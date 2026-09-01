@@ -265,10 +265,12 @@ mod tests {
 
         assert_eq!(evaluation.decision, FilePermissionDecision::Deny);
         assert_eq!(evaluation.matched_pattern.as_deref(), Some("["));
-        assert!(evaluation
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("invalid file permission glob")));
+        assert!(
+            evaluation
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("invalid file permission glob"))
+        );
         assert!(policy.validation_error().is_some());
     }
 }

@@ -3,7 +3,7 @@
 //! This module handles loading MCP server configurations from multiple sources
 //! with proper precedence handling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,8 @@ pub enum McpConfigScope {
     /// User-wide config in ~/.composer/mcp.json
     #[default]
     User,
+    /// Configuration supplied by the managed connection authority.
+    Managed,
     /// Project-local override in .composer/mcp.local.json
     Local,
     /// Project-shared config in .composer/mcp.json
@@ -77,6 +79,23 @@ pub struct McpServerConfig {
 
     #[serde(default, rename = "authPreset")]
     pub auth_preset: Option<String>,
+
+    /// Opaque Maestro connection metadata used by an external credential
+    /// broker. This is never a secret or an authentication header.
+    #[serde(default, rename = "connectionRef")]
+    pub connection_ref: Option<String>,
+
+    /// Opaque credential reference owned by the external connection broker.
+    #[serde(default, rename = "credentialRef")]
+    pub credential_ref: Option<String>,
+
+    /// Runtime-only generation captured from the managed connection record.
+    ///
+    /// This is deliberately not serialized: persisted MCP configuration may
+    /// carry only opaque connection metadata, never a runtime authority
+    /// snapshot.
+    #[serde(skip, default)]
+    pub managed_generation: Option<u64>,
 
     #[serde(default, rename = "supportsParallelToolCalls")]
     pub supports_parallel_tool_calls: Option<bool>,
@@ -134,6 +153,29 @@ impl McpServerConfig {
             }
         }
 
+        match (&self.connection_ref, &self.credential_ref) {
+            (Some(connection_ref), Some(credential_ref)) => {
+                if connection_ref.trim().is_empty()
+                    || !connection_ref.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                    })
+                {
+                    return Err("MCP connectionRef contains unsupported characters".to_string());
+                }
+                crate::service_connections::validate_opaque_reference(
+                    "MCP credentialRef",
+                    credential_ref,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(
+                    "MCP connectionRef and credentialRef must be provided together".to_string(),
+                );
+            }
+            (None, None) => {}
+        }
+
         Ok(())
     }
 
@@ -175,6 +217,10 @@ struct RawServerEntry {
     headers_helper: Option<String>,
     #[serde(default, rename = "authPreset")]
     auth_preset: Option<String>,
+    #[serde(default, rename = "connectionRef")]
+    connection_ref: Option<String>,
+    #[serde(default, rename = "credentialRef")]
+    credential_ref: Option<String>,
     #[serde(default, rename = "supportsParallelToolCalls")]
     supports_parallel_tool_calls: Option<bool>,
     #[serde(default, rename = "requiresProjectApproval")]
@@ -223,6 +269,42 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
         .unwrap_or_else(crate::plugins::PluginRegistry::discover)
         .mcp_paths();
     load_mcp_config_with_plugin_paths(project_root, &plugin_paths)
+}
+
+/// Load configured MCP servers and append bindings supplied by the external
+/// connection authority. Managed bindings win by server name so a project or
+/// user file cannot redirect a centrally managed connection to another endpoint.
+#[must_use]
+pub fn load_mcp_config_with_managed_connections(project_root: Option<&Path>) -> McpConfig {
+    let mut config = load_mcp_config(project_root);
+    append_managed_mcp_connections(&mut config);
+    config
+}
+
+/// Append bindings supplied by the external connection authority after all
+/// file-backed configuration has been merged. Managed bindings own their
+/// server names and cannot be redirected by a project or user file.
+pub fn append_managed_mcp_connections(config: &mut McpConfig) {
+    append_managed_servers(
+        config,
+        crate::orb_connection::managed_mcp_servers(),
+        crate::orb_connection::managed_mcp_server_reservations(),
+    );
+}
+
+fn append_managed_servers<I, R>(config: &mut McpConfig, managed_servers: I, reserved_names: R)
+where
+    I: IntoIterator<Item = McpServerConfig>,
+    R: IntoIterator<Item = String>,
+{
+    let reserved_names = reserved_names.into_iter().collect::<HashSet<_>>();
+    config
+        .servers
+        .retain(|server| !reserved_names.contains(&server.name));
+    for managed in managed_servers {
+        config.servers.retain(|server| server.name != managed.name);
+        config.servers.push(managed);
+    }
 }
 
 fn load_mcp_config_with_plugin_paths(
@@ -376,6 +458,9 @@ fn load_config_file(
             headers: entry.headers,
             headers_helper: entry.headers_helper,
             auth_preset: entry.auth_preset,
+            connection_ref: entry.connection_ref,
+            credential_ref: entry.credential_ref,
+            managed_generation: None,
             supports_parallel_tool_calls: entry.supports_parallel_tool_calls,
             requires_project_approval: entry.requires_project_approval,
             timeout: None,
@@ -443,20 +528,19 @@ pub fn expand_env_vars_for_scope(s: &str, scope: McpConfigScope) -> String {
 }
 
 /// Returns true if connecting this server requires per-workspace trust
-/// approval. Only project/local-scoped servers (repository-controlled) need
-/// approval; stdio servers require it by default because they spawn an
-/// arbitrary repo-controlled process, and any scope can opt in or out via
-/// `requiresProjectApproval`.
+/// approval. Project/local-scoped servers are repository-controlled, so they
+/// always require a trust decision regardless of transport or the value in
+/// the repository file. A repository must not be able to grant itself trust
+/// with `requiresProjectApproval: false`. User, enterprise, and managed
+/// servers remain trusted by default and can opt into an additional workspace
+/// approval with `requiresProjectApproval: true`.
 pub fn server_requires_workspace_approval(server: &McpServerConfig) -> bool {
-    if !matches!(
-        server.scope,
-        McpConfigScope::Project | McpConfigScope::Local
-    ) {
-        return false;
+    match server.scope {
+        McpConfigScope::Project | McpConfigScope::Local => true,
+        McpConfigScope::User | McpConfigScope::Managed | McpConfigScope::Enterprise => {
+            server.requires_project_approval.unwrap_or(false)
+        }
     }
-    server
-        .requires_project_approval
-        .unwrap_or(matches!(server.transport, McpTransport::Stdio))
 }
 
 fn expand_env_vars_internal(s: &str, allow_secrets: bool) -> String {
@@ -588,6 +672,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -611,6 +698,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -634,6 +724,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -657,6 +750,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -665,6 +761,100 @@ mod tests {
             scope: McpConfigScope::User,
         };
         assert!(server.validate().is_err());
+    }
+
+    #[test]
+    fn managed_server_precedence_cannot_be_shadowed_by_file_configuration() {
+        let mut config = McpConfig {
+            servers: vec![McpServerConfig {
+                name: "orb".to_string(),
+                transport: McpTransport::Http,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: Some("https://attacker.example.test/mcp".to_string()),
+                headers: HashMap::new(),
+                headers_helper: None,
+                auth_preset: None,
+                connection_ref: None,
+                credential_ref: None,
+                managed_generation: None,
+                supports_parallel_tool_calls: None,
+                requires_project_approval: None,
+                timeout: None,
+                enabled: true,
+                disabled: false,
+                scope: McpConfigScope::Project,
+            }],
+        };
+        let managed = McpServerConfig {
+            name: "orb".to_string(),
+            transport: McpTransport::Http,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("https://orb.evalops.dev/mcp".to_string()),
+            headers: HashMap::new(),
+            headers_helper: Some("externally managed by https://orb.evalops.dev".to_string()),
+            auth_preset: None,
+            connection_ref: Some("orb-team".to_string()),
+            credential_ref: Some(
+                "ref:orb/credential/00000000-0000-4000-8000-000000000001".to_string(),
+            ),
+            managed_generation: Some(1),
+            supports_parallel_tool_calls: None,
+            requires_project_approval: Some(false),
+            timeout: None,
+            enabled: true,
+            disabled: false,
+            scope: McpConfigScope::Managed,
+        };
+
+        append_managed_servers(&mut config, [managed], ["orb".to_string()]);
+
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].scope, McpConfigScope::Managed);
+        assert_eq!(
+            config.servers[0].url.as_deref(),
+            Some("https://orb.evalops.dev/mcp")
+        );
+    }
+
+    #[test]
+    fn revoked_managed_server_reservation_blocks_project_fallback() {
+        let mut config = McpConfig {
+            servers: vec![McpServerConfig {
+                name: "orb".to_string(),
+                transport: McpTransport::Http,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: Some("https://attacker.example.test/mcp".to_string()),
+                headers: HashMap::new(),
+                headers_helper: None,
+                auth_preset: None,
+                connection_ref: None,
+                credential_ref: None,
+                managed_generation: None,
+                supports_parallel_tool_calls: None,
+                requires_project_approval: None,
+                timeout: None,
+                enabled: true,
+                disabled: false,
+                scope: McpConfigScope::Project,
+            }],
+        };
+
+        append_managed_servers(
+            &mut config,
+            Vec::<McpServerConfig>::new(),
+            ["orb".to_string()],
+        );
+
+        assert!(config.servers.is_empty());
     }
 
     #[test]
@@ -680,6 +870,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -703,6 +896,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
             timeout: None,
@@ -937,6 +1133,9 @@ mod tests {
             headers: HashMap::new(),
             headers_helper: None,
             auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: approval,
             timeout: None,
@@ -948,7 +1147,7 @@ mod tests {
 
     #[test]
     fn test_server_requires_workspace_approval() {
-        // User/enterprise servers never need workspace approval.
+        // User/enterprise servers remain trusted by default.
         assert!(!server_requires_workspace_approval(&server(
             McpConfigScope::User,
             McpTransport::Stdio,
@@ -972,23 +1171,43 @@ mod tests {
             None,
         )));
 
-        // Project/local HTTP servers do not require approval by default.
-        assert!(!server_requires_workspace_approval(&server(
+        // Project/local HTTP and SSE servers require approval by default too.
+        assert!(server_requires_workspace_approval(&server(
             McpConfigScope::Project,
             McpTransport::Http,
+            Some(false),
+        )));
+
+        assert!(server_requires_workspace_approval(&server(
+            McpConfigScope::Local,
+            McpTransport::Sse,
             None,
         )));
 
-        // requiresProjectApproval overrides the default in both directions.
+        // A repository cannot weaken the trust boundary with an explicit
+        // false value; true is accepted but is redundant for project/local.
         assert!(server_requires_workspace_approval(&server(
             McpConfigScope::Project,
             McpTransport::Http,
             Some(true),
         )));
-        assert!(!server_requires_workspace_approval(&server(
+        assert!(server_requires_workspace_approval(&server(
             McpConfigScope::Project,
             McpTransport::Stdio,
             Some(false),
+        )));
+
+        // Non-repository sources preserve their existing default and opt-in
+        // behavior.
+        assert!(!server_requires_workspace_approval(&server(
+            McpConfigScope::Managed,
+            McpTransport::Http,
+            Some(false),
+        )));
+        assert!(server_requires_workspace_approval(&server(
+            McpConfigScope::User,
+            McpTransport::Http,
+            Some(true),
         )));
     }
 }

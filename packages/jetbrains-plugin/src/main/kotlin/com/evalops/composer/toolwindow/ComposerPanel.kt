@@ -305,7 +305,7 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
     private inner class SettingsAction : AnAction("Settings", "Open settings", AllIcons.General.Settings) {
         override fun actionPerformed(e: AnActionEvent) {
             com.intellij.openapi.options.ShowSettingsUtil.getInstance()
-                .showSettingsDialog(project, "Maestro")
+                .showSettingsDialog(project, "Deixic Code")
         }
     }
 

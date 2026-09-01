@@ -1,16 +1,15 @@
 //! Native `maestro plugins` / `maestro plugin` CLI.
 //!
-//! Surfaces the existing plugin discovery registry for operator use without
-//! entering the interactive TUI (`/plugins`). Marketplace install remains
-//! intentionally out of scope for this slice.
+//! Surfaces plugin discovery, installation, marketplace, and capability
+//! controls for operator use without entering the interactive TUI (`/plugins`).
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
-use crate::plugins::{search_roots_for_workspace, DiscoveredPlugin, PluginRegistry};
+use crate::plugins::{DiscoveredPlugin, PluginRegistry, search_roots_for_workspace};
 
 #[derive(Debug, Default)]
 struct PluginArgs {
@@ -34,6 +33,8 @@ struct PluginListEntry {
     description: Option<String>,
     components: Vec<&'static str>,
     has_manifest: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +49,8 @@ struct PluginListReport {
 struct PluginComponentPaths {
     #[serde(skip_serializing_if = "Option::is_none")]
     skills: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     commands: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +72,8 @@ struct PluginInfoReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     has_manifest: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_path: Option<String>,
     components: PluginComponentPaths,
 }
 
@@ -354,7 +359,7 @@ fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
         println!("  ~/.maestro/plugins/<name>/ (user)");
         println!();
         println!(
-            "Each plugin may include plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types."
+            "Each plugin may include plugin.json or .plugin/plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types."
         );
         return Ok(0);
     }
@@ -416,6 +421,10 @@ fn list_entry(plugin: &DiscoveredPlugin) -> PluginListEntry {
         description: plugin.manifest.as_ref().and_then(|m| m.description.clone()),
         components: component_labels(plugin),
         has_manifest: plugin.manifest.is_some(),
+        manifest_path: plugin
+            .manifest_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
     }
 }
 
@@ -427,10 +436,19 @@ fn info_report(plugin: &DiscoveredPlugin) -> PluginInfoReport {
         version: plugin.manifest.as_ref().and_then(|m| m.version.clone()),
         description: plugin.manifest.as_ref().and_then(|m| m.description.clone()),
         has_manifest: plugin.manifest.is_some(),
+        manifest_path: plugin
+            .manifest_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         components: PluginComponentPaths {
             skills: plugin
                 .components
                 .skills_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            agents: plugin
+                .components
+                .agents_dir
                 .as_ref()
                 .map(|p| p.display().to_string()),
             commands: plugin
@@ -461,6 +479,9 @@ fn component_labels(plugin: &DiscoveredPlugin) -> Vec<&'static str> {
     let mut parts = Vec::new();
     if plugin.components.skills_dir.is_some() {
         parts.push("skills");
+    }
+    if plugin.components.agents_dir.is_some() {
+        parts.push("agents");
     }
     if plugin.components.commands_dir.is_some() {
         parts.push("commands");
@@ -580,9 +601,10 @@ mod tests {
             root: PathBuf::from("/p/x"),
             origin: PluginOrigin::Project,
             manifest: None,
+            manifest_path: None,
             components: crate::plugins::PluginComponents {
                 skills_dir: Some(PathBuf::from("/p/x/skills")),
-                agents_dir: None,
+                agents_dir: Some(PathBuf::from("/p/x/agents")),
                 commands_dir: None,
                 hooks_config: None,
                 mcp_path: Some(PathBuf::from("/p/x/mcp.json")),
@@ -590,8 +612,11 @@ mod tests {
             },
         };
         let entry = list_entry(&plugin);
-        assert_eq!(entry.components, vec!["skills", "mcp"]);
+        assert_eq!(entry.components, vec!["skills", "agents", "mcp"]);
         assert!(!entry.has_manifest);
+        assert!(entry.manifest_path.is_none());
+        let report = info_report(&plugin);
+        assert_eq!(report.components.agents.as_deref(), Some("/p/x/agents"));
     }
 
     #[test]

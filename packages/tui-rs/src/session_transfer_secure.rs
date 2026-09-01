@@ -3,11 +3,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
-use ring::signature::{Ed25519KeyPair, UnparsedPublicKey, ED25519};
+use ring::signature::{ED25519, Ed25519KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeroize::Zeroizing;
@@ -15,9 +15,9 @@ use zeroize::Zeroizing;
 use crate::session::SessionManager;
 
 use super::{
-    build_portable_bundle, ensure_output_parent, find_session, import_bundle_with_source,
-    import_entries_with_source, write_private_file, ImportResult, PortableBundle, PortableSession,
-    PORTABLE_FORMAT,
+    ImportResult, PORTABLE_FORMAT, PortableBundle, PortableSession, build_portable_bundle,
+    ensure_output_parent, find_session, import_bundle_with_source, import_entries_with_source,
+    write_private_file,
 };
 
 /// Stable machine-readable format for encrypted, signed session bundles.
@@ -588,10 +588,12 @@ mod tests {
         let raw = fs::read(&output).unwrap();
         let envelope: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(envelope["format"], SECURE_PORTABLE_FORMAT);
-        assert!(!envelope["encryption"]["ciphertext"]
-            .as_str()
-            .unwrap()
-            .is_empty());
+        assert!(
+            !envelope["encryption"]["ciphertext"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
         assert!(!String::from_utf8_lossy(&raw).contains(&fixture_secret("sk-")));
 
         let destination = root.path().join("destination");
@@ -692,29 +694,35 @@ mod tests {
         recipient["recipient"]["keyId"] = Value::String("other-recipient".to_string());
         recipient["encryption"]["keyId"] = Value::String("other-recipient".to_string());
         let recipient = serde_json::from_value::<SecureSessionEnvelope>(recipient).unwrap();
-        assert!(validate_secure_envelope(
-            &recipient,
-            import_options.expected_recipient_key_id.as_deref()
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("does not match"));
+        assert!(
+            validate_secure_envelope(
+                &recipient,
+                import_options.expected_recipient_key_id.as_deref()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match")
+        );
 
         let mut encryption = original.clone();
         encryption["encryption"]["algorithm"] = Value::String("AES-128-GCM".to_string());
         let encryption = serde_json::from_value::<SecureSessionEnvelope>(encryption).unwrap();
-        assert!(validate_secure_envelope(&encryption, None)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported secure session encryption algorithm"));
+        assert!(
+            validate_secure_envelope(&encryption, None)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported secure session encryption algorithm")
+        );
 
         let mut signer = original;
         signer["signer"]["algorithm"] = Value::String("RSA-PSS".to_string());
         let signer = serde_json::from_value::<SecureSessionEnvelope>(signer).unwrap();
-        assert!(validate_secure_envelope(&signer, None)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported secure session signature algorithm"));
+        assert!(
+            validate_secure_envelope(&signer, None)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported secure session signature algorithm")
+        );
     }
 
     #[test]

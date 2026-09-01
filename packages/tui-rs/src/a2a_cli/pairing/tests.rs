@@ -7,7 +7,7 @@
 //! required fields, secret-bearing fields, and oversized payloads.
 
 use super::*;
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 
 /// A minimal, valid `maestro-pair-v1` payload as raw wire JSON (camelCase),
 /// so tests can remove/replace individual fields to simulate adversarial

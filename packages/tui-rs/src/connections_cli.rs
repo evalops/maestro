@@ -6,28 +6,28 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use fd_lock::RwLock as FileLock;
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
 use serde::Serialize;
 
 use crate::plugins::{ConnectionTypeDefinition, ConnectionTypeManifest, PluginRegistry};
 use crate::service_connections::{
-    keyring_secret_ref, now_ms, ConnectionAuthKind, ConnectionBroker, ConnectionPlacement,
-    ConnectionSecretRef, ConnectionState, ConnectionStore, KeyringSecretBackend, SecretBackend,
-    ServiceConnection,
+    ConnectionAuthKind, ConnectionBroker, ConnectionPlacement, ConnectionSecretRef,
+    ConnectionState, ConnectionStore, KeyringSecretBackend, SecretBackend, ServiceConnection,
+    keyring_secret_ref, now_ms,
 };
 
 #[derive(Debug, Default)]
@@ -72,10 +72,10 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
     match command {
         "ui" | "dashboard" => {
             if parsed.json {
-                bail!("maestro connections ui does not support --json")
+                bail!("deixic-code connections ui does not support --json")
             }
             if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                bail!("maestro connections ui requires an interactive terminal")
+                bail!("deixic-code connections ui requires an interactive terminal")
             }
             run_dashboard(parsed.workspace.as_deref())
         }
@@ -159,7 +159,9 @@ fn run_list(json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&store.connections)?);
     } else if store.connections.is_empty() {
-        println!("No managed connections. Run `maestro connections types` to see available types.");
+        println!(
+            "No managed connections. Run `deixic-code connections types` to see available types."
+        );
     } else {
         println!("Connections");
         for connection in store.connections {
@@ -185,12 +187,12 @@ fn run_add(args: &Args) -> Result<i32> {
     let type_id = required_position(
         args,
         0,
-        "Usage: maestro connections add <type> <id> [source]",
+        "Usage: deixic-code connections add <type> <id> [source]",
     )?;
     let id = required_position(
         args,
         1,
-        "Usage: maestro connections add <type> <id> [source]",
+        "Usage: deixic-code connections add <type> <id> [source]",
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
     let definition = resolve_connection_type(&definitions, type_id)?;
@@ -215,6 +217,7 @@ fn run_add(args: &Args) -> Result<i32> {
             placement: definition.placement,
             state: ConnectionState::Active,
             capabilities: definition.capabilities.clone(),
+            mcp_binding: None,
             generation: 1,
             is_default,
             created_at_ms: timestamp,
@@ -245,7 +248,7 @@ fn should_be_default(store: &ConnectionStore, provider_id: &str, requested: bool
 }
 
 fn run_status(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections status <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections status <id>")?;
     let store = load_store()?;
     let connection = store
         .get(id)
@@ -257,11 +260,16 @@ fn run_status(args: &Args) -> Result<i32> {
         "revoked"
     } else if result.is_err() {
         "unavailable"
+    } else if connection.mcp_binding.is_some() {
+        "managed_unverified"
     } else if matches!(connection.secret_ref, ConnectionSecretRef::Delegated { .. }) {
         "ready_delegated"
     } else {
         "ready"
     };
+    let managed_detail = (result.is_ok() && connection.mcp_binding.is_some())
+        .then(|| crate::orb_connection::managed_mcp_health_detail(connection).ok())
+        .flatten();
     if args.json {
         println!(
             "{}",
@@ -270,7 +278,9 @@ fn run_status(args: &Args) -> Result<i32> {
                 "status": status,
                 "providerId": connection.provider_id,
                 "generation": connection.generation,
-                "detail": result.err().map(|error| error.to_string()),
+                "detail": managed_detail.or_else(|| {
+                    result.as_ref().err().map(std::string::ToString::to_string)
+                }),
             }))?
         );
     } else {
@@ -283,7 +293,7 @@ fn run_status(args: &Args) -> Result<i32> {
 }
 
 fn run_use(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections use <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections use <id>")?;
     let path = ConnectionStore::default_path()?;
     with_locked_store(&path, |store| {
         store.set_default(id)?;
@@ -297,7 +307,7 @@ fn run_rotate(args: &Args) -> Result<i32> {
     let id = required_position(
         args,
         0,
-        "Usage: maestro connections rotate <id> [--secret-stdin]",
+        "Usage: deixic-code connections rotate <id> [--secret-stdin]",
     )?;
     let path = ConnectionStore::default_path()?;
     let backend = KeyringSecretBackend;
@@ -318,7 +328,9 @@ fn run_rotate(args: &Args) -> Result<i32> {
                     .checked_add(1)
                     .context("connection generation overflow")?,
             ),
-            _ => bail!("only OS-credential-store connections can be rotated; update the referenced source instead"),
+            _ => bail!(
+                "only OS-credential-store connections can be rotated; update the referenced source instead"
+            ),
         };
         let new_secret_ref = keyring_secret_ref(id, next_generation);
         let (new_service, new_account) = match &new_secret_ref {
@@ -352,7 +364,7 @@ fn run_rotate(args: &Args) -> Result<i32> {
 }
 
 fn run_remove(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections remove <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections remove <id>")?;
     let path = ConnectionStore::default_path()?;
     let backend = KeyringSecretBackend;
     remove_connection(&path, id, &backend)?;
@@ -584,6 +596,11 @@ fn connection_types(workspace: Option<&Path>) -> Result<Vec<ConnectionTypeReport
             continue;
         };
         for definition in ConnectionTypeManifest::load(path)?.connection_types {
+            if definition.provider_id == crate::orb_connection::HOSTED_ORB_PROVIDER_ID
+                && definition.mcp_binding.is_some()
+            {
+                crate::orb_connection::validate_hosted_orb_definition(&definition)?;
+            }
             if definitions.contains_key(&definition.id) {
                 bail!(
                     "plugin {} connection type {} conflicts with an existing type",
@@ -633,6 +650,7 @@ fn builtin_connection_types() -> Vec<ConnectionTypeDefinition> {
             env_var: Some((*env_var).to_owned()),
             capabilities: vec!["models.invoke".to_owned()],
             documentation_url: None,
+            mcp_binding: None,
         });
     }
     values.push(ConnectionTypeDefinition {
@@ -644,6 +662,7 @@ fn builtin_connection_types() -> Vec<ConnectionTypeDefinition> {
         env_var: None,
         capabilities: vec!["models.invoke".into()],
         documentation_url: None,
+        mcp_binding: None,
     });
     values.sort_by(|left, right| left.id.cmp(&right.id));
     values
@@ -684,9 +703,25 @@ fn parse_args(args: &[String]) -> Result<Args> {
 }
 
 fn current_platform_session() -> Option<crate::credential_mode::PlatformSession> {
-    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
     let env = std::env::vars().collect();
-    crate::credential_mode::platform_session_from(snapshot.as_ref(), &env)
+    platform_session_from_env_or_snapshot(&env, || {
+        crate::init_cli::load_evalops_snapshot().ok().flatten()
+    })
+}
+
+fn platform_session_from_env_or_snapshot(
+    env: &HashMap<String, String>,
+    load_snapshot: impl FnOnce() -> Option<crate::init_cli::EvalOpsCredentialSnapshot>,
+) -> Option<crate::credential_mode::PlatformSession> {
+    // Hosted runners and managed local sessions already receive the complete
+    // platform identity through environment variables. Resolve that source
+    // before touching the OS credential store so read-only connection commands
+    // cannot trigger a Keychain prompt they do not need.
+    if let Some(session) = crate::credential_mode::platform_session_from(None, env) {
+        return Some(session);
+    }
+    let snapshot = load_snapshot();
+    crate::credential_mode::platform_session_from(snapshot.as_ref(), env)
 }
 
 fn run_list_platform(
@@ -697,7 +732,7 @@ fn run_list_platform(
     if json {
         println!("{}", serde_json::to_string_pretty(&store.refs)?);
     } else if store.refs.is_empty() {
-        println!("No org provider refs stored. Run `maestro connections add` to upload a key.");
+        println!("No org provider refs stored. Run `deixic-code connections add` to upload a key.");
     } else {
         println!("Org provider refs (secrets live in EvalOps keys)");
         for item in store.refs {
@@ -715,17 +750,17 @@ fn run_list_platform(
 }
 
 fn run_add_platform(args: &Args) -> Result<i32> {
-    let session =
-        current_platform_session().context("EvalOps session expired; run maestro evalops login")?;
+    let session = current_platform_session()
+        .context("EvalOps session expired; run deixic-code evalops login")?;
     let type_id = required_position(
         args,
         0,
-        "Usage: maestro connections add <type> <id> [source]",
+        "Usage: deixic-code connections add <type> <id> [source]",
     )?;
     let id = required_position(
         args,
         1,
-        "Usage: maestro connections add <type> <id> [source]",
+        "Usage: deixic-code connections add <type> <id> [source]",
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
     let definition = resolve_connection_type(&definitions, type_id)?;
@@ -768,7 +803,7 @@ fn run_status_platform(
     session: &crate::credential_mode::PlatformSession,
     args: &Args,
 ) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections status <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections status <id>")?;
     let store = crate::platform_provider_refs::load_default_store()?;
     let stored = store
         .get(id)
@@ -807,7 +842,7 @@ fn run_status_platform(
 }
 
 fn run_use_platform(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections use <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections use <id>")?;
     let selected = crate::platform_provider_refs::select_default(id)?;
     println!(
         "{}: default org provider ref for {}",
@@ -820,7 +855,7 @@ fn run_remove_platform(
     session: &crate::credential_mode::PlatformSession,
     args: &Args,
 ) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: maestro connections remove <id>")?;
+    let id = required_position(args, 0, "Usage: deixic-code connections remove <id>")?;
     let store = crate::platform_provider_refs::load_default_store()?;
     let stored = store
         .get(id)
@@ -833,7 +868,7 @@ fn run_remove_platform(
 
 fn print_help() {
     println!(
-        "maestro connections <command> [options]\n\n\
+        "deixic-code connections <command> [options]\n\n\
 Commands:\n\
   ui                              Open the interactive connection manager\n\
   types [--json]                 List built-in and trusted-plugin connection types\n\
@@ -860,6 +895,7 @@ enum ConnectionHealth {
     Unknown,
     Ready,
     ReadyDelegated,
+    ManagedUnverified,
     Unavailable,
     Revoked,
 }
@@ -870,6 +906,7 @@ impl ConnectionHealth {
             Self::Unknown => "Not checked",
             Self::Ready => "Ready",
             Self::ReadyDelegated => "Ready via sign-in",
+            Self::ManagedUnverified => "Managed (remote health not probed)",
             Self::Unavailable => "Unavailable",
             Self::Revoked => "Revoked",
         }
@@ -879,6 +916,7 @@ impl ConnectionHealth {
         match self {
             Self::Unknown => Color::DarkGray,
             Self::Ready | Self::ReadyDelegated => Color::Green,
+            Self::ManagedUnverified => Color::Yellow,
             Self::Unavailable | Self::Revoked => Color::Red,
         }
     }
@@ -996,6 +1034,8 @@ fn check_connection_health(store: &ConnectionStore, id: &str) -> ConnectionHealt
     let env = std::env::vars().collect::<HashMap<_, _>>();
     if broker.check(id, &env).is_err() {
         ConnectionHealth::Unavailable
+    } else if connection.mcp_binding.is_some() {
+        ConnectionHealth::ManagedUnverified
     } else if matches!(connection.secret_ref, ConnectionSecretRef::Delegated { .. }) {
         ConnectionHealth::ReadyDelegated
     } else {
@@ -1416,6 +1456,7 @@ pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<Stri
             placement: definition.placement,
             state: ConnectionState::Active,
             capabilities: definition.capabilities.clone(),
+            mcp_binding: None,
             generation: 1,
             is_default: true,
             created_at_ms: timestamp,
@@ -1515,6 +1556,7 @@ fn prompt_yes_no(label: &str, default: bool) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1546,11 +1588,46 @@ mod tests {
             placement: ConnectionPlacement::Local,
             state: ConnectionState::Active,
             capabilities: vec!["models.invoke".into()],
+            mcp_binding: None,
             generation: 1,
             is_default: false,
             created_at_ms: 1,
             updated_at_ms: 1,
         }
+    }
+
+    #[test]
+    fn complete_platform_env_skips_the_keychain_backed_snapshot() {
+        let env = HashMap::from([
+            (
+                crate::credential_mode::ACCESS_TOKEN_ENV.to_owned(),
+                "managed-access-token".to_owned(),
+            ),
+            (
+                crate::credential_mode::ORG_ID_ENV.to_owned(),
+                "org_evalops".to_owned(),
+            ),
+        ]);
+
+        let session = platform_session_from_env_or_snapshot(&env, || {
+            panic!("complete platform environment must not read the credential store")
+        })
+        .expect("platform session");
+
+        assert_eq!(session.organization_id, "org_evalops");
+        assert_eq!(session.access_token, "managed-access-token");
+    }
+
+    #[test]
+    fn incomplete_platform_env_falls_back_to_the_snapshot_source() {
+        let loaded = Cell::new(false);
+        let session = platform_session_from_env_or_snapshot(&HashMap::new(), || {
+            loaded.set(true);
+            None
+        });
+
+        assert!(loaded.get());
+        assert!(session.is_none());
     }
 
     #[test]
@@ -1630,10 +1707,13 @@ mod tests {
         assert!(types.iter().any(|item| item.id == "openai-api-key"));
         assert!(types.iter().any(|item| item.id == "anthropic-api-key"));
         assert!(types.iter().any(|item| item.id == "codex-subscription"));
-        assert!(types
-            .iter()
-            .find(|item| item.id == "codex-subscription")
-            .is_some_and(|item| item.auth_kind == ConnectionAuthKind::Subscription));
+        assert!(types.iter().all(|item| item.provider_id != "orb"));
+        assert!(
+            types
+                .iter()
+                .find(|item| item.id == "codex-subscription")
+                .is_some_and(|item| item.auth_kind == ConnectionAuthKind::Subscription)
+        );
     }
 
     #[test]
@@ -1647,6 +1727,7 @@ mod tests {
             env_var: Some("OPENAI_API_KEY".into()),
             capabilities: vec!["models.invoke".into()],
             documentation_url: None,
+            mcp_binding: None,
         };
         let error = source_for_add(
             &Args::default(),
@@ -1669,6 +1750,7 @@ mod tests {
             env_var: None,
             capabilities: vec!["models.invoke".into()],
             documentation_url: None,
+            mcp_binding: None,
         };
         let error = source_for_add(
             &Args::default(),
@@ -1677,9 +1759,11 @@ mod tests {
             &KeyringSecretBackend,
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("no verified delegated authentication transport"));
+        assert!(
+            error
+                .to_string()
+                .contains("no verified delegated authentication transport")
+        );
     }
 
     #[test]
@@ -1694,9 +1778,11 @@ mod tests {
         };
 
         let error = source_for_add(&args, &definition, "work", &KeyringSecretBackend).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("only valid for subscription and OAuth"));
+        assert!(
+            error
+                .to_string()
+                .contains("only valid for subscription and OAuth")
+        );
     }
 
     #[test]
@@ -1748,9 +1834,11 @@ mod tests {
             })
             .unwrap();
         });
-        assert!(second_acquired_rx
-            .recv_timeout(Duration::from_millis(50))
-            .is_err());
+        assert!(
+            second_acquired_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
         release_first_tx.send(()).unwrap();
         first.join().unwrap();
         second_acquired_rx
@@ -1776,10 +1864,12 @@ mod tests {
 
         remove_connection(&path, "obsolete", &DeleteFails).unwrap();
 
-        assert!(ConnectionStore::load(&path)
-            .unwrap()
-            .get("obsolete")
-            .is_none());
+        assert!(
+            ConnectionStore::load(&path)
+                .unwrap()
+                .get("obsolete")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1852,6 +1942,7 @@ mod tests {
                     env_var: Some("ANTHROPIC_API_KEY".into()),
                     capabilities: vec![],
                     documentation_url: None,
+                    mcp_binding: None,
                 },
                 source: "maestro".into(),
             },
@@ -1865,6 +1956,7 @@ mod tests {
                     env_var: None,
                     capabilities: vec![],
                     documentation_url: None,
+                    mcp_binding: None,
                 },
                 source: "plugin:extra".into(),
             },

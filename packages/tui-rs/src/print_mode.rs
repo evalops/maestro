@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::agent::{
     CredentialVault, ExecutionSource, FromAgent, MaxTokensSource, NativeAgent, NativeAgentConfig,
@@ -91,7 +91,14 @@ impl PrintModeLimits {
                 MaxTokensSource::Catalog
             },
             max_tool_calls: positive_env("MAESTRO_PRINT_MAX_TOOL_CALLS", usize::MAX)?,
-            max_turns: positive_env("MAESTRO_PRINT_MAX_TURNS", usize::MAX)?,
+            // Unbounded was the old default and it had no terminator: a
+            // model that keeps calling tools never ends the turn. The
+            // shared per-turn step budget is the floor; the env var still
+            // raises or lowers it.
+            max_turns: positive_env(
+                "MAESTRO_PRINT_MAX_TURNS",
+                crate::agent::DEFAULT_MAX_TURN_STEPS,
+            )?,
             workspace_only_file_tools: bool_env("MAESTRO_PRINT_WORKSPACE_ONLY_FILE_TOOLS")?,
             allowed_tools: allowed_tools_from_env()?,
         })
@@ -316,7 +323,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let cwd = workspace.to_string_lossy().to_string();
 
     let system_prompt = format!(
-        "You are Maestro, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
+        "You are Deixic Code, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
     );
 
     let config = NativeAgentConfig {
@@ -339,6 +346,13 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         // that local check was sandbox-aware; the actual execution wasn't
         // (review finding on #3144).
         sandbox_policy: options.sandbox_policy.clone(),
+        managed_mcp_policy: None,
+        // The print run's own `MAESTRO_PRINT_MAX_TURNS` bound is the same
+        // bound the turn loop enforces; feeding it here makes the loop stop
+        // and report at the budget instead of running past it until this
+        // event loop notices and cancels.
+        max_turn_steps: limits.max_turns,
+        allow_unbounded_turn: false,
     };
 
     let credential_vault = CredentialVault::new();
@@ -352,10 +366,14 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     }
     .context("Failed to create native agent for print mode")?;
     let tool_tx = agent.tool_response_sender();
+    // Print/exec mode has no approval UI (see the `bypass_sandbox` rejection
+    // below), so tools fail closed instead of escalating to a user who is not
+    // there.
     let tool_executor = match options.sandbox_policy.clone() {
         Some(policy) => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone())
+            .unattended()
             .with_sandbox_policy(policy),
-        None => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()),
+        None => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()).unattended(),
     };
 
     agent.send_ready();
@@ -877,9 +895,11 @@ mod tests {
         let discovered = discovered_local_model("llamacpp", 0);
 
         let error = validate_print_local_model("llamacpp/test-model", &discovered).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("did not report its live context limit"));
+        assert!(
+            error
+                .to_string()
+                .contains("did not report its live context limit")
+        );
     }
 
     #[test]

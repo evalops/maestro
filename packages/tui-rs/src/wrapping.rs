@@ -45,8 +45,8 @@
 
 use ratatui::text::{Line, Span};
 use std::ops::Range;
-use textwrap::wrap_algorithms::Penalties;
 use textwrap::Options;
+use textwrap::wrap_algorithms::Penalties;
 
 /// Like `wrap_ranges` but returns ranges without trailing whitespace.
 /// Suitable for general wrapping where trailing spaces should not be preserved.

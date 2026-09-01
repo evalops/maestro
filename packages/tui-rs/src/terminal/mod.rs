@@ -56,8 +56,8 @@ pub(crate) use events::{AppTerminalEvent, TerminalEventReader};
 pub use events::{TerminalEvent, TerminalEventStream};
 pub use history::push_history_lines;
 pub use setup::{
-    calculate_viewport, check_tty, init, init_fallback, is_tty_available, recreate_with_viewport,
-    restore, size, write_raw, Terminal, TerminalCapabilities,
+    Terminal, TerminalCapabilities, calculate_viewport, check_tty, init, init_fallback,
+    is_tty_available, recreate_with_viewport, restore, size, write_raw,
 };
 pub(crate) use setup::{
     disable_theme_reporting, enable_theme_reporting, initialize_theme_reporting, query_theme,

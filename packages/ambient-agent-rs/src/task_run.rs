@@ -370,7 +370,9 @@ mod tests {
         assert!(!outcome.success);
         assert_eq!(
             outcome.failure_reason.as_deref(),
-            Some("critic rejected: Blocker/Security at src/auth.rs: Hardcoded token detected. Remove it.")
+            Some(
+                "critic rejected: Blocker/Security at src/auth.rs: Hardcoded token detected. Remove it."
+            )
         );
     }
 

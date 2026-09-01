@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::headless::messages::ToolRetryDecisionAction;
@@ -275,6 +275,7 @@ async fn run_repl(
                             ToAgentMessage::Prompt {
                                 content: raw,
                                 attachments: None,
+                                managed_inference_authorization: None,
                             },
                         )?;
                     }

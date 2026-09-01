@@ -11,9 +11,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 #[cfg(not(feature = "thin-scenario"))]
 #[path = "scenario_cli/execute.rs"]
@@ -1124,10 +1124,7 @@ fn validate_statement(
         "wait_for_user" => {}
         "end" => {
             let reason = obj.get("reason").and_then(Value::as_str);
-            if !matches!(
-                reason,
-                Some("complete" | "aborted" | "limit_exceeded")
-            ) {
+            if !matches!(reason, Some("complete" | "aborted" | "limit_exceeded")) {
                 bail!(
                     "Replay scenario {label} frame {frame_index} statement {statement_offset} end reason is invalid"
                 );

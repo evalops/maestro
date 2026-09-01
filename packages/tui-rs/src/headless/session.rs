@@ -45,6 +45,7 @@
 //! recorder.record_sent(&ToAgentMessage::Prompt {
 //!     content: "Hello!".to_string(),
 //!     attachments: None,
+//!     managed_inference_authorization: None,
 //! })?;
 //!
 //! recorder.flush()?; // Ensure writes are persisted
@@ -97,6 +98,44 @@ use super::messages::{
     GovernedClientToolBinding, InitConfig, PendingApproval, ServerRequestType, StreamingResponse,
     ToAgentMessage, TokenUsage,
 };
+use super::workspace_capabilities::{ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied};
+
+fn workspace_capability_replay_cursor(request: &ApplyWorkspaceCapabilitySet) -> String {
+    format!(
+        "{}:{}",
+        request.activation_generation, request.capability_set_digest
+    )
+}
+
+fn record_sent_workspace_capability(
+    pending: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
+    message: &ToAgentMessage,
+) {
+    if let ToAgentMessage::ApplyWorkspaceCapabilitySet { request } = message {
+        pending.insert(workspace_capability_replay_cursor(request), request.clone());
+    }
+}
+
+fn accept_workspace_capability_receipt(
+    pending: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
+    last_accepted: &mut Option<ApplyWorkspaceCapabilitySet>,
+    receipt: &WorkspaceCapabilitySetApplied,
+) -> bool {
+    let Some(request) = pending.get(&receipt.replay_cursor) else {
+        return false;
+    };
+    let matches = receipt.organization_id == request.organization_id
+        && receipt.workspace_id == request.workspace_id
+        && receipt.runner_session_id == request.runner_session_id
+        && receipt.runtime_generation == request.runtime_generation
+        && receipt.activation_generation == request.activation_generation
+        && receipt.effective_catalog_digest == request.capability_set_digest;
+    if matches {
+        *last_accepted = pending.remove(&receipt.replay_cursor);
+        return true;
+    }
+    false
+}
 
 fn init_config_from_message(message: &ToAgentMessage) -> Option<InitConfig> {
     match message {
@@ -176,6 +215,8 @@ pub enum SessionEntry {
         last_init: Option<InitConfig>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         semantic_conversation: Option<SemanticConversationCheckpoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_workspace_capability_set: Option<Box<ApplyWorkspaceCapabilitySet>>,
     },
 }
 
@@ -232,6 +273,8 @@ struct ReplaySidecar {
     state: AgentStateCheckpoint,
     last_init: Option<InitConfig>,
     semantic_conversation: Option<SemanticConversationCheckpoint>,
+    #[serde(default)]
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
     #[serde(default)]
     semantic_conversation_attempt: Option<u32>,
     #[serde(default)]
@@ -659,6 +702,7 @@ impl SessionMetadata {
 /// recorder.record_sent(&ToAgentMessage::Prompt {
 ///     content: "Hello".to_string(),
 ///     attachments: None,
+///     managed_inference_authorization: None,
 /// })?;
 ///
 /// recorder.flush()?; // Ensure persistence
@@ -683,6 +727,10 @@ pub struct SessionRecorder {
     last_init: Option<InitConfig>,
     /// Latest private, sanitized provider conversation checkpoint.
     semantic_conversation: Option<SemanticConversationCheckpoint>,
+    /// Last request paired with a matching applied receipt.
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    /// Capability requests sent since their matching receipt boundary.
+    pending_workspace_capability_sets: HashMap<String, ApplyWorkspaceCapabilitySet>,
     /// Attempt identity associated with the latest semantic checkpoint.
     semantic_conversation_attempt: Option<u32>,
     /// Explicit prompt queue ids known to be covered by semantic checkpoints.
@@ -692,6 +740,30 @@ pub struct SessionRecorder {
 }
 
 const CHECKPOINT_INTERVAL: usize = 25;
+
+fn without_ephemeral_managed_authorization(message: &ToAgentMessage) -> ToAgentMessage {
+    let mut durable = message.clone();
+    match &mut durable {
+        ToAgentMessage::Prompt {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::GovernedPrompt {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::Steer {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::GovernedSteer {
+            managed_inference_authorization,
+            ..
+        } => *managed_inference_authorization = None,
+        _ => {}
+    }
+    durable
+}
 
 /// Load `<id>.meta.json`, tolerating a corrupt or torn file left by a crash
 /// mid-write.
@@ -829,6 +901,8 @@ impl SessionRecorder {
             replay_state: AgentState::default(),
             last_init: None,
             semantic_conversation: None,
+            last_workspace_capability_set: None,
+            pending_workspace_capability_sets: HashMap::new(),
             semantic_conversation_attempt: None,
             semantic_processed_queue_ids: HashSet::new(),
             entries_since_checkpoint: 0,
@@ -890,6 +964,10 @@ impl SessionRecorder {
                 .as_ref()
                 .map_or_else(AgentState::default, |replay| replay.state.clone()),
             last_init: replay.as_ref().and_then(|replay| replay.last_init.clone()),
+            last_workspace_capability_set: replay
+                .as_ref()
+                .and_then(|replay| replay.last_workspace_capability_set.clone()),
+            pending_workspace_capability_sets: HashMap::new(),
             semantic_conversation: replay.and_then(|replay| {
                 replay
                     .semantic_conversation
@@ -949,6 +1027,7 @@ impl SessionRecorder {
                         == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
                 })
                 .map(|checkpoint| checkpoint.messages.clone()),
+            last_workspace_capability_set: self.last_workspace_capability_set.clone(),
         }
     }
 
@@ -1006,9 +1085,10 @@ impl SessionRecorder {
 
     /// Record a sent message
     pub fn record_sent(&mut self, message: &ToAgentMessage) -> std::io::Result<()> {
-        let entry = SessionEntry::sent(message.clone());
+        let entry = SessionEntry::sent(without_ephemeral_managed_authorization(message));
         self.write_entry(&entry)?;
         self.replay_state.handle_sent_message(message);
+        record_sent_workspace_capability(&mut self.pending_workspace_capability_sets, message);
         if let Some(config) = init_config_from_message(message) {
             self.last_init = Some(config);
         }
@@ -1037,15 +1117,27 @@ impl SessionRecorder {
         }
         let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
+        let workspace_capability_accepted =
+            if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                accept_workspace_capability_receipt(
+                    &mut self.pending_workspace_capability_sets,
+                    &mut self.last_workspace_capability_set,
+                    receipt,
+                )
+            } else {
+                false
+            };
         let _ = self.replay_state.handle_message(message.clone());
         self.entries_since_checkpoint += 1;
-        self.maybe_write_checkpoint(matches!(
-            message,
-            FromAgentMessage::ResponseEnd { .. }
-                | FromAgentMessage::Error { .. }
-                | FromAgentMessage::Compaction { .. }
-                | FromAgentMessage::ConversationSnapshot { .. }
-        ))?;
+        self.maybe_write_checkpoint(
+            matches!(
+                message,
+                FromAgentMessage::ResponseEnd { .. }
+                    | FromAgentMessage::Error { .. }
+                    | FromAgentMessage::Compaction { .. }
+                    | FromAgentMessage::ConversationSnapshot { .. }
+            ) || workspace_capability_accepted,
+        )?;
 
         // Update metadata
         match message {
@@ -1183,6 +1275,7 @@ impl SessionRecorder {
             // Semantic history lives only in the atomically replaced sidecar;
             // embedding it in every append-only checkpoint is quadratic.
             semantic_conversation: None,
+            last_workspace_capability_set: self.last_workspace_capability_set.clone().map(Box::new),
         };
         self.write_entry(&checkpoint)?;
         self.entries_since_checkpoint = 0;
@@ -1203,6 +1296,7 @@ impl SessionRecorder {
             state: portable_redacted_checkpoint(&self.replay_state),
             last_init: self.last_init.clone(),
             semantic_conversation: self.semantic_conversation.clone(),
+            last_workspace_capability_set: self.last_workspace_capability_set.clone(),
             semantic_conversation_attempt: self.semantic_conversation_attempt,
             semantic_processed_queue_ids,
         };
@@ -1414,6 +1508,8 @@ pub struct SessionReplay {
     /// Latest private provider conversation, if the session wrote a semantic
     /// checkpoint using the supported snapshot protocol.
     pub semantic_conversation: Option<Vec<maestro_ai::Message>>,
+    /// Last workspace capability set proven accepted by a matching receipt.
+    pub last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
 }
 
 fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io::Result<()> {
@@ -1430,6 +1526,8 @@ fn load_replay_sidecar(path: &Path) -> Option<ReplaySidecar> {
 fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Result<SessionReplay> {
     let mut state = sidecar.state.into_state();
     let mut last_init = sidecar.last_init;
+    let mut last_workspace_capability_set = sidecar.last_workspace_capability_set;
+    let mut pending_workspace_capability_sets = HashMap::new();
     let mut semantic_conversation = sidecar.semantic_conversation.and_then(|checkpoint| {
         (checkpoint.protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
             .then_some(checkpoint.messages)
@@ -1439,6 +1537,7 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
             state,
             last_init,
             semantic_conversation,
+            last_workspace_capability_set,
         });
     }
     let mut file = File::open(path)?;
@@ -1457,6 +1556,8 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
                 &mut state,
                 &mut last_init,
                 &mut semantic_conversation,
+                &mut last_workspace_capability_set,
+                &mut pending_workspace_capability_sets,
             );
         }
     }
@@ -1464,6 +1565,7 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
         state,
         last_init,
         semantic_conversation,
+        last_workspace_capability_set,
     })
 }
 
@@ -1472,15 +1574,25 @@ fn apply_replay_entry(
     state: &mut AgentState,
     last_init: &mut Option<InitConfig>,
     semantic_conversation: &mut Option<Vec<maestro_ai::Message>>,
+    last_workspace_capability_set: &mut Option<ApplyWorkspaceCapabilitySet>,
+    pending_workspace_capability_sets: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
 ) {
     match entry {
         SessionEntry::Sent { message, .. } => {
             state.handle_sent_message(message);
+            record_sent_workspace_capability(pending_workspace_capability_sets, message);
             if let Some(config) = init_config_from_message(message) {
                 *last_init = Some(config);
             }
         }
         SessionEntry::Received { message, .. } => {
+            if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                let _ = accept_workspace_capability_receipt(
+                    pending_workspace_capability_sets,
+                    last_workspace_capability_set,
+                    receipt,
+                );
+            }
             if let FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
@@ -1496,10 +1608,13 @@ fn apply_replay_entry(
             state: checkpoint,
             last_init: checkpoint_init,
             semantic_conversation: checkpoint_conversation,
+            last_workspace_capability_set: checkpoint_capability_set,
             ..
         } => {
             *state = checkpoint.as_ref().clone().into_state();
             *last_init = checkpoint_init.clone();
+            *last_workspace_capability_set = checkpoint_capability_set.as_deref().cloned();
+            pending_workspace_capability_sets.clear();
             if let Some(checkpoint) = checkpoint_conversation {
                 *semantic_conversation = (checkpoint.protocol_version
                     == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
@@ -1637,10 +1752,13 @@ impl SessionReader {
         AgentState,
         Option<InitConfig>,
         Option<Vec<maestro_ai::Message>>,
+        Option<ApplyWorkspaceCapabilitySet>,
     ) {
         let mut state = AgentState::default();
         let mut last_init = None;
         let mut semantic_conversation = None;
+        let mut last_workspace_capability_set = None;
+        let mut pending_workspace_capability_sets = HashMap::new();
         let mut start_index = 0;
 
         for (index, entry) in self.entries.iter().enumerate() {
@@ -1648,11 +1766,14 @@ impl SessionReader {
                 state: checkpoint,
                 last_init: checkpoint_init,
                 semantic_conversation: checkpoint_conversation,
+                last_workspace_capability_set: checkpoint_capability_set,
                 ..
             } = entry
             {
                 state = checkpoint.as_ref().clone().into_state();
                 last_init = checkpoint_init.clone();
+                last_workspace_capability_set = checkpoint_capability_set.as_deref().cloned();
+                pending_workspace_capability_sets.clear();
                 match checkpoint_conversation {
                     Some(checkpoint)
                         if checkpoint.protocol_version
@@ -1673,11 +1794,22 @@ impl SessionReader {
             match entry {
                 SessionEntry::Sent { message, .. } => {
                     state.handle_sent_message(message);
+                    record_sent_workspace_capability(
+                        &mut pending_workspace_capability_sets,
+                        message,
+                    );
                     if let Some(config) = init_config_from_message(message) {
                         last_init = Some(config);
                     }
                 }
                 SessionEntry::Received { message, .. } => {
+                    if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                        let _ = accept_workspace_capability_receipt(
+                            &mut pending_workspace_capability_sets,
+                            &mut last_workspace_capability_set,
+                            receipt,
+                        );
+                    }
                     if let FromAgentMessage::ConversationSnapshot {
                         protocol_version,
                         messages,
@@ -1696,17 +1828,24 @@ impl SessionReader {
                 SessionEntry::Checkpoint { .. } => {}
             }
         }
-        (state, last_init, semantic_conversation)
+        (
+            state,
+            last_init,
+            semantic_conversation,
+            last_workspace_capability_set,
+        )
     }
 
     /// Build a resumable snapshot from the recorded session log.
     #[must_use]
     pub fn replay(&self) -> SessionReplay {
-        let (state, last_init, semantic_conversation) = self.replay_parts();
+        let (state, last_init, semantic_conversation, last_workspace_capability_set) =
+            self.replay_parts();
         SessionReplay {
             state,
             last_init,
             semantic_conversation,
+            last_workspace_capability_set,
         }
     }
 }
@@ -1789,6 +1928,7 @@ pub fn delete_session(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Resu
     if meta_path.exists() {
         fs::remove_file(&meta_path)?;
     }
+    let _ = crate::tool_output::remove_model_tool_spill_dir(sessions_dir, id);
 
     Ok(())
 }
@@ -1828,10 +1968,107 @@ mod tests {
             "grant_hash": "sha256:immutable",
             "signing_key_id": "key-1",
             "grant_signature": "hmac-sha256:signed",
+            "identity_authorization": {
+                "schemaVersion": "identity.tool_authorization.v1",
+                "organizationId": "org-1",
+                "workspaceId": "workspace-1",
+                "applicationId": "deixic",
+                "subjectId": "user-1",
+                "actorChainDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decisionId": "decision-1",
+                "authorizationLineageId": "lineage-1",
+                "policyId": "policy-1",
+                "policyVersion": "v1",
+                "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "authorizationFingerprint": "authz_fingerprint_v1_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "capabilityDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "actionDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "audience": "evalops.maestro",
+                "issuedAtMs": 100,
+                "expiresAtMs": 10000,
+                "revocationEpoch": 3
+            },
             "native_tool_ids": ["read"],
             "external_tools": []
         }))
         .unwrap()
+    }
+
+    fn workspace_capability_request(generation: u64) -> ApplyWorkspaceCapabilitySet {
+        ApplyWorkspaceCapabilitySet {
+            organization_id: "org-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            runner_session_id: "runner-1".to_string(),
+            runtime_generation: 7,
+            activation_generation: generation,
+            workspace_snapshot_digest: format!("sha256:snapshot-{generation}"),
+            workspace_skill_set_digest: format!("sha256:skills-{generation}"),
+            capability_set_digest: format!("sha256:set-{generation}"),
+            workspace_instructions: vec![format!("generation {generation}")],
+            admitted_catalog: Vec::new(),
+            admission_receipt_id: format!("admission-{generation}"),
+        }
+    }
+
+    fn workspace_capability_receipt(
+        request: &ApplyWorkspaceCapabilitySet,
+    ) -> WorkspaceCapabilitySetApplied {
+        WorkspaceCapabilitySetApplied {
+            schema_version: "evalops.maestro.workspace-capability-set.v1".to_string(),
+            organization_id: request.organization_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            runner_session_id: request.runner_session_id.clone(),
+            runtime_generation: request.runtime_generation,
+            activation_generation: request.activation_generation,
+            effective_catalog_digest: request.capability_set_digest.clone(),
+            accepted_entry_digests: Vec::new(),
+            rejected_entries: Vec::new(),
+            replay_cursor: workspace_capability_replay_cursor(request),
+            applied_at: 123,
+            controller_binding_sha256: "sha256:binding".to_string(),
+            provider_prompt_sha256: "sha256:provider-prompt".to_string(),
+            staged_for_next_turn: false,
+            idempotent: false,
+        }
+    }
+
+    #[test]
+    fn session_restart_replays_only_the_last_matching_accepted_capability_set() {
+        let temp = TempDir::new().expect("session root");
+        let mut recorder = SessionRecorder::new(temp.path()).expect("session recorder");
+        let session_id = recorder.id().to_string();
+        let accepted = workspace_capability_request(1);
+        recorder
+            .record_sent(&ToAgentMessage::ApplyWorkspaceCapabilitySet {
+                request: accepted.clone(),
+            })
+            .expect("record accepted candidate");
+
+        let mut mismatched = workspace_capability_receipt(&accepted);
+        mismatched.organization_id = "org-wrong".to_string();
+        recorder
+            .record_received(&FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: mismatched,
+            })
+            .expect("record mismatched receipt");
+        recorder
+            .record_received(&FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: workspace_capability_receipt(&accepted),
+            })
+            .expect("record matching receipt");
+
+        recorder
+            .record_sent(&ToAgentMessage::ApplyWorkspaceCapabilitySet {
+                request: workspace_capability_request(2),
+            })
+            .expect("record unacknowledged successor");
+        recorder.flush().expect("flush journal");
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(temp.path(), &session_id)
+            .expect("resume recorder")
+            .replay();
+        assert_eq!(replay.last_workspace_capability_set, Some(accepted));
     }
 
     #[test]
@@ -1863,6 +2100,37 @@ mod tests {
             .expect("governed grant restored");
         assert_eq!(restored.identity(), grant.identity());
         assert_eq!(restored, grant);
+    }
+
+    #[test]
+    fn managed_inference_authorization_crosses_wire_but_not_session_journals() {
+        let temp = TempDir::new().expect("session root");
+        let mut recorder = SessionRecorder::new(temp.path()).expect("session recorder");
+        let session_id = recorder.id().to_string();
+        let message = ToAgentMessage::Prompt {
+            content: "managed prompt".to_string(),
+            attachments: None,
+            managed_inference_authorization: Some(
+                crate::agent::ManagedInferenceAuthorization::new("signed-capability-marker"),
+            ),
+        };
+
+        let wire = serde_json::to_string(&message).expect("serialize transport message");
+        assert!(wire.contains("managed_inference_authorization"));
+        assert!(wire.contains("signed-capability-marker"));
+
+        recorder.record_sent(&message).expect("record sent message");
+        recorder.flush_checkpoint().expect("flush session state");
+        drop(recorder);
+
+        for path in [
+            temp.path().join(format!("{session_id}.jsonl")),
+            temp.path().join(format!("{session_id}.replay.json")),
+        ] {
+            let durable = fs::read_to_string(path).expect("read durable session data");
+            assert!(!durable.contains("managed_inference_authorization"));
+            assert!(!durable.contains("signed-capability-marker"));
+        }
     }
 
     fn semantic_tool_pair_fixture() -> Vec<Message> {
@@ -2011,11 +2279,13 @@ mod tests {
         recorder.flush().unwrap();
         drop(recorder);
 
-        assert!(SessionReader::load(tmp.path(), &id)
-            .unwrap()
-            .replay()
-            .semantic_conversation
-            .is_none());
+        assert!(
+            SessionReader::load(tmp.path(), &id)
+                .unwrap()
+                .replay()
+                .semantic_conversation
+                .is_none()
+        );
     }
 
     #[test]
@@ -2157,6 +2427,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Hello, world!".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
 
@@ -2424,6 +2695,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Hello".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder
@@ -2463,6 +2735,7 @@ mod tests {
         r1.record_sent(&ToAgentMessage::Prompt {
             content: "First session".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .unwrap();
         r1.flush().unwrap();
@@ -2471,6 +2744,7 @@ mod tests {
         r2.record_sent(&ToAgentMessage::Prompt {
             content: "Second session".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .unwrap();
         r2.flush().unwrap();
@@ -2492,6 +2766,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Test".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2500,6 +2775,9 @@ mod tests {
         // Verify files exist
         assert!(sessions_dir.join(format!("{}.jsonl", id)).exists());
         assert!(sessions_dir.join(format!("{}.meta.json", id)).exists());
+        let spill_dir = sessions_dir.join("tool-output").join(&id);
+        fs::create_dir_all(&spill_dir).unwrap();
+        fs::write(spill_dir.join("large.txt"), "output").unwrap();
 
         // Delete the session
         delete_session(sessions_dir, &id).unwrap();
@@ -2507,6 +2785,23 @@ mod tests {
         // Verify files are gone
         assert!(!sessions_dir.join(format!("{}.jsonl", id)).exists());
         assert!(!sessions_dir.join(format!("{}.meta.json", id)).exists());
+        assert!(!spill_dir.exists());
+    }
+
+    #[test]
+    fn delete_session_succeeds_when_post_commit_spill_cleanup_fails() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+        let id = "spill-cleanup-failure";
+        fs::write(sessions_dir.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        fs::write(sessions_dir.join(format!("{id}.meta.json")), "{}").unwrap();
+        fs::write(sessions_dir.join("tool-output"), "blocks spill directory").unwrap();
+
+        delete_session(sessions_dir, id).expect("transcript deletion is the commit point");
+
+        assert!(!sessions_dir.join(format!("{id}.jsonl")).exists());
+        assert!(!sessions_dir.join(format!("{id}.meta.json")).exists());
+        assert!(sessions_dir.join("tool-output").exists());
     }
 
     #[test]
@@ -2521,6 +2816,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "First message".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2532,6 +2828,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Second message".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2559,6 +2856,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Before the crash".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2576,6 +2874,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "After the resume".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2631,6 +2930,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Before the crash".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2654,6 +2954,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "After the resume".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2696,6 +2997,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Recovered title".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2737,6 +3039,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Loaded directly".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -2800,6 +3103,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Still here".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();

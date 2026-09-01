@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 const CURRENT_VERSION: u32 = 2;
@@ -1061,9 +1061,11 @@ mod tests {
         assert!(store.entries[0].content.contains("workspace suite"));
 
         store.rollback(revision_after_add).expect("rollback");
-        assert!(store.entries[0]
-            .content
-            .contains("focused tests after edits"));
+        assert!(
+            store.entries[0]
+                .content
+                .contains("focused tests after edits")
+        );
         assert!(store.revision > revision_after_add);
 
         let loaded = HarnessStore::load_from_path(&path).expect("reload");

@@ -83,22 +83,28 @@ mod cache;
 pub(crate) mod context_tools;
 pub mod details;
 mod exa;
+pub mod executor;
 mod extract_document;
 mod gh;
 pub(crate) mod goal_tools;
 mod history;
 mod image;
 pub mod inline;
-mod net_guard;
+// Public so `maestro-runtime-gateway` can reuse the one SSRF address policy
+// instead of keeping a second copy of the range list.
+pub mod net_guard;
 mod notebook_edit;
+pub(crate) mod orb_delegation;
+pub(crate) mod orb_execution;
 pub mod process_registry;
 pub(crate) mod process_utils;
 mod registry;
 mod shell_env;
 mod status;
 mod subagents;
-pub(crate) use subagents::{coordination_snapshots, CoordinationSnapshot, SubagentLifecycleEvent};
-mod todo;
+pub mod tool_call_contract;
+pub(crate) use subagents::{CoordinationSnapshot, SubagentLifecycleEvent, coordination_snapshots};
+pub(crate) mod todo;
 pub mod versions;
 mod web_fetch;
 
@@ -110,11 +116,15 @@ pub use details::{
     BashDetails, BatchDetails, DiffDetails, EditDetails, GlobDetails, GrepDetails, ImageDetails,
     InlineToolDetails, ListDetails, ReadDetails, ToolDetails, WebFetchDetails, WriteDetails,
 };
+pub use executor::{
+    InProcessExecutor, OutputSink, OutputStream, PROCESS_ISOLATABLE_TOOLS, SandboxPolicySnapshot,
+    ToolInvocation, ToolIsolation, is_process_isolatable,
+};
 pub use history::{HistoryFilter, ToolExecution, ToolHistory, ToolStats};
 pub use image::ImageTool;
 pub use inline::{
-    get_config_paths as get_inline_tools_config_paths, load_inline_tools, InlineTool,
-    InlineToolExecutor, InlineToolSource, InlineToolsConfig, InlineToolsPaths,
+    InlineTool, InlineToolExecutor, InlineToolSource, InlineToolsConfig, InlineToolsPaths,
+    get_config_paths as get_inline_tools_config_paths, load_inline_tools,
 };
 pub use process_registry::{
     cleanup_all as cleanup_background_processes, count as background_process_count,

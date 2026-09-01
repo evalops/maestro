@@ -22,7 +22,7 @@ test("internal tag-release dispatches public-release-mirror after creating a tag
 		return;
 	}
 	assert.match(workflow, /dispatch-public-release-mirror:/);
-	assert.match(workflow, /github\.repository == 'evalops\/maestro-internal'/);
+	assert.match(workflow, /github\.repository == 'evalops\/mono'/);
 	assert.match(workflow, /needs\.tag-current-version\.outputs\.tag_exists != 'true'/);
 	assert.match(workflow, /gh workflow run public-release-mirror/);
 	assert.match(workflow, /--field "publish_npm=false"/);

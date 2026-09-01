@@ -523,9 +523,11 @@ mod tests {
             .expect("printable key should convert");
 
         assert_eq!(converted.code, KeyCode::Char('?'));
-        assert!(converted
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::SHIFT));
+        assert!(
+            converted
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT)
+        );
     }
 
     #[test]
@@ -548,9 +550,11 @@ mod tests {
             .expect("control key should convert");
 
         assert_eq!(converted.code, KeyCode::Char('c'));
-        assert!(converted
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL));
+        assert!(
+            converted
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        );
     }
 
     #[test]
@@ -579,9 +583,11 @@ mod tests {
     fn uncurses_paste_chunks_are_reassembled_lossily() {
         let mut state = EventConversionState::default();
         assert!(state.convert_event(UncursesEvent::PasteStart).is_none());
-        assert!(state
-            .convert_event(UncursesEvent::PasteChunk(vec![b'a', 0xff]))
-            .is_none());
+        assert!(
+            state
+                .convert_event(UncursesEvent::PasteChunk(vec![b'a', 0xff]))
+                .is_none()
+        );
 
         let event = state
             .convert_event(UncursesEvent::PasteEnd)
@@ -592,17 +598,19 @@ mod tests {
     #[test]
     fn uncurses_multi_events_preserve_fifo_order() {
         let mut state = EventConversionState::default();
-        assert!(state
-            .convert_event(UncursesEvent::Multi(vec![
-                UncursesEvent::FocusIn,
-                UncursesEvent::Resize(uncurses::terminal::Winsize {
-                    row: 42,
-                    col: 120,
-                    xpixel: 0,
-                    ypixel: 0,
-                }),
-            ]))
-            .is_none());
+        assert!(
+            state
+                .convert_event(UncursesEvent::Multi(vec![
+                    UncursesEvent::FocusIn,
+                    UncursesEvent::Resize(uncurses::terminal::Winsize {
+                        row: 42,
+                        col: 120,
+                        xpixel: 0,
+                        ypixel: 0,
+                    }),
+                ]))
+                .is_none()
+        );
 
         let first = state.pending.pop_front().expect("first nested event");
         let second = state.pending.pop_front().expect("second nested event");

@@ -22,7 +22,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::native_pty_system;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 /// Generous ceiling for binary startup (first frame + agent init).
 const READY_TIMEOUT: Duration = Duration::from_mins(1);
@@ -109,6 +110,7 @@ struct MockState {
 /// hanging on a dead agent.
 struct MockOpenAiServer {
     base_url: String,
+    identity_base_url: String,
     state: Arc<Mutex<MockState>>,
 }
 
@@ -134,6 +136,7 @@ impl MockOpenAiServer {
             .expect("spawn mock server thread");
         Self {
             base_url: format!("http://{addr}/v1"),
+            identity_base_url: start_mock_identity_server(),
             state,
         }
     }
@@ -170,6 +173,33 @@ impl MockOpenAiServer {
             .requests
             .len()
     }
+}
+
+/// Serve the minimal signed-Identity projection required by the real Maestro
+/// admission boundary. PTY scenarios exercise interaction behavior, but they
+/// still must start through the same live verification path as production.
+fn start_mock_identity_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Identity server");
+    let address = listener.local_addr().expect("mock Identity server address");
+    std::thread::Builder::new()
+        .name("pty-e2e-mock-identity".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    break;
+                };
+                let _ = read_request_body(&mut stream);
+                let body = r#"{"active":true,"subject":"pty-e2e-user","token_type":"access","organization_id":"pty-e2e-org","workspace_id":"pty-e2e-workspace","scopes":["llm_gateway:invoke"]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        })
+        .expect("spawn mock Identity server thread");
+    format!("http://{address}")
 }
 
 /// Read one HTTP request and return its body. Only the small, well-formed
@@ -268,7 +298,10 @@ impl PtySession {
         let maestro_home = workdir.join("maestro-home");
         std::fs::create_dir_all(&maestro_home).expect("create MAESTRO_HOME");
 
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_maestro-tui"));
+        let mut command = CommandBuilder::new(
+            std::env::var_os("CARGO_BIN_EXE_maestro-tui")
+                .expect("Cargo must provide the maestro-tui integration-test binary"),
+        );
         command.args(args);
         command.cwd(workdir);
         // CommandBuilder starts from an empty environment; pass through only
@@ -283,6 +316,13 @@ impl PtySession {
         command.env("MAESTRO_HOME", &maestro_home);
         command.env("OPENAI_BASE_URL", &mock.base_url);
         command.env("OPENAI_API_KEY", "pty-e2e-key");
+        command.env("MAESTRO_IDENTITY_URL", &mock.identity_base_url);
+        command.env(maestro_tui::init_cli::TEST_IDENTITY_AUTHORITY_ENV, "1");
+        command.env(
+            maestro_tui::credential_mode::ACCESS_TOKEN_ENV,
+            "pty-e2e-identity-token",
+        );
+        command.env(maestro_tui::credential_mode::ORG_ID_ENV, "pty-e2e-org");
         command.env("MAESTRO_DISABLE_KEYCHAIN", "1");
         command.env(
             "MAESTRO_PROMPT_HISTORY_FILE",

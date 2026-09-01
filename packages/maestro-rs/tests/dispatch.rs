@@ -1,7 +1,12 @@
-use maestro::{classify, Command};
+use maestro::{Command, classify};
 use serde::Deserialize;
 use std::ffi::OsString;
 use std::process::Command as ProcessCommand;
+
+fn maestro_binary() -> OsString {
+    std::env::var_os("CARGO_BIN_EXE_maestro")
+        .expect("Cargo must provide the maestro integration-test binary")
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,16 +52,18 @@ fn doctor_is_forwarded_to_native_dispatch() {
 
 #[test]
 fn primary_help_exposes_the_canonical_command_surface() {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+    let output = ProcessCommand::new(maestro_binary())
         .arg("--help")
         .output()
         .expect("run maestro --help");
 
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("maestro setup"));
-    assert!(stdout.contains("maestro config"));
-    assert!(stdout.contains("maestro sessions"));
+    assert!(stdout.contains("Deixic Code"));
+    assert!(stdout.contains("deixic-code setup"));
+    assert!(stdout.contains("deixic-code config"));
+    assert!(stdout.contains("deixic-code sessions"));
+    assert!(stdout.contains("maestro remains available as an alias"));
     assert!(!stdout.contains("maestro-tui"));
 }
 
@@ -98,7 +105,7 @@ fn web_rejects_prompt_arguments() {
 
 #[test]
 fn hosted_runner_help_reaches_the_native_hosted_runner_dispatch() {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+    let output = ProcessCommand::new(maestro_binary())
         .args(["hosted-runner", "--help"])
         .output()
         .expect("run maestro hosted-runner help");
@@ -109,15 +116,15 @@ fn hosted_runner_help_reaches_the_native_hosted_runner_dispatch() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Usage: maestro hosted-runner"),
-        "primary maestro binary did not reach the hosted-runner CLI: {}",
+        String::from_utf8_lossy(&output.stdout).contains("Usage: deixic-code hosted-runner"),
+        "primary compatibility binary did not reach the hosted-runner CLI: {}",
         String::from_utf8_lossy(&output.stdout)
     );
 }
 
 #[test]
 fn fork_invalid_flag_reaches_run_fork_with_forwarded_arguments() {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+    let output = ProcessCommand::new(maestro_binary())
         .args(["fork", "--definitely-invalid"])
         .output()
         .expect("run maestro fork invalid flag");

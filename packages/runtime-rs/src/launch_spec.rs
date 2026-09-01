@@ -331,10 +331,10 @@ impl HostedLaunchSpec {
             self.identity.workload_identity.is_some(),
         ) {
             (HostedRuntimeAuthMode::WorkloadIdentity, false) => {
-                return Err(HostedLaunchSpecError::WorkloadIdentityRequired)
+                return Err(HostedLaunchSpecError::WorkloadIdentityRequired);
             }
             (HostedRuntimeAuthMode::None | HostedRuntimeAuthMode::StaticBearer, true) => {
-                return Err(HostedLaunchSpecError::UnexpectedWorkloadIdentity)
+                return Err(HostedLaunchSpecError::UnexpectedWorkloadIdentity);
             }
             _ => {}
         }

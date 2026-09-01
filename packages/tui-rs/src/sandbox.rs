@@ -277,134 +277,36 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
-    /// Curated, well-known package-manager/build-tool cache directories that
-    /// live outside both `cwd` and `/tmp` on a typical system, returned as
-    /// additional `writable_roots` for [`SandboxPolicy::workspace_write_default`].
+    /// Writable roots that toolchains need in order to build inside the
+    /// sandbox: a single per-session cache directory under the system temp
+    /// dir, created on demand.
     ///
-    /// # Why this exists
+    /// [`sandbox_cache_env`] points every toolchain cache variable at
+    /// subdirectories of this root, so `cargo`, `npm`, `pip`, `go`, and the
+    /// rest write their caches here instead of into the user's real caches.
+    /// The root is per-session, so a session's builds stay warm.
     ///
-    /// A `WorkspaceWrite` policy with an empty `writable_roots` list measurably
-    /// breaks ordinary agentic-coding sessions: `cargo build` fetching a
-    /// not-yet-cached dependency fails with `Permission denied` writing to
-    /// `$CARGO_HOME` (default `~/.cargo`), because that directory is outside
-    /// both the workspace and `/tmp`. This was reproduced and fixed during the
-    /// design of the interactive-TUI sandbox default — see the PR that
-    /// introduced this function for the before/after `cargo build` trace.
+    /// # Why the real caches are no longer granted
     ///
-    /// # Why this is a curated list, not `$HOME`
+    /// This function used to return `$CARGO_HOME/registry`, `$CARGO_HOME/git`,
+    /// `$CARGO_HOME/.package-cache`, `$CARGO_HOME/.global-cache`,
+    /// `$XDG_CACHE_HOME/pip`, `$XDG_CACHE_HOME/uv`, `~/.npm/_cacache`, and
+    /// `~/.npm/_logs`, and pre-create the missing ones. Those are the caches a
+    /// *later, unsandboxed* build reads. A build script (`build.rs`, an npm
+    /// install script, `setup.py`) running inside the sandbox could write a
+    /// poisoned artifact into one of them and have it executed outside the
+    /// sandbox on the next build. Redirecting the caches removes that path.
     ///
-    /// Granting all of `$HOME` would defeat the exact containment this
-    /// sandbox exists to provide: the two demonstrated allowlist bypasses
-    /// (`find -fprintf` and an `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`-injected
-    /// write) both target `$HOME` dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`).
-    /// This list only grants the specific, well-known cache directories that
-    /// package managers write to when fetching dependencies, and deliberately
-    /// excludes `~/.ssh`, `~/.aws`, `~/.config`, shell rc files, and the rest
-    /// of the home directory.
-    ///
-    /// Only directories that already exist (or, for the `$CARGO_HOME`
-    /// subdirectories, can be created -- see below) are included, so a fresh
-    /// machine without a Rust or Node toolchain installed does not get roots
-    /// it will never use.
-    ///
-    /// # `$CARGO_HOME` is *not* granted wholesale
-    ///
-    /// `$CARGO_HOME` is not only a cache: it also holds `config.toml`,
-    /// `credentials.toml`, and the installed executables under `bin/`.
-    /// Granting all of it writable would let a sandboxed command persist
-    /// cargo configuration or replace build tooling outside the workspace
-    /// (e.g. `find . -fprintf ~/.cargo/config.toml ...`), defeating the
-    /// containment this list exists to preserve. Instead, only the
-    /// subdirectories cargo actually writes while fetching and building
-    /// dependencies are granted: `registry/` and `git/`, plus the
-    /// `.package-cache`/`.global-cache` lock files cargo creates at the
-    /// `$CARGO_HOME` root when updating those caches. Configuration,
-    /// credentials, and `bin/` stay read-only.
-    ///
-    /// These four are pre-created (`create_dir_all`, best-effort) when
-    /// `$CARGO_HOME` itself exists, rather than only included when they
-    /// already happen to exist: the Landlock/Seatbelt translation requires
-    /// every writable root to exist up front (a rule for a missing path
-    /// fails to install, and Landlock's ruleset setup fails closed for the
-    /// *entire* sandboxed spawn, not just that one root -- see
-    /// `install_landlock_rules`). Without pre-creating them, a fresh or
-    /// cleared cache (`registry/`/`git/` not populated yet, even though
-    /// `$CARGO_HOME` and the Rust toolchain are installed) meant the very
-    /// first `cargo build` that needed to fetch a dependency -- the exact
-    /// case this function exists to support -- failed with a permission
-    /// error, because none of the four existed yet to be granted.
-    ///
-    /// # `$RUSTUP_HOME` is *not* granted at all
-    ///
-    /// `$RUSTUP_HOME` (default `~/.rustup`) holds `settings.toml` and the
-    /// installed compiler binaries under `toolchains/*/bin` (`rustc`,
-    /// `cargo`, `clippy-driver`, ...). Granting it recursive write access,
-    /// even to "just" fetch dependencies, would let a dependency's build
-    /// script (`build.rs`, which runs arbitrary code during `cargo build`)
-    /// overwrite an installed toolchain binary and gain persistent code
-    /// execution across every later sandboxed build, defeating the same
-    /// containment rationale that keeps `$CARGO_HOME/bin` read-only above.
-    /// Ordinary dependency fetching (what this list exists for) never
-    /// writes here, so it is omitted entirely rather than narrowed.
-    ///
-    /// # `$XDG_CACHE_HOME` is granted only known package-manager subdirectories
-    ///
-    /// The XDG cache root holds caches for every application on the
-    /// system, most of which have nothing to do with fetching build
-    /// dependencies -- including installed tool environments such as
-    /// `~/.cache/pre-commit/<env-hash>/.../bin/`. Granting the whole
-    /// directory would let a sandboxed command replace one of those
-    /// installed executables and gain code execution the next time the
-    /// user runs that tool *outside* Maestro entirely. Only `pip`'s and
-    /// `uv`'s own cache subdirectories -- the package-manager caches this
-    /// list exists to support -- are granted, each still gated on already
-    /// existing (unlike the `$CARGO_HOME` subdirectories above, a
-    /// first-ever `pip`/`uv` invocation creates its own cache directory
-    /// before writing into it, so there is no equivalent cold-cache case to
-    /// pre-create for).
+    /// The real caches stay *readable*: every policy allows reads everywhere
+    /// and restricts only writes, so a toolchain can still read a populated
+    /// `~/.cargo/registry`. It cannot write to it, so the first fetch in a
+    /// sandboxed session repopulates the redirected cache instead — see the
+    /// cold-cache cost noted on [`sandbox_cache_env`].
     #[must_use]
     pub fn dev_cache_writable_roots() -> Vec<PathBuf> {
-        let Some(home) = dirs::home_dir() else {
-            return Vec::new();
-        };
-
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cargo"));
-        let mut roots = Vec::new();
-        if cargo_home.exists() {
-            // `registry/` and `git/` are directories cargo writes fetched
-            // packages into; pre-create them so a fresh/cleared cache still
-            // supports the first fetch (see the doc comment above).
-            for subdir in ["registry", "git"] {
-                let path = cargo_home.join(subdir);
-                let _ = std::fs::create_dir_all(&path);
-                roots.push(path);
-            }
-            // `.package-cache`/`.global-cache` are lock *files*, not
-            // directories: `create_dir_all` would put a directory where
-            // cargo expects a file, so these two stay exists-gated by the
-            // `retain` below exactly as before, rather than pre-created.
-            roots.push(cargo_home.join(".global-cache"));
-            roots.push(cargo_home.join(".package-cache"));
-        }
-
-        let xdg_cache_home = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cache"));
-        roots.push(xdg_cache_home.join("pip"));
-        roots.push(xdg_cache_home.join("uv"));
-        let npm_home = home.join(".npm");
-        if npm_home.exists() {
-            for subdir in ["_cacache", "_logs"] {
-                let path = npm_home.join(subdir);
-                let _ = std::fs::create_dir_all(&path);
-                roots.push(path);
-            }
-        }
-
-        roots.retain(|root| root.exists());
-        roots
+        prepare_sandbox_cache_root(sandbox_cache_session_id())
+            .map(|root| vec![root])
+            .unwrap_or_default()
     }
 
     /// The default sandbox policy for interactive and exec sessions that do
@@ -421,8 +323,8 @@ impl SandboxPolicy {
     ///   "users disable it globally on day one" failure mode a sandbox
     ///   default must avoid. This does mean network exfiltration is not
     ///   contained by the default policy — that is a deliberate, documented
-    ///   trade-off, not an oversight; see the PR body for the reasoning and a
-    ///   follow-up issue for a possible allowlisted-network stage 2.
+    ///   trade-off, not an oversight. Structured allowlists are conservatively
+    ///   mapped to no network access until the native policy supports them.
     /// - **`writable_roots: dev_cache_writable_roots()`.** Without these,
     ///   `cargo build` fails to fetch new dependencies (see that function's
     ///   docs).
@@ -440,6 +342,499 @@ impl SandboxPolicy {
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         }
+    }
+}
+
+/// Directory name under the system temp dir holding redirected sandbox caches.
+const SANDBOX_CACHE_DIR: &str = "maestro-sandbox-cache";
+
+/// Stale process caches are reclaimed whenever a Maestro process prepares its
+/// own cache. A live process is never removed, even when it runs longer than
+/// this interval; the age is the fallback for incomplete directories which
+/// never acquired a process marker.
+const SANDBOX_CACHE_STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(24);
+
+/// Bound the number of exited-process caches retained for warm diagnostics.
+const SANDBOX_CACHE_RETAINED_INACTIVE: usize = 2;
+
+const SANDBOX_CACHE_PROCESS_MARKER: &str = ".maestro-process";
+
+/// The cache session id for this process, generated once on first use.
+///
+/// One id per process keeps a session's toolchain caches warm across every
+/// command it runs, and keeps them separate from any other Maestro process on
+/// the same host.
+pub fn sandbox_cache_session_id() -> &'static str {
+    static SESSION_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION_ID.get_or_init(|| {
+        use rand::Rng;
+        use std::fmt::Write as _;
+        let bytes: [u8; 16] = rand::rng().random();
+        bytes
+            .iter()
+            .fold(String::with_capacity(32), |mut id, byte| {
+                let _ = write!(id, "{byte:02x}");
+                id
+            })
+    })
+}
+
+/// The directory that [`sandbox_cache_env`] points toolchain caches at.
+#[must_use]
+pub fn sandbox_cache_root(session_id: &str) -> PathBuf {
+    let temp_dir = std::env::temp_dir();
+    dunce::canonicalize(&temp_dir)
+        .unwrap_or(temp_dir)
+        .join(SANDBOX_CACHE_DIR)
+        .join(session_id)
+}
+
+fn prepare_sandbox_cache_root(session_id: &str) -> std::io::Result<PathBuf> {
+    prepare_sandbox_cache_root_in(&std::env::temp_dir(), session_id)
+}
+
+fn prepare_sandbox_cache_root_in(temp_dir: &Path, session_id: &str) -> std::io::Result<PathBuf> {
+    if Path::new(session_id).components().count() != 1
+        || !matches!(
+            Path::new(session_id).components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "sandbox cache session id must be one path component",
+        ));
+    }
+
+    let temp_dir = dunce::canonicalize(temp_dir)?;
+    ensure_trusted_temp_directory(&temp_dir)?;
+    let parent = temp_dir.join(SANDBOX_CACHE_DIR);
+    ensure_private_directory(&parent)?;
+    reclaim_inactive_sandbox_caches(&parent, session_id)?;
+
+    let root = parent.join(session_id);
+    ensure_private_directory(&root)?;
+    write_process_marker(&root)?;
+    Ok(root)
+}
+
+fn ensure_trusted_temp_directory(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "sandbox temp path is not a trusted directory: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let mode = metadata.mode();
+        let private_to_owner = metadata.uid() == unsafe { libc::geteuid() } && mode & 0o022 == 0;
+        let sticky_directory = mode & 0o1000 != 0;
+        if !private_to_owner && !sticky_directory {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "sandbox temp directory must be private or sticky: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                match builder.create(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                match std::fs::create_dir(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "sandbox cache path is not a trusted directory: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+        // Pin and inspect the directory without following a last-component
+        // symlink. The fd also makes the permission migration race-free.
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = directory.metadata()?;
+        let mode = metadata.mode() & 0o777;
+        if metadata.uid() != unsafe { libc::geteuid() } || mode & 0o022 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "sandbox cache directory must be owned by the current user and private: {}",
+                    path.display()
+                ),
+            ));
+        }
+        // Older Maestro releases created these directories with 0755. Such a
+        // directory was never writable by another user, so it can be safely
+        // migrated before any credentials are copied into it. Group/world
+        // writable directories were rejected above and are never repaired.
+        if mode != 0o700 && unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+
+    Ok(())
+}
+
+fn write_process_marker(root: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let marker = root.join(SANDBOX_CACHE_PROCESS_MARKER);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(marker)?;
+    writeln!(file, "{}", std::process::id())
+}
+
+fn reclaim_inactive_sandbox_caches(parent: &Path, current_session: &str) -> std::io::Result<()> {
+    let mut inactive = Vec::new();
+    let now = std::time::SystemTime::now();
+
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_name() == current_session {
+            continue;
+        }
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        // Multiple Maestro/test processes reclaim this shared parent in
+        // parallel. Another process may remove an inactive entry after our
+        // `read_dir` snapshot but before this metadata lookup; that is already
+        // the desired outcome, not a cache-preparation failure.
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let age = now.duration_since(modified).unwrap_or_default();
+        let pid = std::fs::read_to_string(entry.path().join(SANDBOX_CACHE_PROCESS_MARKER))
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        // Another process may be between creating its directory and writing
+        // the marker. Give incomplete directories the full stale interval so
+        // concurrent startup can never reclaim an active cache.
+        if pid.is_none() && age < SANDBOX_CACHE_STALE_AFTER {
+            continue;
+        }
+        #[cfg(unix)]
+        if pid.is_some_and(process_is_alive) {
+            continue;
+        }
+        #[cfg(not(unix))]
+        if age < SANDBOX_CACHE_STALE_AFTER {
+            // There is no dependency-free cross-platform process probe. Keep
+            // recent marked directories and reclaim them by age instead.
+            continue;
+        }
+        inactive.push((entry.path(), modified, age));
+    }
+
+    inactive.sort_by_key(|(_, modified, _)| *modified);
+    let excess = inactive
+        .len()
+        .saturating_sub(SANDBOX_CACHE_RETAINED_INACTIVE);
+    for (index, (path, _, age)) in inactive.into_iter().enumerate() {
+        if index < excess || age >= SANDBOX_CACHE_STALE_AFTER {
+            if let Err(error) = std::fs::remove_dir_all(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Environment variables that redirect toolchain caches into the sandbox's own
+/// cache directory.
+///
+/// # Why this exists
+///
+/// The alternative is granting the sandbox write access to the user's real
+/// caches (`~/.cargo/registry`, `~/.npm/_cacache`, `~/.cache/pip`, ...), which
+/// is what [`SandboxPolicy::dev_cache_writable_roots`] used to do. A build
+/// script running inside the sandbox could then write a poisoned artifact into
+/// a cache that a later *unsandboxed* build reads and executes. Pointing each
+/// toolchain at a sandbox-private directory removes that path while leaving
+/// the real caches readable.
+///
+/// # What is deliberately absent
+///
+/// `RUSTUP_HOME`, `GEM_HOME`, `VOLTA_HOME`, `PIPX_HOME`, and `DENO_DIR` are
+/// not redirected because they hold installed executables. `CARGO_HOME` is
+/// redirected because Cargo stores registry and Git downloads there; the
+/// command's existing PATH and RUSTUP_HOME still select the installed Cargo
+/// and Rust toolchain, while [`seed_toolchain_user_config`] preserves Cargo
+/// configuration and credentials in the isolated home.
+///
+/// # Cost
+///
+/// The first build in a session runs against a cold cache and re-downloads
+/// dependencies. Subsequent commands in the same session hit the warm
+/// redirected download cache. Cargo build artifacts remain in the caller's
+/// workspace-visible target directory.
+#[must_use]
+pub fn sandbox_cache_env(session_id: &str) -> Vec<(String, String)> {
+    let root = sandbox_cache_root(session_id);
+    let entry = |name: &str, subdir: &str| {
+        (
+            name.to_string(),
+            root.join(subdir).to_string_lossy().into_owned(),
+        )
+    };
+    vec![
+        // npm
+        entry("NPM_CONFIG_CACHE", "npm"),
+        // pnpm
+        entry("npm_config_store_dir", "pnpm-store"),
+        // Go
+        entry("GOCACHE", "go-build"),
+        entry("GOMODCACHE", "go-mod"),
+        // Cargo downloads. Build artifacts remain workspace-visible.
+        entry("CARGO_HOME", "cargo-home"),
+        // Python
+        entry("PIP_CACHE_DIR", "pip"),
+        entry("UV_CACHE_DIR", "uv"),
+        entry("POETRY_CACHE_DIR", "poetry"),
+        entry("CONDA_PKGS_DIRS", "conda"),
+        // Bun
+        entry("BUN_INSTALL_CACHE_DIR", "bun"),
+        // Yarn
+        entry("YARN_CACHE_FOLDER", "yarn"),
+        entry("YARN_GLOBAL_FOLDER", "yarn-global"),
+        // node-gyp
+        entry("npm_config_devdir", "node-gyp"),
+        // Browser automation downloads
+        entry("PLAYWRIGHT_BROWSERS_PATH", "playwright"),
+        entry("PUPPETEER_CACHE_DIR", "puppeteer"),
+        entry("CYPRESS_CACHE_FOLDER", "cypress"),
+        // JS monorepo build caches
+        entry("TURBO_CACHE_DIR", "turbo"),
+        entry("NX_CACHE_DIRECTORY", "nx"),
+        // JVM
+        entry("GRADLE_USER_HOME", "gradle"),
+        // Ruby: spec cache and bundle path only; GEM_HOME holds executables.
+        entry("GEM_SPEC_CACHE", "gem-specs"),
+        entry("BUNDLE_PATH", "bundle"),
+        // PHP
+        entry("COMPOSER_CACHE_DIR", "composer"),
+        // macOS package manager
+        entry("HOMEBREW_CACHE", "homebrew"),
+        // .NET
+        entry("NUGET_PACKAGES", "nuget"),
+        // C/C++
+        entry("CCACHE_DIR", "ccache"),
+        // iOS
+        entry("CP_HOME_DIR", "cocoapods"),
+    ]
+}
+
+/// Overlay [`sandbox_cache_env`] onto a command environment.
+///
+/// The redirected download-cache values win over anything the caller inherited.
+/// `CARGO_TARGET_DIR` is removed so Cargo uses its normal workspace-local
+/// target directory rather than a host path the sandbox cannot safely write.
+/// Maven has no dedicated cache environment variable, so its local repository
+/// override is appended to `MAVEN_OPTS` instead.
+pub fn apply_sandbox_cache_env(
+    mut env: HashMap<String, String>,
+    session_id: &str,
+) -> std::io::Result<HashMap<String, String>> {
+    let root = prepare_sandbox_cache_root(session_id)?;
+    seed_toolchain_user_config(&env, &root)?;
+    for (name, value) in sandbox_cache_env(session_id) {
+        env.insert(name, value);
+    }
+    env.remove("CARGO_TARGET_DIR");
+    let maven_repository = root.join("maven").to_string_lossy().into_owned();
+    let maven_override = format!("-Dmaven.repo.local={maven_repository}");
+    env.entry("MAVEN_OPTS".to_string())
+        .and_modify(|value| {
+            if !value.is_empty() {
+                value.push(' ');
+            }
+            value.push_str(&maven_override);
+        })
+        .or_insert(maven_override);
+    Ok(env)
+}
+
+fn seed_toolchain_user_config(env: &HashMap<String, String>, root: &Path) -> std::io::Result<()> {
+    let home = env
+        .get("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(dirs::home_dir);
+
+    let cargo_source = env
+        .get("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CARGO_HOME").map(PathBuf::from))
+        .or_else(|| home.as_ref().map(|home| home.join(".cargo")));
+    if let Some(source) = cargo_source {
+        let destination = root.join("cargo-home");
+        ensure_private_directory(&destination)?;
+        copy_named_config_files(
+            &source,
+            &destination,
+            &["config", "config.toml", "credentials", "credentials.toml"],
+        )?;
+    }
+
+    let gradle_source = env
+        .get("GRADLE_USER_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from))
+        .or_else(|| home.map(|home| home.join(".gradle")));
+    if let Some(source) = gradle_source {
+        let destination = root.join("gradle");
+        ensure_private_directory(&destination)?;
+        copy_named_config_files(
+            &source,
+            &destination,
+            &["gradle.properties", "init.gradle", "init.gradle.kts"],
+        )?;
+        copy_config_directory(&source.join("init.d"), &destination.join("init.d"))?;
+    }
+    Ok(())
+}
+
+fn copy_named_config_files(
+    source: &Path,
+    destination: &Path,
+    names: &[&str],
+) -> std::io::Result<()> {
+    for name in names {
+        let source_file = source.join(name);
+        let destination_file = destination.join(name);
+        match std::fs::symlink_metadata(&source_file) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+                remove_path_if_present(&destination_file)?;
+                std::fs::copy(&source_file, destination_file)?;
+            }
+            Ok(_) => remove_path_if_present(&destination_file)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                remove_path_if_present(&destination_file)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn copy_config_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            remove_path_if_present(destination)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        remove_path_if_present(destination)?;
+        return Ok(());
+    }
+    ensure_private_directory(destination)?;
+    let mut copied = std::collections::HashSet::new();
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            continue;
+        }
+        copied.insert(entry.file_name());
+        let destination_file = destination.join(entry.file_name());
+        remove_path_if_present(&destination_file)?;
+        std::fs::copy(entry.path(), destination_file)?;
+    }
+    for entry in std::fs::read_dir(destination)? {
+        let entry = entry?;
+        if !copied.contains(&entry.file_name()) {
+            remove_path_if_present(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_path_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path)
+        }
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1248,8 +1643,8 @@ pub const SANDBOX_ENV_VAR: &str = "MAESTRO_SANDBOX";
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{
-        HashMap, Path, PathBuf, SandboxPolicy, SandboxResult, SANDBOX_ENV_VAR,
-        SEATBELT_BASE_POLICY, SEATBELT_EXECUTABLE, SEATBELT_NETWORK_POLICY,
+        HashMap, Path, PathBuf, SANDBOX_ENV_VAR, SEATBELT_BASE_POLICY, SEATBELT_EXECUTABLE,
+        SEATBELT_NETWORK_POLICY, SandboxPolicy, SandboxResult,
     };
     use std::ffi::CStr;
     use tokio::process::{Child, Command};
@@ -1560,11 +1955,11 @@ mod macos {
 mod linux {
     use super::*;
     use landlock::{
-        Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+        ABI, Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetCreatedAttr,
     };
     use seccompiler::{
-        apply_filter, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition,
-        SeccompFilter, SeccompRule, TargetArch,
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule, TargetArch, apply_filter,
     };
     use std::collections::BTreeMap;
     use tokio::process::{Child, Command};
@@ -1826,13 +2221,15 @@ mod linux {
         }
 
         // Allow AF_UNIX sockets only
-        let unix_only_rule = SeccompRule::new(vec![SeccompCondition::new(
-            0, // first argument (domain)
-            SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Ne,
-            libc::AF_UNIX as u64,
-        )
-        .map_err(|e| SandboxError::SeccompFailed(e.to_string()))?])
+        let unix_only_rule = SeccompRule::new(vec![
+            SeccompCondition::new(
+                0, // first argument (domain)
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                libc::AF_UNIX as u64,
+            )
+            .map_err(|e| SandboxError::SeccompFailed(e.to_string()))?,
+        ])
         .map_err(|e| SandboxError::SeccompFailed(e.to_string()))?;
 
         rules.insert(libc::SYS_socket, vec![unix_only_rule.clone()]);
@@ -2231,6 +2628,15 @@ pub async fn spawn_sandboxed_command(
     policy: &SandboxPolicy,
     env: HashMap<String, String>,
 ) -> SandboxResult<tokio::process::Child> {
+    // Point toolchain caches at the sandbox's own cache directory rather than
+    // the user's real ones. `DangerFullAccess` is not sandboxed in any
+    // meaningful sense, so it keeps the caller's environment untouched.
+    let env = if matches!(policy, SandboxPolicy::DangerFullAccess) {
+        env
+    } else {
+        apply_sandbox_cache_env(env, sandbox_cache_session_id())?
+    };
+
     #[cfg(target_os = "macos")]
     {
         macos::spawn_under_seatbelt(command, cwd, policy, env).await
@@ -2324,9 +2730,425 @@ pub async fn spawn_unsandboxed_command(
 // Tests
 // ─────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────
+// Kernel sandbox denial capture
+// ─────────────────────────────────────────────────────────────
+
+/// How a denial event's process relates to the command that was run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DenyRelationship {
+    /// The event's pid is the command's own root process.
+    Related,
+    /// The event's pid is neither the root process nor a known-unrelated one.
+    /// Descendants of the command land here, and so do other sandboxed
+    /// processes on the host that the kernel log does not let us separate.
+    MaybeRelated,
+    /// The event's pid is known not to belong to the command (currently the
+    /// Maestro process itself).
+    ProbablyUnrelated,
+}
+
+/// One kernel sandbox denial parsed out of the macOS unified log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DenyEvent {
+    /// Log timestamp, as the unified log reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// Name of the process the kernel denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_name: Option<String>,
+    /// Pid of the process the kernel denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The kernel's decision, lowercased (`deny`, `deny-file-write`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    /// The denied operation (`file-write-create`, `network-outbound`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    /// What the operation targeted (a path, an address, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// How many identical denials the kernel collapsed into this entry.
+    pub duplicate_count: u32,
+    /// The unparsed `eventMessage`, always present.
+    pub raw: String,
+    /// Whether this event belongs to the command that was run.
+    pub relationship: DenyRelationship,
+}
+
+impl DenyEvent {
+    /// A short `operation target` description for a one-line summary.
+    #[must_use]
+    pub fn short_description(&self) -> String {
+        match (&self.operation, &self.target) {
+            (Some(operation), Some(target)) => format!("{operation} {target}"),
+            (Some(operation), None) => operation.clone(),
+            _ => self.raw.clone(),
+        }
+    }
+}
+
+/// Unified-log predicate selecting kernel sandbox denial messages.
+#[cfg(target_os = "macos")]
+const DENY_PREDICATE: &str =
+    r#"process=="kernel" AND eventMessage CONTAINS "Sandbox:" AND eventMessage contains "deny""#;
+
+/// Upper bound on the `--last` window handed to `log show`, so a long-lived
+/// command cannot ask the unified log for hours of history.
+#[cfg(target_os = "macos")]
+const MAX_DENY_LOOKBACK_SECS: u64 = 300;
+
+/// Collect kernel sandbox denials recorded while a command ran.
+///
+/// # Why this exists
+///
+/// When Seatbelt or Landlock blocks a syscall, the program the agent ran sees
+/// only its own errno — usually `Permission denied` — with nothing saying the
+/// kernel sandbox caused it. The agent then debugs the wrong thing. The kernel
+/// does log the denial with the operation and target, so reading it back turns
+/// a bare errno into "the sandbox denied `file-write-create /etc/hosts`".
+///
+/// # Platform support
+///
+/// macOS reads the unified log (`/usr/bin/log show`). Linux returns an empty
+/// list: Landlock denials are not recorded anywhere readable without an
+/// auditd configuration Maestro does not control.
+///
+/// # Bounds
+///
+/// `budget` is a hard wall-clock cap on the `log show` subprocess. On timeout,
+/// spawn failure, a non-zero exit, or unparseable output, this returns an
+/// empty list — a missing diagnostic must never turn into a failed command.
+/// The lookback window is `started.elapsed()` rounded up, capped at
+/// `MAX_DENY_LOOKBACK_SECS`.
+///
+/// Uses the native Seatbelt log format and fails open for diagnostics only.
+pub async fn capture_denies(
+    pid: u32,
+    started: std::time::Instant,
+    budget: std::time::Duration,
+) -> Vec<DenyEvent> {
+    #[cfg(target_os = "macos")]
+    {
+        capture_denies_macos(pid, started, budget).await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, started, budget);
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn capture_denies_macos(
+    pid: u32,
+    started: std::time::Instant,
+    budget: std::time::Duration,
+) -> Vec<DenyEvent> {
+    let seconds = started
+        .elapsed()
+        .as_secs()
+        .saturating_add(1)
+        .min(MAX_DENY_LOOKBACK_SECS);
+
+    let mut command = tokio::process::Command::new("/usr/bin/log");
+    command
+        .arg("show")
+        .arg("--style")
+        .arg("ndjson")
+        .arg("--predicate")
+        .arg(DENY_PREDICATE)
+        .arg("--last")
+        .arg(format!("{seconds}s"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let Ok(child) = command.spawn() else {
+        return Vec::new();
+    };
+    let Ok(Ok(output)) = tokio::time::timeout(budget, child.wait_with_output()).await else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_deny_events(&String::from_utf8_lossy(&output.stdout), pid)
+}
+
+/// Parse `log show --style ndjson` output into denial events.
+///
+/// Lines that are not JSON, carry no `eventMessage`, or do not match a
+/// known Sandbox message shape are skipped or kept as raw text; nothing here
+/// can fail.
+#[must_use]
+pub fn parse_deny_events(ndjson: &str, root_pid: u32) -> Vec<DenyEvent> {
+    ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|entry| {
+            let message = entry.get("eventMessage")?.as_str()?.to_string();
+            let timestamp = entry
+                .get("timestamp")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string);
+            Some(parse_deny_message(&message, timestamp, root_pid))
+        })
+        .collect()
+}
+
+/// Classify a denial's pid against the command's root pid.
+#[must_use]
+fn deny_relationship(event_pid: u32, root_pid: u32) -> DenyRelationship {
+    if event_pid == root_pid {
+        DenyRelationship::Related
+    } else if event_pid == std::process::id() {
+        // Maestro itself is sandboxed by nothing we spawned; a denial from
+        // this pid never belongs to the command.
+        DenyRelationship::ProbablyUnrelated
+    } else {
+        DenyRelationship::MaybeRelated
+    }
+}
+
+/// Parse one `eventMessage` into a [`DenyEvent`].
+fn parse_deny_message(message: &str, timestamp: Option<String>, root_pid: u32) -> DenyEvent {
+    static DENY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^Sandbox:\s+([^(]+)\((\d+)\)\s+([a-zA-Z-]+)\((\d+)\)\s+(\S+)\s+(.+)$")
+            .expect("deny regex")
+    });
+    static DUPLICATE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(\d+) duplicate reports? for Sandbox: (.+)$").expect("duplicate regex")
+    });
+    static DUPLICATE_BODY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^([^(]+)\((\d+)\)\s+([a-zA-Z-]+)\((\d+)\)\s+(\S+)\s+(.+)$")
+            .expect("duplicate body regex")
+    });
+
+    let unparsed = |timestamp: Option<String>, duplicate_count: u32| DenyEvent {
+        timestamp,
+        process_name: None,
+        pid: None,
+        decision: None,
+        operation: None,
+        target: None,
+        duplicate_count,
+        raw: message.to_string(),
+        relationship: DenyRelationship::MaybeRelated,
+    };
+
+    let build = |captures: &regex::Captures<'_>, duplicate_count: u32| {
+        let event_pid: u32 = captures[2].parse().unwrap_or(0);
+        DenyEvent {
+            timestamp: timestamp.clone(),
+            process_name: Some(captures[1].trim().to_string()),
+            pid: Some(event_pid),
+            decision: Some(captures[3].to_lowercase()),
+            operation: Some(captures[5].to_string()),
+            target: Some(captures[6].to_string()),
+            duplicate_count,
+            raw: message.to_string(),
+            relationship: deny_relationship(event_pid, root_pid),
+        }
+    };
+
+    if let Some(captures) = DENY.captures(message) {
+        return build(&captures, 1);
+    }
+    if let Some(captures) = DUPLICATE.captures(message) {
+        let count: u32 = captures[1].parse().unwrap_or(1);
+        if let Some(body) = DUPLICATE_BODY.captures(&captures[2]) {
+            return build(&body, count);
+        }
+        return unparsed(timestamp, count);
+    }
+    unparsed(timestamp, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn private_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        temp
+    }
+
+    /// One `log show --style ndjson` line, as the unified log emits them.
+    fn ndjson_line(message: &str) -> String {
+        serde_json::json!({
+            "timestamp": "2026-08-23 09:41:02.123456-0700",
+            "processImagePath": "/kernel",
+            "eventMessage": message,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parse_deny_events_extracts_process_operation_and_target() {
+        let ndjson = ndjson_line(
+            "Sandbox: bash(4242) deny(1) file-write-create /Users/dev/.cargo/registry/x",
+        );
+
+        let events = parse_deny_events(&ndjson, 4242);
+
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.process_name.as_deref(), Some("bash"));
+        assert_eq!(event.pid, Some(4242));
+        assert_eq!(event.decision.as_deref(), Some("deny"));
+        assert_eq!(event.operation.as_deref(), Some("file-write-create"));
+        assert_eq!(
+            event.target.as_deref(),
+            Some("/Users/dev/.cargo/registry/x")
+        );
+        assert_eq!(event.duplicate_count, 1);
+        assert_eq!(event.relationship, DenyRelationship::Related);
+        assert_eq!(
+            event.timestamp.as_deref(),
+            Some("2026-08-23 09:41:02.123456-0700")
+        );
+    }
+
+    #[test]
+    fn parse_deny_events_reads_duplicate_reports() {
+        let ndjson = ndjson_line(
+            "17 duplicate reports for Sandbox: cargo(4243) deny(1) network-outbound 1.2.3.4:443",
+        );
+
+        let events = parse_deny_events(&ndjson, 4242);
+
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.duplicate_count, 17);
+        assert_eq!(event.pid, Some(4243));
+        assert_eq!(event.operation.as_deref(), Some("network-outbound"));
+        assert_eq!(event.target.as_deref(), Some("1.2.3.4:443"));
+        assert_eq!(event.relationship, DenyRelationship::MaybeRelated);
+    }
+
+    #[test]
+    fn parse_deny_events_tags_relationship_by_pid() {
+        let ndjson = [
+            ndjson_line("Sandbox: bash(4242) deny(1) file-write-create /etc/hosts"),
+            ndjson_line("Sandbox: rustc(9999) deny(1) file-write-create /etc/hosts"),
+            ndjson_line(&format!(
+                "Sandbox: maestro({}) deny(1) file-write-create /etc/hosts",
+                std::process::id()
+            )),
+        ]
+        .join("\n");
+
+        let events = parse_deny_events(&ndjson, 4242);
+
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].relationship, DenyRelationship::Related);
+        assert_eq!(events[1].relationship, DenyRelationship::MaybeRelated);
+        assert_eq!(events[2].relationship, DenyRelationship::ProbablyUnrelated);
+    }
+
+    #[test]
+    fn parse_deny_events_keeps_unrecognized_messages_as_raw() {
+        let ndjson = ndjson_line("Sandbox: something the regex does not model");
+
+        let events = parse_deny_events(&ndjson, 4242);
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].operation.is_none());
+        assert!(events[0].pid.is_none());
+        assert_eq!(events[0].raw, "Sandbox: something the regex does not model");
+        assert_eq!(events[0].duplicate_count, 1);
+    }
+
+    #[test]
+    fn parse_deny_events_skips_lines_that_are_not_usable() {
+        let ndjson = [
+            "not json at all",
+            "",
+            "   ",
+            &serde_json::json!({ "timestamp": "t" }).to_string(),
+            &ndjson_line("Sandbox: bash(1) deny(1) file-write-create /x"),
+        ]
+        .join("\n");
+
+        assert_eq!(parse_deny_events(&ndjson, 1).len(), 1);
+    }
+
+    #[test]
+    fn deny_event_short_description_prefers_operation_and_target() {
+        let mut event = parse_deny_events(
+            &ndjson_line("Sandbox: bash(1) deny(1) file-write-create /x"),
+            1,
+        )
+        .remove(0);
+        assert_eq!(event.short_description(), "file-write-create /x");
+
+        event.operation = None;
+        event.target = None;
+        assert_eq!(event.short_description(), event.raw);
+    }
+
+    #[tokio::test]
+    async fn capture_denies_returns_empty_within_its_budget() {
+        // No sandboxed command ran under this pid, so there is nothing to
+        // find. The point of the assertion is the bound: the capture must
+        // return promptly and must never fail the caller.
+        let started = std::time::Instant::now();
+        let events = capture_denies(
+            std::process::id(),
+            started,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        for event in &events {
+            assert!(!event.raw.is_empty());
+        }
+    }
+
+    /// Integration probe: run a write the sandbox must deny and check that
+    /// the kernel denial is visible. Ignored by default because CI runners
+    /// commonly cannot read the unified log (`log show` needs a real macOS
+    /// host with the log daemon, which sandboxed/virtualized runners lack).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "needs a macOS host where `log show` can read kernel messages"]
+    async fn capture_denies_sees_a_denied_write_under_read_only() {
+        let started = std::time::Instant::now();
+        let child = spawn_sandboxed_command(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "touch /etc/maestro-probe".to_string(),
+            ],
+            std::env::temp_dir(),
+            &SandboxPolicy::ReadOnly,
+            HashMap::new(),
+        )
+        .await
+        .expect("sandboxed spawn should succeed");
+        let pid = child.id().expect("child pid");
+        let output = child.wait_with_output().await.expect("child should exit");
+        assert!(!output.status.success(), "the write must be denied");
+
+        let events = capture_denies(pid, started, std::time::Duration::from_secs(10)).await;
+        assert!(
+            events.iter().any(|event| event
+                .operation
+                .as_deref()
+                .is_some_and(|operation| operation.starts_with("file-write"))),
+            "expected a file-write denial: {events:?}"
+        );
+    }
 
     /// `CARGO_HOME`/`XDG_CACHE_HOME` are process-global env vars read by
     /// `dev_cache_writable_roots()`; guard tests that set them so they don't
@@ -2341,33 +3163,305 @@ mod tests {
     }
 
     #[test]
-    fn dev_cache_writable_roots_pre_creates_cold_cargo_cache_dirs() {
-        // Regression test for the review finding on #3144: a fresh or
-        // cleared Cargo cache (CARGO_HOME exists -- Rust is installed --
-        // but registry/git haven't been populated yet) must still get
-        // registry/git granted, or the first `cargo build` that fetches a
-        // dependency fails with a permission error under the sandbox --
-        // the exact case this function exists to support.
+    fn dev_cache_writable_roots_never_grants_the_real_cargo_cache() {
+        // The sandbox no longer writes into the user's Cargo cache at all:
+        // `sandbox_cache_env` redirects dependency caches into a
+        // session-private directory, while Cargo build artifacts stay under
+        // the writable workspace, so a build script cannot leave a poisoned
+        // artifact in the user's reusable Cargo cache.
         let _guard = dev_cache_env_lock();
         let cargo_home = tempfile::tempdir().unwrap();
         std::env::set_var("CARGO_HOME", cargo_home.path());
-        assert!(!cargo_home.path().join("registry").exists());
-        assert!(!cargo_home.path().join("git").exists());
+        std::fs::create_dir_all(cargo_home.path().join("registry")).unwrap();
+        std::fs::create_dir_all(cargo_home.path().join("git")).unwrap();
 
         let roots = SandboxPolicy::dev_cache_writable_roots();
 
         std::env::remove_var("CARGO_HOME");
 
         assert!(
-            roots.contains(&cargo_home.path().join("registry")),
-            "registry/ must be pre-created and granted: {roots:?}"
+            roots
+                .iter()
+                .all(|root| !root.starts_with(cargo_home.path())),
+            "no writable root may live under $CARGO_HOME: {roots:?}"
         );
+        assert_eq!(
+            roots,
+            vec![sandbox_cache_root(sandbox_cache_session_id())],
+            "the only writable cache root is the session-private one: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn dev_cache_writable_roots_is_the_session_cache_root() {
+        let roots = SandboxPolicy::dev_cache_writable_roots();
+        assert_eq!(roots.len(), 1);
         assert!(
-            roots.contains(&cargo_home.path().join("git")),
-            "git/ must be pre-created and granted: {roots:?}"
+            roots[0].is_dir(),
+            "the cache root must be created: {roots:?}"
         );
-        assert!(cargo_home.path().join("registry").is_dir());
-        assert!(cargo_home.path().join("git").is_dir());
+        let temp_dir = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(roots[0].starts_with(temp_dir));
+    }
+
+    #[test]
+    fn sandbox_cache_env_never_names_toolchain_home_variables() {
+        // These hold installed executables, not caches. Redirecting them
+        // would point the toolchain at an empty directory and break the
+        // command, and is why the reference implementation excludes them.
+        let env = sandbox_cache_env("test-session");
+        for forbidden in [
+            "RUSTUP_HOME",
+            "GEM_HOME",
+            "VOLTA_HOME",
+            "PIPX_HOME",
+            "DENO_DIR",
+        ] {
+            assert!(
+                !env.iter().any(|(name, _)| name == forbidden),
+                "{forbidden} must not be redirected: {env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_cache_env_points_every_variable_inside_the_session_root() {
+        let root = sandbox_cache_root("test-session");
+        let env = sandbox_cache_env("test-session");
+        assert!(env.len() >= 25, "expected the full cache variable set");
+        for (name, value) in &env {
+            assert!(
+                PathBuf::from(value).starts_with(&root),
+                "{name} points outside the session cache root: {value}"
+            );
+        }
+        assert!(env.iter().any(|(name, _)| name == "NPM_CONFIG_CACHE"));
+        assert!(env.iter().any(|(name, _)| name == "npm_config_store_dir"));
+        assert!(!env.iter().any(|(name, _)| name == "PNPM_STORE_PATH"));
+        assert!(env.iter().any(|(name, _)| name == "CARGO_HOME"));
+        assert!(!env.iter().any(|(name, _)| name == "CARGO_TARGET_DIR"));
+        assert!(env.iter().any(|(name, _)| name == "GOCACHE"));
+        assert!(env.iter().any(|(name, _)| name == "PIP_CACHE_DIR"));
+        assert!(env.iter().any(|(name, _)| name == "GRADLE_USER_HOME"));
+        assert!(env.iter().any(|(name, _)| name == "YARN_CACHE_FOLDER"));
+        assert!(env.iter().any(|(name, _)| name == "YARN_GLOBAL_FOLDER"));
+        assert!(env.iter().any(|(name, _)| name == "COMPOSER_CACHE_DIR"));
+        assert!(!env.iter().any(|(name, _)| name == "COMPOSER_HOME"));
+    }
+
+    #[test]
+    fn apply_sandbox_cache_env_uses_the_workspace_cargo_target() {
+        let mut env = HashMap::new();
+        env.insert("CARGO_TARGET_DIR".to_string(), "/host/target".to_string());
+        env.insert("COMPOSER_HOME".to_string(), "/host/composer".to_string());
+        env.insert(
+            "COMPOSER_CACHE_DIR".to_string(),
+            "/host/composer-cache".to_string(),
+        );
+        env.insert(
+            "MAVEN_OPTS".to_string(),
+            "-Xmx2g -Dmaven.repo.local=/host/maven".to_string(),
+        );
+        env.insert("PATH".to_string(), "/usr/bin".to_string());
+
+        let applied = apply_sandbox_cache_env(env, "test-session").unwrap();
+
+        assert_eq!(applied.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert!(!applied.contains_key("CARGO_TARGET_DIR"));
+        assert_eq!(
+            applied.get("COMPOSER_HOME").map(String::as_str),
+            Some("/host/composer")
+        );
+        assert_eq!(
+            applied.get("COMPOSER_CACHE_DIR").map(PathBuf::from),
+            Some(sandbox_cache_root("test-session").join("composer"))
+        );
+        let maven_opts = applied.get("MAVEN_OPTS").expect("MAVEN_OPTS set");
+        assert!(maven_opts.starts_with("-Xmx2g -Dmaven.repo.local=/host/maven "));
+        assert!(maven_opts.ends_with(&format!(
+            "-Dmaven.repo.local={}",
+            sandbox_cache_root("test-session").join("maven").display()
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_sandbox_cache_root_is_owner_only() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp = private_tempdir();
+        let root = prepare_sandbox_cache_root_in(temp.path(), "private-session").unwrap();
+        let parent = root.parent().unwrap();
+
+        assert_eq!(std::fs::metadata(parent).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&root).unwrap().uid(), unsafe {
+            libc::geteuid()
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_sandbox_cache_root_rejects_a_symlink_parent() {
+        use std::os::unix::fs::symlink;
+
+        let temp = private_tempdir();
+        let attacker = tempfile::tempdir().unwrap();
+        symlink(attacker.path(), temp.path().join(SANDBOX_CACHE_DIR)).unwrap();
+
+        let error = prepare_sandbox_cache_root_in(temp.path(), "session").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!attacker.path().join("session").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_sandbox_cache_root_rejects_a_shared_parent() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = private_tempdir();
+        let parent = temp.path().join(SANDBOX_CACHE_DIR);
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let error = prepare_sandbox_cache_root_in(temp.path(), "session").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!parent.join("session").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_sandbox_cache_root_reclaims_exited_process_caches_but_keeps_live_ones() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = private_tempdir();
+        let parent = temp.path().join(SANDBOX_CACHE_DIR);
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let live = parent.join("live");
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(
+            live.join(SANDBOX_CACHE_PROCESS_MARKER),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        for index in 0..4 {
+            let inactive = parent.join(format!("inactive-{index}"));
+            std::fs::create_dir(&inactive).unwrap();
+            std::fs::write(inactive.join(SANDBOX_CACHE_PROCESS_MARKER), "4294967295").unwrap();
+        }
+
+        prepare_sandbox_cache_root_in(temp.path(), "current").unwrap();
+
+        assert!(
+            live.exists(),
+            "a live process cache must never be reclaimed"
+        );
+        let inactive_count = std::fs::read_dir(&parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("inactive-"))
+            .count();
+        assert_eq!(inactive_count, SANDBOX_CACHE_RETAINED_INACTIVE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_cache_reclaim_tolerates_entries_removed_by_another_process() {
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join(SANDBOX_CACHE_DIR);
+        std::fs::create_dir(&parent).unwrap();
+        for index in 0..64 {
+            let inactive = parent.join(format!("inactive-{index}"));
+            std::fs::create_dir(&inactive).unwrap();
+            std::fs::write(inactive.join(SANDBOX_CACHE_PROCESS_MARKER), "4294967295").unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(8));
+        std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 0..8 {
+                let barrier = Arc::clone(&barrier);
+                let parent = parent.clone();
+                workers.push(scope.spawn(move || {
+                    barrier.wait();
+                    reclaim_inactive_sandbox_caches(&parent, "current")
+                }));
+            }
+            for worker in workers {
+                worker
+                    .join()
+                    .expect("reclaim worker must not panic")
+                    .expect("a concurrently removed inactive entry is already reclaimed");
+            }
+        });
+    }
+
+    #[test]
+    fn seed_toolchain_user_config_preserves_cargo_and_gradle_configuration() {
+        let temp = private_tempdir();
+        let home = temp.path().join("home");
+        let cargo = home.join(".cargo");
+        let gradle = home.join(".gradle");
+        std::fs::create_dir_all(&cargo).unwrap();
+        std::fs::create_dir_all(gradle.join("init.d")).unwrap();
+        std::fs::write(cargo.join("config.toml"), "[net]\noffline = true\n").unwrap();
+        std::fs::write(
+            cargo.join("credentials.toml"),
+            "[registry]\ntoken = 'secret'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            gradle.join("gradle.properties"),
+            "org.gradle.daemon=false\n",
+        )
+        .unwrap();
+        std::fs::write(gradle.join("init.d/company.gradle"), "// company init\n").unwrap();
+
+        let cache = prepare_sandbox_cache_root_in(temp.path(), "session").unwrap();
+        let env = HashMap::from([
+            ("HOME".to_string(), home.to_string_lossy().into_owned()),
+            (
+                "CARGO_HOME".to_string(),
+                cargo.to_string_lossy().into_owned(),
+            ),
+            (
+                "GRADLE_USER_HOME".to_string(),
+                gradle.to_string_lossy().into_owned(),
+            ),
+        ]);
+        seed_toolchain_user_config(&env, &cache).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(cache.join("cargo-home/config.toml")).unwrap(),
+            "[net]\noffline = true\n"
+        );
+        assert!(cache.join("cargo-home/credentials.toml").is_file());
+        assert_eq!(
+            std::fs::read_to_string(cache.join("gradle/gradle.properties")).unwrap(),
+            "org.gradle.daemon=false\n"
+        );
+        assert!(cache.join("gradle/init.d/company.gradle").is_file());
+
+        std::fs::remove_file(cargo.join("config.toml")).unwrap();
+        std::fs::remove_file(gradle.join("gradle.properties")).unwrap();
+        std::fs::remove_file(gradle.join("init.d/company.gradle")).unwrap();
+        std::fs::write(gradle.join("init.d/replacement.gradle"), "// replacement\n").unwrap();
+        seed_toolchain_user_config(&env, &cache).unwrap();
+
+        assert!(!cache.join("cargo-home/config.toml").exists());
+        assert!(!cache.join("gradle/gradle.properties").exists());
+        assert!(!cache.join("gradle/init.d/company.gradle").exists());
+        assert!(cache.join("gradle/init.d/replacement.gradle").is_file());
+    }
+
+    #[test]
+    fn sandbox_cache_session_id_is_stable_within_the_process() {
+        assert_eq!(sandbox_cache_session_id(), sandbox_cache_session_id());
+        assert_eq!(sandbox_cache_session_id().len(), 32);
     }
 
     #[test]
@@ -2526,13 +3620,11 @@ mod tests {
     }
 
     #[test]
-    fn dev_cache_writable_roots_narrows_xdg_cache_to_known_package_managers() {
-        // Regression test for the review finding on #3144: granting the
-        // whole XDG cache root would let a sandboxed command replace an
-        // installed tool environment's executable under e.g.
-        // `~/.cache/pre-commit/...` and persist code execution outside
-        // Maestro entirely. Only known package-manager subdirectories are
-        // granted; an unrelated cache directory must not be.
+    fn dev_cache_writable_roots_never_grants_the_xdg_cache() {
+        // The XDG cache root holds installed tool environments (e.g.
+        // `~/.cache/pre-commit/<hash>/.../bin/`). No part of it is granted
+        // now that `PIP_CACHE_DIR` and `UV_CACHE_DIR` are redirected into the
+        // session-private cache root instead.
         let _guard = dev_cache_env_lock();
         let xdg_cache_home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(xdg_cache_home.path().join("pip")).unwrap();
@@ -2545,17 +3637,10 @@ mod tests {
         std::env::remove_var("XDG_CACHE_HOME");
 
         assert!(
-            roots.contains(&xdg_cache_home.path().join("pip")),
-            "pip's own cache subdirectory must still be granted: {roots:?}"
-        );
-        assert!(
-            !roots.contains(&xdg_cache_home.path().to_path_buf()),
-            "the whole XDG cache root must not be granted: {roots:?}"
-        );
-        assert!(
-            !roots.contains(&xdg_cache_home.path().join("pre-commit")),
-            "an unrelated cache subdirectory (e.g. pre-commit's installed hook \
-             environments) must not be granted: {roots:?}"
+            roots
+                .iter()
+                .all(|root| !root.starts_with(xdg_cache_home.path())),
+            "no writable root may live under $XDG_CACHE_HOME: {roots:?}"
         );
     }
 
@@ -2622,12 +3707,16 @@ mod tests {
         let roots = policy.get_writable_roots_with_cwd(&cwd);
 
         // Should include /custom and cwd
-        assert!(roots
-            .iter()
-            .any(|r| r.root.as_path() == Path::new("/custom")));
-        assert!(roots
-            .iter()
-            .any(|r| r.root.as_path() == Path::new("/workspace")));
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.root.as_path() == Path::new("/custom"))
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.root.as_path() == Path::new("/workspace"))
+        );
     }
 
     #[test]
@@ -2739,8 +3828,8 @@ mod tests {
 
     #[test]
     fn test_workspace_write_default_has_network_and_no_writable_roots_on_a_bare_machine() {
-        // dev_cache_writable_roots() only includes directories that already
-        // exist, so this assertion holds regardless of whether the test
+        // dev_cache_writable_roots() returns the session cache root, which it
+        // creates, so this assertion holds regardless of whether the test
         // runner happens to have a Rust/Node toolchain installed.
         let policy = SandboxPolicy::workspace_write_default();
         assert!(policy.has_full_network_access());

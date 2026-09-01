@@ -38,8 +38,8 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
-use image::{imageops::FilterType, GenericImageView, ImageFormat};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use image::{GenericImageView, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 
 use super::details::ImageDetails;

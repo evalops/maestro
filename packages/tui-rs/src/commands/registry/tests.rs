@@ -61,7 +61,7 @@ fn registry_execute() {
         CommandOutput::Message(message) => {
             assert_eq!(
                 message,
-                format!("Maestro TUI v{}", env!("CARGO_PKG_VERSION"))
+                format!("Deixic Code v{}", env!("CARGO_PKG_VERSION"))
             );
         }
         other => panic!("expected version message, got {other:?}"),
@@ -360,20 +360,26 @@ fn a2a_command_parses_peer_actions() {
 
     assert!(registry.execute("/a2a fleet", "/tmp", None, None).is_ok());
     assert!(registry.execute("/a2a tasks", "/tmp", None, None).is_ok());
-    assert!(registry
-        .execute("/a2a tasks --work-graph mac-mini", "/tmp", None, None)
-        .is_ok());
-    assert!(registry
-        .execute("/a2a coordinate", "/tmp", None, None)
-        .is_ok());
-    assert!(registry
-        .execute(
-            "/a2a delegate mac-mini run workspace smoke",
-            "/tmp",
-            None,
-            None,
-        )
-        .is_ok());
+    assert!(
+        registry
+            .execute("/a2a tasks --work-graph mac-mini", "/tmp", None, None)
+            .is_ok()
+    );
+    assert!(
+        registry
+            .execute("/a2a coordinate", "/tmp", None, None)
+            .is_ok()
+    );
+    assert!(
+        registry
+            .execute(
+                "/a2a delegate mac-mini run workspace smoke",
+                "/tmp",
+                None,
+                None,
+            )
+            .is_ok()
+    );
 
     match registry
         .execute("/a2a peers", "/tmp", None, None)
@@ -1056,9 +1062,11 @@ fn rewind_parses_dry_run_and_rejects_history_only() {
         }
         other => panic!("expected flagged Rewind, got {other:?}"),
     }
-    assert!(registry
-        .execute("/rewind --history-only", "/tmp", None, None)
-        .is_err());
+    assert!(
+        registry
+            .execute("/rewind --history-only", "/tmp", None, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -1078,9 +1086,11 @@ fn rewind_parses_files_and_checkpoints_subcommands() {
         CommandOutput::Action(CommandAction::Session(SessionAction::ListCheckpoints)) => {}
         other => panic!("expected ListCheckpoints, got {other:?}"),
     }
-    assert!(registry
-        .execute("/rewind files extra", "/tmp", None, None)
-        .is_err());
+    assert!(
+        registry
+            .execute("/rewind files extra", "/tmp", None, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -1216,7 +1226,7 @@ fn memory_and_continue_commands_parse() {
     let err = registry
         .execute("/memory save foo", "/tmp", None, None)
         .expect_err("/memory save should not pretend to work");
-    assert!(err.message.contains("maestro memory"), "{err}");
+    assert!(err.message.contains("deixic-code memory"), "{err}");
     match registry
         .execute("/continue", "/tmp", None, None)
         .expect("/continue")
@@ -1645,9 +1655,11 @@ fn loop_command_parses_interval_and_prompt() {
         other => panic!("expected Loop::Status, got {other:?}"),
     }
 
-    assert!(registry
-        .execute("/loop nonsense", "/tmp", None, None)
-        .is_err());
+    assert!(
+        registry
+            .execute("/loop nonsense", "/tmp", None, None)
+            .is_err()
+    );
     assert!(registry.execute("/loop 5m", "/tmp", None, None).is_err());
 }
 
@@ -1697,4 +1709,163 @@ fn queue_command_parses_reorder_and_send_now_actions() {
             direction: QueueMoveDirection::Now
         }))
     ));
+}
+
+#[test]
+fn computer_command_and_orb_alias_parse_native_task_controls() {
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry.execute("/computer list", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::List)))
+    ));
+    assert!(matches!(
+        registry.execute("/computer status task-1", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::Status(id)))
+            ) if id == "task-1"
+    ));
+    assert!(matches!(
+        registry.execute("/computer followup task-1 check the build", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::Followup { id, prompt })))
+            if id == "task-1" && prompt == "check the build"
+    ));
+    assert!(matches!(
+        registry.execute(
+            "/computer handoff create task-1 thread-2 --file src/lib.rs --include-diff",
+            "/tmp",
+            None,
+            None
+        ),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::HandoffCreate {
+            source_id,
+            target_thread_id,
+            files,
+            artifact_ids,
+            include_diff,
+        })))
+            if source_id == "task-1"
+                && target_thread_id == "thread-2"
+                && files == vec!["src/lib.rs".to_string()]
+                && artifact_ids.is_empty()
+                && include_diff
+    ));
+    assert!(matches!(
+        registry.execute(
+            "/computer handoff read thread-2 package-1",
+            "/tmp",
+            None,
+            None
+        ),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::HandoffRead {
+            target_thread_id,
+            package_id,
+        })))
+            if target_thread_id == "thread-2" && package_id == "package-1"
+    ));
+    assert!(
+        registry
+            .execute("/computer pause", "/tmp", None, None)
+            .is_err()
+    );
+    assert!(
+        registry
+            .execute(
+                "/computer handoff create task-1 thread-2",
+                "/tmp",
+                None,
+                None
+            )
+            .is_err()
+    );
+    assert!(matches!(
+        registry.execute("/orb list", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::Orb(OrbAction::List)))
+    ));
+}
+
+#[test]
+fn handoff_command_parses_direct_and_computer_package_forms() {
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry.execute(
+            "/handoff check the release queue",
+            "/tmp",
+            None,
+            None
+        ),
+        Ok(CommandOutput::Action(CommandAction::A2a(A2aAction::Handoff {
+            peer,
+            text,
+            computer_package: None,
+        }))) if peer.is_none() && text == "check the release queue"
+    ));
+    assert!(matches!(
+        registry.execute(
+            "/handoff --peer chief check the release queue",
+            "/tmp",
+            None,
+            None
+        ),
+        Ok(CommandOutput::Action(CommandAction::A2a(A2aAction::Handoff {
+            peer,
+            text,
+            computer_package: None,
+        }))) if peer.as_deref() == Some("chief") && text == "check the release queue"
+    ));
+    assert!(matches!(
+        registry.execute(
+            "/handoff --source-task task-1 --target-thread thread-2 --file src/lib.rs --artifact artifact-1 --include-diff -- continue the implementation",
+            "/tmp",
+            None,
+            None
+        ),
+        Ok(CommandOutput::Action(CommandAction::A2a(A2aAction::Handoff {
+            peer,
+            text,
+            computer_package: Some(A2aComputerHandoffSelection {
+                source_task_id,
+                target_thread_id,
+                files,
+                artifact_ids,
+                include_diff,
+            }),
+        })))
+            if peer.is_none()
+                && text == "continue the implementation"
+                && source_task_id == "task-1"
+                && target_thread_id == "thread-2"
+                && files == vec!["src/lib.rs".to_string()]
+                && artifact_ids == vec!["artifact-1".to_string()]
+                && include_diff
+    ));
+}
+
+#[test]
+fn handoff_command_rejects_missing_prompt_and_partial_computer_packages() {
+    let registry = build_command_registry();
+    assert!(registry.execute("/handoff", "/tmp", None, None).is_err());
+    assert!(
+        registry
+            .execute("/handoff --peer", "/tmp", None, None)
+            .is_err()
+    );
+    assert!(
+        registry
+            .execute(
+                "/handoff --source-task task-1 --include-diff -- continue",
+                "/tmp",
+                None,
+                None
+            )
+            .is_err()
+    );
+    assert!(
+        registry
+            .execute(
+                "/handoff --source-task task-1 --target-thread thread-2 -- continue",
+                "/tmp",
+                None,
+                None
+            )
+            .is_err()
+    );
 }

@@ -19,13 +19,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{provider_model_name, ProviderProtocol, ProviderRegistry};
+use crate::ai::{ProviderProtocol, ProviderRegistry, provider_model_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1210,9 +1210,11 @@ mod tests {
         assert!(!native.is_empty());
         assert!(!openrouter.is_empty());
         assert!(native.iter().all(|model| model.provider != "openrouter"));
-        assert!(openrouter
-            .iter()
-            .all(|model| model.provider == "openrouter"));
+        assert!(
+            openrouter
+                .iter()
+                .all(|model| model.provider == "openrouter")
+        );
         assert_eq!(
             native.len() + openrouter.len(),
             bundled_models().len(),
@@ -1569,17 +1571,14 @@ mod tests {
         let model = find_model("openrouter/moonshotai/kimi-k2.7-code")
             .expect("openrouter kimi catalog row");
         assert_eq!(model.capabilities.context_tokens, 262_144);
-        assert_eq!(
-            model.capabilities.output_tokens, None,
-            "context copied into output is not a real output cap"
-        );
-        assert_eq!(
-            default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-code"),
-            DEFAULT_MAX_OUTPUT_TOKENS
-        );
+        let budget = default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-code");
         assert!(
-            default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-code")
-                < model.capabilities.context_tokens
+            budget
+                <= model
+                    .capabilities
+                    .context_tokens
+                    .saturating_sub(MIN_PROMPT_TOKEN_HEADROOM),
+            "runtime catalog overlays must still reserve prompt headroom"
         );
     }
 

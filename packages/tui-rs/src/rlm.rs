@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 const CURRENT_VERSION: u32 = 1;
@@ -406,9 +406,11 @@ mod tests {
     fn unknown_or_oversized_templates_are_rejected() {
         let store = RlmStore::default();
         assert!(store.render_template("{{missing}}").is_err());
-        assert!(store
-            .render_template(&"x".repeat(MAX_RENDER_CHARS + 1))
-            .is_err());
+        assert!(
+            store
+                .render_template(&"x".repeat(MAX_RENDER_CHARS + 1))
+                .is_err()
+        );
     }
 
     #[test]

@@ -376,12 +376,13 @@ mod tests {
         let mut run = WorkflowRun::start(spec(), args.clone()).unwrap();
         run.pause().unwrap();
         assert!(run.resume("wrong", &args).is_err());
-        assert!(run
-            .resume(
+        assert!(
+            run.resume(
                 &run.spec_sha.clone(),
                 &serde_json::json!({"topic": "other"})
             )
-            .is_err());
+            .is_err()
+        );
         run.resume(&run.spec_sha.clone(), &args).unwrap();
         assert_eq!(run.status, WorkflowRunStatus::Running);
     }

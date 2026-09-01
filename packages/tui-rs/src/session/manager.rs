@@ -296,7 +296,7 @@ use super::entries::{
     AttachmentExtract, SessionEntry, SessionHeader, SessionMeta, SessionStats, ThinkingLevel,
 };
 use super::reader::{ParsedSession, SessionReadError, SessionReader};
-use super::writer::{lock_path_for, sessions_dir, SessionLock, SessionWriter};
+use super::writer::{SessionLock, SessionWriter, lock_path_for, sessions_dir};
 
 /// Lightweight session summary for listing operations.
 ///
@@ -777,7 +777,19 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Remove a session's `.jsonl` file and its sibling checkpoint directory.
+    /// Delete one session and all session-owned checkpoint and spill data.
+    pub fn delete_session(&self, session: &SessionInfo) -> std::io::Result<()> {
+        let lock = SessionLock::acquire(&session.path)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let result = self.remove_session_and_checkpoints(session);
+        drop(lock);
+        if result.is_ok() {
+            self.remove_session_lock_file(session);
+        }
+        result
+    }
+
+    /// Remove a session's `.jsonl` file and its sibling checkpoint and spill directories.
     ///
     /// Checkpoints for a session live at
     /// `<sessions_dir>/checkpoints/<session_id>/` (see
@@ -907,6 +919,10 @@ impl SessionManager {
                 if !legacy_root_is_exclusive {
                     self.cleanup_orphaned_legacy_checkpoint_root(store.legacy_root());
                 }
+                let _ = crate::tool_output::remove_model_tool_spill_dir(
+                    &self.sessions_dir,
+                    &session.id,
+                );
                 Ok(())
             }
             Err(e) => {
@@ -2341,7 +2357,7 @@ mod tests {
 
         // Prune to 0 count - favorites should survive
         let (removed, _) = manager.prune_sessions(0, 1); // 1 day age limit
-                                                         // The favorite session file should still exist
+        // The favorite session file should still exist
         assert!(fav_path.exists());
         // removed count may vary based on file timestamps
         let _ = removed;
@@ -2407,6 +2423,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ids = ["session0", "session1", "session2"];
         let mut checkpoint_roots = std::collections::HashMap::new();
+        let mut spill_roots = std::collections::HashMap::new();
         for id in ids {
             create_test_session_file(dir.path(), id);
             let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
@@ -2414,6 +2431,10 @@ mod tests {
             fs::create_dir_all(&checkpoint_dir).unwrap();
             fs::write(checkpoint_dir.join("checkpoint.json"), b"{}").unwrap();
             checkpoint_roots.insert(id.to_string(), store.root().to_path_buf());
+            let spill_dir = dir.path().join("tool-output").join(id);
+            fs::create_dir_all(&spill_dir).unwrap();
+            fs::write(spill_dir.join("large.txt"), b"output").unwrap();
+            spill_roots.insert(id.to_string(), spill_dir);
         }
 
         let manager = SessionManager {
@@ -2450,6 +2471,13 @@ mod tests {
                     "pruned session {id}'s checkpoints must be removed, not orphaned"
                 );
             }
+        }
+        for (id, spill_root) in &spill_roots {
+            assert_eq!(
+                spill_root.exists(),
+                remaining_ids.contains(id),
+                "spill retention must match transcript retention for session {id}"
+            );
         }
     }
 
@@ -2522,6 +2550,33 @@ mod tests {
     }
 
     #[test]
+    fn transcript_deletion_succeeds_when_post_commit_spill_cleanup_fails() {
+        let dir = TempDir::new().unwrap();
+        let id = "spill-cleanup-failure";
+        create_test_session_file(dir.path(), id);
+        fs::write(dir.path().join("tool-output"), b"blocks spill directory").unwrap();
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == id)
+            .unwrap();
+
+        manager
+            .remove_session_and_checkpoints(&session)
+            .expect("transcript deletion is the commit point");
+
+        assert!(!session.path.exists());
+        assert!(dir.path().join("tool-output").exists());
+    }
+
+    #[test]
     fn pruning_one_session_preserves_a_colliding_live_legacy_root() {
         let dir = TempDir::new().unwrap();
         let pruned_id = "legacy:collision";
@@ -2556,20 +2611,24 @@ mod tests {
             .into_iter()
             .find(|candidate| candidate.id == pruned_id)
             .unwrap();
-        assert!(manager
-            .legacy_checkpoint_root_has_other_live_owner(&session, pruned_store.legacy_root())
-            .unwrap());
+        assert!(
+            manager
+                .legacy_checkpoint_root_has_other_live_owner(&session, pruned_store.legacy_root())
+                .unwrap()
+        );
 
         manager.remove_session_and_checkpoints(&session).unwrap();
 
         assert!(!session.path.exists());
         assert!(!pruned_store.root().exists());
         assert!(shared_legacy_checkpoint.exists());
-        assert!(manager
-            .list_sessions()
-            .unwrap()
-            .iter()
-            .any(|candidate| candidate.id == live_id));
+        assert!(
+            manager
+                .list_sessions()
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate.id == live_id)
+        );
     }
 
     #[test]
@@ -3084,6 +3143,14 @@ mod tests {
         let original_mode = fs::metadata(dir.path()).unwrap().permissions().mode();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o111)).unwrap();
 
+        // Root and some CI sandboxes ignore directory mode bits, so this
+        // fixture cannot force discovery to fail. The unreadable-header test
+        // covers the same abort path without depending on DAC.
+        if manager.list_sessions().is_ok() {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(original_mode)).unwrap();
+            return;
+        }
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             manager.prune_sessions(0, 1)
         }));
@@ -3210,7 +3277,10 @@ mod tests {
         let (_removed, errors) = manager.prune_sessions(0, 1);
         assert_eq!(errors, 0);
         assert!(
-            staged.join("pre-crash-chk").join("checkpoint.json").exists(),
+            staged
+                .join("pre-crash-chk")
+                .join("checkpoint.json")
+                .exists(),
             "a failed restore must retain the staged (older) checkpoints, not delete them as though superseded"
         );
         assert!(

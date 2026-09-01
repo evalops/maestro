@@ -12,8 +12,8 @@
 mod tests {
     use crate::agent::safety::{SafetyConfig, SafetyController, SafetyVerdict};
     use crate::safety::{
-        analyze_bash_command, check_dangerous_patterns, ActionFirewall, CommandRisk,
-        FirewallVerdict,
+        ActionFirewall, CommandRisk, FirewallVerdict, analyze_bash_command,
+        check_dangerous_patterns,
     };
     use serde_json::json;
     use std::time::Duration;
@@ -33,10 +33,10 @@ mod tests {
         match safety.check_tool_call(tool_name, args) {
             SafetyVerdict::Allow => {}
             SafetyVerdict::BlockDoomLoop { reason } => {
-                return Err(format!("Doom loop: {}", reason))
+                return Err(format!("Doom loop: {}", reason));
             }
             SafetyVerdict::BlockRateLimit { reason } => {
-                return Err(format!("Rate limit: {}", reason))
+                return Err(format!("Rate limit: {}", reason));
             }
         }
 
@@ -44,7 +44,7 @@ mod tests {
         match firewall.check_tool(tool_name, args) {
             FirewallVerdict::Allow => {}
             FirewallVerdict::RequireApproval { reason } => {
-                return Err(format!("Needs approval: {}", reason))
+                return Err(format!("Needs approval: {}", reason));
             }
             FirewallVerdict::Block { reason } => return Err(format!("Blocked: {}", reason)),
         }

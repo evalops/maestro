@@ -1,11 +1,14 @@
 [workspace]
 resolver = "2"
+exclude = ["examples/hooks/wasm-plugin"]
 members = [
     "packages/maestro-rs",
     "packages/runtime-rs",
     "packages/scenario-rs",
+    "packages/session-history-rs",
     "packages/ai-rs",
     "packages/runtime-gateway-rs",
+    "packages/a2a-ledger-rs",
     "packages/execpolicy-rs",
     "packages/tui-rs",
     "packages/ambient-agent-rs",
@@ -13,6 +16,7 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1"
+http = "1.4"
 aws-config = { version = "1.10.1", default-features = false, features = [
     "behavior-version-latest",
     "credentials-process",
@@ -38,18 +42,28 @@ eventsource-stream = "0.2"
 fd-lock = "4"
 futures = "0.3"
 glob = "0.3"
+# CIDR types for the structured sandbox network policy (MIT OR Apache-2.0).
+ipnet = "2.11"
 libc = "0.2"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
 maestro-ai = { path = "packages/ai-rs" }
+maestro-a2a-ledger = { path = "packages/a2a-ledger-rs" }
 maestro-runtime-gateway = { path = "packages/runtime-gateway-rs" }
 maestro-execpolicy = { path = "packages/execpolicy-rs" }
 maestro-runtime = { path = "packages/runtime-rs" }
+maestro-session-history = { path = "packages/session-history-rs" }
 maestro-tui = { path = "packages/tui-rs" }
 # Shared by maestro-tui and maestro-runtime-gateway; keep both crates on the
 # same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187
 # fix) can't land in one crate's Cargo.toml and silently miss the other.
 pdf-extract = "0.12"
 portable-pty = "0.9"
+prost = "0.14"
+prost-types = "0.14"
 regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false }
 rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -64,9 +78,10 @@ time = "0.3"
 tokio = { version = "1" }
 tokio-stream = "0.1"
 tokio-rustls = "0.26"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.32"
 wait-timeout = "0.2"
 x509-parser = "0.18"
 zip = { version = "8", default-features = false, features = ["aes-crypto", "deflate64", "deflate", "lzma", "ppmd", "time", "zstd", "xz"] }

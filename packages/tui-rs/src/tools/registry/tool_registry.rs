@@ -612,20 +612,41 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new(
                     "spawn_subagent",
-                    "Delegate a focused task to a child agent with its own session and optional worktree.",
+                    "Delegate a focused task to a child agent with its own session and optional worktree. When the user explicitly asks to work in, on, or with a Computer, use backend=computer so Maestro sends the task through the managed Computer MCP launch; the runtime fills the active workspace project and repository context when omitted. Do not silently fall back to native execution if Computer is unavailable.",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "task": {"type": "string", "description": "The focused task for the child agent."},
                         "role": {"type": "string", "enum": ["explore", "plan", "code", "review"]},
+                        "backend": {"type": "string", "enum": ["native", "computer", "orb"], "description": "Use Maestro's local native child agent or the managed hosted Computer delegation backend. Set computer for explicit requests such as 'work on this in a Computer'; orb is a compatibility alias. Defaults to native."},
                         "profile": {"type": "string", "description": "Optional specialist profile from .maestro/agent-profiles or the user profile directory."},
                         "model": {"type": "string"},
                         "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 86_400_000, "description": "Maximum child execution time in milliseconds. Defaults to two hours."},
                         "max_tokens": {"type": "integer", "minimum": 1, "maximum": 131_072, "description": "Maximum output tokens for the child."},
                         "run_in_background": {"type": "boolean", "description": "Return immediately and let the child run asynchronously. Defaults to true."},
                         "isolation": {"type": "string", "enum": ["worktree", "shared"], "description": "Use an isolated git worktree (default) or the current workspace."},
-                        "worktree_name": {"type": "string"}
+                        "worktree_name": {"type": "string"},
+                        "computer": {
+                            "type": "object",
+                            "description": "Optional high-level hosted Computer delegation intent. Maestro chooses the concrete launch settings from task policy; Computer owns admission and placement.",
+                            "properties": {
+                                "project": {"type": "string"},
+                                "repository": {"type": "string", "description": "Credential-free repository intent, resolved by the hosted project policy."},
+                                "title": {"type": "string"},
+                                "profile": {"type": "string", "description": "Optional high-level hosted capacity profile. Omit to let Maestro choose from task role and policy."}
+                            }
+                        },
+                        "orb": {
+                            "type": "object",
+                            "description": "Compatibility alias for computer. New requests should use computer.",
+                            "properties": {
+                                "project": {"type": "string"},
+                                "repository": {"type": "string", "description": "Credential-free repository intent, resolved by the hosted project policy."},
+                                "title": {"type": "string"},
+                                "profile": {"type": "string", "description": "Optional high-level hosted capacity profile. Omit to let Maestro choose from task role and policy."}
+                            }
+                        }
                     },
                     "required": ["task"]
                 })),

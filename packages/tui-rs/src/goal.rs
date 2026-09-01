@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// Safety circuit-breaker: max auto-continue submissions if the judge keeps
@@ -797,14 +797,16 @@ mod tests {
         assert!(store.demote_active_for_process_restart().unwrap());
         assert_eq!(store.current.as_ref().unwrap().status, GoalStatus::Paused);
         assert!(!store.current.as_ref().unwrap().auto_continue);
-        assert!(store
-            .current
-            .as_ref()
-            .unwrap()
-            .last_judge_reason
-            .as_ref()
-            .unwrap()
-            .contains("process restart"));
+        assert!(
+            store
+                .current
+                .as_ref()
+                .unwrap()
+                .last_judge_reason
+                .as_ref()
+                .unwrap()
+                .contains("process restart")
+        );
         let reloaded = load_from_path(&path).unwrap();
         assert_eq!(
             reloaded.current.as_ref().unwrap().status,
@@ -891,10 +893,12 @@ mod tests {
         store
             .create("do the thing", None, false, None, None)
             .unwrap();
-        assert!(store
-            .continuation_prompt()
-            .unwrap()
-            .contains("do the thing"));
+        assert!(
+            store
+                .continuation_prompt()
+                .unwrap()
+                .contains("do the thing")
+        );
         store.pause().unwrap();
         assert!(store.continuation_prompt().is_none());
     }
@@ -910,14 +914,16 @@ mod tests {
         assert!(!store.should_auto_continue());
         assert_eq!(store.current.as_ref().unwrap().auto_continue_count, 2);
         assert!(!store.current.as_ref().unwrap().auto_continue);
-        assert!(store
-            .current
-            .as_ref()
-            .unwrap()
-            .last_judge_reason
-            .as_ref()
-            .unwrap()
-            .contains("safety"));
+        assert!(
+            store
+                .current
+                .as_ref()
+                .unwrap()
+                .last_judge_reason
+                .as_ref()
+                .unwrap()
+                .contains("safety")
+        );
     }
 
     #[test]

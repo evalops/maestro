@@ -86,6 +86,14 @@ pub struct BashDetails {
     /// Whether output chunks were forwarded while the command was running.
     #[serde(default, skip_serializing_if = "is_false")]
     pub streamed: bool,
+
+    /// Kernel sandbox denials recorded while the command ran.
+    ///
+    /// Populated only for a failed command that ran under an active sandbox
+    /// policy. Empty on every other path, including when the host has no
+    /// readable denial log; see `crate::sandbox::capture_denies`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sandbox_denials: Vec<crate::sandbox::DenyEvent>,
 }
 
 impl BashDetails {
@@ -106,6 +114,13 @@ impl BashDetails {
     /// Create details for a failed command
     pub fn failed(command: impl Into<String>, exit_code: i32) -> Self {
         Self::new(command, exit_code)
+    }
+
+    /// Attach kernel sandbox denials recorded while the command ran.
+    #[must_use]
+    pub fn with_sandbox_denials(mut self, denials: Vec<crate::sandbox::DenyEvent>) -> Self {
+        self.sandbox_denials = denials;
+        self
     }
 
     /// Create details for a cancelled command

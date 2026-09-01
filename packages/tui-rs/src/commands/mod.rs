@@ -98,14 +98,15 @@ pub use matcher::{
     SlashCycleState,
 };
 pub use registry::{
-    build_command_registry, build_command_registry_with_extensions, register_exec_commands,
-    CommandRegistry,
+    CommandRegistry, build_command_registry, build_command_registry_with_extensions,
+    register_exec_commands,
 };
 pub use types::{
-    A2aAction, AttachAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
-    CommandArgumentType, CommandCategory, CommandContext, CommandError, CommandHandler,
-    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HarnessAction,
-    HistoryAction, HooksAction, LoopAction, MagicTraceAction, MailboxAction, McpAction, ModalType,
-    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection, RlmAction,
-    SessionAction, SkillsAction, ToolHistoryAction, TrustAction, UsageAction,
+    A2aAction, A2aComputerHandoffSelection, AttachAction, BackgroundMonitorAction, Command,
+    CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
+    CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, FooterStyle,
+    GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction, MagicTraceAction,
+    MailboxAction, McpAction, ModalType, OrbAction, PlanReviewAction, PluginsAction, QueueAction,
+    QueueModeKind, QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction,
+    TrustAction, UsageAction,
 };

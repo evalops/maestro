@@ -1,8 +1,10 @@
-# Maestro TUI User Guide
+# Deixic Code TUI User Guide
 
-Learn how to install, authenticate, configure, and extend the native Maestro terminal UI (`maestro` / `packages/tui-rs`).
+Learn how to install, authenticate, configure, and extend the native Deixic Code terminal UI (`deixic-code` / `packages/tui-rs`).
 
-Interactive Maestro hands off to this native binary. For architecture and contributor notes, see [TUI Architecture](../../../../docs/TUI_ARCHITECTURE.md) and the [package README](../../README.md).
+Deixic Code uses this native binary. The `maestro` executable, `MAESTRO_*`
+environment variables, and `.maestro` paths remain compatibility coordinates.
+For architecture and contributor notes, see [TUI Architecture](../../../../docs/TUI_ARCHITECTURE.md) and the [package README](../../README.md).
 
 ---
 

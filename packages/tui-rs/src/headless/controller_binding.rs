@@ -11,6 +11,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use super::messages::ControllerBindingHello;
+
 /// Version of the optional Platform-to-Maestro controller binding handshake.
 pub(crate) const CONTROLLER_BINDING_VERSION: &str = "evalops.maestro.controller-binding.v1";
 /// Schema version for the secret-free controller context inside the binding.
@@ -74,6 +76,7 @@ impl ControllerScopeExpectation {
 pub(crate) struct ControllerBindingReceipt {
     pub(crate) binding_version: String,
     pub(crate) binding_sha256: String,
+    pub(crate) controller_context: ControllerContext,
 }
 
 /// Strict controller-binding validation failures.
@@ -145,6 +148,31 @@ pub(crate) fn controller_binding_from_hello_json(
     Ok(Some(ControllerBindingReceipt {
         binding_version,
         binding_sha256,
+        controller_context: context,
+    }))
+}
+
+pub(crate) fn controller_binding_from_hello_extension(
+    extension: Option<&ControllerBindingHello>,
+    negotiated_protocol_version: &str,
+    expected: &ControllerScopeExpectation,
+) -> Result<Option<ControllerBindingReceipt>, ControllerBindingError> {
+    let Some(extension) = extension else {
+        return Ok(None);
+    };
+    let context = serde_json::from_value::<ControllerContext>(extension.controller_context.clone())
+        .map_err(|_| ControllerBindingError::InvalidJson)?;
+    validate_context(&extension.controller_binding_version, &context, expected)?;
+    validate_manifest(&extension.capability_manifest, negotiated_protocol_version)?;
+    let binding_sha256 = controller_binding_sha256(
+        &extension.controller_binding_version,
+        &context,
+        &extension.capability_manifest,
+    )?;
+    Ok(Some(ControllerBindingReceipt {
+        binding_version: extension.controller_binding_version.clone(),
+        binding_sha256,
+        controller_context: context,
     }))
 }
 

@@ -15,15 +15,17 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use serde_json::Value;
 use url::Url;
 
 use crate::init_cli::{
-    has_evalops_credentials, load_evalops_snapshot, perform_evalops_login, perform_evalops_logout,
-    EvalOpsCredentialSnapshot,
+    EvalOpsCredentialSnapshot, has_evalops_credentials, load_evalops_snapshot,
+    perform_evalops_login, perform_evalops_logout,
 };
 
+mod ci_auth;
 mod platform_tools;
 
 const EVALOPS_ACCESS_TOKEN_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_ACCESS_TOKEN"];
@@ -83,10 +85,22 @@ struct ManagedContext {
     workspace_id: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct HostedOrbSmokeCredential {
+    url: &'static str,
+    token: String,
+    organization_id: String,
+    workspace_id: String,
+    expires_at: i64,
+}
+
+const DEFAULT_SESSION_HISTORY_URL: &str = "https://api.evalops.dev";
+
 pub async fn run_evalops(args: &[String]) -> Result<i32> {
     match args.first().map(String::as_str) {
         Some("init") => crate::init_cli::run_init(&args[1..]).await,
         Some("platform-tools") => platform_tools::run(&args[1..]).await,
+        Some("ci-auth") => ci_auth::run(&args[1..]).await,
         Some("login" | "logout" | "status") if args.get(1).is_some_and(|arg| is_help(arg)) => {
             println!("{}", evalops_help());
             Ok(0)
@@ -94,13 +108,16 @@ pub async fn run_evalops(args: &[String]) -> Result<i32> {
         Some("login") => login().await,
         Some("logout") => logout().await,
         Some("status") => status(),
+        Some("hosted-computer-smoke-credential" | "hosted-orb-smoke-credential") => {
+            hosted_orb_smoke_credential_command(&args[1..])
+        }
         Some("help" | "--help" | "-h") | None => {
             println!("{}", evalops_help());
             Ok(0)
         }
         _ => {
             eprintln!(
-                "Unknown evalops subcommand. Try \"maestro init\" for setup, \"maestro evalops platform-tools\" for governed execution, or \"maestro evalops login\", \"logout\", or \"status\"."
+                "Unknown evalops subcommand. Try \"deixic-code init\" for setup, \"deixic-code evalops platform-tools\" for governed execution, or \"deixic-code evalops login\", \"logout\", or \"status\"."
             );
             Ok(1)
         }
@@ -112,7 +129,80 @@ fn is_help(arg: &str) -> bool {
 }
 
 fn evalops_help() -> &'static str {
-    "maestro evalops\n  maestro evalops login               Authenticate with EvalOps (browser OAuth)\n  maestro evalops logout              Remove stored EvalOps credentials\n  maestro evalops status              Show managed EvalOps session status\n  maestro evalops init ...            Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...  Install and operate Platform-governed tools\n\nNotes:\n  - Desktop device-identity enroll/refresh proofs soft-fail without MAESTRO_DEVICE_IDENTITY_HELPER.\n  - Login uses the same PKCE client-registration flow as `maestro init`."
+    "maestro login                         Authenticate with EvalOps Identity\n  maestro evalops logout                  Remove stored EvalOps credentials\n  maestro evalops status                  Show managed EvalOps session status\n  maestro evalops init ...                Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...      Install and operate Platform-governed tools\n\n`maestro evalops login` remains a compatibility alias for `maestro login`."
+}
+
+pub(crate) fn authenticated_session_history_endpoint() -> String {
+    session_history_endpoint_from(&env_map())
+}
+
+fn session_history_endpoint_from(env: &HashMap<String, String>) -> String {
+    [
+        "MAESTRO_SESSION_HISTORY_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+        "EVALOPS_PLATFORM_API_URL",
+    ]
+    .iter()
+    .find_map(|name| env.get(*name))
+    .map(String::as_str)
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .unwrap_or(DEFAULT_SESSION_HISTORY_URL)
+    .trim_end_matches('/')
+    .to_owned()
+}
+
+fn hosted_orb_smoke_credential_command(args: &[String]) -> Result<i32> {
+    if args.len() != 1 || args[0] != "--json" {
+        eprintln!("Usage: deixic-code evalops hosted-computer-smoke-credential --json");
+        return Ok(1);
+    }
+    let snapshot = load_evalops_snapshot()?;
+    let credential = hosted_orb_smoke_credential(snapshot.as_ref())?;
+    println!("{}", serde_json::to_string(&credential)?);
+    Ok(0)
+}
+
+fn hosted_orb_smoke_credential(
+    snapshot: Option<&EvalOpsCredentialSnapshot>,
+) -> Result<HostedOrbSmokeCredential> {
+    let snapshot =
+        snapshot.context("no stored EvalOps session; run `deixic-code evalops login`")?;
+    let token = snapshot
+        .access
+        .trim()
+        .strip_prefix("Bearer ")
+        .unwrap_or(snapshot.access.trim())
+        .trim();
+    if token.is_empty() {
+        bail!("stored EvalOps session has no access credential");
+    }
+    if snapshot.expires <= now_ms() {
+        bail!("stored EvalOps session is expired; run `deixic-code evalops login`");
+    }
+    let organization_id = snapshot
+        .organization_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("stored EvalOps session has no organization binding")?
+        .to_owned();
+    let workspace_id = snapshot
+        .agent_mcp
+        .as_ref()
+        .and_then(|agent| agent.workspace_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("stored EvalOps session has no workspace binding; run `deixic-code init`")?
+        .to_owned();
+    Ok(HostedOrbSmokeCredential {
+        url: crate::orb_connection::HOSTED_ORB_MCP_ENDPOINT,
+        token: token.to_owned(),
+        organization_id,
+        workspace_id,
+        expires_at: snapshot.expires,
+    })
 }
 
 async fn login() -> Result<i32> {
@@ -147,7 +237,7 @@ fn status() -> Result<i32> {
     // Match TS: short-circuit on stored OAuth credentials only (not env tokens).
     if !has_evalops_credentials() {
         println!("No stored EvalOps credentials.");
-        println!("Run \"maestro evalops login\" to authenticate with EvalOps.");
+        println!("Run \"deixic-code evalops login\" to authenticate with EvalOps.");
         return Ok(0);
     }
 
@@ -156,7 +246,7 @@ fn status() -> Result<i32> {
     let context = resolve_managed_context(snapshot.as_ref(), &env_map());
     println!("{}", format_managed_status(&context));
     if !context.managed {
-        println!("No EvalOps agent session yet. Run \"maestro init\".");
+        println!("No EvalOps agent session yet. Run \"deixic-code init\".");
     }
     Ok(0)
 }
@@ -174,8 +264,7 @@ fn resolve_managed_context(
     let organization_id = env_from_map(env, EVALOPS_ORGANIZATION_ID_ENV_VARS)
         .or_else(|| snapshot.and_then(|value| value.organization_id.clone()));
     let workspace_id = env_from_map(env, EVALOPS_WORKSPACE_ID_ENV_VARS)
-        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()))
-        .or_else(|| organization_id.clone());
+        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()));
     let agent_id = env_from_map(env, &["MAESTRO_AGENT_ID"])
         .or_else(|| agent_mcp.and_then(|meta| meta.agent_id.clone()));
     let run_id = env_from_map(env, &["MAESTRO_AGENT_RUN_ID"])
@@ -186,12 +275,15 @@ fn resolve_managed_context(
         .is_some_and(|key| !key.trim().is_empty())
         || (env_from_map(env, EVALOPS_ACCESS_TOKEN_ENV_VARS).is_some()
             && (agent_id.is_some() || run_id.is_some()));
-    let platform = organization_id.is_some() && authenticated;
+    let platform = organization_id.is_some() && workspace_id.is_some() && authenticated;
+    let scope_unavailable = organization_id.is_some() && workspace_id.is_none() && authenticated;
     let managed = platform && managed_agent_session;
     let mode = if managed {
         "EvalOps managed"
     } else if platform {
         "EvalOps platform"
+    } else if scope_unavailable {
+        "EvalOps unavailable"
     } else {
         "byok"
     };
@@ -262,6 +354,11 @@ fn format_managed_status(context: &ManagedContext) -> String {
     }
     if let Some(workspace) = context.workspace_id.as_deref() {
         lines.push(format!("Workspace: {workspace}"));
+    }
+    if context.mode == "EvalOps unavailable" {
+        lines.push(
+            "Control plane unavailable: an explicit workspace binding is required.".to_owned(),
+        );
     }
     lines.push(format!(
         "Agent runtime: {}",
@@ -367,14 +464,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn help_mentions_login_and_device_identity_helper() {
+    fn help_presents_plain_login_and_keeps_compatibility_alias() {
         let help = evalops_help();
-        assert!(help.contains("device-identity"));
-        assert!(help.contains("MAESTRO_DEVICE_IDENTITY_HELPER"));
-        assert!(help.contains("login"));
+        assert!(help.contains("maestro login"));
+        assert!(help.contains("compatibility alias"));
         assert!(help.contains("status"));
         assert!(help.contains("platform-tools"));
-        assert!(!help.contains("is not ported"));
+    }
+
+    #[test]
+    fn session_history_endpoint_requires_no_configuration() {
+        assert_eq!(
+            session_history_endpoint_from(&HashMap::new()),
+            DEFAULT_SESSION_HISTORY_URL
+        );
     }
 
     #[test]
@@ -415,16 +518,49 @@ mod tests {
             agent_mcp: None,
         };
         let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
-        assert_eq!(context.mode, "EvalOps platform");
+        assert_eq!(context.mode, "EvalOps unavailable");
         assert!(!context.managed);
-        assert_eq!(context.inference, "llm-gateway");
+        assert_eq!(context.inference, "local-provider");
         let output = format_managed_status(&context);
-        assert!(output.contains("Mode: EvalOps platform"));
+        assert!(output.contains("Mode: EvalOps unavailable"));
+        assert!(
+            output
+                .contains("Control plane unavailable: an explicit workspace binding is required.")
+        );
         assert!(output.contains("Organization: org_123"));
         assert!(output.contains("Authenticated as: user@evalops.dev"));
         assert!(output.contains("Provider ref: openai/prod"));
         assert!(output.contains("Agent runtime: not registered"));
         assert!(output.contains("Access token: expires in ~2 minutes"));
+    }
+
+    #[test]
+    fn hosted_orb_smoke_credential_is_access_only_and_workspace_bound() {
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "session-access".to_owned(),
+            refresh: "refresh-secret".to_owned(),
+            expires: now_ms() + 120_000,
+            email: Some("user@evalops.dev".to_owned()),
+            organization_id: Some("org_fixture".to_owned()),
+            user_id: Some("user_fixture".to_owned()),
+            identity_base_url: Some("https://identity.evalops.dev".to_owned()),
+            provider_ref: None,
+            agent_mcp: Some(EvalOpsAgentMcpSnapshot {
+                workspace_id: Some("workspace_fixture".to_owned()),
+                ..EvalOpsAgentMcpSnapshot::default()
+            }),
+        };
+        let credential = hosted_orb_smoke_credential(Some(&snapshot)).expect("smoke credential");
+        assert_eq!(
+            credential.url,
+            crate::orb_connection::HOSTED_ORB_MCP_ENDPOINT
+        );
+        assert_eq!(credential.token, "session-access");
+        assert_eq!(credential.organization_id, "org_fixture");
+        assert_eq!(credential.workspace_id, "workspace_fixture");
+        let encoded = serde_json::to_value(&credential).expect("credential JSON");
+        assert!(encoded.get("refresh_token").is_none());
+        assert!(encoded.get("refreshToken").is_none());
     }
 
     #[test]

@@ -72,7 +72,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// anything that derefs to `[u8]`, so both `&str` (via UTF-8 text) and
 /// `Vec<u8>`/`&[u8]` (binary content) callers can use the same helper.
 pub fn write_atomic<C: AsRef<[u8]>>(path: impl AsRef<Path>, contents: C) -> io::Result<()> {
-    let path = path.as_ref();
+    write_atomic_impl(path.as_ref(), contents.as_ref(), false)
+}
+
+/// Atomically write sensitive contents, creating the replacement inode with
+/// owner-only permissions even when the process umask is permissive.
+pub fn write_atomic_private<C: AsRef<[u8]>>(path: impl AsRef<Path>, contents: C) -> io::Result<()> {
+    write_atomic_impl(path.as_ref(), contents.as_ref(), true)
+}
+
+fn write_atomic_impl(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
     // Follow symlinks like `fs::write` did: when the target is a symlink,
     // write through to the referent instead of replacing the link itself
     // with a regular file. Resolved by following `read_link` hops manually
@@ -107,11 +116,7 @@ pub fn write_atomic<C: AsRef<[u8]>>(path: impl AsRef<Path>, contents: C) -> io::
     let (temp_path, file) = loop {
         let counter = TEMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
         let candidate = parent.join(format!(".{file_name}.{}.{counter}.tmp", std::process::id()));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        match open_new_temp(&candidate, private) {
             Ok(file) => break (candidate, file),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -123,11 +128,22 @@ pub fn write_atomic<C: AsRef<[u8]>>(path: impl AsRef<Path>, contents: C) -> io::
     // see `write_and_rename`.
     let existing_metadata = fs::metadata(path).ok();
 
-    let result = write_and_rename(&temp_path, path, file, contents.as_ref(), existing_metadata);
+    let result = write_and_rename(&temp_path, path, file, contents, existing_metadata, private);
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+fn open_new_temp(path: &Path, private: bool) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -251,6 +267,7 @@ fn write_and_rename(
     mut file: File,
     contents: &[u8],
     existing_metadata: Option<fs::Metadata>,
+    private: bool,
 ) -> io::Result<()> {
     // Preserve the target's existing ownership and permissions (e.g. a
     // user-owned `0600` secrets file during a one-off privileged run) on the
@@ -259,6 +276,11 @@ fn write_and_rename(
     // otherwise leave a user-owned state file owned by root.
     if let Some(metadata) = existing_metadata {
         apply_existing_metadata(&file, metadata)?;
+    }
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     file.write_all(contents)?;
     // Durability guarantee #1 (power loss): flush the temp file's data (and,
@@ -541,11 +563,13 @@ mod tests {
         assert!(!path.exists());
         assert!(rotated.exists());
         assert_eq!(fs::read_to_string(&rotated).unwrap(), "not valid json {{{");
-        assert!(rotated
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains(".corrupt."));
+        assert!(
+            rotated
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(".corrupt.")
+        );
     }
 
     /// A temp file whose embedded pid belongs to a live process (here: this
@@ -700,6 +724,25 @@ mod tests {
             replaced.permissions().mode() & 0o777,
             0o600,
             "overwrite must preserve the existing target's permissions",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_private_enforces_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tool-output.txt");
+        write_atomic(&path, "public mode").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_atomic_private(&path, "sensitive output").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "sensitive output");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
 

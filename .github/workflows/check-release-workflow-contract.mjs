@@ -463,59 +463,52 @@ export function validateReleaseWorkflow(source) {
 	if (requiredStepCanBeSkippedOrIgnored(publishStep)) {
 		failures.push("npm publication must not be conditional or ignored");
 	}
-	const registryPreflight = [
-		"registry_status=0",
-		"verify_published_tarball || registry_status=$?",
-		'if [[ "$registry_status" -eq 0 ]]; then',
-		"exit 0",
-		"fi",
-		'if [[ "$registry_status" -eq 2 ]]; then',
-		"exit 2",
-		"fi",
+	const expectedPackageCalls = [
+		'publish_package "$PACKAGE_NAME" "$TARBALL" "$PACKED_INTEGRITY"',
+		'publish_package "$ALIAS_PACKAGE_NAME" "$ALIAS_TARBALL" "$ALIAS_PACKED_INTEGRITY"',
 	];
-	const preflightStart = publishLines.indexOf(registryPreflight[0]);
-	const hasExactRegistryPreflight =
-		preflightStart >= 0 &&
-		JSON.stringify(
-			publishLines.slice(
-				preflightStart,
-				preflightStart + registryPreflight.length,
-			),
-		) === JSON.stringify(registryPreflight);
-	const tokenPublishIndex = topLevelPublishLines.indexOf(
-		"publish_or_verify publish_with_token",
+	const oidcCall =
+		'if publish_or_verify publish_with_oidc "$package_name" "$tarball" "$packed_integrity"; then';
+	const tokenCall =
+		'publish_or_verify publish_with_token "$package_name" "$tarball" "$packed_integrity"';
+	const packageCallIndexes = expectedPackageCalls.map((line) =>
+		topLevelPublishLines.indexOf(line),
 	);
+	const firstPackageCallIndex = packageCallIndexes[0];
 	const prePublishTerminations = topLevelPublishLines
-		.slice(0, tokenPublishIndex)
+		.slice(0, firstPackageCallIndex)
 		.filter((line) => /^(?:exit|return)(?:\s|$)/u.test(line));
 	if (
-		!hasExactRegistryPreflight ||
-		tokenPublishIndex < 0 ||
+		packageCallIndexes.some((index) => index < 0) ||
+		packageCallIndexes[1] <= packageCallIndexes[0] ||
+		topLevelPublishLines.filter((line) => expectedPackageCalls.includes(line))
+			.length !== 2 ||
+		!publishLines.includes(tokenCall) ||
 		prePublishTerminations.length !== 0 ||
+		publishLines.includes("if false; then") ||
 		publishLines.some((line) => /^npm\s*\(\)\s*\{/u.test(line)) ||
 		!publishLines.includes(
-			'command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null',
+			'command npm view "${package_name}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null',
 		) ||
 		!publishLines.includes(
-			'if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then',
+			'if [[ "$registry_integrity" != "$packed_integrity" ]]; then',
 		)
 	) {
 		failures.push("token-backed npm publication must not be bypassed");
 	}
-	const oidcCalls = topLevelPublishLines.filter(
-		(line) => line === "if publish_or_verify publish_with_oidc; then",
+	const oidcCalls = publishLines.filter(
+		(line) => line === oidcCall,
 	).length;
-	const tokenCalls = topLevelPublishLines.filter(
-		(line) => line === "publish_or_verify publish_with_token",
+	const tokenCalls = publishLines.filter(
+		(line) => line === tokenCall,
 	).length;
-	const oidcCallIndex = topLevelPublishLines.indexOf(
-		"if publish_or_verify publish_with_oidc; then",
-	);
+	const oidcCallIndex = publishLines.indexOf(oidcCall);
+	const tokenPublishIndex = publishLines.indexOf(tokenCall);
 	const npmPublishLines = publishLines.filter((line) =>
 		line.startsWith("npx --yes npm@11.10.0 publish "),
 	);
 	const expectedPublishLines = new Set([
-		'npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"',
+		'npx --yes npm@11.10.0 publish "$tarball" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"',
 	]);
 	if (
 		oidcCalls !== 1 ||
@@ -548,10 +541,13 @@ export function validateReleaseWorkflow(source) {
 	if (
 		swallowedPublish ||
 		publishLines.filter(
-			(line) => line === "verify_published_tarball || registry_status=$?",
+			(line) =>
+				line ===
+				'verify_published_tarball "$package_name" "$packed_integrity" || registry_status=$?',
 		).length !== 2 ||
-		publishLines.filter((line) => line === "return 0").length !== 2 ||
-		publishLines.filter((line) => line === "return 2").length !== 2
+		!publishLines.includes('"$publisher" "$tarball" || publish_status=$?') ||
+		!publishLines.includes('return "$publish_status"') ||
+		!expectedPackageCalls.every((line) => topLevelPublishLines.includes(line))
 	) {
 		failures.push(
 			"npm publication errors and reruns must reconcile the exact registry tarball",
@@ -559,6 +555,9 @@ export function validateReleaseWorkflow(source) {
 	}
 	if (
 		!hasExactRecord(publishStep?.env ?? {}, {
+			ALIAS_PACKAGE_NAME: "@evalops/maestro",
+			ALIAS_PACKED_INTEGRITY: "${{ steps.pack.outputs.alias_integrity }}",
+			ALIAS_TARBALL: "${{ steps.pack.outputs.alias_tarball }}",
 			NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}",
 			NPM_TAG: "${{ needs.prepare.outputs.npm_tag }}",
 			PACKAGE_NAME: "${{ needs.prepare.outputs.package_name }}",

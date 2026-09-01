@@ -52,6 +52,11 @@ test("Buildkite supply-chain validation is strict and shared with the public pro
 	assert.match(SUPPLY_CHAIN_SCRIPT, /event\.event === "committed"/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /approvalIndex <= headCommitIndex/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /gh api --paginate --slurp/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /\[\[ -n "\$\{GH_TOKEN:-\}" \]\]/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /https:\/\/api\.github\.com\/repos\/\$repo_slug/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /timeline-page-%06d\.json/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /node --input-type=module - \\\n/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /GitHub timeline pagination exceeded 100 pages/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /supply_chain_tmp="\$\(mktemp -d\)"/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile "\$base_lockfile"/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /--fail-on-preexisting/);

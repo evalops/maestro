@@ -241,8 +241,8 @@ mod tests {
 
     #[test]
     fn render_blanks_cells_covered_by_overlay() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");

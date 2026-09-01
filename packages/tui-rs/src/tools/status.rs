@@ -23,17 +23,17 @@ use crate::agent::ToolResult;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+    CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
 #[cfg(unix)]
@@ -124,7 +124,7 @@ impl JobObjectGuard {
         // class, and this guard still owns a live job handle for the call.
         if unsafe {
             SetInformationJobObject(
-                self.0 .0,
+                self.0.0,
                 JobObjectExtendedLimitInformation,
                 std::ptr::from_ref(&limits).cast(),
                 std::mem::size_of_val(&limits) as u32,
@@ -457,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn successful_status_command_keeps_spawned_descendant_alive() {
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
         };
 
         let dir = tempfile::tempdir().unwrap();

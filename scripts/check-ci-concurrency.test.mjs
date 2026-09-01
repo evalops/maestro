@@ -12,7 +12,7 @@ const advisory = readFileSync(
 );
 
 test("CI uses one configurable Buildkite concurrency group", () => {
-	assert.match(pipeline, /MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads/);
+	assert.match(pipeline, /MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6/);
 });
 
 test("CI bounds each Buildkite lane to available worker capacity", () => {

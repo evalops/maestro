@@ -44,21 +44,6 @@ import {
  * check names.
  */
 export const COVERAGE_OPT_OUT = {
-	"evalops/maestro-internal": [
-		// label (agent-authorship-labels.yml): advisory labeling; advisory
-		// automation fails open by design (AGENTS.md) and must not gate PRs.
-		"label",
-		// dispatch (evalopsbot-review-request.yml): advisory review-request bot;
-		// fails open when its token is unavailable (enforced by
-		// scripts/check-workflow-footguns.mjs).
-		"dispatch",
-		// label-run-evals (eval-label.yml): opt-in eval lane triggered by a PR
-		// label; requiring it would force eval spend on every PR.
-		"label-run-evals",
-		// validate (codex-rails-check.yml): AGENTS.md/skills template lint,
-		// paths-filtered to template files; required on the public repo only.
-		"validate",
-	],
 	"evalops/maestro": [
 		// dispatch (evalopsbot-review-request.yml): advisory review-request bot;
 		// fails open by design and must not gate PRs.
@@ -66,8 +51,8 @@ export const COVERAGE_OPT_OUT = {
 	],
 };
 
-function parseArgs(argv) {
-	const args = { targets: [] };
+export function parseArgs(argv) {
+	const args = { targets: [], optOutByRepo: new Map() };
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		switch (arg) {
@@ -76,13 +61,28 @@ function parseArgs(argv) {
 				args.targets.push(parseTarget(value));
 				break;
 			}
+			case "--opt-out": {
+				const value = argv[++index] ?? "";
+				const separator = value.indexOf("=");
+				if (separator <= 0 || separator === value.length - 1) {
+					throw new Error(
+						`Invalid --opt-out "${value}"; expected owner/repo=context`,
+					);
+				}
+				const repo = value.slice(0, separator);
+				const context = value.slice(separator + 1);
+				const entries = args.optOutByRepo.get(repo) ?? [];
+				entries.push(context);
+				args.optOutByRepo.set(repo, entries);
+				break;
+			}
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
 		}
 	}
 	if (args.targets.length === 0) {
 		args.targets.push({
-			repo: process.env.GITHUB_REPOSITORY || "evalops/maestro-internal",
+			repo: "evalops/maestro",
 			branch: "main",
 			root: process.cwd(),
 		});
@@ -252,7 +252,10 @@ function main() {
 		const { covered, optedOut, uncovered, extraRequired } = diffCoverage({
 			jobContexts,
 			requiredContexts,
-			optOut: COVERAGE_OPT_OUT[target.repo] ?? [],
+			optOut: [
+				...(COVERAGE_OPT_OUT[target.repo] ?? []),
+				...(options.optOutByRepo.get(target.repo) ?? []),
+			],
 		});
 		for (const job of covered) {
 			console.log(`  required:   ${job.context} (${job.workflowPath})`);

@@ -11,4 +11,4 @@ if [[ ! -f "$baseline" ]]; then
   echo "no performance baseline for ${os}-${arch}; skipping advisory comparison"
   exit 0
 fi
-timeout --signal=TERM --kill-after=30s 50m cargo run -p maestro-tui --release --locked --bin maestro-perf-bench -- --baseline "$baseline"
+timeout --signal=TERM --kill-after=30s 50m cargo run -p maestro-tui --release --locked --features test-support --bin maestro-perf-bench -- --baseline "$baseline"

@@ -45,7 +45,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Multiple owners can share the same data. The data is freed when the last
 // Arc is dropped. Unlike `Rc`, `Arc` is safe to use across threads.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 // `anyhow` provides ergonomic error handling:
 // - `Result` is shorthand for `Result<T, anyhow::Error>`
 // - `.context("msg")` adds context to errors for better debugging
@@ -75,19 +75,19 @@ use crate::agent::{
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
-    build_command_registry_with_extensions, BackgroundMonitorAction, CommandAction, CommandOutput,
-    CommandRegistry, FooterStyle, LoopAction, ModalType, PlanReviewAction, QueueAction,
-    QueueModeKind, QueueMoveDirection, SlashCommandMatcher, SlashCycleState,
+    BackgroundMonitorAction, CommandAction, CommandOutput, CommandRegistry, FooterStyle,
+    LoopAction, ModalType, PlanReviewAction, QueueAction, QueueModeKind, QueueMoveDirection,
+    SlashCommandMatcher, SlashCycleState, build_command_registry_with_extensions,
 };
 use crate::components::{
-    approval_modal_kind, calculate_input_height, ApprovalController, ApprovalDecision,
-    ApprovalModal, ApprovalModalKind, ApprovalRequest, BatchedApprovalModal, ChatInputWidget,
-    ChatInputWidgetOptions, ChatView, CommandPalette, DetailView, FileSearchModal, ModelSelector,
-    OperationsModal, RewindPicker, SessionSwitcher, SetupAdvance, SetupModal, ShortcutsHelp,
-    ThemeSelector,
+    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalModalKind, ApprovalRequest,
+    BatchedApprovalModal, ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette,
+    DetailView, FileSearchModal, ModelSelector, OperationsModal, RewindPicker, SessionSwitcher,
+    SetupAdvance, SetupModal, ShortcutsHelp, ThemeSelector, approval_modal_kind,
+    calculate_input_height,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
-use crate::files::{get_workspace_files, WorkspaceFile};
+use crate::files::{WorkspaceFile, get_workspace_files};
 use crate::git;
 use crate::goal::GoalStore;
 use crate::harness::HarnessStore;
@@ -95,16 +95,15 @@ use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mailbox::MailboxStore;
 use crate::mcp::{
-    append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
+    McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport, append_mcp_prompt_summary,
 };
 use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
-use crate::prompts::{parse_args, render_prompt, PromptDefinition};
+use crate::prompts::{PromptDefinition, parse_args, render_prompt};
 use crate::rlm::RlmStore;
 use crate::safety::{
-    check_model_allowed, check_path_allowed, check_session_limits,
+    FirewallVerdict, check_model_allowed, check_path_allowed, check_session_limits,
     guardian::{GuardianError, GuardianVerdict},
-    FirewallVerdict,
 };
 use crate::session::{
     AppMessage, CompactionEntry, ContentBlock as SessionContentBlock, CustomEntry, MessageContent,
@@ -112,7 +111,7 @@ use crate::session::{
     SessionEntry, SessionExporter, SessionHeader, SessionManager, SideQuestionEntry, ThinkingLevel,
     ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
-use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
+use crate::skills::{LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
 use crate::state::{AppState, Message, MessageKind, MessageRole, QueueMode};
 use crate::sync_output::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crate::terminal::{self, AppTerminalEvent, TerminalCapabilities, TerminalEventReader};
@@ -151,7 +150,7 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
-    /// First-run EvalOps or local API key setup
+    /// First-run EvalOps Identity and optional local API key setup
     Setup,
     /// Keyboard shortcuts help overlay
     ShortcutsHelp,
@@ -179,6 +178,16 @@ struct PendingAgentToolNote {
     content: String,
 }
 
+/// Skills catalog fragment plus the provenance recorded on it.
+///
+/// `source` is stamped with the catalog-budget rung so `/prompt-audit` shows
+/// degradation as provenance, not only inside the rendered block.
+struct SkillsPromptSection {
+    content: Option<String>,
+    source: String,
+    audit_only: bool,
+}
+
 struct PendingAgentNoteConsumption {
     application_id: String,
     content: String,
@@ -194,6 +203,17 @@ struct PendingAgentNoteApplication {
 #[derive(Debug, Clone, Copy)]
 struct QueuedPromptCursor {
     id: u64,
+}
+
+struct SystemPromptAssemblyContext<'a> {
+    cwd: &'a str,
+    current_year: i32,
+    skills: SkillsPromptSection,
+    harness_section: Option<String>,
+    rlm_section: Option<String>,
+    mailbox_section: Option<String>,
+    managed_rules_section: Option<String>,
+    active_prompt: &'a str,
 }
 
 fn build_mcp_config_watcher() -> ConfigWatcher {
@@ -238,6 +258,7 @@ fn is_mcp_config_path(path: &std::path::Path) -> bool {
 fn format_mcp_scope_label(scope: McpConfigScope) -> &'static str {
     match scope {
         McpConfigScope::Enterprise => "Enterprise config",
+        McpConfigScope::Managed => "Managed connection",
         McpConfigScope::Local => "Local config",
         McpConfigScope::Project => "Project config",
         McpConfigScope::User => "User config",
@@ -279,7 +300,7 @@ pub(super) fn format_session_persistence_error(
         || normalized.contains("no space")
     {
         format!(
-            "Disk full: Maestro could not {action}. Free disk space, then retry; the transcript may be missing the latest event. ({error})"
+            "Disk full: Deixic Code could not {action}. Free disk space, then retry; the transcript may be missing the latest event. ({error})"
         )
     } else {
         format!("Failed to {action}: {error}")
@@ -352,6 +373,11 @@ fn format_mcp_runtime_event_status(event: &McpRuntimeEvent) -> Option<String> {
             *total,
             message.as_deref(),
         )),
+        McpRuntimeEvent::ToolRevoked {
+            server,
+            tool,
+            reason,
+        } => Some(format!("MCP tool \"{server}/{tool}\" withdrawn: {reason}")),
         McpRuntimeEvent::Log {
             server,
             level,
@@ -669,7 +695,7 @@ pub struct App {
     /// Color theme selection modal.
     theme_selector: ThemeSelector,
 
-    /// `/setup` EvalOps or local API key modal.
+    /// `/setup` modal for mandatory EvalOps Identity and optional local API keys.
     setup_modal: SetupModal,
     setup_login_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
     pending_agent_spawn: bool,
@@ -722,6 +748,10 @@ pub struct App {
     /// Receiver polled each frame for finished executable command runs.
     exec_command_rx: std::sync::mpsc::Receiver<exec_commands::ExecCommandOutcome>,
 
+    /// Background progress for `/handoff` A2A tasks.
+    a2a_handoff_tx: mpsc::UnboundedSender<a2a_handoff::A2aHandoffEvent>,
+    a2a_handoff_rx: mpsc::UnboundedReceiver<a2a_handoff::A2aHandoffEvent>,
+
     /// Optional initial prompt from CLI (Grok-style trailing args).
     initial_prompt: Option<String>,
 
@@ -773,6 +803,11 @@ pub struct App {
 
     /// Durable messages left by or addressed to delegated sessions.
     mailbox_store: MailboxStore,
+
+    /// The organization's setup document, resolved once at session start. It
+    /// supplies the system-prompt rule block, the MCP server policy installed
+    /// on the tool executor, and the team sandbox policy source.
+    managed_setup: crate::managed_setup::ManagedSetupClient,
 
     /// When true and the agent is idle, fire one goal continuation prompt.
     /// Armed on create/resume/auto-on, and after a worker turn if the goal is
@@ -920,7 +955,7 @@ fn untrusted_workspace_notice(
     }
 
     Some(format!(
-        "Workspace untrusted — skipped project config: {}. Run `/trust` (or `maestro trust`) to load them for {}.",
+        "Workspace untrusted — skipped project config: {}. Run `/trust` (or `deixic-code trust`) to load them for {}.",
         skipped.join(", "),
         workspace_dir.display()
     ))
@@ -929,6 +964,12 @@ fn untrusted_workspace_notice(
 // ─────────────────────────────────────────────────────────────────────────────
 // IMPLEMENTATION
 // ─────────────────────────────────────────────────────────────────────────────
+
+enum PlatformSessionResolution {
+    Detect,
+    #[cfg(test)]
+    UseNoPlatformSession,
+}
 
 impl App {
     /// Create a new application instance.
@@ -1216,6 +1257,46 @@ impl App {
         context_window: Option<u64>,
         terminal_clear_supported: bool,
     ) -> Self {
+        Self::new_with_terminal_with_history_and_platform_session(
+            terminal,
+            capabilities,
+            prompt_history,
+            initial_prompt,
+            context_window,
+            terminal_clear_supported,
+            PlatformSessionResolution::Detect,
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_terminal_with_history_for_test(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        prompt_history: crate::history::PromptHistory,
+        initial_prompt: Option<String>,
+        context_window: Option<u64>,
+        terminal_clear_supported: bool,
+    ) -> Self {
+        Self::new_with_terminal_with_history_and_platform_session(
+            terminal,
+            capabilities,
+            prompt_history,
+            initial_prompt,
+            context_window,
+            terminal_clear_supported,
+            PlatformSessionResolution::UseNoPlatformSession,
+        )
+    }
+
+    fn new_with_terminal_with_history_and_platform_session(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        prompt_history: crate::history::PromptHistory,
+        initial_prompt: Option<String>,
+        context_window: Option<u64>,
+        terminal_clear_supported: bool,
+        platform_session_resolution: PlatformSessionResolution,
+    ) -> Self {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let workspace_dir = std::path::PathBuf::from(&cwd);
@@ -1264,40 +1345,11 @@ impl App {
         let app_config = crate::config::load_config(&workspace_dir, None);
         let tui_settings = app_config.tui.clone();
 
-        // Native OS sandbox for the interactive session. See
-        // `config::resolve_interactive_sandbox_policy` for the precedence
-        // (explicit `MAESTRO_SANDBOX_MODE` > staged-rollout internal gate +
-        // persistent config > today's unsandboxed default) and
-        // `sandbox::SandboxPolicy::workspace_write_default` for what the
-        // resulting policy actually restricts.
-        //
-        // Stage-1 note: if a policy is requested but the sandbox is
-        // unavailable on this host (e.g. Landlock missing, as happens inside
-        // some containers), we do not silently fall back to the sandboxed
-        // spawn path (every command would fail closed with an opaque error)
-        // nor do we build a policy that pretends to work. We tell the user
-        // plainly and run the session unsandboxed, exactly as if no policy
-        // had been requested. Promoting the interactive default to "on" for
-        // everyone (stage 2) must replace this with an approval-gated
-        // must-acknowledge flow instead of an automatic fallback — tracked in
-        // the stage-2 follow-up issue referenced from the PR that introduced
-        // this comment.
+        // Resolve the session's configured native OS sandbox. Managed setup is
+        // applied below before either executor is constructed, so a workspace
+        // policy can only narrow this baseline.
         let requested_sandbox_policy =
             crate::config::resolve_interactive_sandbox_policy(&app_config);
-        let sandbox_policy = match requested_sandbox_policy {
-            Some(_policy) if !crate::sandbox::is_sandbox_available() => {
-                let reason = crate::sandbox::sandbox_unavailable_reason()
-                    .unwrap_or_else(|| "the native sandbox is unavailable".to_string());
-                state.add_system_message(format!(
-                    "Native sandboxing was requested for this session but is not available \
-                     here: {reason} Running WITHOUT the sandbox for this session instead of \
-                     failing every command closed. Fix the environment (or accept this) and \
-                     restart to try again."
-                ));
-                None
-            }
-            other => other,
-        };
 
         let terminal_notifier = crate::notifications::TerminalStateNotifier::from_config(
             tui_settings.as_ref().and_then(|tui| tui.tab_progress),
@@ -1319,13 +1371,78 @@ impl App {
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
         let (guardian_tx, guardian_rx) = mpsc::unbounded_channel();
         let (exec_command_tx, exec_command_rx) = std::sync::mpsc::channel();
+        let (a2a_handoff_tx, a2a_handoff_rx) = mpsc::unbounded_channel();
 
-        // Cloned before being consumed below: `spawn_agent` needs the same
-        // policy to configure the native agent runner's own tool executor
-        // (see the `sandbox_policy` field doc on `App`).
+        // The organization's setup document is resolved once, at session
+        // start, before any MCP server can be dialed. A session bound to a
+        // platform workspace with no reachable platform and no cache starts
+        // with every MCP server refused; it never starts open.
+        let platform_session = match platform_session_resolution {
+            PlatformSessionResolution::Detect => match crate::credential_mode::detect() {
+                Ok(crate::credential_mode::DetectedMode::Platform(session)) => Some(session),
+                _ => None,
+            },
+            #[cfg(test)]
+            PlatformSessionResolution::UseNoPlatformSession => None,
+        };
+        let managed_setup =
+            crate::managed_setup::ManagedSetupClient::resolve(platform_session.as_ref());
+        for notice in managed_setup.notices() {
+            state.add_system_message(notice.clone());
+        }
+        if let Some(notice) = managed_setup.missing_required_skills_notice(
+            loaded_skills
+                .iter()
+                .map(|skill| skill.definition.id.as_str()),
+        ) {
+            state.add_system_message(notice);
+        }
+        let managed_sandbox_required = managed_setup.is_managed()
+            && !managed_setup.setup().sandbox_policy_toml.trim().is_empty();
+        let (sandbox_policy, policy_resolution_failed) =
+            match managed_setup.native_sandbox_policy(&workspace_dir, requested_sandbox_policy) {
+                Ok(policy) => (policy, false),
+                Err(error) => {
+                    state.add_system_message(format!(
+                    "Sandbox policy could not be loaded ({error}); command execution is read-only \
+                     for this session."
+                ));
+                    (Some(crate::sandbox::SandboxPolicy::ReadOnly), true)
+                }
+            };
+        let sandbox_policy = match sandbox_policy {
+            Some(policy) if !crate::sandbox::is_sandbox_available() => {
+                let reason = crate::sandbox::sandbox_unavailable_reason()
+                    .unwrap_or_else(|| "the native sandbox is unavailable".to_string());
+                if managed_sandbox_required || policy_resolution_failed {
+                    state.add_system_message(format!(
+                        "Required sandboxing is unavailable here: {reason} Commands will fail \
+                         closed until the environment is fixed and the session is restarted."
+                    ));
+                    Some(policy)
+                } else {
+                    state.add_system_message(format!(
+                        "Native sandboxing was requested for this session but is not available \
+                         here: {reason} Running without the sandbox for this session. Fix the \
+                         environment and restart to try again."
+                    ));
+                    None
+                }
+            }
+            other => other,
+        };
+        // `spawn_agent` needs the same policy as the interactive tool executor.
         let stored_sandbox_policy = sandbox_policy.clone();
+        let managed_mcp_policy = managed_setup
+            .is_managed()
+            .then(|| crate::mcp::ManagedMcpPolicy {
+                version: managed_setup.version(),
+                policy: managed_setup.mcp_policy().clone(),
+            });
+
         let tool_executor = {
-            let executor = ToolExecutor::with_credential_vault(&cwd, credential_vault.clone());
+            let executor = ToolExecutor::with_credential_vault(&cwd, credential_vault.clone())
+                .with_managed_mcp_policy(managed_mcp_policy);
             match sandbox_policy {
                 Some(policy) => executor.with_sandbox_policy(policy),
                 None => executor,
@@ -1418,6 +1535,8 @@ impl App {
             exec_commands,
             exec_command_tx,
             exec_command_rx,
+            a2a_handoff_tx,
+            a2a_handoff_rx,
             initial_prompt: initial_prompt.filter(|p| !p.trim().is_empty()),
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
@@ -1435,6 +1554,7 @@ impl App {
             harness_store,
             rlm_store,
             mailbox_store,
+            managed_setup,
             goal_auto_continue_armed: false,
             footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
@@ -1495,6 +1615,12 @@ You have access to the following tools:
 - glob: Find files by pattern. REQUIRED: {{\"pattern\":\"*.rs\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
 - grep: Search file contents. REQUIRED: {{\"pattern\":\"regex or text\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
 
+Hosted Computer delegation:
+- When the user explicitly asks to "work on this in a Computer", "use a Computer", "send this to Computer", or equivalent, treat that as a request to delegate the whole task to the managed hosted Computer.
+- Call `spawn_subagent` once with `backend: "computer"` and the user's complete task. Infer the role from the request: implementation work uses `code`, planning uses `plan`, review uses `review`, and read-only investigation uses `explore`.
+- The runtime resolves the active workspace project and remote repository when the request omits them. Do not make the user manually provide those values unless the workspace has no safe remote origin.
+- Do not call raw `mcp__...` Computer lifecycle tools, manually orchestrate create/start/wait/message, or silently fall back to the native backend. If Computer is unavailable or policy denies the launch, explain that clearly and stop.
+
 Tool-calling rules:
 - Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
 - Never emit a tool call without all required fields.
@@ -1516,57 +1642,75 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         mailbox_section: Option<String>,
         active_prompt: &str,
     ) -> String {
-        Self::build_system_prompt_assembly_with_context(
+        Self::build_system_prompt_assembly_with_context(SystemPromptAssemblyContext {
             cwd,
             current_year,
-            skills_section,
+            skills: SkillsPromptSection {
+                content: skills_section,
+                source: "skills.loader.available_skills".to_string(),
+                audit_only: false,
+            },
             harness_section,
             rlm_section,
             mailbox_section,
+            managed_rules_section: None,
             active_prompt,
-        )
+        })
         .render()
     }
 
     fn build_system_prompt_assembly_with_context(
-        cwd: &str,
-        current_year: i32,
-        skills_section: Option<String>,
-        harness_section: Option<String>,
-        rlm_section: Option<String>,
-        mailbox_section: Option<String>,
-        active_prompt: &str,
+        ctx: SystemPromptAssemblyContext<'_>,
     ) -> PromptAssembly {
         let mut fragments = vec![PromptFragment::new(
             "base",
             "maestro.base_system_prompt",
-            Self::build_base_system_prompt(cwd),
+            Self::build_base_system_prompt(ctx.cwd),
         )];
 
-        let mut push_section =
-            |name: &'static str, source: &'static str, section: Option<String>| {
-                if let Some(content) = section.filter(|content| !content.trim().is_empty()) {
-                    fragments.push(PromptFragment::new(name, source, content));
-                }
-            };
+        if ctx.skills.audit_only {
+            fragments.push(PromptFragment::audit_only(
+                "loaded_skills",
+                ctx.skills.source,
+            ));
+        } else if let Some(content) = ctx
+            .skills
+            .content
+            .filter(|content| !content.trim().is_empty())
+        {
+            fragments.push(PromptFragment::new(
+                "loaded_skills",
+                ctx.skills.source,
+                content,
+            ));
+        }
 
+        let mut push_section = |name: &'static str, source: &str, section: Option<String>| {
+            if let Some(content) = section.filter(|content| !content.trim().is_empty()) {
+                fragments.push(PromptFragment::new(name, source, content));
+            }
+        };
+
+        push_section("harness", "harness.store", ctx.harness_section);
+        push_section("rlm", "rlm.store", ctx.rlm_section);
+        push_section("mailbox", "mailbox.store", ctx.mailbox_section);
+        // The organization's rules are a named fragment like any other, so the
+        // prompt audit reports them and nothing has to match on prompt text.
         push_section(
-            "loaded_skills",
-            "skills.loader.available_skills",
-            skills_section,
+            "managed_setup_rules",
+            "managed_setup.rules",
+            ctx.managed_rules_section,
         );
-        push_section("harness", "harness.store", harness_section);
-        push_section("rlm", "rlm.store", rlm_section);
-        push_section("mailbox", "mailbox.store", mailbox_section);
 
         fragments.push(PromptFragment::new(
             "current_year_hint",
             "maestro.current_year_hint",
             format!(
-                "When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range."
+                "When using websearch/codesearch for up-to-date information, include the current year ({}) in the query unless the user specifies a different year or a historical range.",
+                ctx.current_year
             ),
         ));
-        let active_prompt = active_prompt.trim();
+        let active_prompt = ctx.active_prompt.trim();
         if !active_prompt.is_empty() {
             fragments.push(PromptFragment::new(
                 "active_skill_additions",
@@ -1746,6 +1890,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
             // Apply finished executable slash command runs (non-blocking).
             if self.poll_exec_commands() {
+                needs_redraw = true;
+            }
+
+            if self.poll_a2a_handoffs() {
                 needs_redraw = true;
             }
 
@@ -1934,15 +2082,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .as_deref()
                     .or(event.summary.as_deref())
                     .unwrap_or("no summary");
-                let outcome = outcome.replace(['\n', '\r'], " ");
-                let lifecycle_message = format!(
-                    "Subagent {} attempt {} **{}**: {}",
-                    event.subagent_id, event.attempt, status, outcome
+                let projection = maestro_runtime::DelegationEvent::from_subagent_lifecycle(
+                    &event.mailbox_message_id,
+                    &event.subagent_id,
+                    event.attempt,
+                    &status,
+                    Some(outcome),
+                    None,
                 );
-                let agent_note = format!(
-                    "Subagent {} attempt {} finished with status {}. {}",
-                    event.subagent_id, event.attempt, status, outcome
-                );
+                let lifecycle_message = projection.native_summary("Subagent");
+                let agent_note = projection.native_agent_note("Subagent");
                 let Some(already_applied) = self.subagent_lifecycle_application_exists(&event)
                 else {
                     continue;
@@ -2040,7 +2189,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     // but do not increment auto_continue_count or call submit.
                     self.goal_auto_continue_armed = false;
                     self.state.status.replace(
-                        "Goal auto-continue waiting for agent (set API key / login)".to_string(),
+                        "Goal auto-continue waiting for agent (sign in to EvalOps Identity, then configure a provider)".to_string(),
                     );
                     needs_redraw = true;
                 } else if let Some(prompt) = self.goal_store.continuation_prompt() {
@@ -2247,6 +2396,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // sandboxed. Yolo mode and Selective mode's allowlisted calls
             // run through the native agent runner's own executor instead.
             sandbox_policy: self.sandbox_policy.clone(),
+            managed_mcp_policy: self.managed_setup.is_managed().then(|| {
+                crate::mcp::ManagedMcpPolicy {
+                    version: self.managed_setup.version(),
+                    policy: self.managed_setup.mcp_policy().clone(),
+                }
+            }),
+            max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
+            allow_unbounded_turn: false,
         };
 
         let policy_model = policy_model_id(&model);
@@ -2317,7 +2474,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                         && std::env::var_os("OPENAI_API_KEY").is_none()
                         && std::env::var_os("OPENAI_CODEX_TOKEN").is_none()
                     {
-                        message.push_str(" — run `maestro setup` or set a provider API key.");
+                        message.push_str(
+                            " — run `deixic-code evalops login` (required), then configure a provider if needed.",
+                        );
                     }
                     self.state.error = Some(message);
                 }
@@ -2358,10 +2517,42 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let current_year = Utc::now().year();
+        let mut skills_source = "skills.loader.available_skills".to_string();
+        let mut skills_audit_only = false;
         let skills_section = if self.loaded_skills.is_empty() {
             None
         } else {
-            Some(skills_to_prompt(&self.loaded_skills))
+            // The catalog is bounded at a share of the model's context window
+            // rather than rendered whole: a large plugin set would otherwise
+            // spend an unbounded part of the prompt listing skills. The rung
+            // the ladder reached is stamped on the rendered block as
+            // `budget_strategy`, so `/prompt-audit` shows the degradation.
+            let entries: Vec<crate::skills::SkillCatalogEntry> = self
+                .loaded_skills
+                .iter()
+                .map(crate::skills::SkillCatalogEntry::from_loaded)
+                .collect();
+            let budget = crate::skills::skill_catalog_budget_tokens(&self.current_model);
+            match crate::skills::apply_skill_catalog_budget(&entries, budget) {
+                Ok((rendered, strategy)) => {
+                    skills_source = format!("skills.loader.available_skills#{}", strategy.as_str());
+                    Some(rendered)
+                }
+                Err(error) => {
+                    skills_source = format!(
+                        "skills.loader.available_skills#omitted_budget_exceeded?budget_tokens={}&required_tokens={}&protected_count={}",
+                        error.budget_tokens, error.required_tokens, error.protected_count
+                    );
+                    skills_audit_only = true;
+                    tracing::warn!(
+                        budget_tokens = error.budget_tokens,
+                        required_tokens = error.required_tokens,
+                        protected_count = error.protected_count,
+                        "omitting skills catalog because its minimum representation exceeds the budget"
+                    );
+                    None
+                }
+            }
         };
         let harness_section = self
             .harness_store
@@ -2371,21 +2562,37 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             .mailbox_store
             .prompt_section_for(&crate::mailbox::local_identity());
         let active_prompt = self.skill_registry.active_system_prompt_additions();
+        let managed_rules_section = self.managed_setup.rules_prompt_section();
 
-        Self::build_system_prompt_assembly_with_context(
-            &cwd,
+        Self::build_system_prompt_assembly_with_context(SystemPromptAssemblyContext {
+            cwd: &cwd,
             current_year,
-            skills_section,
+            skills: SkillsPromptSection {
+                content: skills_section,
+                source: skills_source,
+                audit_only: skills_audit_only,
+            },
             harness_section,
             rlm_section,
             mailbox_section,
-            &active_prompt,
-        )
+            managed_rules_section,
+            active_prompt: &active_prompt,
+        })
     }
 
     /// Build the system prompt for the agent.
     fn build_system_prompt(&self) -> String {
         self.build_system_prompt_assembly().render()
+    }
+
+    /// The team sandbox policy source for this session.
+    ///
+    /// `sandbox_policy::resolve_effective_policy` takes a
+    /// `&dyn TeamPolicyProvider` for the administrator's document; for a
+    /// platform-bound session that document arrives inside the managed setup.
+    #[must_use]
+    pub fn team_policy_provider(&self) -> &dyn crate::sandbox_policy::TeamPolicyProvider {
+        &self.managed_setup
     }
 
     fn build_prompt_audit_report(&self) -> PromptAuditReport {
@@ -2606,7 +2813,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if let Err(e) = agent.set_subagent_parent_scope(scope) {
             self.state.error = Some(format!("Failed to rotate subagent scope: {e}"));
         }
-        if let Err(e) = agent.set_session_context(session_id.map(str::to_owned), reason) {
+        let owns_persistent_tool_spills =
+            session_id.is_some() && self.session_manager.writer().is_some();
+        let transcript_path = session_id.and_then(|_| {
+            self.session_manager
+                .current_session_path()
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+        if let Err(e) = agent.set_session_context_with_transcript(
+            session_id.map(str::to_owned),
+            transcript_path,
+            reason,
+            owns_persistent_tool_spills,
+        ) {
             self.state.error = Some(format!("Failed to update session context: {e}"));
         }
     }
@@ -2667,15 +2886,28 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         match rx.try_recv() {
             Ok(Ok(())) => {
                 self.setup_login_rx = None;
-                self.setup_modal.hide();
-                if self.active_modal == ActiveModal::Setup {
-                    self.active_modal = ActiveModal::None;
+                if let Err(error) = self.refresh_managed_setup_after_identity_login() {
+                    self.setup_modal.set_status(error.clone());
+                    self.state.add_system_message(error);
+                    return true;
                 }
-                self.state.add_system_message(
-                    "EvalOps login saved. This session uses managed inference.".to_string(),
-                );
-                if self.native_agent.is_none() {
-                    self.pending_agent_spawn = true;
+                if self.setup_modal.continue_to_byok_after_identity() {
+                    self.state.add_system_message(
+                        "EvalOps Identity saved. Choose a provider key to finish BYOK setup."
+                            .to_string(),
+                    );
+                } else {
+                    self.setup_modal.hide();
+                    if self.active_modal == ActiveModal::Setup {
+                        self.active_modal = ActiveModal::None;
+                    }
+                    self.state.add_system_message(
+                        "EvalOps Identity saved. This session can use managed inference or BYOK."
+                            .to_string(),
+                    );
+                    if self.native_agent.is_none() {
+                        self.pending_agent_spawn = true;
+                    }
                 }
                 true
             }
@@ -2692,6 +2924,56 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 true
             }
         }
+    }
+
+    fn refresh_managed_setup_after_identity_login(&mut self) -> Result<(), String> {
+        let platform_session = match crate::credential_mode::detect() {
+            Ok(crate::credential_mode::DetectedMode::Platform(session)) => session,
+            Ok(_) => {
+                return Err(
+                    "EvalOps Identity was saved but no tenant-bound platform session could be resolved; the agent was not started."
+                        .to_string(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "EvalOps Identity was saved but its tenant session could not be loaded: {error}"
+                ));
+            }
+        };
+        let managed_setup =
+            crate::managed_setup::ManagedSetupClient::resolve(Some(&platform_session));
+        for notice in managed_setup.notices() {
+            self.state.add_system_message(notice.clone());
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let sandbox_policy = match managed_setup
+            .native_sandbox_policy(&cwd, self.sandbox_policy.clone())
+        {
+            Ok(policy) => policy,
+            Err(error) => {
+                self.state.add_system_message(format!(
+                    "Managed sandbox policy could not be loaded after login ({error}); command execution is read-only."
+                ));
+                Some(crate::sandbox::SandboxPolicy::ReadOnly)
+            }
+        };
+        let managed_mcp_policy = Some(crate::mcp::ManagedMcpPolicy {
+            version: managed_setup.version(),
+            policy: managed_setup.mcp_policy().clone(),
+        });
+        let cwd_text = cwd.to_string_lossy();
+        let executor =
+            ToolExecutor::with_credential_vault(cwd_text.as_ref(), self.credential_vault.clone())
+                .with_managed_mcp_policy(managed_mcp_policy);
+        self.tool_executor = Arc::new(match sandbox_policy.clone() {
+            Some(policy) => executor.with_sandbox_policy(policy),
+            None => executor,
+        });
+        self.sandbox_policy = sandbox_policy;
+        self.managed_setup = managed_setup;
+        Ok(())
     }
 
     fn poll_model_verification(&mut self) -> bool {
@@ -3790,8 +4072,8 @@ was missing; retry to review the exact execution context."
     /// so the event loop never blocks on the review call.
     fn spawn_guardian_review(&mut self, request: &ApprovalRequest) -> bool {
         use crate::safety::guardian::{
-            bounded_transcript, guardian_may_auto_approve, summarize_args, GuardianContext,
-            TranscriptItem,
+            GuardianContext, TranscriptItem, bounded_transcript, guardian_may_auto_approve,
+            summarize_args,
         };
 
         let Some(guardian) = self.guardian.clone() else {
@@ -3974,7 +4256,7 @@ Slash Commands:
   /alerts       List recorded alerts
   /copy         Copy last response
   /theme        Change theme
-  /setup        Sign in or add a local API key
+  /setup        Sign in to EvalOps Identity, then optionally add a local API key
   /queue        Manage queued prompts (list/cancel/modes)
   /steer        Send a steering message
   /sessions     Browse sessions
@@ -4665,9 +4947,12 @@ fn short_codex_status_id(value: &str) -> String {
 // TESTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+mod a2a_handoff;
 mod checkpoints;
 mod command_handlers;
-mod context_breakdown;
+// `pub(crate)` so `agent::compaction` can assert that its token counts and
+// this breakdown's agree; nothing outside the crate uses it.
+pub(crate) mod context_breakdown;
 mod exec_commands;
 mod input_handlers;
 mod prompt_audit;

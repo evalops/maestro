@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::ai::{
-    create_client_for_model, Message, MessageContent, RequestConfig, Role, StreamEvent,
+    Message, MessageContent, RequestConfig, Role, StreamEvent, create_client_for_model,
 };
 
 /// Hard bound on a guardian review call, adopted from codex's guardian.

@@ -1,10 +1,27 @@
 # Authentication
 
-Maestro is provider-agnostic. Interactive sessions typically use Codex subscription auth or direct provider API keys.
+Every Maestro session requires an EvalOps Identity account. Provider credentials
+(managed inference, Codex subscription auth, and BYOK API keys) are a separate
+choice made after that Identity sign-in.
 
 ---
 
-## Codex login (recommended default)
+## EvalOps Identity (required)
+
+Sign in before starting Maestro. The browser flow lets a new user create an
+account when necessary:
+
+```bash
+deixic-code evalops login
+```
+
+This Identity session is required even when you bring your own provider key or
+use a Codex subscription. It does not replace those credentials or expose your
+BYOK secret to EvalOps.
+
+---
+
+## Codex login (after EvalOps Identity)
 
 ```bash
 maestro codex login
@@ -74,10 +91,11 @@ Common failure modes:
 
 ---
 
-## API keys and environment variables
+## API keys and environment variables (after EvalOps Identity)
 
-Managed connections are the recommended path when developers switch accounts
-or do not want keys in their shell environment:
+After the required Identity sign-in, managed connections are the recommended
+BYOK path when developers switch accounts or do not want keys in their shell
+environment:
 
 ```bash
 maestro connections types

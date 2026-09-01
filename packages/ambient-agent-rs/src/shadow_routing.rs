@@ -860,14 +860,18 @@ mod tests {
 
         let loaded = ShadowRouter::from_data_dir(temp.path()).unwrap();
         assert_eq!(loaded.records().len(), 2);
-        assert!(loaded
-            .records()
-            .iter()
-            .any(|record| record.decision_id == first_decision.decision_id
-                && record.outcome.is_some()));
-        assert!(loaded
-            .records()
-            .iter()
-            .any(|record| record.decision_id == second_decision.decision_id));
+        assert!(
+            loaded
+                .records()
+                .iter()
+                .any(|record| record.decision_id == first_decision.decision_id
+                    && record.outcome.is_some())
+        );
+        assert!(
+            loaded
+                .records()
+                .iter()
+                .any(|record| record.decision_id == second_decision.decision_id)
+        );
     }
 }

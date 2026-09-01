@@ -1,11 +1,11 @@
-//! Plugin manifest (`plugin.json`) schema.
+//! Plugin manifest (`plugin.json` or `.plugin/plugin.json`) schema.
 //!
 //! Manifests are optional. When missing, discovery falls back to convention
 //! paths under the plugin root (`skills/`, `agents/`, `commands/`, hooks, MCP configs).
 
 use serde::{Deserialize, Serialize};
 
-/// Optional `plugin.json` metadata for a Maestro plugin package.
+/// Optional manifest metadata for a Maestro plugin package.
 ///
 /// All fields are optional so partial manifests remain valid. Relative path
 /// fields (`skills`, `agents`, `commands`, `hooks`, `mcp`, `connections`) are resolved against the

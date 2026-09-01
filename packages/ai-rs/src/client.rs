@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use super::anthropic::AnthropicClient;
+#[cfg(feature = "bedrock")]
 use super::bedrock::BedrockClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
@@ -253,6 +254,65 @@ pub const MANAGED_GATEWAY_STREAM_IDLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 pub const MANAGED_GATEWAY_STREAM_MAX_RETRIES: u32 = 2;
 
+/// A provider event stream together with the task that owns its upstream
+/// request. Callers that abandon a response early can close the receiver and
+/// await the producer, ensuring detached HTTP/SSE work has actually stopped
+/// before they start a replacement request.
+pub struct CancellableStream {
+    receiver: Option<mpsc::UnboundedReceiver<StreamEvent>>,
+    producer: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl CancellableStream {
+    pub(crate) fn detached(receiver: mpsc::UnboundedReceiver<StreamEvent>) -> Self {
+        Self {
+            receiver: Some(receiver),
+            producer: None,
+        }
+    }
+
+    pub(crate) fn with_producer(
+        receiver: mpsc::UnboundedReceiver<StreamEvent>,
+        producer: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            receiver: Some(receiver),
+            producer: Some(producer),
+        }
+    }
+
+    /// Receive the next event from the provider.
+    pub async fn recv(&mut self) -> Option<StreamEvent> {
+        self.receiver.as_mut()?.recv().await
+    }
+
+    /// Stop this stream and wait until its producer has released the upstream
+    /// request. Closing the receiver wakes producers that select on
+    /// `Sender::closed`; awaiting their task confirms the cancellation crossed
+    /// the spawned-task boundary.
+    pub async fn cancel_and_wait(mut self) -> Result<(), tokio::task::JoinError> {
+        drop(self.receiver.take());
+        if let Some(producer) = self.producer.take() {
+            producer.await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_receiver(mut self) -> mpsc::UnboundedReceiver<StreamEvent> {
+        // Dropping a JoinHandle detaches the task, preserving the historical
+        // receiver-only API for callers that do not need explicit ownership.
+        self.receiver
+            .take()
+            .expect("cancellable stream receiver is present")
+    }
+}
+
+impl From<mpsc::UnboundedReceiver<StreamEvent>> for CancellableStream {
+    fn from(receiver: mpsc::UnboundedReceiver<StreamEvent>) -> Self {
+        Self::detached(receiver)
+    }
+}
+
 /// Unified AI client trait
 #[allow(async_fn_in_trait)]
 pub trait AiClient: Send + Sync {
@@ -272,6 +332,7 @@ pub trait AiClient: Send + Sync {
 pub enum UnifiedClient {
     Anthropic(AnthropicClient),
     /// Amazon Bedrock Converse API.
+    #[cfg(feature = "bedrock")]
     Bedrock(BedrockClient),
     OpenAI(OpenAiClient),
     /// Mistral uses `OpenAI` client with custom base URL
@@ -306,6 +367,28 @@ impl UnifiedClient {
         }
     }
 
+    /// Carry the opaque, signed authorization for the current managed turn.
+    /// Direct provider clients ignore this managed-only context.
+    pub fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
+        if let Self::OpenAI(client) = self {
+            client.set_managed_inference_authorization(authorization);
+        }
+    }
+
+    /// Whether this client sends requests through the managed EvalOps gateway.
+    pub fn is_managed_gateway(&self) -> bool {
+        matches!(self, Self::OpenAI(client) if client.is_managed_gateway())
+    }
+
+    /// Return the complete tenant scope attached to a managed gateway client.
+    /// Direct provider clients intentionally have no managed scope.
+    pub fn managed_gateway_scope(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::OpenAI(client) => client.managed_gateway_scope(),
+            _ => None,
+        }
+    }
+
     fn stream_idle_policy(&self) -> (std::time::Duration, u32) {
         match self {
             Self::OpenAI(client) if client.is_managed_gateway() => (
@@ -327,8 +410,15 @@ impl UnifiedClient {
 
     /// Create a client for Amazon Bedrock using the AWS runtime credential
     /// provider chain.
+    #[cfg(feature = "bedrock")]
     pub fn bedrock() -> Result<Self> {
         Ok(Self::Bedrock(BedrockClient::from_env()?))
+    }
+
+    /// Report that this build excluded the native Bedrock client.
+    #[cfg(not(feature = "bedrock"))]
+    pub fn bedrock() -> Result<Self> {
+        anyhow::bail!("maestro-ai was built without Bedrock support")
     }
 
     /// Create client for `OpenAI`
@@ -463,10 +553,19 @@ impl UnifiedClient {
                     auth_source,
                 )?))
             }
-            ProviderProtocol::Bedrock => Ok(Self::Bedrock(BedrockClient::from_runtime_env(
-                env,
-                resolved.base_url.as_deref(),
-            )?)),
+            ProviderProtocol::Bedrock => {
+                #[cfg(feature = "bedrock")]
+                {
+                    Ok(Self::Bedrock(BedrockClient::from_runtime_env(
+                        env,
+                        resolved.base_url.as_deref(),
+                    )?))
+                }
+                #[cfg(not(feature = "bedrock"))]
+                {
+                    anyhow::bail!("maestro-ai was built without Bedrock support")
+                }
+            }
             ProviderProtocol::Managed => {
                 let credential = resolved
                     .credential
@@ -483,12 +582,15 @@ impl UnifiedClient {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .context("EvalOps managed provider requires MAESTRO_EVALOPS_ORG_ID")?;
-                let workspace_id = ["MAESTRO_EVALOPS_WORKSPACE_ID"].iter().find_map(|name| {
-                    env.get(*name)
-                        .map(String::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                });
+                let workspace_id = ["MAESTRO_EVALOPS_WORKSPACE_ID"]
+                    .iter()
+                    .find_map(|name| {
+                        env.get(*name)
+                            .map(String::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+                    .context("EvalOps managed provider requires MAESTRO_EVALOPS_WORKSPACE_ID")?;
                 let provider = env
                     .get("MAESTRO_EVALOPS_PROVIDER")
                     .map(String::as_str)
@@ -533,20 +635,12 @@ impl UnifiedClient {
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|value| !value.is_empty()),
                     organization_id = %organization_id,
-                    workspace_id_present = workspace_id.is_some(),
+                    workspace_id_present = true,
                     "managed provider reference prepared"
                 );
                 let client = OpenAiClient::with_base_url(credential, base_url)?
-                    .with_route_provider(provider);
-                let client = if let Some(workspace_id) = workspace_id {
-                    client.with_managed_gateway_scope(
-                        organization_id,
-                        workspace_id,
-                        provider_ref,
-                    )?
-                } else {
-                    client.with_managed_gateway_context(organization_id, provider_ref)?
-                };
+                    .with_route_provider(provider)
+                    .with_managed_gateway_scope(organization_id, workspace_id, provider_ref)?;
                 Ok(Self::OpenAI(client))
             }
             ProviderProtocol::OpenAi
@@ -579,6 +673,7 @@ impl UnifiedClient {
     pub fn provider(&self) -> AiProvider {
         match self {
             Self::Anthropic(_) => AiProvider::Anthropic,
+            #[cfg(feature = "bedrock")]
             Self::Bedrock(_) => AiProvider::Bedrock,
             Self::OpenAI(_) => AiProvider::OpenAI,
             Self::Mistral(_) => AiProvider::Mistral,
@@ -604,6 +699,7 @@ impl UnifiedClient {
     pub fn provider_name(&self) -> &str {
         match self {
             Self::Anthropic(_) => "anthropic",
+            #[cfg(feature = "bedrock")]
             Self::Bedrock(_) => "bedrock",
             Self::OpenAI(client) => client.routed_provider().unwrap_or("openai"),
             Self::Mistral(_) => "mistral",
@@ -631,7 +727,10 @@ impl UnifiedClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-        self.stream_owned_config(messages, config.clone()).await
+        Ok(self
+            .stream_owned_config(messages, config.clone())
+            .await?
+            .into_receiver())
     }
 
     /// Stream a request while transferring ownership of its immutable config.
@@ -644,7 +743,7 @@ impl UnifiedClient {
         &self,
         messages: &[Message],
         config: RequestConfig,
-    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    ) -> Result<CancellableStream> {
         self.stream_owned_config_shared_messages(Arc::new(messages.to_vec()), config)
             .await
     }
@@ -658,11 +757,12 @@ impl UnifiedClient {
         &self,
         messages: Arc<Vec<Message>>,
         config: RequestConfig,
-    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    ) -> Result<CancellableStream> {
         let provider = self.provider_name().to_string();
         let (idle_timeout, max_retries) = self.stream_idle_policy();
         let model = config.model.trim().to_string();
         let provider_model = telemetry_provider_model(&provider, &model);
+        let model_span = maestro_runtime::model_span(&provider, &provider_model);
         let started = Instant::now();
         tracing::info!(
             target: "maestro.llm",
@@ -684,7 +784,11 @@ impl UnifiedClient {
         let first = if self.stream_owner_starts_initial_attempt() {
             None
         } else {
-            let first = match self.stream_once(messages.as_slice(), &config).await {
+            let first = match self
+                .stream_once(messages.as_slice(), &config)
+                .instrument(model_span.clone())
+                .await
+            {
                 Ok(first) => first,
                 Err(error) => {
                     tracing::warn!(
@@ -722,9 +826,9 @@ impl UnifiedClient {
             model = %model,
             provider_model = %provider_model,
         );
-        tokio::spawn(
+        let producer = tokio::spawn(
             async move {
-                forward_stream_with_idle_policy(
+                forward_stream_with_idle_policy_with_span(
                     first,
                     move || {
                         let client = client.clone();
@@ -739,12 +843,14 @@ impl UnifiedClient {
                     idle_timeout,
                     max_retries,
                     tx,
+                    model_span.clone(),
                 )
+                .instrument(model_span.clone())
                 .await;
             }
             .instrument(stream_span),
         );
-        Ok(rx)
+        Ok(CancellableStream::with_producer(rx, producer))
     }
 
     /// A single streaming attempt with no idle-timeout or retry policy.
@@ -752,21 +858,22 @@ impl UnifiedClient {
         &self,
         messages: &[Message],
         config: &RequestConfig,
-    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    ) -> Result<CancellableStream> {
         match self {
-            Self::Anthropic(client) => client.stream(messages, config).await,
-            Self::Bedrock(client) => client.stream(messages, config).await,
-            Self::OpenAI(client) => client.stream(messages, config).await,
-            Self::Mistral(client) => client.stream(messages, config).await,
-            Self::Google(client) => client.stream(messages, config).await,
-            Self::Groq(client) => client.stream(messages, config).await,
-            Self::VertexAi(client) => client.stream(messages, config).await,
-            Self::DeepSeek(client) => client.stream(messages, config).await,
-            Self::Moonshot(client) => client.stream(messages, config).await,
-            Self::Qwen(client) => client.stream(messages, config).await,
-            Self::MiniMax(client) => client.stream(messages, config).await,
-            Self::Zai(client) => client.stream(messages, config).await,
-            Self::Scripted(client) => client.stream(messages, config).await,
+            Self::Anthropic(client) => client.stream(messages, config).await.map(Into::into),
+            #[cfg(feature = "bedrock")]
+            Self::Bedrock(client) => client.stream(messages, config).await.map(Into::into),
+            Self::OpenAI(client)
+            | Self::Mistral(client)
+            | Self::Groq(client)
+            | Self::DeepSeek(client)
+            | Self::Moonshot(client)
+            | Self::Qwen(client)
+            | Self::MiniMax(client)
+            | Self::Zai(client) => client.stream_with_producer(messages, config).await,
+            Self::Google(client) => client.stream(messages, config).await.map(Into::into),
+            Self::VertexAi(client) => client.stream(messages, config).await.map(Into::into),
+            Self::Scripted(client) => client.stream(messages, config).await.map(Into::into),
         }
     }
 }
@@ -786,22 +893,47 @@ impl UnifiedClient {
 /// produces a typed transient protocol error.
 ///
 /// For managed gateways, response opening and streaming share this budget.
-/// Other providers keep their existing request/connect semantics. A retried
-/// attempt's receiver is dropped, which detaches the provider's stream task
-/// until its HTTP connection ends.
-async fn forward_stream_with_idle_policy<F, Fut>(
-    first: Option<mpsc::UnboundedReceiver<StreamEvent>>,
+/// Other providers keep their existing request/connect semantics. Before a
+/// retry starts, the abandoned attempt is cancelled and its producer is
+/// awaited so an OpenAI-compatible HTTP/SSE request cannot remain detached.
+#[cfg(test)]
+async fn forward_stream_with_idle_policy<F, Fut, S>(
+    first: Option<S>,
     begin_attempt: F,
     idle_timeout: std::time::Duration,
     max_retries: u32,
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<mpsc::UnboundedReceiver<StreamEvent>>>,
+    Fut: std::future::Future<Output = Result<S>>,
+    S: Into<CancellableStream>,
+{
+    forward_stream_with_idle_policy_with_span(
+        first,
+        begin_attempt,
+        idle_timeout,
+        max_retries,
+        tx,
+        tracing::Span::none(),
+    )
+    .await;
+}
+
+async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
+    first: Option<S>,
+    begin_attempt: F,
+    idle_timeout: std::time::Duration,
+    max_retries: u32,
+    tx: mpsc::UnboundedSender<StreamEvent>,
+    model_span: tracing::Span,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S>>,
+    S: Into<CancellableStream>,
 {
     let max_attempts = max_retries.saturating_add(1);
     let mut attempt = u32::from(first.is_some());
-    let mut pending_attempt = first;
+    let mut pending_attempt = first.map(Into::into);
     let mut begin_attempt = Some(begin_attempt);
     let stream_started = Instant::now();
     let mut events_forwarded = 0u64;
@@ -827,8 +959,12 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                     });
                     return;
                 };
-                match begin_attempt_fn().await {
-                    Ok(next) => break next,
+                let opened = tokio::select! {
+                    () = tx.closed() => return,
+                    opened = begin_attempt_fn() => opened,
+                };
+                match opened {
+                    Ok(next) => break next.into(),
                     Err(err) if attempt < max_attempts => {
                         tracing::warn!(
                             target: "maestro.llm",
@@ -863,7 +999,15 @@ async fn forward_stream_with_idle_policy<F, Fut>(
         let attempt_started = Instant::now();
         let mut committed_content = false;
         loop {
-            let event = match tokio::time::timeout(idle_timeout, attempt_rx.recv()).await {
+            let received = tokio::select! {
+                () = tx.closed() => None,
+                received = tokio::time::timeout(idle_timeout, attempt_rx.recv()) => Some(received),
+            };
+            let Some(received) = received else {
+                let _ = attempt_rx.cancel_and_wait().await;
+                return;
+            };
+            let event = match received {
                 Ok(Some(event)) => event,
                 Ok(None) => {
                     if !committed_content && attempt < max_attempts {
@@ -957,6 +1101,21 @@ async fn forward_stream_with_idle_policy<F, Fut>(
             };
             events_forwarded = events_forwarded.saturating_add(1);
             committed_content |= stream_event_commits_content(&event);
+            if let StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } = &event
+            {
+                maestro_runtime::record_model_usage(
+                    &model_span,
+                    *input_tokens,
+                    *output_tokens,
+                    cache_read_tokens.unwrap_or(0),
+                    cache_creation_tokens.unwrap_or(0),
+                );
+            }
             if committed_content {
                 // Once content has been forwarded, retries are forbidden to
                 // avoid duplicating the response. Drop the retry closure now
@@ -1023,9 +1182,16 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                     duration_ms = stream_started.elapsed().as_millis() as u64,
                     events_forwarded,
                 );
+                let _ = attempt_rx.cancel_and_wait().await;
                 return; // Caller dropped the receiver.
             }
             if terminal {
+                maestro_runtime::record_outcome(
+                    &model_span,
+                    if terminal_error { "error" } else { "success" },
+                    stream_started.elapsed(),
+                    terminal_error.then_some("provider_error"),
+                );
                 if !terminal_error {
                     tracing::info!(
                         target: "maestro.llm",
@@ -1042,6 +1208,9 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                 return;
             }
         }
+        // Every path that leaves the inner loop is about to replay the request.
+        // Confirm the previous producer has released its HTTP/SSE stream first.
+        let _ = attempt_rx.cancel_and_wait().await;
     }
 }
 
@@ -1419,13 +1588,15 @@ mod tests {
             "EVALOPS_WORKSPACE_ID".to_string(),
             "workspace_alias".to_string(),
         );
-        let alias_client = UnifiedClient::from_resolved_provider(&resolved, &alias_env).unwrap();
-        let UnifiedClient::OpenAI(alias_client) = alias_client else {
-            panic!("managed provider should use the OpenAI-compatible client");
+        let alias_error = match UnifiedClient::from_resolved_provider(&resolved, &alias_env) {
+            Ok(_) => panic!("managed provider must not be constructed without workspace scope"),
+            Err(error) => error,
         };
         assert!(
-            alias_client.headers().get("x-workspace-id").is_none(),
-            "EVALOPS_WORKSPACE_ID is not a fallback when MAESTRO_EVALOPS_WORKSPACE_ID is blank"
+            alias_error
+                .to_string()
+                .contains("MAESTRO_EVALOPS_WORKSPACE_ID"),
+            "workspace scope failure should identify the required managed-provider input"
         );
 
         let missing_org = HashMap::from([(
@@ -1434,8 +1605,18 @@ mod tests {
         )]);
         let resolved = ProviderRegistry::require("evalops/gpt-4o-mini", &missing_org).unwrap();
         assert!(UnifiedClient::from_resolved_provider(&resolved, &missing_org).is_err());
+
+        let mut missing_workspace = env.clone();
+        missing_workspace.remove("MAESTRO_EVALOPS_WORKSPACE_ID");
+        let resolved =
+            ProviderRegistry::require("evalops/claude-sonnet-4-5", &missing_workspace).unwrap();
+        assert!(
+            UnifiedClient::from_resolved_provider(&resolved, &missing_workspace).is_err(),
+            "managed client construction must require workspace scope"
+        );
     }
 
+    #[cfg(feature = "bedrock")]
     #[test]
     fn bedrock_provider_matrix_constructs_native_client() {
         let env = HashMap::from([
@@ -1471,10 +1652,12 @@ mod tests {
             ProviderRegistry::require("aws-bedrock/amazon.nova-lite-v1:0", &env).unwrap();
         assert_eq!(resolved.provider.id, "bedrock");
         assert_eq!(resolved.provider.protocol, ProviderProtocol::Bedrock);
-        assert!(ProviderRegistry::resolve("openai/gpt-4o", &env)
-            .unwrap()
-            .credential
-            .is_none());
+        assert!(
+            ProviderRegistry::resolve("openai/gpt-4o", &env)
+                .unwrap()
+                .credential
+                .is_none()
+        );
 
         let unrelated = HashMap::from([("OPENAI_API_KEY".to_string(), "secret".to_string())]);
         let error = ProviderRegistry::require("bedrock/amazon.nova-lite-v1:0", &unrelated)
@@ -1484,6 +1667,7 @@ mod tests {
         assert!(error.contains("AWS_PROFILE"));
     }
 
+    #[cfg(feature = "bedrock")]
     #[test]
     fn bedrock_client_construction_reports_precise_missing_credentials() {
         let env = HashMap::new();
@@ -1496,6 +1680,16 @@ mod tests {
         assert!(error.contains("AWS_SECRET_ACCESS_KEY"));
         assert!(error.contains("AWS_CONFIG_FILE"));
         assert!(error.contains("AWS_CONTAINER_CREDENTIALS_FULL_URI"));
+    }
+
+    #[cfg(not(feature = "bedrock"))]
+    #[test]
+    fn bedrock_client_reports_when_support_is_excluded() {
+        let error = match UnifiedClient::bedrock() {
+            Ok(_) => panic!("a build without the Bedrock feature must not construct the client"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(error, "maestro-ai was built without Bedrock support");
     }
 
     #[test]
@@ -1552,8 +1746,8 @@ mod tests {
 mod stream_idle_policy_tests {
     use super::*;
     use crate::types::ProviderStreamErrorKind;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Duration;
 
     const IDLE: Duration = Duration::from_millis(100);
@@ -1596,8 +1790,9 @@ mod stream_idle_policy_tests {
         let managed = UnifiedClient::OpenAI(
             OpenAiClient::with_base_url("delegated-token", "http://gateway.invalid/v1")
                 .expect("managed client")
-                .with_managed_gateway_context(
+                .with_managed_gateway_scope(
                     "org-test",
+                    "workspace_456",
                     serde_json::json!({
                         "provider": "openrouter",
                         "environment": "production",
@@ -1659,14 +1854,14 @@ mod stream_idle_policy_tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn slow_but_progressing_stream_is_not_killed() {
         let retried = Attempts::new(AtomicU32::new(0));
         let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             for i in 0..5 {
-                // Gaps stay under the idle window: the stream is slow but
-                // never fully idle.
+                // Virtual time makes these gaps deterministically remain under
+                // the idle window, independent of host test-suite scheduling.
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let _ = attempt_tx.send(StreamEvent::TextDelta {
                     index: 0,
@@ -1704,6 +1899,25 @@ mod stream_idle_policy_tests {
             events.last(),
             Some(StreamEvent::MessageStop { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_consumer_closes_the_active_provider_receiver() {
+        let (provider_tx, provider_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let forwarder = tokio::spawn(forward_stream_with_idle_policy(
+            Some(provider_rx),
+            || async { unreachable!("a cancelled consumer must not retry") },
+            IDLE,
+            RETRIES,
+            tx,
+        ));
+
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), provider_tx.closed())
+            .await
+            .expect("consumer cancellation must close the provider stream");
+        forwarder.await.expect("forwarder must not panic");
     }
 
     #[tokio::test]
@@ -1908,7 +2122,7 @@ mod stream_idle_policy_tests {
         let requests = Attempts::new(AtomicU32::new(0));
         let server_requests = Arc::clone(&requests);
         let server = std::thread::spawn(move || {
-            for _ in 0..=MANAGED_GATEWAY_STREAM_MAX_RETRIES {
+            for attempt in 0..=MANAGED_GATEWAY_STREAM_MAX_RETRIES {
                 let (mut stream, _) = listener.accept().expect("accept gateway request");
                 let mut request = [0_u8; 4096];
                 let _ = stream.read(&mut request).expect("read gateway request");
@@ -1916,7 +2130,7 @@ mod stream_idle_policy_tests {
                 let body = r#"{"error":{"type":"server_error","message":"operation timed out"}}"#;
                 write!(
                     stream,
-                    "HTTP/1.1 504 Gateway Timeout\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 504 Gateway Timeout\r\nX-Request-ID: request-timeout-{attempt}\r\nX-EvalOps-Record-ID: record-timeout-{attempt}\r\nX-EvalOps-Lineage-ID: lineage-timeout-{attempt}\r\nX-EvalOps-Record-Status: failed\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body,
                 )
@@ -1927,8 +2141,9 @@ mod stream_idle_policy_tests {
         let client = UnifiedClient::OpenAI(
             OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
                 .expect("managed gateway client")
-                .with_managed_gateway_context(
+                .with_managed_gateway_scope(
                     "org-test",
+                    "workspace_456",
                     serde_json::json!({
                         "provider": "openrouter",
                         "environment": "production",
@@ -1948,17 +2163,32 @@ mod stream_idle_policy_tests {
             .await
             .expect("gateway stream opens");
 
+        let mut received = Vec::new();
+        while let Some(event) = events.recv().await {
+            received.push(event);
+        }
+        let expected_attempts = (MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1) as usize;
+        assert_eq!(
+            received.len(),
+            expected_attempts + 1,
+            "each managed attempt must emit one receipt before the terminal error"
+        );
+        for (attempt, event) in received[..expected_attempts].iter().enumerate() {
+            let StreamEvent::ManagedGatewayReceipt(receipt) = event else {
+                panic!("expected managed receipt before terminal error, got {event:?}");
+            };
+            assert_eq!(receipt.request_id, format!("request-timeout-{attempt}"));
+            assert_eq!(receipt.record_id, format!("record-timeout-{attempt}"));
+            assert_eq!(receipt.lineage_id, format!("lineage-timeout-{attempt}"));
+            assert_eq!(receipt.record_status, "failed");
+        }
         assert!(matches!(
-            events.recv().await,
-            Some(StreamEvent::ProviderError {
+            &received[expected_attempts],
+            StreamEvent::ProviderError {
                 kind: ProviderStreamErrorKind::TransientProtocol,
                 message,
-            }) if message.contains("504 Gateway Timeout")
+            } if message.contains("504 Gateway Timeout")
         ));
-        assert!(
-            events.recv().await.is_none(),
-            "terminal error must be emitted once"
-        );
         server.join().expect("mock gateway server");
         assert_eq!(
             requests.load(Ordering::SeqCst),
@@ -1979,13 +2209,31 @@ mod stream_idle_policy_tests {
         let address = listener.local_addr().expect("mock gateway address");
         let requests = Attempts::new(AtomicU32::new(0));
         let server_requests = Arc::clone(&requests);
+        let stop_server = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop_server);
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_millis(500);
-            let mut last_request = std::time::Instant::now();
-            while std::time::Instant::now() < deadline
-                && (server_requests.load(Ordering::SeqCst) < MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1
-                    || last_request.elapsed() < Duration::from_millis(100))
-            {
+            // Keep the listener alive until the client has emitted its
+            // terminal event. A wall-clock server deadline can expire between
+            // retries on a loaded host and turn the final timeout into an
+            // unrelated connection-refused failure.
+            let mut drain_deadline = None;
+            let mut quiet_since = None;
+            loop {
+                if server_stop.load(Ordering::SeqCst) {
+                    let now = std::time::Instant::now();
+                    if drain_deadline.is_none() {
+                        drain_deadline = Some(now + Duration::from_secs(5));
+                        quiet_since = Some(now);
+                    }
+                    if now >= drain_deadline.expect("drain deadline initialized")
+                        || quiet_since
+                            .expect("drain quiet boundary initialized")
+                            .elapsed()
+                            >= Duration::from_millis(100)
+                    {
+                        break;
+                    }
+                }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
@@ -1994,7 +2242,7 @@ mod stream_idle_policy_tests {
                         let mut request = [0_u8; 4096];
                         let _ = stream.read(&mut request).expect("read gateway request");
                         server_requests.fetch_add(1, Ordering::SeqCst);
-                        last_request = std::time::Instant::now();
+                        quiet_since = Some(std::time::Instant::now());
                         // Accept the request but never open an HTTP response.
                         // Keep the socket alive past the client-side boundary.
                         std::thread::sleep(Duration::from_millis(50));
@@ -2010,8 +2258,9 @@ mod stream_idle_policy_tests {
         let client = UnifiedClient::OpenAI(
             OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
                 .expect("managed gateway client")
-                .with_managed_gateway_context(
+                .with_managed_gateway_scope(
                     "org-test",
+                    "workspace_456",
                     serde_json::json!({
                         "provider": "openrouter",
                         "environment": "production",
@@ -2032,18 +2281,26 @@ mod stream_idle_policy_tests {
             .await
             .expect("stream owner is established before opening attempt one");
 
-        assert!(matches!(
-            events.recv().await,
-            Some(StreamEvent::ProviderError {
-                kind: ProviderStreamErrorKind::TransientProtocol,
-                message,
-            }) if message.contains("response headers timed out")
-        ));
+        let terminal = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
+        let exhausted = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
+        stop_server.store(true, Ordering::SeqCst);
+        server.join().expect("mock gateway server");
+
+        let terminal = terminal.expect("managed retries must terminate within the test boundary");
         assert!(
-            events.recv().await.is_none(),
+            matches!(
+                &terminal,
+                Some(StreamEvent::ProviderError {
+                    kind: ProviderStreamErrorKind::TransientProtocol,
+                    message,
+                }) if message.contains("response headers timed out")
+            ),
+            "unexpected terminal event: {terminal:?}"
+        );
+        assert!(
+            matches!(exhausted, Ok(None)),
             "exhaustion must emit exactly one typed terminal event"
         );
-        server.join().expect("mock gateway server");
         assert_eq!(
             requests.load(Ordering::SeqCst),
             MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1,

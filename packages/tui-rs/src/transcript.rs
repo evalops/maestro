@@ -477,12 +477,16 @@ mod tests {
             call_id: "call".into(),
             content: "access_token=secret".into(),
         });
-        assert!(!serde_json::to_string(&call)
-            .unwrap()
-            .contains("Bearer secret"));
-        assert!(!serde_json::to_string(&call)
-            .unwrap()
-            .contains("prefixed-secret"));
+        assert!(
+            !serde_json::to_string(&call)
+                .unwrap()
+                .contains("Bearer secret")
+        );
+        assert!(
+            !serde_json::to_string(&call)
+                .unwrap()
+                .contains("prefixed-secret")
+        );
 
         let noncredential = redact_agent_message(FromAgentMessage::ToolCall {
             call_id: "call".into(),
@@ -495,18 +499,22 @@ mod tests {
             serde_json::to_value(noncredential).unwrap()["args"]["max_tokens"],
             1000
         );
-        assert!(!serde_json::to_string(&output)
-            .unwrap()
-            .contains("access_token"));
+        assert!(
+            !serde_json::to_string(&output)
+                .unwrap()
+                .contains("access_token")
+        );
 
         let utility_output = redact_agent_message(FromAgentMessage::UtilityCommandOutput {
             command_id: "command".into(),
             stream: UtilityCommandStream::Stderr,
             content: "OPENAI_API_KEY=secret".into(),
         });
-        assert!(!serde_json::to_string(&utility_output)
-            .unwrap()
-            .contains("OPENAI_API_KEY"));
+        assert!(
+            !serde_json::to_string(&utility_output)
+                .unwrap()
+                .contains("OPENAI_API_KEY")
+        );
 
         let file_read = redact_agent_message(FromAgentMessage::UtilityFileReadResult {
             read_id: "read".into(),
@@ -519,17 +527,21 @@ mod tests {
             total_lines: 1,
             truncated: false,
         });
-        assert!(!serde_json::to_string(&file_read)
-            .unwrap()
-            .contains("file-secret"));
+        assert!(
+            !serde_json::to_string(&file_read)
+                .unwrap()
+                .contains("file-secret")
+        );
 
         let prose = redact_agent_message(FromAgentMessage::ToolOutput {
             call_id: "call".into(),
             content: "search results for authorization middleware".into(),
         });
-        assert!(serde_json::to_string(&prose)
-            .unwrap()
-            .contains("authorization middleware"));
+        assert!(
+            serde_json::to_string(&prose)
+                .unwrap()
+                .contains("authorization middleware")
+        );
 
         let typed_source = redact_agent_message(FromAgentMessage::ToolOutput {
             call_id: "call".into(),
@@ -550,9 +562,11 @@ mod tests {
             total_lines: 1,
             truncated: false,
         });
-        assert!(!serde_json::to_string(&connection_url)
-            .unwrap()
-            .contains("s3cr3t"));
+        assert!(
+            !serde_json::to_string(&connection_url)
+                .unwrap()
+                .contains("s3cr3t")
+        );
 
         let compact_json = redact_agent_message(FromAgentMessage::ToolOutput {
             call_id: "call".into(),

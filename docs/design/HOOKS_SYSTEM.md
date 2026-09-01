@@ -263,6 +263,26 @@ that makes decisions on timing should know which it is looking at:
 - Sub-operations of one tool call, and results supplied by the approval UI
   rather than executed here, report `0`.
 
+### SessionEnd Input
+
+```typescript
+interface SessionEndHookInput {
+  hookEventName: "SessionEnd";
+  cwd: string;
+  sessionId?: string;
+  transcriptPath?: string;
+  timestamp: string;
+  reason: string;
+  durationMs: number;
+  turnCount: number;
+}
+```
+
+`transcriptPath` is the absolute path to the active native JSONL when the
+session has a persistent writer. Observation-only adapters may copy and redact
+that file, but it is not restore or continuation authority. External hooks also
+receive the compatibility `transcript_path` spelling.
+
 ### UserPromptSubmit Input
 
 ```typescript

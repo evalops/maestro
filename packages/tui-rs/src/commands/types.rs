@@ -249,6 +249,8 @@ pub enum CommandAction {
     CompactConversation(Option<String>),
     /// MCP (Model Context Protocol) actions
     Mcp(McpAction),
+    /// Native hosted Computer task console actions.
+    Orb(OrbAction),
     /// Agent-to-Agent peer pairing actions
     A2a(A2aAction),
     /// Hook system management action
@@ -315,6 +317,35 @@ pub enum CommandAction {
     Attach(AttachAction),
     /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
     Init { force: bool },
+}
+
+/// Product-level hosted Computer controls exposed by `/computer` in the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrbAction {
+    List,
+    Status(String),
+    Followup {
+        id: String,
+        prompt: String,
+    },
+    Pause(String),
+    Resume(String),
+    Cancel(String),
+    Collect(String),
+    HandoffCreate {
+        source_id: String,
+        target_thread_id: String,
+        files: Vec<String>,
+        artifact_ids: Vec<String>,
+        include_diff: bool,
+    },
+    HandoffList {
+        target_thread_id: String,
+    },
+    HandoffRead {
+        target_thread_id: String,
+        package_id: String,
+    },
 }
 
 /// `/attach` subcommands.
@@ -692,6 +723,23 @@ pub enum A2aAction {
     },
     /// Send a message to a peer.
     Send { peer: String, text: String },
+    /// Hand work to the default or explicitly selected peer and follow the task.
+    Handoff {
+        peer: Option<String>,
+        text: String,
+        computer_package: Option<A2aComputerHandoffSelection>,
+    },
+}
+
+/// Explicit selection used to freeze an existing hosted Computer task before
+/// handing work to an A2A peer. Computer remains the package owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aComputerHandoffSelection {
+    pub source_task_id: String,
+    pub target_thread_id: String,
+    pub files: Vec<String>,
+    pub artifact_ids: Vec<String>,
+    pub include_diff: bool,
 }
 
 /// Actions for managing the hook system
@@ -789,7 +837,7 @@ pub enum ModalType {
     ShortcutsHelp,
     /// Help documentation viewer
     Help,
-    /// First-run EvalOps or local API key setup
+    /// First-run EvalOps Identity and optional local API key setup
     Setup,
 }
 

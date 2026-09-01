@@ -39,6 +39,16 @@ export function conformanceFixtureCommand() {
 	return `printf 'runtime conformance fixture\\nreversible test data\\n' > ${CONFORMANCE_FIXTURE_FILE}; printf runtime-conformance-shell`;
 }
 
+export function dockerImageRefForRun(dockerImage) {
+	const pinned = dockerImage.match(/^(?<name>[^@]+)@(?<digest>sha256:[a-f0-9]{64})$/i);
+	if (pinned?.groups && !pinned.groups.name.includes("/")) {
+		// Local tags pinned by image id (`maestro-conformance:run@sha256:...`)
+		// are not registry references. `docker run name@sha256` tries Docker Hub.
+		return pinned.groups.digest.toLowerCase();
+	}
+	return dockerImage;
+}
+
 export function dockerConformanceRunArgs({ containerName, dockerImage }) {
 	return [
 		"run",
@@ -69,7 +79,7 @@ export function dockerConformanceRunArgs({ containerName, dockerImage }) {
 		// creates its reversible fixture through Maestro after startup.
 		"--mount",
 		"type=tmpfs,destination=/conformance-workspace",
-		dockerImage,
+		dockerImageRefForRun(dockerImage),
 		"conformance",
 	];
 }

@@ -3,22 +3,23 @@ use crate::headless::report_diagnostic_nonblocking;
 use crate::hooks::{HookResult, IntegratedHookSystem};
 #[cfg(windows)]
 use crate::tools::bash::resolve_shell_config;
+use std::collections::VecDeque;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+    CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
 const STREAM_CREDENTIAL_MARKERS: &[&str] = &[
@@ -598,37 +599,93 @@ fn lossy_line(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Read a child process stream into at most `byte_limit` bytes, keeping the
+/// first and last halves.
+///
+/// Head-only capping discarded exactly the part that carries the verdict:
+/// `cargo test`, `npm install`, and most build tools print their failure
+/// summary at the end of the stream. The tail is held in a fixed-size
+/// `VecDeque` of `byte_limit / 2` bytes, so an unbounded producer still costs
+/// bounded memory.
+///
+/// Keeps both the beginning and end of bounded output.
 async fn read_limited_lossy<R>(mut reader: R, byte_limit: usize, truncated_label: &str) -> String
 where
     R: AsyncRead + Unpin,
 {
+    let head_limit = byte_limit / 2;
+    let tail_limit = byte_limit - head_limit;
     let mut buffer = [0_u8; 8192];
-    let mut bytes = Vec::with_capacity(byte_limit.min(buffer.len()));
-    let mut truncated = false;
+    let mut head = Vec::with_capacity(head_limit.min(buffer.len()));
+    let mut tail: VecDeque<u8> = VecDeque::new();
+    let mut elided: u64 = 0;
 
     while let Ok(read) = reader.read(&mut buffer).await {
         if read == 0 {
             break;
         }
+        let mut chunk = &buffer[..read];
 
-        if bytes.len() < byte_limit {
-            let remaining = byte_limit - bytes.len();
-            let keep = remaining.min(read);
-            bytes.extend_from_slice(&buffer[..keep]);
-            truncated |= keep < read;
-        } else {
-            truncated = true;
+        if head.len() < head_limit {
+            let keep = (head_limit - head.len()).min(chunk.len());
+            head.extend_from_slice(&chunk[..keep]);
+            chunk = &chunk[keep..];
+        }
+        if chunk.is_empty() {
+            continue;
+        }
+        if tail_limit == 0 {
+            elided += chunk.len() as u64;
+            continue;
+        }
+        tail.extend(chunk.iter().copied());
+        if tail.len() > tail_limit {
+            let drop = tail.len() - tail_limit;
+            tail.drain(..drop);
+            elided += drop as u64;
         }
     }
 
-    let mut output = String::from_utf8_lossy(&bytes).into_owned();
-    if truncated {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str(truncated_label);
+    let tail_bytes: Vec<u8> = tail.into_iter().collect();
+    if elided == 0 {
+        let mut all = head;
+        all.extend_from_slice(&tail_bytes);
+        return String::from_utf8_lossy(&all).into_owned();
     }
+
+    let mut output = String::from_utf8_lossy(&head).into_owned();
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(truncated_label);
+    output.push('\n');
+    output.push_str(&format!("[... {elided} bytes elided ...]\n"));
+    output.push_str(&String::from_utf8_lossy(&tail_bytes));
     output
+}
+
+/// Text handed to the model for one MCP tool result.
+///
+/// Joins the text content blocks (falling back to a pretty-printed dump of
+/// non-text content) and strips terminal control characters. The Native agent
+/// owns the later model-facing clamp because only that layer knows whether the
+/// current tool allowlist lets the model retrieve a spill file with `read`.
+fn mcp_model_output(content: &[McpContent]) -> String {
+    let text_output = content
+        .iter()
+        .filter_map(|content| match content {
+            McpContent::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let output = if text_output.is_empty() {
+        serde_json::to_string_pretty(content)
+            .unwrap_or_else(|_| "MCP tool returned non-text content".to_string())
+    } else {
+        text_output
+    };
+    crate::output_sanitize::sanitize_control_chars(&output)
 }
 
 fn collect_string_values(value: Option<&Value>) -> Vec<String> {
@@ -1212,7 +1269,7 @@ impl ToolExecutor {
             _ => {
                 return ToolResult::failure(
                     "explore requires a non-empty operations array".to_string(),
-                )
+                );
             }
         };
         if operations.len() > 8 {
@@ -1392,6 +1449,29 @@ impl ToolExecutor {
             emit_tool_events,
         } = execution_context;
         let lifecycle_event_tx = emit_tool_events.then_some(event_tx).flatten();
+        if super::is_reserved_orb_tool(tool_name) {
+            return ToolResult::failure(
+                "Raw Computer MCP lifecycle tools are reserved; use the durable subagent tools",
+            );
+        }
+        // A resumed transcript can carry a call recorded against a tool whose
+        // definition has since changed, or whose server has been swapped for
+        // another one exporting the same name. Refuse rather than execute the
+        // new tool under the old approval. See `tools::tool_call_contract`.
+        if McpClient::is_mcp_tool(tool_name) {
+            if let Some(recorded) = crate::tools::tool_call_contract::recorded_contract(tool_name) {
+                let live = self.live_mcp_tool_contract(call_id, tool_name).await;
+                if let Err(reason) =
+                    crate::tools::tool_call_contract::validate_identity(&recorded, live.as_ref())
+                {
+                    // Refuse once, then forget the pin: a re-issued call is
+                    // judged against the current definition and needs its own
+                    // approval, rather than being refused forever.
+                    crate::tools::tool_call_contract::drop_contract(tool_name);
+                    return ToolResult::failure(reason);
+                }
+            }
+        }
         if McpClient::is_mcp_tool(tool_name) {
             let client = match cancel.as_ref() {
                 Some(token) => tokio::select! {
@@ -1432,21 +1512,7 @@ impl ToolExecutor {
 
             match call_result {
                 Ok((server_name, tool_label, result)) => {
-                    let text_output = result
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            McpContent::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let output = if text_output.is_empty() {
-                        serde_json::to_string_pretty(&result.content)
-                            .unwrap_or_else(|_| "MCP tool returned non-text content".to_string())
-                    } else {
-                        text_output
-                    };
+                    let output = mcp_model_output(&result.content);
                     let details = serde_json::json!({
                         "server": server_name,
                         "tool": tool_label,
@@ -1470,6 +1536,26 @@ impl ToolExecutor {
             }
         }
 
+        let needs_orb_adapter = match tool_name {
+            "spawn_subagent" => {
+                args.get("backend")
+                    .and_then(Value::as_str)
+                    .is_some_and(|backend| {
+                        backend.eq_ignore_ascii_case("computer")
+                            || backend.eq_ignore_ascii_case("orb")
+                    })
+            }
+            "list_subagents" => self.subagents.has_orb_records(),
+            "get_subagent" | "wait_subagent" | "resume_subagent" | "cancel_subagent"
+            | "control_subagent" => self.subagents.uses_orb_backend(args),
+            _ => false,
+        };
+        if needs_orb_adapter {
+            if let Err(error) = self.ensure_orb_delegation_adapter().await {
+                return ToolResult::failure(error);
+            }
+        }
+
         // Every name (canonical or alias) matched below dispatches before
         // the wildcard arm's inline-tool fallback ever runs. Adding a new
         // arm/alias here also needs a matching entry in
@@ -1490,7 +1576,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "explore requires a non-empty operations array".to_string(),
-                        )
+                        );
                     }
                 };
                 if operations.len() > 8 {
@@ -1502,7 +1588,7 @@ impl ToolExecutor {
                     let operation_object = match operation.as_object() {
                         Some(operation) => operation,
                         None => {
-                            return ToolResult::failure("Each explore operation must be an object")
+                            return ToolResult::failure("Each explore operation must be an object");
                         }
                     };
                     let sub_tool = operation_object
@@ -1530,7 +1616,7 @@ impl ToolExecutor {
                         _ => {
                             return ToolResult::failure(
                                 "Each explore operation requires an args object",
-                            )
+                            );
                         }
                     };
                     let sub_call_id = format!("{call_id}:explore:{index}");
@@ -2971,7 +3057,7 @@ impl ToolExecutor {
                             None => {
                                 return ToolResult::failure(
                                     "command required for start".to_string(),
-                                )
+                                );
                             }
                         };
                         let requested_cwd = args.get("cwd").and_then(|v| v.as_str());
@@ -3052,7 +3138,7 @@ impl ToolExecutor {
                         let id = match args.get("taskId").and_then(|v| v.as_str()) {
                             Some(id) => id,
                             None => {
-                                return ToolResult::failure("taskId required for stop".to_string())
+                                return ToolResult::failure("taskId required for stop".to_string());
                             }
                         };
                         match background_tasks::stop(id) {
@@ -3064,7 +3150,7 @@ impl ToolExecutor {
                         let id = match args.get("taskId").and_then(|v| v.as_str()) {
                             Some(id) => id,
                             None => {
-                                return ToolResult::failure("taskId required for logs".to_string())
+                                return ToolResult::failure("taskId required for logs".to_string());
                             }
                         };
                         let lines = args
@@ -3082,7 +3168,7 @@ impl ToolExecutor {
                             None => {
                                 return ToolResult::failure(
                                     "taskId required for waitForRotation".to_string(),
-                                )
+                                );
                             }
                         };
                         // Default 0 = non-blocking snapshot (do not stall the turn).
@@ -3153,7 +3239,13 @@ impl ToolExecutor {
                     .await
             }
             "list_subagents" => self.subagents.list().await,
-            "get_subagent" => self.subagents.get(args),
+            "get_subagent" => {
+                if self.subagents.uses_orb_backend(args) {
+                    self.subagents.get_remote(args, cancel.as_ref()).await
+                } else {
+                    self.subagents.get(args)
+                }
+            }
             "inspect_subagent" => self.subagents.inspect(args),
             "cleanup_subagent" => self.subagents.cleanup(args),
             "wait_subagent" => self.subagents.wait(args, cancel.as_ref()).await,
@@ -3168,7 +3260,7 @@ impl ToolExecutor {
                     )
                     .await
             }
-            "cancel_subagent" => self.subagents.cancel(args),
+            "cancel_subagent" => self.subagents.cancel(args, cancel.as_ref()).await,
             "control_subagent" => {
                 self.subagents
                     .control(args, call_id, self.credential_vault.clone())
@@ -3463,7 +3555,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "line must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
                 let character = match args.get("character").and_then(serde_json::Value::as_i64) {
@@ -3471,7 +3563,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "character must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
 
@@ -3508,7 +3600,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "line must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
                 let character = match args.get("character").and_then(serde_json::Value::as_i64) {
@@ -3516,7 +3608,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "character must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
                 let include_declaration = args
@@ -3566,7 +3658,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "startLine must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
                 let end_line = match args.get("endLine").and_then(serde_json::Value::as_i64) {
@@ -3574,7 +3666,7 @@ impl ToolExecutor {
                     _ => {
                         return ToolResult::failure(
                             "endLine must be a non-negative integer".to_string(),
-                        )
+                        );
                     }
                 };
 
@@ -3860,5 +3952,63 @@ mod tests {
         let tail = redactor.finish(&vault, generation);
         assert!(tail.contains("{{CRED:password:"));
         assert!(!tail.contains("uri-secret"));
+    }
+
+    #[tokio::test]
+    async fn read_limited_lossy_keeps_head_and_tail_of_a_large_stream() {
+        // 1 MiB of filler with a marker at each end. Head-only capping kept
+        // `HEAD` and dropped `TAILMARK`, which is where build tools print the
+        // failure summary.
+        let mut body = String::from("HEAD");
+        body.push_str(&"f".repeat(1024 * 1024));
+        body.push_str("TAILMARK");
+
+        let out = read_limited_lossy(
+            std::io::Cursor::new(body.into_bytes()),
+            MAX_PROCESS_STDERR_BYTES,
+            "[stderr truncated]",
+        )
+        .await;
+
+        assert!(out.starts_with("HEAD"), "head lost: {}", &out[..32]);
+        assert!(out.ends_with("TAILMARK"), "tail lost");
+        assert!(out.contains("[stderr truncated]"));
+        assert!(out.contains("bytes elided ...]"));
+        assert!(
+            out.len() <= MAX_PROCESS_STDERR_BYTES + 128,
+            "output not bounded: {}",
+            out.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_limited_lossy_returns_short_output_unchanged() {
+        let out = read_limited_lossy(
+            std::io::Cursor::new(b"short output\n".to_vec()),
+            MAX_PROCESS_STDERR_BYTES,
+            "[stderr truncated]",
+        )
+        .await;
+        assert_eq!(out, "short output\n");
+    }
+
+    #[test]
+    fn mcp_model_output_preserves_full_payload_for_the_native_spill_boundary() {
+        let body = format!("HEAD{}TAIL", "y".repeat(1024 * 1024));
+        let content = vec![McpContent::Text { text: body.clone() }];
+
+        let out = mcp_model_output(&content);
+
+        assert_eq!(out, body);
+        assert!(!out.contains("bytes elided"));
+    }
+
+    #[test]
+    fn mcp_model_output_strips_nul_bytes() {
+        let content = vec![McpContent::Text {
+            text: "before\u{0}after".to_string(),
+        }];
+        let out = mcp_model_output(&content);
+        assert_eq!(out, "beforeafter");
     }
 }

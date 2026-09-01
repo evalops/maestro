@@ -1,7 +1,40 @@
 use serde_json::Value;
 use std::fs;
-use std::io::Write;
+use std::io::{Read as _, Write as _};
+use std::net::TcpListener;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+fn maestro_tui_binary() -> std::ffi::OsString {
+    std::env::var_os("CARGO_BIN_EXE_maestro-tui")
+        .expect("Cargo must provide the maestro-tui integration-test binary")
+}
+
+fn test_identity_base_url() -> &'static str {
+    static IDENTITY_BASE_URL: OnceLock<String> = OnceLock::new();
+    IDENTITY_BASE_URL
+        .get_or_init(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind test Identity server");
+            let address = listener.local_addr().expect("test Identity address");
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else {
+                        continue;
+                    };
+                    let mut request = [0_u8; 4 * 1024];
+                    let _ = stream.read(&mut request);
+                    let body = r#"{"active":true,"subject":"headless-parity-user","token_type":"access","organization_id":"headless-parity-org","workspace_id":"headless-parity-workspace","scopes":["llm_gateway:invoke"]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            format!("http://{address}")
+        })
+        .as_str()
+}
 
 #[test]
 fn every_contract_request_is_handled_or_typed_unsupported() {
@@ -42,10 +75,20 @@ fn every_contract_request_is_handled_or_typed_unsupported() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let mut child = Command::new(env!("CARGO_BIN_EXE_maestro-tui"))
+    let mut child = Command::new(maestro_tui_binary())
         .arg("--headless")
         .env("MAESTRO_MODEL", "gpt-5.5")
         .env("OPENAI_API_KEY", "headless-parity-test-key")
+        .env(
+            maestro_tui::credential_mode::ACCESS_TOKEN_ENV,
+            "headless-parity-identity-token",
+        )
+        .env(
+            maestro_tui::credential_mode::ORG_ID_ENV,
+            "headless-parity-org",
+        )
+        .env("MAESTRO_IDENTITY_URL", test_identity_base_url())
+        .env(maestro_tui::init_cli::TEST_IDENTITY_AUTHORITY_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

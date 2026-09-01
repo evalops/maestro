@@ -10,14 +10,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{Local, TimeZone, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::a2a_cli::{
-    get_task_ledger_path, is_action_required_state, is_completed_state, is_failed_state,
-    is_final_state, load_task_ledger, TaskLedgerEntry,
+    TaskLedgerEntry, get_task_ledger_path, is_action_required_state, is_completed_state,
+    is_failed_state, is_final_state, load_task_ledger,
 };
 use crate::session::{SessionInfo, SessionManager};
 
@@ -884,7 +884,7 @@ fn summarize_next_actions(delegated: &[&TaskLedgerEntry]) -> Vec<MultiAgentNextA
             "waiting" => (
                 format!("Reply to delegated task on {}", task.peer),
                 format!(
-                    "maestro a2a reply {} {} 'RESPONSE_TEXT' --wait --work-graph",
+                    "deixic-code a2a reply {} {} 'RESPONSE_TEXT' --wait --work-graph",
                     shell_quote(&task.peer),
                     shell_quote(&task.task_id)
                 ),
@@ -894,7 +894,7 @@ fn summarize_next_actions(delegated: &[&TaskLedgerEntry]) -> Vec<MultiAgentNextA
             "failed" => (
                 format!("Inspect failed delegated task on {}", task.peer),
                 format!(
-                    "maestro a2a tasks --peer {} --task {}",
+                    "deixic-code a2a tasks --peer {} --task {}",
                     shell_quote(&task.peer),
                     shell_quote(&task.task_id)
                 ),
@@ -905,7 +905,7 @@ fn summarize_next_actions(delegated: &[&TaskLedgerEntry]) -> Vec<MultiAgentNextA
             "running" => (
                 format!("Wait for delegated task on {}", task.peer),
                 format!(
-                    "maestro a2a wait {} {} --work-graph",
+                    "deixic-code a2a wait {} {} --work-graph",
                     shell_quote(&task.peer),
                     shell_quote(&task.task_id)
                 ),
@@ -1544,9 +1544,11 @@ mod tests {
 
     #[test]
     fn residual_gaps_drop_full_multi_agent_ledger_gap() {
-        assert!(!RESIDUAL_GAPS
-            .iter()
-            .any(|gap| gap.contains("A2A task ledger multi-agent coordination")));
+        assert!(
+            !RESIDUAL_GAPS
+                .iter()
+                .any(|gap| gap.contains("A2A task ledger multi-agent coordination"))
+        );
     }
 
     #[test]
@@ -1603,6 +1605,7 @@ mod tests {
                     text: "Do the work".into(),
                     state: None,
                     message_id: None,
+                    extensions: Default::default(),
                 },
                 TranscriptEntry {
                     at: "2026-05-16T06:39:51.075Z".into(),
@@ -1610,6 +1613,7 @@ mod tests {
                     text: "Done".into(),
                     state: Some(state.into()),
                     message_id: None,
+                    extensions: Default::default(),
                 },
             ],
             created_at: "2026-05-16T06:38:56.864Z".into(),
@@ -1619,6 +1623,7 @@ mod tests {
             } else {
                 None
             },
+            extensions: Default::default(),
         }
     }
 
@@ -1663,6 +1668,8 @@ mod tests {
                 sample_task("delegation", "TASK_STATE_COMPLETED", "desk", true),
                 sample_task("delegation", "TASK_STATE_WORKING", "mobile", false),
             ],
+            orb_delegations: vec![],
+            extensions: Default::default(),
         };
         std::fs::write(&path, serde_json::to_string_pretty(&ledger).unwrap()).unwrap();
         let range = ValueRange {

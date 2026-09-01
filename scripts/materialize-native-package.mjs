@@ -96,4 +96,22 @@ MAESTRO_WEB_STATIC_ROOT="\${MAESTRO_WEB_STATIC_ROOT:-$root/packages/web/dist}" \
 const launcherPath = resolve("bin", "maestro");
 writeFileSync(launcherPath, launcher);
 chmodSync(launcherPath, 0o755);
-console.log(`Native launcher -> ${launcherPath}`);
+console.log(`Compatibility launcher -> ${launcherPath}`);
+
+const canonicalLauncher = `#!/bin/sh
+set -eu
+script=$0
+while [ -L "$script" ]; do
+  link=$(readlink "$script")
+  case "$link" in
+    /*) script=$link ;;
+    *) script=$(dirname -- "$script")/$link ;;
+  esac
+done
+bin_dir=$(CDPATH='' cd -- "$(dirname -- "$script")" && pwd -P)
+exec "$bin_dir/maestro" "$@"
+`;
+const canonicalLauncherPath = resolve("bin", "deixic-code");
+writeFileSync(canonicalLauncherPath, canonicalLauncher);
+chmodSync(canonicalLauncherPath, 0o755);
+console.log(`Deixic Code launcher -> ${canonicalLauncherPath}`);

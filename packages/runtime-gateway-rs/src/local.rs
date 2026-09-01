@@ -7,13 +7,13 @@ use std::process::Stdio;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 
-use maestro_tui::checkpoints::{restore_latest, CheckpointStore};
+use maestro_tui::checkpoints::{CheckpointStore, restore_latest};
 use maestro_tui::session::SessionManager;
 
-use crate::http::{json_response, read_request_body, RequestHead};
+use crate::http::{RequestHead, json_response, read_request_body};
 use crate::{
-    run_git, AppState, BackgroundSettings, BackgroundUpdateRequest, CommandPrefs,
-    FrameworkUpdateRequest,
+    AppState, BackgroundSettings, BackgroundUpdateRequest, CommandPrefs, FrameworkUpdateRequest,
+    run_git,
 };
 
 pub(super) async fn workspace_files(cwd: &Path) -> Vec<String> {
@@ -169,6 +169,16 @@ pub(super) fn default_session_store_path(cwd: &Path) -> PathBuf {
         return env::temp_dir().join("maestro/sessions.json");
     }
     PathBuf::from(".maestro/sessions.json")
+}
+
+pub(super) fn default_session_messages_path(cwd: &Path) -> PathBuf {
+    if let Ok(state_dir) = env::var("MAESTRO_STATE_DIR") {
+        return PathBuf::from(state_dir).join("session-messages.json");
+    }
+    if cwd == Path::new("/app") {
+        return env::temp_dir().join("maestro/session-messages.json");
+    }
+    PathBuf::from(".maestro/session-messages.json")
 }
 
 pub(super) fn usage_file_path() -> PathBuf {

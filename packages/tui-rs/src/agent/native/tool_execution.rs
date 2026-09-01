@@ -12,15 +12,16 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::super::protocol::InlineToolApprovalContext;
-use super::super::safety::{SafetyController, SafetyVerdict};
 use super::super::{
     CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent, ToolExecution,
     ToolResult,
 };
-use super::{prompt_kind_starts_main_request, AgentCommand};
+use super::{AgentCommand, prompt_kind_starts_main_request};
 use crate::ai::ContentBlock;
-use crate::hooks::{HookResult, IntegratedHookSystem};
-use crate::safety::{ActionFirewall, FirewallContext, FirewallVerdict};
+use crate::hooks::{
+    HookEventType, HookResult, IntegratedHookSystem, render_hook_context, render_hook_context_error,
+};
+use crate::safety::{ActionFirewall, DenialMemory, FirewallContext, FirewallVerdict};
 use crate::state::ApprovalMode;
 use crate::tools::ToolExecutor;
 
@@ -57,10 +58,12 @@ pub(super) fn build_runner_tool_executor(
     cwd: &str,
     credential_vault: CredentialVault,
     sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    managed_mcp_policy: Option<crate::mcp::ManagedMcpPolicy>,
     subagent_parent_scope_id: Option<String>,
     mailbox_identity: Option<String>,
 ) -> ToolExecutor {
-    let executor = ToolExecutor::with_credential_vault(cwd, credential_vault);
+    let executor = ToolExecutor::with_credential_vault(cwd, credential_vault)
+        .with_managed_mcp_policy(managed_mcp_policy);
     let executor = match sandbox_policy {
         Some(policy) => executor.with_sandbox_policy(policy),
         None => executor,
@@ -73,6 +76,41 @@ pub(super) fn build_runner_tool_executor(
         Some(identity) => executor.with_mailbox_identity(identity),
         None => executor,
     }
+}
+
+/// What the approval gate decided for one tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ApprovalDecision {
+    /// Execute without asking.
+    NotRequired,
+    /// Ask the user.
+    Required,
+    /// The user already refused this exact call in this turn. Refuse it again
+    /// without asking.
+    RefusedEarlierThisTurn,
+}
+
+impl ApprovalDecision {
+    /// Whether the call must not execute without a fresh human decision.
+    ///
+    /// A repeat of a refused call answers `true` as well: it does not run, and
+    /// the caller reports the earlier refusal instead of prompting.
+    pub(super) fn requires_approval(self) -> bool {
+        !matches!(self, Self::NotRequired)
+    }
+
+    /// Whether the caller should refuse without prompting.
+    pub(super) fn is_repeat_refusal(self) -> bool {
+        matches!(self, Self::RefusedEarlierThisTurn)
+    }
+}
+
+/// The message returned to the model for a call refused earlier this turn.
+pub(super) fn repeat_refusal_message(tool_name: &str) -> String {
+    format!(
+        "Tool denied by user: `{tool_name}` was already refused with these exact arguments \
+         earlier in this turn. Do not retry it; change the approach or ask the user."
+    )
 }
 
 /// Decide whether a tool call must wait for caller approval before the
@@ -105,7 +143,8 @@ pub(super) fn tool_requires_approval(
     tool_executor: &ToolExecutor,
     tool_name: &str,
     args: &serde_json::Value,
-) -> bool {
+    denials: &DenialMemory,
+) -> ApprovalDecision {
     let mode_requires_approval = match approval_mode {
         ApprovalMode::Yolo => tool_executor.requires_sandbox_bypass_approval(tool_name, args),
         ApprovalMode::Safe => true,
@@ -114,7 +153,15 @@ pub(super) fn tool_requires_approval(
     let firewall_requires_approval =
         matches!(firewall_verdict, FirewallVerdict::RequireApproval { .. })
             && approval_mode != ApprovalMode::Yolo;
-    is_external_tool || mode_requires_approval || firewall_requires_approval
+    if !(is_external_tool || mode_requires_approval || firewall_requires_approval) {
+        return ApprovalDecision::NotRequired;
+    }
+    // Only calls that would prompt are checked. A call that needs no approval
+    // this turn was never refused through this gate.
+    if denials.was_refused(tool_name, args) {
+        return ApprovalDecision::RefusedEarlierThisTurn;
+    }
+    ApprovalDecision::Required
 }
 
 pub(super) fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, String> {
@@ -290,13 +337,26 @@ pub(super) fn run_post_execution_hooks(
 
 /// Append hook-injected context to a tool result body.
 ///
-/// Empty or whitespace-only context is dropped rather than appended as blank
-/// lines the model has to read.
-pub(super) fn append_hook_context(content: String, context: Option<&str>) -> String {
-    match context {
-        Some(context) if !context.trim().is_empty() => format!("{content}\n\n{context}"),
-        _ => content,
-    }
+/// The context is bounded, escaped, and wrapped in the `<system_reminder>`
+/// delimiter by [`render_hook_context`], so hook text is separated from tool
+/// output and cannot forge the delimiter. Empty or whitespace-only context is
+/// dropped rather than appended as blank lines the model has to read. Context
+/// over [`crate::hooks::MAX_HOOK_CONTEXT_CHARS`] is replaced by a visible note that it was
+/// dropped, so an oversized hook response is not silently invisible.
+pub(super) fn append_hook_context(
+    content: String,
+    event: HookEventType,
+    context: Option<&str>,
+) -> String {
+    let Some(context) = context else {
+        return content;
+    };
+    let rendered = match render_hook_context(event, context) {
+        Ok(rendered) if rendered.is_empty() => return content,
+        Ok(rendered) => rendered,
+        Err(error) => render_hook_context_error(&error),
+    };
+    format!("{content}\n\n{rendered}")
 }
 
 pub(super) fn deferred_tool_call_event(
@@ -507,13 +567,6 @@ pub(super) fn deferred_firewall_verdict(
             annotations,
         })
     }
-}
-
-pub(super) fn deferred_execution_safety_verdict(
-    safety: &SafetyController,
-    call: &ToolCallContext,
-) -> SafetyVerdict {
-    safety.check_tool_call(&call.tool_name, &call.safe_args)
 }
 
 pub(super) fn deferred_rejection_output_event(call: &ToolCallContext, reason: &str) -> FromAgent {

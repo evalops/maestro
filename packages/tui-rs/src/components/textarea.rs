@@ -102,9 +102,9 @@ use ratatui::widgets::Widget;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ops::Range;
+use textwrap::Options;
 use textwrap::core::break_words;
 use textwrap::word_splitters::split_words;
-use textwrap::Options;
 use unicode_width::UnicodeWidthStr;
 
 /// A pasted block is folded into a chip when it spans more than this many lines.
@@ -462,11 +462,7 @@ impl TextArea {
     /// Find which wrapped line contains the given byte position
     fn wrapped_line_index(lines: &[Range<usize>], pos: usize) -> Option<usize> {
         let idx = lines.partition_point(|r| r.start <= pos);
-        if idx == 0 {
-            None
-        } else {
-            Some(idx - 1)
-        }
+        if idx == 0 { None } else { Some(idx - 1) }
     }
 
     /// Get wrapped lines for the given width (cached)

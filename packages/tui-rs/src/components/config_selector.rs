@@ -3,11 +3,11 @@
 //! Provides a UI for viewing and modifying runtime configuration settings.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
 /// A single configurable setting

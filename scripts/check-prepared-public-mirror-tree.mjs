@@ -61,6 +61,10 @@ if (!existsSync(targetRoot)) {
 	fail(`Prepared public mirror target does not exist: ${targetRoot}`);
 }
 
+if (!existsSync(resolve(targetRoot, "rustfmt.toml"))) {
+	fail("Prepared public mirror is missing the canonical rustfmt.toml configuration.");
+}
+
 if (existsSync(resolve(targetRoot, ".github/public-release-mirror.exclude"))) {
 	fail(".github/public-release-mirror.exclude must not exist in the prepared public mirror tree.");
 }

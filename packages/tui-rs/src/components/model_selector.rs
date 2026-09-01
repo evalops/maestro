@@ -3,14 +3,14 @@
 //! Provides a UI for selecting AI models.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
-pub use crate::model_catalog::{available_models, ModelInfo, ModelVerification};
+pub use crate::model_catalog::{ModelInfo, ModelVerification, available_models};
 
 /// Maximum number of models in the focused slice shown before the
 /// "show all models" affordance expands the full catalog.

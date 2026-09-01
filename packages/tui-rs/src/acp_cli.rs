@@ -6,10 +6,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use uuid::Uuid;
 
 use crate::session::{
@@ -364,6 +364,8 @@ fn create_acp_session_in(
     cwd: &Path,
     sessions_dir: Option<&Path>,
 ) -> Result<AcpSession> {
+    let unified_context_manifest = crate::context_cli::load_unified_context_manifest_json(cwd)
+        .context("failed to capture ACP context manifest")?;
     let header = SessionHeader {
         version: Some(1),
         id: session_id.to_string(),
@@ -376,7 +378,7 @@ fn create_acp_session_in(
         system_prompt: None,
         prompt_metadata: None,
         prompt_context_manifest: None,
-        unified_context_manifest: None,
+        unified_context_manifest: Some(Box::new(unified_context_manifest)),
         tools: Vec::new(),
         branched_from: None,
         parent_session: None,
@@ -748,6 +750,18 @@ mod tests {
 
         assert_eq!(parsed.header.id, "acp-session");
         assert_eq!(parsed.header.cwd, temp.path().to_string_lossy());
+        let context_manifest = parsed
+            .header
+            .unified_context_manifest
+            .as_ref()
+            .expect("ACP sessions persist their context generation");
+        assert_eq!(
+            context_manifest
+                .get("manifestSha256")
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(71)
+        );
         assert!(parsed.messages.is_empty());
     }
 

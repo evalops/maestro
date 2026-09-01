@@ -1,11 +1,11 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>com.evalops.composer</id>
-    <name>Maestro</name>
+    <name>Deixic Code</name>
     <vendor email="support@evalops.ai" url="https://evalops.ai">EvalOps</vendor>
 
     <description><![CDATA[
-    <p>Maestro - Deterministic AI coding assistant for JetBrains IDEs.</p>
+    <p>Deixic Code - Deterministic AI coding assistant for JetBrains IDEs.</p>
     <p>Use Claude, GPT-4, Gemini, and other AI models with full transparency and control.</p>
     <h3>Features</h3>
     <ul>
@@ -18,9 +18,9 @@
     </ul>
     <h3>Getting Started</h3>
     <ol>
-        <li>Install the Maestro CLI: <code>npm install -g @evalops/maestro</code></li>
-        <li>Start the web server: <code>maestro web</code></li>
-        <li>Open the Maestro tool window in your IDE</li>
+        <li>Install Deixic Code: <code>npm install -g @evalops/maestro</code> (compatibility package)</li>
+        <li>Start the web server: <code>deixic-code web</code></li>
+        <li>Open the Deixic Code tool window in your IDE</li>
     </ol>
     ]]></description>
 
@@ -41,7 +41,7 @@
                 parentId="tools"
                 instance="com.evalops.composer.settings.ComposerSettingsConfigurable"
                 id="com.evalops.composer.settings"
-                displayName="Maestro"/>
+                displayName="Deixic Code"/>
 
         <!-- Persistent State for Settings -->
         <applicationService
@@ -64,15 +64,15 @@
 
     <actions>
         <!-- Main Menu Group -->
-        <group id="Composer.MainMenu" text="Maestro" popup="true">
+        <group id="Composer.MainMenu" text="Deixic Code" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </group>
 
         <!-- Add to Context Action -->
         <action id="Composer.AddToContext"
                 class="com.evalops.composer.actions.AddToContextAction"
-                text="Add File to Maestro Context"
-                description="Add the current file to Maestro's context"
+                text="Add File to Deixic Code Context"
+                description="Add the current file to Deixic Code's context"
                 icon="AllIcons.General.Pin_tab">
             <add-to-group group-id="Composer.MainMenu" anchor="first"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
@@ -84,7 +84,7 @@
         <action id="Composer.ClearChat"
                 class="com.evalops.composer.actions.ClearChatAction"
                 text="Clear Chat"
-                description="Clear the current Maestro chat session"
+                description="Clear the current Deixic Code chat session"
                 icon="AllIcons.Actions.GC">
             <add-to-group group-id="Composer.MainMenu" anchor="after" relative-to-action="Composer.AddToContext"/>
         </action>
@@ -92,8 +92,8 @@
         <!-- Open Settings Action -->
         <action id="Composer.OpenSettings"
                 class="com.evalops.composer.actions.OpenSettingsAction"
-                text="Maestro Settings..."
-                description="Open Maestro settings"
+                text="Deixic Code Settings..."
+                description="Open Deixic Code settings"
                 icon="AllIcons.General.Settings">
             <add-to-group group-id="Composer.MainMenu" anchor="last"/>
         </action>
@@ -101,8 +101,8 @@
         <!-- Focus Maestro Action -->
         <action id="Composer.Focus"
                 class="com.evalops.composer.actions.FocusComposerAction"
-                text="Focus Maestro"
-                description="Open and focus the Maestro tool window"
+                text="Focus Deixic Code"
+                description="Open and focus the Deixic Code tool window"
                 icon="AllIcons.Toolwindows.ToolWindowMessages">
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift C"/>
         </action>

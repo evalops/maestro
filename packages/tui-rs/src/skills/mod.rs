@@ -31,6 +31,7 @@
 //! registry.activate("frontend-design")?;
 //! ```
 
+pub mod catalog_budget;
 pub mod loader;
 mod types;
 
@@ -38,7 +39,11 @@ pub use types::{
     ActiveSkill, SkillActivationState, SkillDefinition, SkillEvent, SkillId, SkillSource,
 };
 
-pub use loader::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillResources};
+pub use catalog_budget::{
+    SkillCatalogBudgetError, SkillCatalogEntry, SkillCatalogStrategy, apply_skill_catalog_budget,
+    skill_catalog_budget_tokens,
+};
+pub use loader::{LoadedSkill, SkillLoadError, SkillLoader, SkillResources, skills_to_prompt};
 
 use std::collections::HashMap;
 
@@ -325,9 +330,11 @@ mod tests {
         assert_eq!(activated, vec!["allowed"]);
         assert!(registry.get("allowed").expect("skill exists").is_active());
         assert!(!registry.get("disabled").expect("skill exists").is_active());
-        assert!(registry
-            .active_system_prompt_additions()
-            .contains("parser conventions"));
+        assert!(
+            registry
+                .active_system_prompt_additions()
+                .contains("parser conventions")
+        );
     }
 
     #[test]
@@ -349,13 +356,17 @@ mod tests {
         let activated = registry.auto_activate_for_input("Review the parser changes");
 
         assert_eq!(activated, vec!["parser-new"]);
-        assert!(registry
-            .get("parser-new")
-            .expect("skill exists")
-            .is_active());
-        assert!(registry
-            .active_system_prompt_additions()
-            .contains("parser conventions"));
+        assert!(
+            registry
+                .get("parser-new")
+                .expect("skill exists")
+                .is_active()
+        );
+        assert!(
+            registry
+                .active_system_prompt_additions()
+                .contains("parser conventions")
+        );
     }
 
     #[test]
@@ -1216,10 +1227,12 @@ mod tests {
 
         assert!(registry.get("skill/with:special-chars_v1.0").is_some());
         registry.activate("skill/with:special-chars_v1.0").unwrap();
-        assert!(registry
-            .get("skill/with:special-chars_v1.0")
-            .unwrap()
-            .is_active());
+        assert!(
+            registry
+                .get("skill/with:special-chars_v1.0")
+                .unwrap()
+                .is_active()
+        );
     }
 
     #[test]

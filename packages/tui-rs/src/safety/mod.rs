@@ -53,6 +53,7 @@
 
 mod bash_analyzer;
 mod dangerous_patterns;
+mod denial_memory;
 mod firewall;
 pub mod guardian;
 mod path_containment;
@@ -64,29 +65,35 @@ mod workflow_state;
 mod integration_tests;
 
 pub use bash_analyzer::{
-    analyze_bash_command, is_dangerous, is_likely_safe, BashAnalysis, CommandRisk,
+    BashAnalysis, CommandRisk, RunAttendance, UNPARSEABLE_INTERACTIVE_REASON,
+    UNPARSEABLE_UNATTENDED_REASON, analyze_bash_command, analyze_bash_command_with_attendance,
+    canonicalize_for_matching, is_dangerous, is_likely_safe,
 };
 pub(crate) use bash_analyzer::{find_has_dangerous_predicate, git_args_are_mutating, tokenize};
 pub use dangerous_patterns::{
-    check_dangerous_patterns, has_high_severity_pattern, most_severe_match, DangerousPattern,
-    PatternMatch, Severity,
+    DangerousPattern, PatternMatch, Severity, check_dangerous_patterns, has_high_severity_pattern,
+    most_severe_match,
 };
+pub use denial_memory::{DenialMemory, MAX_DENIAL_TARGET_CHARS};
 pub use firewall::{ActionFirewall, FirewallContext, FirewallVerdict};
-pub(crate) use path_containment::{expand_tilde, is_tilde_path};
 pub use path_containment::{
-    has_path_traversal, is_path_contained, is_system_path, PathContainment,
+    PathContainment, has_path_traversal, is_path_contained, is_system_path,
 };
+pub(crate) use path_containment::{expand_tilde, is_tilde_path};
 pub use policy::{
-    check_model_allowed, check_path_allowed, check_session_limits, get_policy_limits,
-    managed_policy_audit, managed_policy_metadata, managed_policy_status, publish_managed_policy,
-    record_managed_policy_audit, refresh_managed_policy, ManagedPolicyAuditEvent,
-    ManagedPolicyEnvelope, ManagedPolicyMetadata, ManagedPolicyPublishResult, ManagedPolicyStatus,
+    ManagedPolicyAuditEvent, ManagedPolicyEnvelope, ManagedPolicyMetadata,
+    ManagedPolicyPublishResult, ManagedPolicyStatus, check_model_allowed, check_path_allowed,
+    check_session_limits, get_policy_limits, managed_policy_audit, managed_policy_metadata,
+    managed_policy_status, publish_managed_policy, record_managed_policy_audit,
+    refresh_managed_policy,
 };
+#[cfg(test)]
+pub(crate) use safe_mode::PlanModeOverride;
 pub use safe_mode::{
-    is_plan_mode, is_safe_mode_enabled, require_plan, run_validators,
-    run_validators_with_diagnostics, set_plan_mode, set_plan_satisfied, ValidatorResult,
+    ValidatorResult, is_plan_mode, is_safe_mode_enabled, require_plan, run_validators,
+    run_validators_with_diagnostics, set_plan_mode, set_plan_satisfied,
 };
 pub use workflow_state::{
-    apply_workflow_state_hooks, has_tool_tags, is_human_facing_tool, is_workflow_tracked_tool,
-    looks_like_egress, ToolEgress, ToolTag, WorkflowStateSnapshot, WorkflowStateTracker,
+    ToolEgress, ToolTag, WorkflowStateSnapshot, WorkflowStateTracker, apply_workflow_state_hooks,
+    has_tool_tags, is_human_facing_tool, is_workflow_tracked_tool, looks_like_egress,
 };

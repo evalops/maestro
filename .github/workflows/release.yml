@@ -124,10 +124,28 @@ jobs:
           RELEASE_PLATFORM: ${{ matrix.platform }}
         run: node scripts/build-release-binary.mjs --platform "$RELEASE_PLATFORM"
       - name: Smoke host binary
-        if: ${{ matrix.platform == 'linux-x64' }}
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
         run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${RELEASE_PLATFORM}"
+      - name: Record smoke marker
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          binary="dist/release/maestro-${RELEASE_PLATFORM}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum "$binary" | awk '{print $1}')"
+          else
+            digest="$(shasum -a 256 "$binary" | awk '{print $1}')"
+          fi
+          printf '%s  maestro-%s\n' "$digest" "$RELEASE_PLATFORM" > "dist/release/smoked-${RELEASE_PLATFORM}.txt"
+      - name: Verify macOS release signature
+        if: ${{ startsWith(matrix.platform, 'darwin-') }}
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          node scripts/check-macos-release-signature.mjs \
+            "dist/release/maestro-${RELEASE_PLATFORM}" \
+            --marker "dist/release/signed-${RELEASE_PLATFORM}.json"
       - name: Record release toolchain
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
@@ -137,6 +155,8 @@ jobs:
           name: maestro-${{ matrix.platform }}
           path: |
             dist/release/maestro-${{ matrix.platform }}
+            dist/release/smoked-${{ matrix.platform }}.txt
+            dist/release/signed-${{ matrix.platform }}.json
             dist/release/rustc-${{ matrix.platform }}.txt
 
   publish:
@@ -193,9 +213,15 @@ jobs:
         run: |
           PACK_JSON=$(npm pack --json)
           echo "$PACK_JSON"
+          node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("package.json","utf8")); p.name="@evalops/maestro"; fs.writeFileSync("package.json", JSON.stringify(p, null, "\t")+"\n")'
+          ALIAS_PACK_JSON=$(npm pack --json)
+          echo "$ALIAS_PACK_JSON"
+          git checkout -- package.json
           {
             echo "tarball=$(echo "$PACK_JSON" | jq -r '.[0].filename')"
             echo "integrity=$(echo "$PACK_JSON" | jq -r '.[0].integrity')"
+            echo "alias_tarball=$(echo "$ALIAS_PACK_JSON" | jq -r '.[0].filename')"
+            echo "alias_integrity=$(echo "$ALIAS_PACK_JSON" | jq -r '.[0].integrity')"
           } >> "$GITHUB_OUTPUT"
       - name: Smoke packed package without JS runtime
         env:
@@ -212,15 +238,20 @@ jobs:
           retention-days: 14
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           overwrite: true
-          path: ${{ steps.pack.outputs.tarball }}
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.alias_tarball }}
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          ALIAS_PACKAGE_NAME: "@evalops/maestro"
           PACKED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
+          ALIAS_PACKED_INTEGRITY: ${{ steps.pack.outputs.alias_integrity }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
           NPM_TAG: ${{ needs.prepare.outputs.npm_tag }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
+          ALIAS_TARBALL: ${{ steps.pack.outputs.alias_tarball }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -232,11 +263,13 @@ jobs:
           # Trusted publishing (OIDC) is the primary path for @evalops/maestro.
           # Classic NPM_TOKEN is fallback only; a dead token returns E404 on PUT.
           publish_with_oidc() {
+            local tarball="$1"
             # npm ≥ 11.5.1 required for OIDC; pin via npx for stable behavior.
-            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
+            npx --yes npm@11.10.0 publish "$tarball" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
 
           publish_with_token() {
+            local tarball="$1"
             if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
               echo "::error::OIDC publish failed and secrets.NPM_TOKEN is empty. Configure npm trusted publishing for evalops/maestro release.yml (npm-release env) and ensure this job has id-token: write, or set a granular NPM_TOKEN with write on @evalops/maestro."
               return 1
@@ -245,36 +278,41 @@ jobs:
             printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
             NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" \
               NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
-              npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
+              npx --yes npm@11.10.0 publish "$tarball" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
 
           verify_published_tarball() {
+            local package_name="$1"
+            local packed_integrity="$2"
             local registry_integrity
             registry_integrity="$(
-              command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
+              command npm view "${package_name}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
             )" || return 1
 
             if [[ -z "$registry_integrity" ]]; then
               return 1
             fi
-            if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then
-              echo "::error::npm already contains ${PACKAGE_NAME}@${RELEASE_VERSION} with integrity ${registry_integrity}, not ${PACKED_INTEGRITY}."
+            if [[ "$registry_integrity" != "$packed_integrity" ]]; then
+              echo "::error::npm already contains ${package_name}@${RELEASE_VERSION} with integrity ${registry_integrity}, not ${packed_integrity}."
               return 2
             fi
-            echo "Verified ${PACKAGE_NAME}@${RELEASE_VERSION} already contains the packed tarball."
+            echo "Verified ${package_name}@${RELEASE_VERSION} already contains the packed tarball."
           }
 
           publish_or_verify() {
             local publisher="$1"
+            local package_name="$2"
+            local tarball="$3"
+            local packed_integrity="$4"
             local publish_status=0
             local registry_status=0
 
-            "$publisher" || publish_status=$?
+            "$publisher" "$tarball" || publish_status=$?
             if [[ "$publish_status" -eq 0 ]]; then
               return 0
             fi
 
-            verify_published_tarball || registry_status=$?
+            verify_published_tarball "$package_name" "$packed_integrity" || registry_status=$?
             if [[ "$registry_status" -eq 0 ]]; then
               return 0
             fi
@@ -284,21 +322,28 @@ jobs:
             return "$publish_status"
           }
 
-          registry_status=0
-          verify_published_tarball || registry_status=$?
-          if [[ "$registry_status" -eq 0 ]]; then
-            exit 0
-          fi
-          if [[ "$registry_status" -eq 2 ]]; then
-            exit 2
-          fi
+          publish_package() {
+            local package_name="$1"
+            local tarball="$2"
+            local packed_integrity="$3"
+            local registry_status=0
+            verify_published_tarball "$package_name" "$packed_integrity" || registry_status=$?
+            if [[ "$registry_status" -eq 0 ]]; then
+              return 0
+            fi
+            if [[ "$registry_status" -eq 2 ]]; then
+              return 2
+            fi
+            if publish_or_verify publish_with_oidc "$package_name" "$tarball" "$packed_integrity"; then
+              return 0
+            fi
+            echo "::warning::OIDC trusted publish failed for ${package_name}; trying secrets.NPM_TOKEN fallback."
+            publish_or_verify publish_with_token "$package_name" "$tarball" "$packed_integrity"
+          }
 
-          # OIDC first (matches last successful publisher identity), then token.
-          if publish_or_verify publish_with_oidc; then
-            exit 0
-          fi
-          echo "::warning::OIDC trusted publish failed; trying secrets.NPM_TOKEN fallback."
-          publish_or_verify publish_with_token
+          # shellcheck disable=SC2153 # Values are supplied by the step env block.
+          publish_package "$PACKAGE_NAME" "$TARBALL" "$PACKED_INTEGRITY"
+          publish_package "$ALIAS_PACKAGE_NAME" "$ALIAS_TARBALL" "$ALIAS_PACKED_INTEGRITY"
   github-release:
     needs:
       - prepare

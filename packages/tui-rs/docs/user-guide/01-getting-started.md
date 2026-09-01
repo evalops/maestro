@@ -1,6 +1,6 @@
 # Getting Started
 
-Maestro is a coding agent for real software work. The interactive surface is a native terminal UI (`maestro`) that can inspect code, edit files, run shell commands, and stream tool use with approvals and sandbox controls.
+Deixic Code is a coding agent for real software work. The interactive surface is a native terminal UI (`deixic-code`) that can inspect code, edit files, run shell commands, and stream tool use with approvals and sandbox controls.
 
 ---
 
@@ -21,10 +21,10 @@ npm install -g @evalops/maestro
 Verify:
 
 ```bash
-maestro --version
+deixic-code --version
 ```
 
-The installer keeps prior verified releases under the Maestro data directory so a failed update does not replace the active launcher. Use `MAESTRO_REQUIRE_SIGNED_INSTALL=1` when your environment should reject older unsigned releases.
+The installer keeps prior verified releases under the compatibility-named Maestro data directory so a failed update does not replace the active launcher. Use `MAESTRO_REQUIRE_SIGNED_INSTALL=1` when your environment should reject older unsigned releases.
 
 See the root [README Install section](../../../../README.md#install) for manual release binary downloads.
 
@@ -43,43 +43,45 @@ npm run tui-rs:build
 Run the read-only setup check once after installation. It checks the selected model, credentials, local configuration, and Codex transport, then prints the next command without exposing secret values:
 
 ```bash
-maestro setup
+deixic-code setup
 ```
 
-Use `maestro setup --live` only when you want the optional provider metadata probe. Use `maestro setup --json` for scripts.
+Use `deixic-code setup --live` only when you want the optional provider metadata probe. Use `deixic-code setup --json` for scripts.
 
 ```bash
-maestro
+deixic-code
 ```
 
 Or with an initial prompt (opens the TUI and submits once the agent is ready):
 
 ```bash
-maestro "Audit this repository and suggest the next refactor"
+deixic-code "Audit this repository and suggest the next refactor"
 ```
 
 Other common entrypoints:
 
 ```bash
-maestro "…"                 # interactive TUI with trailing prompt
-maestro web                 # browser UI on http://localhost:8080
-maestro --resume            # interactive session picker
-maestro --continue          # resume most recent session for this cwd
+deixic-code "…"                 # interactive TUI with trailing prompt
+deixic-code web                 # browser UI on http://localhost:8080
+deixic-code --resume            # interactive session picker
+deixic-code --continue          # resume most recent session for this cwd
 ```
 
 ---
 
 ## Authenticate
 
-On first launch with no credentials, Maestro opens `/setup`. Choose EvalOps login or paste a local API key. You can reopen it later with `/setup`.
+On first launch, Deixic Code opens `/setup` and requires an EvalOps Identity
+sign-in. After that, choose managed inference or add a local API key (BYOK).
+You can reopen it later with `/setup`.
 
 Default path for Codex subscription models:
 
 ```bash
-maestro codex login
+deixic-code codex login
 ```
 
-Bare `maestro` defaults toward `openai-codex/gpt-5.5` when Codex auth is available. You can also set provider API keys (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or store keys in `~/.maestro/keys.json`. See [Authentication](02-authentication.md).
+Bare `deixic-code` defaults toward `openai-codex/gpt-5.5` when Codex auth is available. You can also set provider API keys (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or store keys in the retained `~/.maestro/keys.json` compatibility path. See [Authentication](02-authentication.md).
 
 ---
 

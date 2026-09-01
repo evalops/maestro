@@ -11,6 +11,7 @@ TASKS_A="$WORK_DIR/peer-a-tasks.json"
 TASKS_B="$WORK_DIR/peer-b-tasks.json"
 READY_TIMEOUT_SECONDS="${MAESTRO_A2A_TMUX_READY_TIMEOUT_SECONDS:-120}"
 KEEP_SESSION="${MAESTRO_A2A_TMUX_KEEP_SESSION:-0}"
+OWNS_SESSION=0
 
 require_cmd() {
 	local cmd="$1"
@@ -54,10 +55,12 @@ wait_for_health() {
 
 cleanup() {
 	local status=$?
-	if [[ "$KEEP_SESSION" != "1" ]]; then
-		tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1 || true
-	else
-		echo "leaving tmux session attached state for inspection: $SESSION_NAME"
+	if [[ "$OWNS_SESSION" == "1" ]]; then
+		if [[ "$KEEP_SESSION" != "1" ]]; then
+			tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1 || true
+		else
+			echo "leaving tmux session attached state for inspection: $SESSION_NAME"
+		fi
 	fi
 	exit "$status"
 }
@@ -199,22 +202,28 @@ require_cmd curl
 
 cd "$ROOT_DIR"
 mkdir -p "$LOG_DIR"
-rm -f "$REGISTRY_A" "$REGISTRY_B" "$TASKS_A" "$TASKS_B"
 
-if tmux has-session -t "$SESSION_NAME" >/dev/null 2>&1; then
+trap cleanup EXIT INT TERM
+
+if tmux new-session -d -s "$SESSION_NAME" -n peer-a "sleep 300"; then
+	OWNS_SESSION=1
+else
 	echo "tmux session already exists: $SESSION_NAME" >&2
 	echo "kill it or set MAESTRO_A2A_TMUX_SESSION to another name" >&2
 	exit 1
 fi
+
+rm -f \
+	"$REGISTRY_A" "$REGISTRY_B" \
+	"$TASKS_A" "$TASKS_A.sqlite3" "$TASKS_A.sqlite3-wal" "$TASKS_A.sqlite3-shm" \
+	"$TASKS_B" "$TASKS_B.sqlite3" "$TASKS_B.sqlite3-wal" "$TASKS_B.sqlite3-shm"
 
 PORT_A="$(allocate_port)"
 PORT_B="$(allocate_port)"
 BASE_A="http://127.0.0.1:$PORT_A"
 BASE_B="http://127.0.0.1:$PORT_B"
 
-trap cleanup EXIT INT TERM
-
-tmux new-session -d -s "$SESSION_NAME" -n peer-a \
+tmux respawn-window -k -t "$SESSION_NAME:peer-a" \
 	"cd '$ROOT_DIR' && env MAESTRO_HOME='$WORK_DIR/peer-a-home' MAESTRO_A2A_AGENT_NAME='Maestro A2A tmux peer A' MAESTRO_A2A_FAKE_RESPONSE='tmux peer A received the A2A message' MAESTRO_CONTROL_HOST='127.0.0.1' MAESTRO_WEB_REQUIRE_KEY='0' PORT='$PORT_A' cargo run --quiet -p maestro-runtime-gateway --bin maestro-runtime-gateway 2>&1 | tee '$LOG_DIR/peer-a.log'"
 
 tmux new-window -t "$SESSION_NAME" -n peer-b \

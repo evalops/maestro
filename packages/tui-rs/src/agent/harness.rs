@@ -48,7 +48,7 @@ impl AgentHarness {
             "scripted-replay/maestro-replay-v1",
             responses,
         ));
-        let (agent, events) = NativeAgent::new_with_client(config, client)?;
+        let (agent, events) = NativeAgent::new_with_test_client(config, client)?;
         // Point the runner's hook logger at our file without requiring the
         // temp workspace to be marked trusted in global config.
         agent.set_hook_log_file(hook_log.display().to_string())?;
@@ -118,6 +118,7 @@ pub const WIRED_HOOK_EVENTS: &[HookEventType] = &[
     HookEventType::StopFailure,
     HookEventType::PreMessage,
     HookEventType::PostMessage,
+    HookEventType::OnError,
     HookEventType::EvalGate,
     HookEventType::SubagentStart,
     HookEventType::SubagentStop,
@@ -133,7 +134,6 @@ pub const UNWIRED_HOOK_EVENTS: &[HookEventType] = &[
     HookEventType::PreCompact,
     HookEventType::PostCompact,
     HookEventType::Notification,
-    HookEventType::OnError,
     HookEventType::Branch,
 ];
 
@@ -175,7 +175,7 @@ async fn session_context_transition_logs_session_start_and_end() {
 
     harness
         .agent
-        .set_session_context(Some("sess-a".to_owned()), "new")
+        .set_session_context(Some("sess-a".to_owned()), "new", false)
         .expect("set session a");
     // Give the runner a moment to process the command and write the hook log.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -187,7 +187,7 @@ async fn session_context_transition_logs_session_start_and_end() {
 
     harness
         .agent
-        .set_session_context(Some("sess-b".to_owned()), "resume")
+        .set_session_context(Some("sess-b".to_owned()), "resume", false)
         .expect("set session b");
     tokio::time::sleep(Duration::from_millis(100)).await;
     let lines = harness.hook_log_lines();
@@ -218,7 +218,7 @@ async fn scripted_stream_error_dispatches_stop_failure() {
 
     harness
         .agent
-        .set_session_context(Some("sess-stop".to_owned()), "new")
+        .set_session_context(Some("sess-stop".to_owned()), "new", false)
         .expect("session");
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -262,6 +262,11 @@ async fn scripted_stream_error_dispatches_stop_failure() {
         "expected StopFailure in hook log, got {:?}",
         harness.hook_log_lines()
     );
+    assert!(
+        harness.hook_log_contains("OnError"),
+        "expected OnError in hook log, got {:?}",
+        harness.hook_log_lines()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -296,13 +301,15 @@ async fn scripted_provider_error_preserves_kind_and_never_completes_turn() {
             message,
         }) if message.contains("output budget exhausted")
     ));
-    assert!(harness
-        .wait_for_event(Duration::from_millis(200), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_none());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_none()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -352,13 +359,15 @@ async fn scripted_partial_text_eof_is_transient_protocol_error() {
             ..
         })
     ));
-    assert!(harness
-        .wait_for_event(Duration::from_millis(200), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_none());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_none()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -397,13 +406,15 @@ async fn scripted_completed_tool_block_eof_is_transient_protocol_error() {
             ..
         })
     ));
-    assert!(harness
-        .wait_for_event(Duration::from_millis(200), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_none());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_none()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -419,13 +430,15 @@ async fn successful_native_loop_emits_explicit_turn_completed() {
         .await
         .expect("prompt");
 
-    assert!(harness
-        .wait_for_event(Duration::from_secs(5), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_some());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_some()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -450,13 +463,15 @@ async fn continue_preserves_provider_error_kind_and_does_not_complete() {
         .prompt("first prompt".to_owned(), vec![])
         .await
         .expect("prompt");
-    assert!(harness
-        .wait_for_event(Duration::from_secs(5), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_some());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_some()
+    );
 
     harness.agent.continue_execution().expect("continue");
     assert!(matches!(
@@ -471,13 +486,15 @@ async fn continue_preserves_provider_error_kind_and_does_not_complete() {
             message,
         }) if message == "declared continue failure"
     ));
-    assert!(harness
-        .wait_for_event(Duration::from_millis(200), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_none());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_none()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -496,13 +513,15 @@ async fn cancelled_native_loop_emits_explicit_turn_interrupted() {
         .prompt("wait for cancellation".to_owned(), vec![])
         .await
         .expect("prompt");
-    assert!(harness
-        .wait_for_event(Duration::from_secs(5), |event| matches!(
-            event,
-            FromAgent::ResponseStart { .. }
-        ))
-        .await
-        .is_some());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ResponseStart { .. }
+            ))
+            .await
+            .is_some()
+    );
     harness.agent.cancel();
 
     assert!(matches!(
@@ -514,13 +533,15 @@ async fn cancelled_native_loop_emits_explicit_turn_interrupted() {
             .await,
         Some(FromAgent::TurnInterrupted { reason, .. }) if reason == "cancelled"
     ));
-    assert!(harness
-        .wait_for_event(Duration::from_millis(200), |event| matches!(
-            event,
-            FromAgent::TurnCompleted { .. }
-        ))
-        .await
-        .is_none());
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| matches!(
+                event,
+                FromAgent::TurnCompleted { .. }
+            ))
+            .await
+            .is_none()
+    );
 
     harness.agent.shutdown().await;
 }
@@ -785,7 +806,7 @@ async fn failed_tool_dispatches_post_tool_use_failure() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     harness
         .agent
-        .set_session_context(Some("sess-fail".to_owned()), "new")
+        .set_session_context(Some("sess-fail".to_owned()), "new", false)
         .expect("session");
     tokio::time::sleep(Duration::from_millis(50)).await;
 

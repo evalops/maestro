@@ -308,7 +308,13 @@ pub fn is_context_overflow(error_message: &str) -> bool {
 ///
 /// Produces a canonical JSON string with sorted keys for deterministic
 /// comparison of tool arguments.
-fn stable_stringify(value: &serde_json::Value) -> String {
+/// Canonical, key-sorted JSON rendering of a value.
+///
+/// Two calls with the same arguments produce the same string regardless of map
+/// iteration order, which is what makes a doom-loop signature comparable. The
+/// agent extension registry uses it to fill `ToolCallContext::args_hash`.
+#[must_use]
+pub fn stable_stringify(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();

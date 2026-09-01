@@ -125,7 +125,7 @@ use ratatui::{
 
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
-use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
+use crate::runtime_badges::{RuntimeBadgeParams, build_runtime_badges};
 use crate::session::ThinkingLevel;
 use crate::shimmer::{DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT, DEIXIC_VIOLET};
 use crate::state::{
@@ -133,9 +133,9 @@ use crate::state::{
 };
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::tool_summary::summarize_tool_use;
-use crate::wrapping::{word_wrap_lines, RtOptions};
-use std::collections::hash_map::DefaultHasher;
+use crate::wrapping::{RtOptions, word_wrap_lines};
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
@@ -773,8 +773,8 @@ impl Widget for MessageWidget<'_> {
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
                         MessageKind::System => ("• ", "System", Color::Yellow),
-                        MessageKind::SideAnswer => ("• ", "Maestro (side)", brand_muted()),
-                        _ => ("• ", "Maestro", brand_violet()),
+                        MessageKind::SideAnswer => ("• ", "Deixic Code (side)", brand_muted()),
+                        _ => ("• ", "Deixic Code", brand_violet()),
                     };
                     header_spans.push(Span::styled(
                         prefix,
@@ -1610,7 +1610,7 @@ impl<'a> ChatInputWidget<'a> {
     ) -> Self {
         let mut context = model
             .map(chrome_model_label)
-            .unwrap_or_else(|| "Maestro".to_string());
+            .unwrap_or_else(|| "Deixic Code".to_string());
         if thinking_level != ThinkingLevel::Off {
             context.push_str(&format!(
                 " ({})",
@@ -3360,7 +3360,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_messages_render_maestro_header() {
+    fn assistant_messages_render_deixic_code_header() {
         let message = Message {
             id: "msg-2".to_string(),
             role: MessageRole::Assistant,
@@ -3388,12 +3388,12 @@ mod tests {
         MessageWidget::new(&message).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("• Maestro"));
+        assert!(rendered.contains("• Deixic Code"));
         assert!(!rendered.contains("• Composer"));
     }
 
     #[test]
-    fn empty_chat_view_uses_plain_maestro_welcome_copy() {
+    fn empty_chat_view_uses_plain_deixic_code_welcome_copy() {
         let state = crate::state::AppState::default();
         let width = 100;
         let height = 20;
@@ -3402,10 +3402,10 @@ mod tests {
         ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("Maestro"));
+        assert!(rendered.contains("Deixic Code"));
         assert!(rendered.contains("Type a message or /help."));
         assert!(!rendered.contains("session 01"));
-        assert!(!rendered.contains("Welcome to Maestro!"));
+        assert!(!rendered.contains("Welcome to Deixic Code!"));
         assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
     }
 

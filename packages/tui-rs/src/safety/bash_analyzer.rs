@@ -9,7 +9,10 @@ const MAX_BASH_SOURCE_BYTES: usize = 1_048_576;
 const MAX_BASH_NODES: usize = 50_000;
 
 /// Risk level for a bash command
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The variants are declared least to most severe, so the derived `Ord`
+/// orders them `Safe < RequiresApproval < Dangerous`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandRisk {
     /// Safe - read-only operations
     Safe,
@@ -276,9 +279,60 @@ pub(crate) fn find_has_dangerous_predicate(tokens: &[String]) -> bool {
     })
 }
 
+/// Whether a human is present to answer an approval prompt for this run.
+///
+/// Interactive sessions (the TUI) can escalate an unclassifiable command to
+/// the user. Print/exec and other headless runs have no approval UI, so an
+/// unclassifiable command there has only two possible outcomes: run it
+/// unchecked, or refuse it. This enum makes the caller state which it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunAttendance {
+    /// A human can be shown an approval prompt.
+    #[default]
+    Interactive,
+    /// No approval UI exists for this run.
+    Unattended,
+}
+
+/// Reason reported when the analyzer cannot parse a command and a human can
+/// still be asked about it.
+pub const UNPARSEABLE_INTERACTIVE_REASON: &str = "Bash command could not be parsed safely";
+
+/// Reason reported when the analyzer cannot parse a command in a run with no
+/// approval UI. The command is refused; it cannot be approved from the
+/// conversation.
+pub const UNPARSEABLE_UNATTENDED_REASON: &str = "Bash command could not be analyzed and this run has no approval prompt, so it was refused \
+     and did not execute. It cannot be approved from this conversation; run it manually outside \
+     the agent if you intend it.";
+
 /// Analyze a bash command for safety
+///
+/// Equivalent to [`analyze_bash_command_with_attendance`] with
+/// [`RunAttendance::Interactive`].
+///
+/// The command is classified twice: once as written, and once with every
+/// ANSI-C quoted span (`$'...'`) decoded by [`canonicalize_for_matching`].
+/// The higher of the two risk levels wins, so `$'\x72\x6d' -rf /` is rated
+/// `Dangerous` like the `rm -rf /` it runs. The decoded form can only raise
+/// the rating, never lower it, and the reported commands and structural flags
+/// always come from the command as written.
 #[must_use]
 pub fn analyze_bash_command(command: &str) -> BashAnalysis {
+    analyze_bash_command_with_attendance(command, RunAttendance::Interactive)
+}
+
+/// Analyze a bash command for safety, fail-closed when nobody can approve it.
+///
+/// A command the bounded tree-sitter parse rejects is unclassifiable: the
+/// analyzer cannot say which programs it runs. Interactively that is rated
+/// [`CommandRisk::RequiresApproval`] and the user decides. Under
+/// [`RunAttendance::Unattended`] there is no user to decide, so it is rated
+/// [`CommandRisk::Dangerous`] and refused instead of being executed unchecked.
+#[must_use]
+pub fn analyze_bash_command_with_attendance(
+    command: &str,
+    attendance: RunAttendance,
+) -> BashAnalysis {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return BashAnalysis {
@@ -293,10 +347,43 @@ pub fn analyze_bash_command(command: &str) -> BashAnalysis {
         };
     }
 
+    let mut analysis = analyze_command_form(trimmed, attendance);
+
+    let canonical = canonicalize_for_matching(trimmed);
+    let canonical = canonical.trim();
+    if canonical != trimmed {
+        // A decoded form that no longer parses is not evidence of anything, so
+        // it is ignored rather than being downgraded to "requires approval".
+        if let Ok(parsed) = parse_commands(canonical) {
+            let (risk, reason) = determine_risk(
+                &parsed.commands,
+                parsed.has_pipes,
+                parsed.has_redirects,
+                parsed.has_command_substitution,
+            );
+            if risk > analysis.risk {
+                analysis.risk = risk;
+                analysis.reason = format!("{reason} (after decoding ANSI-C quoting)");
+            }
+        }
+    }
+
+    analysis
+}
+
+/// Parse and classify one concrete form of a command.
+fn analyze_command_form(trimmed: &str, attendance: RunAttendance) -> BashAnalysis {
     let Ok(parsed) = parse_commands(trimmed) else {
+        let (risk, reason) = match attendance {
+            RunAttendance::Interactive => (
+                CommandRisk::RequiresApproval,
+                UNPARSEABLE_INTERACTIVE_REASON,
+            ),
+            RunAttendance::Unattended => (CommandRisk::Dangerous, UNPARSEABLE_UNATTENDED_REASON),
+        };
         return BashAnalysis {
-            risk: CommandRisk::RequiresApproval,
-            reason: "Bash command could not be parsed safely".to_string(),
+            risk,
+            reason: reason.to_string(),
             commands: Vec::new(),
             has_pipes: false,
             has_redirects: false,
@@ -469,6 +556,177 @@ pub(crate) fn tokenize(input: &str) -> Vec<String> {
     }
 
     tokens
+}
+
+/// Named ANSI-C escapes (`$'...'`) recognized by bash.
+fn ansi_c_named_escape(ch: char) -> Option<char> {
+    Some(match ch {
+        'a' => '\u{7}',
+        'b' => '\u{8}',
+        'e' | 'E' => '\u{1b}',
+        'f' => '\u{c}',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'v' => '\u{b}',
+        '\\' => '\\',
+        '\'' => '\'',
+        '"' => '"',
+        '?' => '?',
+        _ => return None,
+    })
+}
+
+/// Read up to `max` digits of the given radix starting at `chars[start]`.
+/// Returns the parsed value and the number of digits consumed.
+fn read_radix_digits(chars: &[char], start: usize, radix: u32, max: usize) -> Option<(u32, usize)> {
+    let mut value: u32 = 0;
+    let mut consumed = 0usize;
+    while consumed < max {
+        let Some(digit) = chars.get(start + consumed).and_then(|c| c.to_digit(radix)) else {
+            break;
+        };
+        value = value.saturating_mul(radix).saturating_add(digit);
+        consumed += 1;
+    }
+    if consumed == 0 {
+        None
+    } else {
+        Some((value, consumed))
+    }
+}
+
+/// Decode every ANSI-C quoted span (`$'...'`) in a shell command into the
+/// literal text bash would pass to the program, leaving all other bytes
+/// untouched.
+///
+/// `$'\x72\x6d' -rf /` is the same command as `rm -rf /`, but neither
+/// [`tokenize`] nor the regexes in [`crate::safety::dangerous_patterns`] see
+/// `rm` in the raw text: `tokenize` treats a backslash inside single quotes as
+/// literal, so the program name comes out as `$\x72\x6d`. Classifying the
+/// decoded form as well closes that gap.
+///
+/// The result is only ever used as an *additional* form to match against; it
+/// is never executed and never lowers a risk rating. When the input contains
+/// no `$'` the input is returned unchanged, so commands without ANSI-C quoting
+/// are classified exactly as before.
+///
+/// Supported escapes: the named set (`\a \b \e \E \f \n \r \t \v \\ \' \" \?`),
+/// `\xHH` (1-2 hex digits), `\uHHHH` (1-4 hex digits), `\UHHHHHHHH`
+/// (1-8 hex digits), and `\nnn` (1-3 octal digits). An unrecognized escape
+/// decodes to the escaped character itself, matching bash.
+#[must_use]
+pub fn canonicalize_for_matching(input: &str) -> String {
+    if !input.contains("$'") {
+        return input.to_string();
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        Plain,
+        Single,
+        Double,
+        AnsiC,
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut mode = Mode::Plain;
+    let mut idx = 0usize;
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+        match mode {
+            Mode::Plain => {
+                if ch == '$' && chars.get(idx + 1) == Some(&'\'') {
+                    // Enter ANSI-C quoting. The `$'` opener is dropped: the
+                    // decoded body replaces the whole span.
+                    mode = Mode::AnsiC;
+                    idx += 2;
+                } else if ch == '\\' && idx + 1 < chars.len() {
+                    // Preserve plain-mode escapes verbatim; `tokenize` already
+                    // resolves them.
+                    out.push(ch);
+                    out.push(chars[idx + 1]);
+                    idx += 2;
+                } else {
+                    if ch == '\'' {
+                        mode = Mode::Single;
+                    } else if ch == '"' {
+                        mode = Mode::Double;
+                    }
+                    out.push(ch);
+                    idx += 1;
+                }
+            }
+            Mode::Single => {
+                // Inside `'...'` nothing is special, including `$'`.
+                if ch == '\'' {
+                    mode = Mode::Plain;
+                }
+                out.push(ch);
+                idx += 1;
+            }
+            Mode::Double => {
+                // Inside `"..."`, `$'` is a literal dollar sign followed by a
+                // quote, not ANSI-C quoting.
+                if ch == '\\' && idx + 1 < chars.len() {
+                    out.push(ch);
+                    out.push(chars[idx + 1]);
+                    idx += 2;
+                    continue;
+                }
+                if ch == '"' {
+                    mode = Mode::Plain;
+                }
+                out.push(ch);
+                idx += 1;
+            }
+            Mode::AnsiC => {
+                if ch == '\'' {
+                    mode = Mode::Plain;
+                    idx += 1;
+                    continue;
+                }
+                if ch != '\\' || idx + 1 >= chars.len() {
+                    out.push(ch);
+                    idx += 1;
+                    continue;
+                }
+                let escaped = chars[idx + 1];
+                if let Some(decoded) = ansi_c_named_escape(escaped) {
+                    out.push(decoded);
+                    idx += 2;
+                    continue;
+                }
+                let numeric = match escaped {
+                    'x' => {
+                        read_radix_digits(&chars, idx + 2, 16, 2).map(|(v, n)| (v, n + 2, false))
+                    }
+                    'u' => read_radix_digits(&chars, idx + 2, 16, 4).map(|(v, n)| (v, n + 2, true)),
+                    'U' => read_radix_digits(&chars, idx + 2, 16, 8).map(|(v, n)| (v, n + 2, true)),
+                    _ => read_radix_digits(&chars, idx + 1, 8, 3).map(|(v, n)| (v, n + 1, false)),
+                };
+                if let Some((value, consumed, is_unicode)) = numeric {
+                    let decoded = if is_unicode {
+                        char::from_u32(value)
+                    } else {
+                        u8::try_from(value).ok().map(char::from)
+                    };
+                    if let Some(decoded) = decoded {
+                        out.push(decoded);
+                        idx += consumed;
+                        continue;
+                    }
+                }
+                // Unrecognized escape: bash emits the escaped character.
+                out.push(escaped);
+                idx += 2;
+            }
+        }
+    }
+
+    out
 }
 
 /// Skip common command wrappers (nice, command, etc.)
@@ -677,6 +935,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_canonicalize_ansi_c_hex_escapes() {
+        assert_eq!(canonicalize_for_matching(r"$'\x72\x6d' -rf /"), "rm -rf /");
+    }
+
+    #[test]
+    fn test_canonicalize_ansi_c_octal_escapes() {
+        assert_eq!(canonicalize_for_matching(r"$'\162\155' -rf /"), "rm -rf /");
+    }
+
+    #[test]
+    fn test_canonicalize_ansi_c_unicode_escapes() {
+        assert_eq!(canonicalize_for_matching(r"$'rm'"), "rm");
+        assert_eq!(canonicalize_for_matching(r"$'\U00000072\U0000006d'"), "rm");
+    }
+
+    #[test]
+    fn test_canonicalize_ansi_c_named_escapes() {
+        assert_eq!(
+            canonicalize_for_matching(r"echo $'hello\n'"),
+            "echo hello\n"
+        );
+        assert_eq!(canonicalize_for_matching(r"echo $'a\tb'"), "echo a\tb");
+        assert_eq!(canonicalize_for_matching(r"echo $'q\'z'"), "echo q'z");
+    }
+
+    #[test]
+    fn test_canonicalize_leaves_other_quoting_alone() {
+        // No `$'` anywhere: byte-for-byte identical, so classification of
+        // every command without ANSI-C quoting is unchanged.
+        for command in [
+            "ls -la",
+            r#"grep "pattern" file.txt"#,
+            "echo 'literal $HOME'",
+            r"echo \$HOME",
+        ] {
+            assert_eq!(
+                canonicalize_for_matching(command),
+                command,
+                "unexpected rewrite of: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_ignores_ansi_c_inside_other_quotes() {
+        // Inside `"..."` and `'...'` bash does not apply ANSI-C decoding, so
+        // neither does the canonicalizer.
+        for command in [r#"echo "$'\x72\x6d'""#, r"echo 'a $'"] {
+            assert_eq!(
+                canonicalize_for_matching(command),
+                command,
+                "unexpected rewrite of: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ansi_c_quoted_dangerous_command_is_dangerous() {
+        for command in [
+            r"$'\x72\x6d' -rf /",
+            r"$'\162\155' -rf /",
+            r"$'rm' -rf /",
+            r"$'s\x75do' anything",
+        ] {
+            let analysis = analyze_bash_command(command);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::Dangerous,
+                "expected Dangerous for: {command} (reason: {})",
+                analysis.reason
+            );
+        }
+    }
+
+    #[test]
+    fn test_benign_ansi_c_quoting_keeps_prior_risk() {
+        // `echo` is a safe command and stays safe once `$'hello\n'` is decoded.
+        let analysis = analyze_bash_command(r"echo $'hello\n'");
+        assert_eq!(analysis.risk, CommandRisk::Safe, "{}", analysis.reason);
+
+        // A benign-but-unknown program keeps its pre-existing rating rather
+        // than being escalated by canonicalization.
+        let analysis = analyze_bash_command(r"custom_cmd $'hello\n'");
+        assert_eq!(
+            analysis.risk,
+            CommandRisk::RequiresApproval,
+            "{}",
+            analysis.reason
+        );
+    }
+
+    #[test]
+    fn test_command_risk_orders_least_to_most_severe() {
+        assert!(CommandRisk::Safe < CommandRisk::RequiresApproval);
+        assert!(CommandRisk::RequiresApproval < CommandRisk::Dangerous);
+    }
+
+    #[test]
     fn test_safe_commands() {
         assert!(is_likely_safe("ls -la"));
         assert!(is_likely_safe("cat file.txt"));
@@ -770,6 +1126,31 @@ mod tests {
         let analysis = analyze_bash_command("echo $(unterminated");
         assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
         assert!(analysis.reason.contains("could not be parsed"));
+    }
+
+    #[test]
+    fn malformed_bash_is_refused_when_unattended() {
+        let analysis =
+            analyze_bash_command_with_attendance("echo $(unterminated", RunAttendance::Unattended);
+        assert_eq!(analysis.risk, CommandRisk::Dangerous);
+        assert_eq!(analysis.reason, UNPARSEABLE_UNATTENDED_REASON);
+
+        // Interactive classification is unchanged: a human can still decide.
+        let interactive =
+            analyze_bash_command_with_attendance("echo $(unterminated", RunAttendance::Interactive);
+        assert_eq!(interactive.risk, CommandRisk::RequiresApproval);
+        assert_eq!(interactive.reason, UNPARSEABLE_INTERACTIVE_REASON);
+    }
+
+    #[test]
+    fn attendance_does_not_change_parseable_commands() {
+        for command in ["ls -la", "rm -rf /", "cargo build", "git status"] {
+            assert_eq!(
+                analyze_bash_command_with_attendance(command, RunAttendance::Unattended).risk,
+                analyze_bash_command(command).risk,
+                "attendance changed the rating of: {command}"
+            );
+        }
     }
 
     #[test]

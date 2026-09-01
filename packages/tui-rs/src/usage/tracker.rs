@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use super::pricing::{ModelPricing, DEFAULT_PRICING};
+use super::pricing::{DEFAULT_PRICING, ModelPricing};
 use crate::headless::TokenUsage;
 
 /// Usage data for a single turn (request/response pair)

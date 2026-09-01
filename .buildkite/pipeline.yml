@@ -1,15 +1,14 @@
 agents:
-  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
-  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
   CI: "true"
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
-  # [profile.dev] defaults to 128 codegen units. rustc compiling
-  # maestro-tui lib tests with that setting was SIGKILL'd on
-  # hetzner-linux-medium (build 342). Cap both crate parallelism
-  # and per-crate CGUs so one rustc cannot exhaust the worker.
+  # [profile.dev] defaults to 128 codegen units. Cap both crate
+  # parallelism and per-crate CGUs so one rustc cannot exhaust the
+  # self-hosted worker.
   CARGO_BUILD_JOBS: "4"
   CARGO_PROFILE_DEV_CODEGEN_UNITS: "16"
   CARGO_PROFILE_TEST_CODEGEN_UNITS: "16"
@@ -52,6 +51,8 @@ steps:
       npm run check:helm-probes
       npm run check:hook-dispatch
       npm run check:session-transfer
+      npm run check:hosted-orb-delegation
+      npm run check:macos-signature
 
   - group: ":rust: Native validation"
     depends_on: "protocol-contracts"
@@ -62,7 +63,7 @@ steps:
         priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -77,6 +78,7 @@ steps:
           size: "50g"
           paths: [".buildkite/cache"]
         command: |
+          .buildkite/run-with-mise "rust@1.95.0" bash -s <<'MAESTRO_CI'
           set -euo pipefail
           timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
           timeout --signal=TERM --kill-after=30s 45m npm run check
@@ -90,13 +92,14 @@ steps:
           timeout --signal=TERM --kill-after=30s 30m npm run lint
           node --test scripts/check-advisory-expiry.test.mjs
           node scripts/check-advisory-expiry.mjs
+          MAESTRO_CI
 
       - label: ":test_tube: Full Rust workspace"
         key: "rust-tests"
         priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -107,8 +110,8 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
-          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         env:
           CARGO_BUILD_JOBS: "4"
         cache:
@@ -116,6 +119,7 @@ steps:
           size: "50g"
           paths: [".buildkite/cache"]
         command: |
+          .buildkite/run-with-mise "rust@1.95.0" bash -s <<'MAESTRO_CI'
           set -euo pipefail
           export MAESTRO_TRUSTED_RUNNER_WORKSPACE_ROOTS="$$(pwd -P)"
           maestro_test_home="$$(mktemp -d)"
@@ -133,18 +137,22 @@ steps:
             "$$nextest_archive" | sha256sum --check --status
           tar -C "$$nextest_dir" -xzf "$$nextest_archive"
           export PATH="$$nextest_dir:$$PATH"
+          # This focused contract exercises the offline denial path and
+          # child-environment stripping before the full suite.
+          timeout --signal=TERM --kill-after=30s 10m cargo test --locked -p maestro-tui ci_auth_conformance
           timeout --signal=TERM --kill-after=30s 45m cargo nextest run --profile buildkite --workspace --locked --no-fail-fast
           timeout --signal=TERM --kill-after=30s 20m cargo test --workspace --locked --doc
           export MAESTRO_TUI_BIN="$$CARGO_TARGET_DIR/debug/maestro-tui"
           test -x "$$MAESTRO_TUI_BIN" || timeout --signal=TERM --kill-after=30s 30m cargo build --locked -p maestro-tui
           npm run smoke:tui
+          MAESTRO_CI
 
       - label: ":package: Native build and conformance"
         key: "native-release"
         priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -153,18 +161,20 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
-          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
           paths: [".buildkite/cache"]
         command: |
+          .buildkite/run-with-mise "rust@1.95.0" bash -s <<'MAESTRO_CI'
           set -euo pipefail
           timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
           timeout --signal=TERM --kill-after=30s 45m npm run build
           npm run smoke:release-native-only
           node scripts/run-runtime-conformance.mjs --binary "$$CARGO_TARGET_DIR/fast-validation/maestro"
+          MAESTRO_CI
 
   - group: ":repeat: Integration and replay"
     depends_on: "protocol-contracts"
@@ -175,7 +185,7 @@ steps:
         priority: 50
         timeout_in_minutes: 60
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -184,13 +194,14 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
-          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+          queue: "${MAESTRO_CI_INTEGRATION_QUEUE:-linux-medium}"
+          image: "${MAESTRO_CI_INTEGRATION_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-integration-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
           paths: [".buildkite/cache"]
         command: |
+          .buildkite/run-with-mise "rust@1.95.0" bash -s <<'MAESTRO_CI'
           set -euo pipefail
           suffix="$${BUILDKITE_JOB_ID//-/}"
           redis="maestro-redis-$$suffix"
@@ -215,13 +226,14 @@ steps:
             POSTGRES_USER=maestro \
             PGPASSWORD=maestro \
             timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-tui --test tools_integration
+          MAESTRO_CI
 
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"
         priority: 50
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -234,11 +246,13 @@ steps:
           size: "30g"
           paths: [".buildkite/cache"]
         command: |
+          .buildkite/run-with-mise "rust@1.95.0" bash -s <<'MAESTRO_CI'
           set -euo pipefail
           timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
           timeout --signal=TERM --kill-after=30s 30m cargo build --locked -p maestro-scenario
           node --test scripts/scenario-replay-governance.test.mjs
           MAESTRO_BIN="$$CARGO_TARGET_DIR/debug/maestro-scenario" npm run check:scenario-replay-gate -- --junit-dir tmp/scenario-replay
+          MAESTRO_CI
 
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
@@ -247,7 +261,7 @@ steps:
     if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     timeout_in_minutes: 30
     concurrency: 3
-    concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+    concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
     retry:
       automatic:
         - exit_status: -1
@@ -279,7 +293,7 @@ steps:
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 30
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -296,9 +310,12 @@ steps:
       - label: ":lock: Supply chain"
         key: "supply-chain"
         priority: 50
+        agents:
+          queue: "${MAESTRO_CI_SUPPLY_CHAIN_QUEUE:-linux-medium}"
+          image: "${MAESTRO_CI_SUPPLY_CHAIN_IMAGE:-evalops-platform-ci-v6}"
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads-v6}"
         retry:
           automatic:
             - exit_status: -1
@@ -310,14 +327,14 @@ steps:
           name: "maestro-supply-chain-${BUILDKITE_PULL_REQUEST}"
           size: "20g"
           paths: [".buildkite/cache"]
-        command: scripts/run-buildkite-supply-chain.sh
+        command: .buildkite/run-with-mise "rust@1.95.0 gh@2.88.1" scripts/run-buildkite-supply-chain.sh
 
       - label: ":idea: JetBrains plugin"
         key: "jetbrains-plugin"
         priority: 50
         agents:
           queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy}"
-          image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v3}"
+          image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6}"
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3

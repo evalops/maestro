@@ -1183,5 +1183,15 @@
 		"source": "docs/VSCODE_ARCHITECTURE.md",
 		"path": "src/web-server.ts",
 		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/SESSIONS.md",
+		"path": "src/lib.rs",
+		"reason": "Illustrative handoff example path supplied by a user, not a path in this repository."
+	},
+	{
+		"source": "docs/protocols/a2a-peer-pairing.md",
+		"path": "src/lib.rs",
+		"reason": "Illustrative handoff example path supplied by a user, not a path in this repository."
 	}
 ]

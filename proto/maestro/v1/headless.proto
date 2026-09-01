@@ -53,6 +53,54 @@ enum ToolRetryDecisionAction {
   TOOL_RETRY_DECISION_ACTION_ABORT = 3;
 }
 
+enum DelegationEventKind {
+  DELEGATION_EVENT_KIND_UNSPECIFIED = 0;
+  DELEGATION_EVENT_KIND_PROGRESS = 1;
+  DELEGATION_EVENT_KIND_NEEDS_ATTENTION = 2;
+  DELEGATION_EVENT_KIND_APPROVAL_REQUIRED = 3;
+  DELEGATION_EVENT_KIND_CONTROL = 4;
+  DELEGATION_EVENT_KIND_COMPLETION = 5;
+  DELEGATION_EVENT_KIND_UNAVAILABLE = 6;
+}
+
+enum DelegationLifecycleState {
+  DELEGATION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  DELEGATION_LIFECYCLE_STATE_QUEUED = 1;
+  DELEGATION_LIFECYCLE_STATE_ACTIVE = 2;
+  DELEGATION_LIFECYCLE_STATE_NEEDS_ATTENTION = 3;
+  DELEGATION_LIFECYCLE_STATE_APPROVAL_REQUIRED = 4;
+  DELEGATION_LIFECYCLE_STATE_PAUSED = 5;
+  DELEGATION_LIFECYCLE_STATE_RESUMED = 6;
+  DELEGATION_LIFECYCLE_STATE_CANCELLED = 7;
+  DELEGATION_LIFECYCLE_STATE_COMPLETED = 8;
+  DELEGATION_LIFECYCLE_STATE_FAILED = 9;
+  DELEGATION_LIFECYCLE_STATE_UNAVAILABLE = 10;
+}
+
+enum DelegationControlAction {
+  DELEGATION_CONTROL_ACTION_UNSPECIFIED = 0;
+  DELEGATION_CONTROL_ACTION_APPROVE = 1;
+  DELEGATION_CONTROL_ACTION_STEER = 2;
+  DELEGATION_CONTROL_ACTION_FOLLOWUP = 3;
+  DELEGATION_CONTROL_ACTION_COLLECT = 4;
+  DELEGATION_CONTROL_ACTION_INTERRUPT = 5;
+  DELEGATION_CONTROL_ACTION_PAUSE = 6;
+  DELEGATION_CONTROL_ACTION_RESUME = 7;
+  DELEGATION_CONTROL_ACTION_CANCEL = 8;
+  DELEGATION_CONTROL_ACTION_RETRY = 9;
+  DELEGATION_CONTROL_ACTION_REQUEST_REVIEW = 10;
+  DELEGATION_CONTROL_ACTION_RERUN_CHECKS = 11;
+}
+
+enum DelegationControlState {
+  DELEGATION_CONTROL_STATE_UNSPECIFIED = 0;
+  DELEGATION_CONTROL_STATE_REQUESTED = 1;
+  DELEGATION_CONTROL_STATE_ACCEPTED = 2;
+  DELEGATION_CONTROL_STATE_APPLIED = 3;
+  DELEGATION_CONTROL_STATE_REJECTED = 4;
+  DELEGATION_CONTROL_STATE_UNAVAILABLE = 5;
+}
+
 enum ConnectionRole {
   CONNECTION_ROLE_UNSPECIFIED = 0;
   CONNECTION_ROLE_VIEWER = 1;
@@ -365,6 +413,36 @@ message GovernedClientToolResultMessage {
   uint64 owner_lease_epoch = 11;
   string idempotency_key = 12;
   string turn_digest = 13;
+}
+
+message WorkspacePromptCapability {
+  string qualified_id = 1;
+  string name = 2;
+  string scope = 3;
+  string revision_digest = 4;
+  string body_digest = 5;
+  repeated string trigger_patterns = 6;
+  bool user_invocable = 7;
+  bool pinned_prompt_only = 8;
+  string title = 9;
+  string description = 10;
+  repeated string instructions = 11;
+  string body = 12;
+  string entry_digest = 13;
+}
+
+message ApplyWorkspaceCapabilitySetMessage {
+  string organization_id = 1;
+  string workspace_id = 2;
+  string runner_session_id = 3;
+  uint64 runtime_generation = 4;
+  uint64 activation_generation = 5;
+  string workspace_snapshot_digest = 6;
+  string workspace_skill_set_digest = 7;
+  string capability_set_digest = 8;
+  repeated string workspace_instructions = 9;
+  repeated WorkspacePromptCapability admitted_catalog = 10;
+  string admission_receipt_id = 11;
 }
 
 message ServerRequestResponseMessage {
@@ -696,9 +774,50 @@ message ResponseAcceptedMessage {
   string request_id = 1;
 }
 
+message WorkspaceCapabilitySetAppliedMessage {
+  string schema_version = 1;
+  string organization_id = 2;
+  string workspace_id = 3;
+  string runner_session_id = 4;
+  uint64 runtime_generation = 5;
+  uint64 activation_generation = 6;
+  string effective_catalog_digest = 7;
+  repeated string accepted_entry_digests = 8;
+  repeated string rejected_entries = 9;
+  string replay_cursor = 10;
+  uint64 applied_at = 11;
+  string controller_binding_sha256 = 12;
+  string provider_prompt_sha256 = 13;
+  bool staged_for_next_turn = 14;
+  bool idempotent = 15;
+}
+
 message RawAgentEventMessage {
   string event_type = 1;
   google.protobuf.Value event = 2;
+}
+
+message DelegationControlProjection {
+  DelegationControlAction action = 1;
+  DelegationControlState state = 2;
+  optional string id = 3;
+  optional string reason_code = 4;
+}
+
+message DelegationEventMessage {
+  string schema_version = 1;
+  string event_id = 2;
+  string delegation_id = 3;
+  optional string task_id = 4;
+  optional uint32 attempt = 5;
+  DelegationEventKind kind = 6;
+  DelegationLifecycleState lifecycle_state = 7;
+  string summary = 8;
+  optional string reason_code = 9;
+  repeated DelegationControlAction available_controls = 10;
+  DelegationControlProjection control = 11;
+  optional string open_url = 12;
+  optional string occurred_at = 13;
 }
 
 message ToAgentEnvelope {
@@ -724,6 +843,7 @@ message ToAgentEnvelope {
     GovernedPromptMessage governed_prompt = 19;
     GovernedPromptMessage governed_steer = 20;
     GovernedClientToolResultMessage governed_client_tool_result = 21;
+    ApplyWorkspaceCapabilitySetMessage apply_workspace_capability_set = 22;
   }
 }
 
@@ -761,5 +881,7 @@ message FromAgentEnvelope {
     TurnInterruptedMessage turn_interrupted = 30;
     ProviderErrorMessage provider_error = 31;
     GovernedClientToolRequestMessage governed_client_tool_request = 32;
+    DelegationEventMessage delegation_event = 33;
+    WorkspaceCapabilitySetAppliedMessage workspace_capability_set_applied = 34;
   }
 }

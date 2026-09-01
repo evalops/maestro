@@ -9,15 +9,15 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Context, Result};
-use aws_credential_types::{provider::ProvideCredentials, Credentials};
+use anyhow::{Context, Result, bail};
+use aws_credential_types::{Credentials, provider::ProvideCredentials};
 use aws_sdk_bedrockruntime as bedrock;
 use aws_smithy_types::{Blob, Document, Number};
 use base64::Engine;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::client::{provider_model_name, AiClient, AiProvider};
+use super::client::{AiClient, AiProvider, provider_model_name};
 use super::types::{ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role};
 use super::types::{StopReason, StreamEvent};
 

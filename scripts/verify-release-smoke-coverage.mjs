@@ -49,6 +49,7 @@ const sha256 = (path) =>
 	createHash("sha256").update(readFileSync(path)).digest("hex");
 
 const failures = [];
+const macosSignatures = [];
 
 for (const platform of PLATFORMS) {
 	const binary = join(dir, `maestro-${platform}`);
@@ -58,15 +59,59 @@ for (const platform of PLATFORMS) {
 		failures.push(`${platform}: binary missing (${binary})`);
 		continue;
 	}
+	const actual = sha256(binary);
 	if (!existsSync(marker)) {
 		failures.push(
 			`${platform}: no smoke marker — this binary was never smoke-tested`,
 		);
 		continue;
 	}
+	if (platform.startsWith("darwin-")) {
+		const signatureMarker = join(dir, `signed-${platform}.json`);
+		if (!existsSync(signatureMarker)) {
+			failures.push(`${platform}: no macOS Developer ID signature marker`);
+			continue;
+		}
+		try {
+			const signature = JSON.parse(readFileSync(signatureMarker, "utf8"));
+			if (
+				signature.schema !== "evalops.maestro.macos-release-signature.v1" ||
+				!/^Developer ID Application: .+/.test(signature.authority || "") ||
+				!/^[A-Z0-9]{10}$/.test(signature.teamIdentifier || "") ||
+				signature.binarySha256 !== actual
+			) {
+				failures.push(`${platform}: invalid Developer ID signature marker`);
+				continue;
+			}
+			macosSignatures.push(signature);
+		} catch {
+			failures.push(`${platform}: macOS Developer ID signature marker is not valid JSON`);
+			continue;
+		}
+		const notarizationMarker = join(dir, `notarized-${platform}.json`);
+		if (!existsSync(notarizationMarker)) {
+			failures.push(`${platform}: no Apple notarization marker`);
+			continue;
+		}
+		try {
+			const notarization = JSON.parse(readFileSync(notarizationMarker, "utf8"));
+			if (
+				notarization.schema !== "evalops.maestro.macos-notarization.v1" ||
+				notarization.status !== "Accepted" ||
+				notarization.platform !== platform ||
+				!notarization.submissionId ||
+				notarization.binarySha256 !== actual
+			) {
+				failures.push(`${platform}: invalid Apple notarization marker or binary digest`);
+				continue;
+			}
+		} catch {
+			failures.push(`${platform}: Apple notarization marker is not valid JSON`);
+			continue;
+		}
+	}
 
 	const recorded = readFileSync(marker, "utf8").trim().split(/\s+/)[0];
-	const actual = sha256(binary);
 	if (recorded !== actual) {
 		failures.push(
 			`${platform}: smoke marker covers ${recorded} but the shipped binary is ${actual}`,
@@ -74,6 +119,14 @@ for (const platform of PLATFORMS) {
 		continue;
 	}
 	console.log(`ok  ${platform}  smoked  sha256=${actual}`);
+}
+
+if (macosSignatures.length > 1) {
+	const teams = new Set(macosSignatures.map((signature) => signature.teamIdentifier));
+	const authorities = new Set(macosSignatures.map((signature) => signature.authority));
+	if (teams.size !== 1 || authorities.size !== 1) {
+		failures.push("darwin release binaries do not share one stable Developer ID authority and TeamIdentifier");
+	}
 }
 
 // A platform binary present but not in PLATFORMS would ship unchecked.

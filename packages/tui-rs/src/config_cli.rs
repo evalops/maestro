@@ -17,8 +17,8 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Map, Value as JsonValue};
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value as JsonValue, json};
 use toml::Value as TomlValue;
 
 use crate::local_models::{local_metadata_url, local_runtime_endpoints};
@@ -72,7 +72,7 @@ pub async fn run_config(args: &[String]) -> Result<i32> {
         "list" | "ls" => run_list(&args[1..]),
         "get" => run_get(&args[1..]),
         "set" => run_set(&args[1..]),
-        "show" => run_show(&args[1..]),
+        "show" | "status" => run_show(&args[1..]),
         "validate" => run_validate(&args[1..]),
         "init" => run_init(&args[1..]),
         "local" => run_local(&args[1..]).await,
@@ -86,7 +86,7 @@ pub async fn run_config(args: &[String]) -> Result<i32> {
 }
 
 fn config_help() -> &'static str {
-    "Usage: maestro config <command> [options]
+    "Usage: deixic-code config <command> [options]
 
 Commands:
   path                         Show Maestro config file locations
@@ -95,7 +95,7 @@ Commands:
   get <key> [--scope ...]      Read a dotted TOML key (e.g. model, history.persistence)
   set <key> <value> [--scope ...]
                                Write a dotted TOML key
-  show                         Inspect provider JSON sources + effective TOML settings
+  show | status                Inspect sources and print a secret-safe generation digest
   validate                     Validate provider JSON + TOML config files
   init [--preset <id>] [--force]
                                Create project .maestro/config.json
@@ -175,7 +175,7 @@ fn run_get(args: &[String]) -> Result<i32> {
             "--scope" => {
                 let value = args
                     .get(index + 1)
-                    .context("maestro config get --scope requires user|project|local")?;
+                    .context("deixic-code config get --scope requires user|project|local")?;
                 scope = Scope::parse(value)
                     .with_context(|| format!("unknown config scope: {value}"))?;
                 index += 2;
@@ -185,13 +185,15 @@ fn run_get(args: &[String]) -> Result<i32> {
                 index += 1;
             }
             "--help" | "-h" => {
-                println!("Usage: maestro config get <key> [--scope user|project|local] [--json]");
+                println!(
+                    "Usage: deixic-code config get <key> [--scope user|project|local] [--json]"
+                );
                 return Ok(0);
             }
             arg if arg.starts_with('-') => bail!("Unknown option: {arg}"),
             arg => {
                 if key.is_some() {
-                    bail!("maestro config get accepts a single key");
+                    bail!("deixic-code config get accepts a single key");
                 }
                 key = Some(arg.to_owned());
                 index += 1;
@@ -199,7 +201,7 @@ fn run_get(args: &[String]) -> Result<i32> {
         }
     }
     let Some(key) = key else {
-        eprintln!("Key required. Usage: maestro config get <key>");
+        eprintln!("Key required. Usage: deixic-code config get <key>");
         return Ok(1);
     };
 
@@ -238,13 +240,15 @@ fn run_set(args: &[String]) -> Result<i32> {
             "--scope" => {
                 let value = args
                     .get(index + 1)
-                    .context("maestro config set --scope requires user|project|local")?;
+                    .context("deixic-code config set --scope requires user|project|local")?;
                 scope = Scope::parse(value)
                     .with_context(|| format!("unknown config scope: {value}"))?;
                 index += 2;
             }
             "--help" | "-h" => {
-                println!("Usage: maestro config set <key> <value> [--scope user|project|local]");
+                println!(
+                    "Usage: deixic-code config set <key> <value> [--scope user|project|local]"
+                );
                 return Ok(0);
             }
             arg if arg.starts_with('-') => bail!("Unknown option: {arg}"),
@@ -254,18 +258,18 @@ fn run_set(args: &[String]) -> Result<i32> {
                 } else if value_raw.is_none() {
                     value_raw = Some(arg.to_owned());
                 } else {
-                    bail!("maestro config set accepts a single key and value");
+                    bail!("deixic-code config set accepts a single key and value");
                 }
                 index += 1;
             }
         }
     }
     let Some(key) = key else {
-        eprintln!("Key required. Usage: maestro config set <key> <value>");
+        eprintln!("Key required. Usage: deixic-code config set <key> <value>");
         return Ok(1);
     };
     let Some(value_raw) = value_raw else {
-        eprintln!("Value required. Usage: maestro config set <key> <value>");
+        eprintln!("Value required. Usage: deixic-code config set <key> <value>");
         return Ok(1);
     };
 
@@ -328,6 +332,10 @@ fn run_show(args: &[String]) -> Result<i32> {
     }
 
     println!("Configuration Inspection");
+    println!(
+        "Generation: {}",
+        inspection["generation"].as_str().unwrap_or("unavailable")
+    );
     println!();
     println!("Config Sources");
     for source in &inspection["sources"]
@@ -520,7 +528,7 @@ fn run_init(args: &[String]) -> Result<i32> {
             "--preset" | "-p" => {
                 let value = args
                     .get(index + 1)
-                    .context("maestro config init --preset requires an id")?;
+                    .context("deixic-code config init --preset requires an id")?;
                 preset_id = Some(value.to_owned());
                 index += 2;
             }
@@ -529,7 +537,7 @@ fn run_init(args: &[String]) -> Result<i32> {
                 index += 1;
             }
             "--help" | "-h" => {
-                println!("Usage: maestro config init [--preset <id>] [--force]");
+                println!("Usage: deixic-code config init [--preset <id>] [--force]");
                 println!("\nPresets:");
                 for preset in provider_presets() {
                     let note = preset.note.unwrap_or("");
@@ -541,11 +549,11 @@ fn run_init(args: &[String]) -> Result<i32> {
                 }
                 return Ok(0);
             }
-            other => bail!("Unknown option for maestro config init: {other}"),
+            other => bail!("Unknown option for deixic-code config init: {other}"),
         }
     }
 
-    println!("Initialize Maestro Configuration");
+    println!("Initialize Deixic Code Configuration");
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let config_dir = cwd.join(".maestro");
     let config_path = config_dir.join("config.json");
@@ -617,7 +625,7 @@ fn run_init(args: &[String]) -> Result<i32> {
         }
     } else if preset.managed {
         println!(
-            "\nManaged gateway preset does not use a local API key. Run maestro evalops login after setup."
+            "\nManaged gateway preset does not use a local API key. Run deixic-code evalops login after setup."
         );
     } else {
         println!("\nLocal providers do not require API keys. Skipping step.");
@@ -680,9 +688,9 @@ fn run_init(args: &[String]) -> Result<i32> {
         if let Some(env_name) = api_key_env {
             let env_example = cwd.join(".env.example");
             let addition = if env_example.exists() {
-                format!("\n# Added by maestro init\n{env_name}=your-api-key-here\n")
+                format!("\n# Added by deixic-code init\n{env_name}=your-api-key-here\n")
             } else {
-                format!("# Maestro Configuration\n{env_name}=your-api-key-here\n")
+                format!("# Deixic Code Configuration\n{env_name}=your-api-key-here\n")
             };
             if env_example.exists() {
                 let mut existing = fs::read_to_string(&env_example)?;
@@ -707,7 +715,7 @@ fn run_init(args: &[String]) -> Result<i32> {
     if create_prompts {
         println!("  2. Edit .maestro/prompts/system.md");
     }
-    println!("  3. Run: maestro models list");
+    println!("  3. Run: deixic-code models list");
     println!("  4. Start using: maestro \"your prompt\"");
     Ok(0)
 }
@@ -724,16 +732,16 @@ async fn run_local(args: &[String]) -> Result<i32> {
                 index += 1;
             }
             "--provider" => {
-                let value = args
-                    .get(index + 1)
-                    .context("maestro config local --provider requires lmstudio|ollama|llamacpp")?;
+                let value = args.get(index + 1).context(
+                    "deixic-code config local --provider requires lmstudio|ollama|llamacpp",
+                )?;
                 provider = Some(value.to_owned());
                 index += 2;
             }
             "--scope" => {
                 let value = args
                     .get(index + 1)
-                    .context("maestro config local --scope requires project|user")?;
+                    .context("deixic-code config local --scope requires project|user")?;
                 scope = match value.as_str() {
                     "project" | "1" => Scope::Project,
                     "user" | "home" | "global" | "2" => Scope::User,
@@ -743,11 +751,11 @@ async fn run_local(args: &[String]) -> Result<i32> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: maestro config local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]"
+                    "Usage: deixic-code config local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]"
                 );
                 return Ok(0);
             }
-            other => bail!("Unknown option for maestro config local: {other}"),
+            other => bail!("Unknown option for deixic-code config local: {other}"),
         }
     }
 
@@ -912,11 +920,11 @@ async fn run_local(args: &[String]) -> Result<i32> {
     );
     if template.id == "llamacpp" {
         println!(
-            "Set LLAMA_CPP_BASE_URL before starting Maestro to override {}.",
+            "Set LLAMA_CPP_BASE_URL before starting Deixic Code to override {}.",
             template.base_url
         );
     }
-    println!("Tip: run `maestro config local --check` to check connectivity.");
+    println!("Tip: run `deixic-code config local --check` to check connectivity.");
     Ok(0)
 }
 
@@ -1067,13 +1075,35 @@ fn inspect_config() -> Result<JsonValue> {
 
     let settings = effective_settings_summary();
 
-    Ok(json!({
+    let mut inspection = json!({
+        "schemaVersion": "evalops.maestro.config-inspection.v2",
         "sources": sources,
         "providers": providers,
         "fileReferences": file_references,
         "envVars": env_var_rows,
         "settings": settings,
-    }))
+    });
+    let generation = config_generation_sha256(&inspection);
+    inspection["generation"] = JsonValue::String(generation);
+    Ok(inspection)
+}
+
+fn config_generation_sha256(inspection: &JsonValue) -> String {
+    let mut generation_input = inspection.clone();
+    if let Some(object) = generation_input.as_object_mut() {
+        object.remove("generation");
+    }
+    if let Some(env_vars) = generation_input
+        .get_mut("envVars")
+        .and_then(JsonValue::as_array_mut)
+    {
+        for env_var in env_vars {
+            if let Some(object) = env_var.as_object_mut() {
+                object.remove("maskedValue");
+            }
+        }
+    }
+    crate::evidence::canonical_json_sha256(&generation_input)
 }
 
 fn validate_config() -> Result<JsonValue> {
@@ -1975,6 +2005,11 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 fn stdin_is_tty() -> bool {
+    // Unit tests must stay non-interactive even when the test runner allocates
+    // a pseudo-terminal (as Buildkite does for this workspace).
+    if cfg!(test) {
+        return false;
+    }
     io::IsTerminal::is_terminal(&io::stdin())
 }
 
@@ -2019,14 +2054,10 @@ You are a helpful AI coding assistant.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+    fn env_lock() -> tokio::sync::OwnedMutexGuard<()> {
+        crate::config::test_process_env_lock()
     }
 
     fn restore_env(name: &str, value: Option<String>) {
@@ -2328,6 +2359,36 @@ mod tests {
                 ("LM Studio", "http://127.0.0.1:9123/v1".to_owned()),
                 ("Ollama", "http://127.0.0.1:9114/v1".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn config_generation_excludes_secret_derived_masked_values() {
+        let first = json!({
+            "schemaVersion": "evalops.maestro.config-inspection.v2",
+            "envVars": [{"name": "MODEL_API_KEY", "set": true, "maskedValue": "ab…yz"}],
+            "settings": {"model": "openai/gpt-5.5"}
+        });
+        let second = json!({
+            "schemaVersion": "evalops.maestro.config-inspection.v2",
+            "envVars": [{"name": "MODEL_API_KEY", "set": true, "maskedValue": "cd…wx"}],
+            "settings": {"model": "openai/gpt-5.5"}
+        });
+
+        assert_eq!(
+            config_generation_sha256(&first),
+            config_generation_sha256(&second)
+        );
+    }
+
+    #[test]
+    fn config_generation_changes_with_effective_settings() {
+        let first = json!({"envVars": [], "settings": {"model": "model-a"}});
+        let second = json!({"envVars": [], "settings": {"model": "model-b"}});
+
+        assert_ne!(
+            config_generation_sha256(&first),
+            config_generation_sha256(&second)
         );
     }
 }

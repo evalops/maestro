@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use super::types::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
 };
-use super::{provider_model_name, AiProvider};
+use super::{AiProvider, provider_model_name};
 
 /// Default Vertex AI region
 const DEFAULT_REGION: &str = "us-central1";
@@ -281,10 +281,7 @@ async fn stream_vertex_response(
     request: VertexRequest,
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    // Vertex AI endpoint format
-    let url = format!(
-        "https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/publishers/google/models/{model}:streamGenerateContent"
-    );
+    let url = vertex_stream_url(&project_id, &region, &model);
 
     let mut req_builder = client.post(&url).header("Content-Type", "application/json");
 
@@ -310,78 +307,42 @@ async fn stream_vertex_response(
         );
     }
 
-    // Parse SSE stream
+    // Parse the SSE stream requested by `alt=sse`. Without that query
+    // parameter Vertex returns one JSON array, which is not incrementally
+    // streamable and used to be silently discarded by the line parser.
     let mut stream = response.bytes_stream();
 
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut next_block_index = 0usize;
+    let mut terminal_stop_reason = None;
+
+    let _ = tx.send(StreamEvent::MessageStart {
+        id: format!("vertex-{}", uuid::Uuid::new_v4()),
+        model,
+    });
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Failed to read chunk")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.extend_from_slice(&chunk);
 
-        // Process complete JSON objects (Vertex uses newline-delimited JSON)
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim().to_string();
-            buffer = buffer[pos + 1..].to_string();
-
-            if line.is_empty() || line == "[" || line == "]" || line == "," {
-                continue;
-            }
-
-            // Strip leading comma if present (array format)
-            let json_str = line.trim_start_matches(',').trim();
-            if json_str.is_empty() {
-                continue;
-            }
-
-            if let Ok(response) = serde_json::from_str::<VertexResponse>(json_str) {
-                // Process candidates
-                if let Some(candidates) = response.candidates {
-                    for candidate in candidates {
-                        if let Some(content) = candidate.content {
-                            for part in content.parts {
-                                match part {
-                                    Part::Text { text } => {
-                                        let _ = tx.send(StreamEvent::TextDelta { index: 0, text });
-                                    }
-                                    Part::FunctionCall { function_call } => {
-                                        let _ = tx.send(StreamEvent::ContentBlockStart {
-                                            index: 0,
-                                            block: ContentBlock::ToolUse {
-                                                id: format!("call_{}", uuid::Uuid::new_v4()),
-                                                name: function_call.name,
-                                                input: function_call.args,
-                                            },
-                                        });
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // Check finish reason
-                        if let Some(reason) = candidate.finish_reason {
-                            let stop_reason = match reason.as_str() {
-                                "STOP" => Some(StopReason::EndTurn),
-                                "MAX_TOKENS" => Some(StopReason::MaxTokens),
-                                "SAFETY" => Some(StopReason::EndTurn),
-                                "TOOL_USE" => Some(StopReason::ToolUse),
-                                _ => Some(StopReason::EndTurn),
-                            };
-                            let _ = tx.send(StreamEvent::MessageStop { stop_reason });
-                        }
-                    }
-                }
-
-                // Update usage
-                if let Some(metadata) = response.usage_metadata {
-                    input_tokens = metadata.prompt_token_count.unwrap_or(0);
-                    output_tokens = metadata.candidates_token_count.unwrap_or(0);
-                }
+        while let Some(event) = take_vertex_sse_event(&mut buffer)? {
+            if let Some(response) = decode_vertex_sse_event(&event)? {
+                emit_vertex_response(
+                    response,
+                    &tx,
+                    &mut next_block_index,
+                    &mut input_tokens,
+                    &mut output_tokens,
+                    &mut terminal_stop_reason,
+                );
             }
         }
+    }
+
+    if buffer.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        anyhow::bail!("Vertex AI SSE stream ended with an incomplete frame");
     }
 
     // Send final usage
@@ -391,8 +352,127 @@ async fn stream_vertex_response(
         cache_read_tokens: Some(0),
         cache_creation_tokens: Some(0),
     });
+    if terminal_stop_reason.is_some() {
+        let _ = tx.send(StreamEvent::MessageStop {
+            stop_reason: terminal_stop_reason,
+        });
+    }
 
     Ok(())
+}
+
+fn emit_vertex_response(
+    response: VertexResponse,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+    next_block_index: &mut usize,
+    input_tokens: &mut u64,
+    output_tokens: &mut u64,
+    terminal_stop_reason: &mut Option<StopReason>,
+) {
+    if let Some(candidates) = response.candidates {
+        for candidate in candidates {
+            if let Some(content) = candidate.content {
+                for part in content.parts {
+                    let index = *next_block_index;
+                    match part {
+                        Part::Text { text } if !text.is_empty() => {
+                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                index,
+                                block: ContentBlock::Text {
+                                    text: String::new(),
+                                },
+                            });
+                            let _ = tx.send(StreamEvent::TextDelta { index, text });
+                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                index,
+                                thinking_signature: None,
+                            });
+                            *next_block_index += 1;
+                        }
+                        Part::FunctionCall { function_call } => {
+                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                index,
+                                block: ContentBlock::ToolUse {
+                                    id: format!("call_{}", uuid::Uuid::new_v4()),
+                                    name: function_call.name,
+                                    input: json!({}),
+                                },
+                            });
+                            let _ = tx.send(StreamEvent::InputJsonDelta {
+                                index,
+                                partial_json: function_call.args.to_string(),
+                            });
+                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                index,
+                                thinking_signature: None,
+                            });
+                            *next_block_index += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(reason) = candidate.finish_reason {
+                *terminal_stop_reason = Some(match reason.as_str() {
+                    "MAX_TOKENS" => StopReason::MaxTokens,
+                    "TOOL_USE" => StopReason::ToolUse,
+                    "STOP" | "SAFETY" => StopReason::EndTurn,
+                    _ => StopReason::EndTurn,
+                });
+            }
+        }
+    }
+
+    if let Some(metadata) = response.usage_metadata {
+        *input_tokens = metadata.prompt_token_count.unwrap_or(0);
+        *output_tokens = metadata.candidates_token_count.unwrap_or(0);
+    }
+}
+
+fn vertex_stream_url(project_id: &str, region: &str, model: &str) -> String {
+    format!(
+        "https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/publishers/google/models/{model}:streamGenerateContent?alt=sse"
+    )
+}
+
+fn vertex_sse_data(event: &str) -> Option<&str> {
+    event
+        .lines()
+        .find_map(|line| line.strip_prefix("data:").map(str::trim))
+        .filter(|data| !data.is_empty() && *data != "[DONE]")
+}
+
+fn vertex_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let lf = buffer.windows(2).position(|window| window == b"\n\n");
+    let crlf = buffer.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if lf < crlf => Some((lf, 2)),
+        (Some(_), Some(crlf)) => Some((crlf, 4)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+fn take_vertex_sse_event(buffer: &mut Vec<u8>) -> Result<Option<String>> {
+    let Some((pos, delimiter_len)) = vertex_sse_event_boundary(buffer) else {
+        return Ok(None);
+    };
+    let event = std::str::from_utf8(&buffer[..pos])
+        .context("Vertex AI SSE frame was not valid UTF-8")?
+        .to_owned();
+    buffer.drain(..pos + delimiter_len);
+    Ok(Some(event))
+}
+
+fn decode_vertex_sse_event(event: &str) -> Result<Option<VertexResponse>> {
+    let Some(data) = vertex_sse_data(event) else {
+        return Ok(None);
+    };
+    serde_json::from_str(data)
+        .context("Vertex AI SSE data frame was not valid response JSON")
+        .map(Some)
 }
 
 // ============================================================================
@@ -876,6 +956,149 @@ mod tests {
         let usage = response.usage_metadata.unwrap();
         assert_eq!(usage.prompt_token_count, Some(10));
         assert_eq!(usage.candidates_token_count, Some(5));
+    }
+
+    #[test]
+    fn vertex_stream_requests_and_decodes_sse() {
+        let url = vertex_stream_url("evalops-prod", "us-central1", "gemini-2.5-flash");
+        assert_eq!(
+            url,
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/evalops-prod/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+        );
+
+        let event = concat!(
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",",
+            "\"parts\":[{\"text\":\"MAESTRO_E2E_OK\"}]},\"finishReason\":\"STOP\"}]}\r\n\r\n"
+        );
+        assert_eq!(
+            vertex_sse_event_boundary(event.as_bytes()),
+            Some((event.len() - 4, 4))
+        );
+        let response = decode_vertex_sse_event(event)
+            .expect("valid Vertex SSE event")
+            .expect("Vertex response");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut next_block_index = 0;
+        let mut input_tokens = 0;
+        let mut output_tokens = 0;
+        let mut terminal_stop_reason = None;
+        emit_vertex_response(
+            response,
+            &tx,
+            &mut next_block_index,
+            &mut input_tokens,
+            &mut output_tokens,
+            &mut terminal_stop_reason,
+        );
+        assert!(matches!(
+            rx.try_recv().expect("text block start"),
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                block: ContentBlock::Text { ref text }
+            } if text.is_empty()
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("text delta"),
+            StreamEvent::TextDelta { index: 0, ref text } if text == "MAESTRO_E2E_OK"
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("text block stop"),
+            StreamEvent::ContentBlockStop { index: 0, .. }
+        ));
+        assert_eq!(next_block_index, 1);
+        assert_eq!(terminal_stop_reason, Some(StopReason::EndTurn));
+
+        let lf_event = "data: {}\n\n";
+        assert_eq!(
+            vertex_sse_event_boundary(lf_event.as_bytes()),
+            Some((lf_event.len() - 2, 2))
+        );
+    }
+
+    #[test]
+    fn vertex_sse_preserves_unicode_across_every_chunk_boundary() {
+        let event = concat!(
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[",
+            "{\"text\":\"héllo 🌍\"},{\"functionCall\":{\"name\":\"echo\",",
+            "\"args\":{\"value\":\"東京\"}}}]},\"finishReason\":\"TOOL_USE\"}]}\r\n\r\n"
+        );
+
+        for split in 0..=event.len() {
+            let mut buffer = Vec::new();
+            let mut frames = Vec::new();
+            for chunk in [&event.as_bytes()[..split], &event.as_bytes()[split..]] {
+                buffer.extend_from_slice(chunk);
+                while let Some(frame) =
+                    take_vertex_sse_event(&mut buffer).expect("valid UTF-8 frame")
+                {
+                    frames.push(frame);
+                }
+            }
+            assert_eq!(frames.len(), 1, "split at byte {split}");
+            let response = decode_vertex_sse_event(&frames[0])
+                .expect("valid response JSON")
+                .expect("response event");
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut next_block_index = 0;
+            let mut input_tokens = 0;
+            let mut output_tokens = 0;
+            let mut terminal_stop_reason = None;
+            emit_vertex_response(
+                response,
+                &tx,
+                &mut next_block_index,
+                &mut input_tokens,
+                &mut output_tokens,
+                &mut terminal_stop_reason,
+            );
+            let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert!(events.iter().any(
+                |event| matches!(event, StreamEvent::TextDelta { text, .. } if text == "héllo 🌍")
+            ));
+            assert!(events.iter().any(|event| matches!(
+                event,
+                StreamEvent::InputJsonDelta { partial_json, .. }
+                    if partial_json.contains("東京")
+            )));
+        }
+    }
+
+    #[test]
+    fn malformed_vertex_sse_frame_cannot_be_followed_by_success_terminal() {
+        let stream = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n",
+            "data: {not-json}\n\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"
+        );
+        let mut buffer = stream.as_bytes().to_vec();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut next_block_index = 0;
+        let mut input_tokens = 0;
+        let mut output_tokens = 0;
+        let mut terminal_stop_reason = None;
+        let mut decode_error = None;
+
+        while let Some(event) = take_vertex_sse_event(&mut buffer).expect("valid UTF-8 frame") {
+            match decode_vertex_sse_event(&event) {
+                Ok(Some(response)) => emit_vertex_response(
+                    response,
+                    &tx,
+                    &mut next_block_index,
+                    &mut input_tokens,
+                    &mut output_tokens,
+                    &mut terminal_stop_reason,
+                ),
+                Ok(None) => {}
+                Err(error) => {
+                    decode_error = Some(error);
+                    break;
+                }
+            }
+        }
+
+        assert!(decode_error.is_some());
+        assert_eq!(terminal_stop_reason, None);
+        assert!(!buffer.is_empty(), "terminal frame must remain unprocessed");
     }
 
     #[test]

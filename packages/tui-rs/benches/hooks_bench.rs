@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --all-features
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::hooks::{
     HookRegistry, HookResult, IntegratedHookSystem, PreToolUseHook, PreToolUseInput, SafetyHook,
 };

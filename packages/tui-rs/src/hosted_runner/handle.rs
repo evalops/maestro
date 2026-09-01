@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{handle_drain, DrainRequest, ResponseBody, SharedRunner};
+use super::{DrainRequest, ResponseBody, SharedRunner, handle_drain};
 
 pub struct HostedRunnerHandle {
     pub(super) local_addr: SocketAddr,

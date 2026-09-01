@@ -905,13 +905,18 @@ mod tests {
         }
 
         let recommendations = learner.get_recommendations(10);
-        assert!(recommendations
-            .iter()
-            .any(|recommendation| recommendation.kind
-                == LearnerRecommendationKind::GuardTransientFailure));
-        assert!(!recommendations
-            .iter()
-            .any(|recommendation| recommendation.kind == LearnerRecommendationKind::RepairPattern));
+        assert!(
+            recommendations
+                .iter()
+                .any(|recommendation| recommendation.kind
+                    == LearnerRecommendationKind::GuardTransientFailure)
+        );
+        assert!(
+            !recommendations
+                .iter()
+                .any(|recommendation| recommendation.kind
+                    == LearnerRecommendationKind::RepairPattern)
+        );
     }
 
     #[tokio::test]
@@ -996,9 +1001,12 @@ mod tests {
         assert_eq!(stats.protected_transient_failure_count, 0);
 
         let recommendations = learner.get_recommendations(10);
-        assert!(recommendations
-            .iter()
-            .any(|recommendation| recommendation.kind == LearnerRecommendationKind::RepairPattern));
+        assert!(
+            recommendations
+                .iter()
+                .any(|recommendation| recommendation.kind
+                    == LearnerRecommendationKind::RepairPattern)
+        );
     }
 
     #[tokio::test]

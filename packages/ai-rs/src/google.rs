@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use super::types::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
 };
-use super::{provider_model_name, AiProvider};
+use super::{AiProvider, provider_model_name};
 
 /// Google Gemini API base URL
 const GOOGLE_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -768,7 +768,7 @@ mod tests {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
             tools: vec![
-                Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())
+                Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone()),
             ]
             .into(),
             ..Default::default()

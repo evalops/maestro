@@ -3,8 +3,9 @@
 import { spawnSync } from "node:child_process";
 
 const DEFAULT_WORKFLOWS = [
-	"public-mirror-drift-audit",
-	"sync-public-release-mirror",
+	"maestro-sync-public-release-mirror",
+	"maestro-model-catalog-freshness",
+	"maestro-version-bump",
 ];
 const LABEL = "ci-watchdog";
 const LABEL_COLOR = "d93f0b";
@@ -379,6 +380,22 @@ function checkWorkflow(repo, workflow, options) {
 	const branch = options.branch;
 	const runs = recentRuns(repo, entry.id, options.runs, branch);
 	if (runs.length === 0) {
+		// The weekly release proposal is intentionally quiet between its first
+		// installation and the next Monday 16:00 UTC schedule. Treating that
+		// expected pre-cadence silence as a blind spot made every six-hour
+		// watchdog run red before the workflow had a chance to fire. Once the
+		// first scheduled boundary has passed, an empty run set remains a real
+		// blind spot and fails closed.
+		if (
+			workflow === "maestro-version-bump" &&
+			entry.updated_at &&
+			Date.now() < nextWeeklyVersionBumpAt(entry.updated_at)
+		) {
+			console.log(
+				`${workflow}: awaiting its first scheduled Monday 16:00 UTC run`,
+			);
+			return;
+		}
 		// Not "nothing to report": a monitored workflow with no completed runs
 		// on the default branch is unobservable, which is the same blind spot
 		// as a failed query.
@@ -429,6 +446,18 @@ function checkWorkflow(repo, workflow, options) {
 	console.log(
 		`${workflow}: ok (latest conclusion: ${runs[0].conclusion ?? "unknown"})`,
 	);
+}
+
+function nextWeeklyVersionBumpAt(updatedAt) {
+	const updated = new Date(updatedAt);
+	if (Number.isNaN(updated.getTime())) {
+		return 0;
+	}
+	const next = new Date(updated);
+	const daysUntilMonday = (1 - next.getUTCDay() + 7) % 7 || 7;
+	next.setUTCDate(next.getUTCDate() + daysUntilMonday);
+	next.setUTCHours(16, 0, 0, 0);
+	return next.getTime();
 }
 
 function reportBlindSpots(count, total) {

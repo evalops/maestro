@@ -27,6 +27,20 @@ pub(crate) struct ClientToolDefinition {
     pub(crate) parameters: Value,
 }
 
+pub(crate) fn validate_client_tool_names(chat: &ChatRequest) -> Result<(), String> {
+    if let Some(tool) = chat
+        .tools
+        .iter()
+        .find(|tool| is_session_messaging_tool(&tool.name.to_ascii_lowercase()))
+    {
+        return Err(format!(
+            "client tool name `{}` is reserved by the gateway",
+            tool.name
+        ));
+    }
+    Ok(())
+}
+
 fn client_tool_definitions(chat: &ChatRequest) -> (Vec<ToolDefinition>, HashSet<String>) {
     let names = chat
         .tools
@@ -53,6 +67,28 @@ fn native_chat_terminal_status(event: &FromAgent) -> Option<Result<(), String>> 
         }
         _ => None,
     }
+}
+
+fn native_chat_acknowledges_peer_messages(event: &FromAgent) -> bool {
+    matches!(native_chat_terminal_status(event), Some(Ok(())))
+}
+
+fn managed_gateway_receipt_status(
+    request_id: String,
+    record_id: String,
+    lineage_id: String,
+    record_status: String,
+) -> Value {
+    serde_json::json!({
+        "type": "status",
+        "status": "managed_gateway_receipt",
+        "details": {
+            "requestId": request_id,
+            "recordId": record_id,
+            "lineageId": lineage_id,
+            "recordStatus": record_status,
+        }
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -130,7 +166,7 @@ async fn handle_codex_app_server_chat(
     model: &str,
     prompt: &str,
     attachment_paths: &[String],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     handle_codex_app_server_chat_transport(
         stream,
         state,
@@ -151,7 +187,7 @@ pub(crate) async fn handle_codex_app_server_chat_transport(
     prompt: &str,
     attachment_paths: &[String],
     transport: CodexBridgeTransport,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let session_approval_mode = approval_mode_for_session(state, session_id).await;
     let approval_mode = codex_app_server_approval_mode(&session_approval_mode);
     send_codex_bridge_event(
@@ -207,7 +243,7 @@ pub(crate) async fn handle_codex_app_server_chat_transport(
             .await?;
             send_codex_bridge_event(stream, transport, &serde_json::json!({ "type": "done" }))
                 .await?;
-            return Ok(());
+            return Ok(false);
         }
     };
     for tool_event in &assistant_output.tool_events {
@@ -268,7 +304,7 @@ pub(crate) async fn handle_codex_app_server_chat_transport(
     )
     .await?;
     send_codex_bridge_event(stream, transport, &serde_json::json!({ "type": "done" })).await?;
-    Ok(())
+    Ok(true)
 }
 
 async fn handle_codex_app_server_chat_ws(
@@ -278,7 +314,7 @@ async fn handle_codex_app_server_chat_ws(
     model: &str,
     prompt: &str,
     attachment_paths: &[String],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     handle_codex_app_server_chat_transport(
         stream,
         state,
@@ -295,12 +331,12 @@ pub(crate) async fn record_chat_user_message(
     state: &AppState,
     chat: &ChatRequest,
     auth: &AuthContext,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let Some(session_id) = chat.session_id.as_deref() else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(latest) = chat.messages.last() else {
-        return Ok(());
+        return Ok(None);
     };
     let mut message = chat_message_prompt_value(latest);
     if let Value::Object(object) = &mut message {
@@ -309,7 +345,7 @@ pub(crate) async fn record_chat_user_message(
     if !latest.attachments.is_empty() {
         message["attachments"] = serde_json::json!(latest.attachments);
     }
-    append_session_message(
+    let message_count = append_session_message(
         state,
         session_id,
         message,
@@ -317,7 +353,16 @@ pub(crate) async fn record_chat_user_message(
         auth.subject.clone(),
         Some(auth),
     )
-    .await
+    .await?;
+    let sessions = state.sessions.lock().await;
+    let session = sessions
+        .sessions
+        .get(session_id)
+        .ok_or_else(|| "Session not found".to_string())?;
+    Ok(Some(format!(
+        "{}:{}:{}",
+        session.id, session.created_at, message_count
+    )))
 }
 
 async fn record_chat_assistant_message(state: &AppState, session_id: Option<&str>, message: Value) {
@@ -327,6 +372,36 @@ async fn record_chat_assistant_message(state: &AppState, session_id: Option<&str
     let _ = append_session_message(state, session_id, message, None, None, None).await;
 }
 
+async fn prepend_pending_peer_messages(
+    state: &AppState,
+    session_id: Option<&str>,
+    auth: &AuthContext,
+    prompt: &mut String,
+) -> Vec<String> {
+    let Some(session_id) = session_id else {
+        return Vec::new();
+    };
+    let pending = unread_inbox_for_session(state, session_id, auth).await;
+    if let Some(block) = render_peer_messages_block(&pending) {
+        *prompt = format!("{block}\n{prompt}");
+    }
+    pending.into_iter().map(|message| message.id).collect()
+}
+
+async fn acknowledge_peer_messages(
+    state: &AppState,
+    session_id: Option<&str>,
+    auth: &AuthContext,
+    message_ids: &[String],
+) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+    if let Err(error) = mark_inbox_messages_read(state, session_id, auth, message_ids).await {
+        eprintln!("failed to acknowledge delivered peer messages: {error}");
+    }
+}
+
 async fn append_session_message(
     state: &AppState,
     session_id: &str,
@@ -334,7 +409,7 @@ async fn append_session_message(
     title_source: Option<&Value>,
     owner: Option<String>,
     auth: Option<&AuthContext>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let mut sessions = state.sessions.lock().await;
     let session = if sessions.sessions.contains_key(session_id) {
         let session = sessions
@@ -353,6 +428,9 @@ async fn append_session_message(
                 let mut session =
                     create_session_record(title_source.and_then(title_from_content), owner);
                 session.id = session_id.to_string();
+                if let Some(auth) = auth {
+                    bind_session_to_auth(&mut session, auth);
+                }
                 session
             })
     };
@@ -363,10 +441,11 @@ async fn append_session_message(
     }
     session.messages.push(message);
     session.message_count = session.messages.len() as u64;
+    let message_count = session.message_count;
     session.updated_at = now_rfc3339();
     drop(sessions);
     persist_session_store(state).await;
-    Ok(())
+    Ok(message_count)
 }
 
 fn title_from_content(content: &Value) -> Option<String> {
@@ -385,14 +464,16 @@ pub(crate) async fn handle_chat_endpoint(
     head: RequestHead,
     state: AppState,
 ) -> Result<(), String> {
-    let Some(auth) = auth_context(&head, &state.config) else {
-        let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
-        stream
-            .write_all(&response)
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
+    let auth = match authorized_context(&head, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => {
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
     };
     if let Err(response) = validate_csrf(&head, &state.config) {
         stream
@@ -428,6 +509,14 @@ pub(crate) async fn handle_chat_endpoint(
             return Ok(());
         }
     };
+    if let Err(error) = validate_client_tool_names(&chat) {
+        stream
+            .write_all(&json_response(400, &serde_json::json!({ "error": error })))
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
 
     let Some(latest) = chat.messages.last() else {
         stream
@@ -463,7 +552,7 @@ pub(crate) async fn handle_chat_endpoint(
         let _ = stream.shutdown().await;
         return Ok(());
     }
-    let prompt = build_prompt_from_chat(&chat);
+    let mut prompt = build_prompt_from_chat(&chat);
     let system_prompt = system_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
@@ -478,15 +567,20 @@ pub(crate) async fn handle_chat_endpoint(
             return Ok(());
         }
     };
-    if let Err(error) = record_chat_user_message(&state, &chat, &auth).await {
-        cleanup_prepared_attachments(prepared_attachments).await;
-        stream
-            .write_all(&json_response(404, &serde_json::json!({ "error": error })))
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
-    }
+    let turn_scope = match record_chat_user_message(&state, &chat, &auth).await {
+        Ok(turn_scope) => turn_scope,
+        Err(error) => {
+            cleanup_prepared_attachments(prepared_attachments).await;
+            stream
+                .write_all(&json_response(404, &serde_json::json!({ "error": error })))
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+    let pending_peer_message_ids =
+        prepend_pending_peer_messages(&state, session_id.as_deref(), &auth, &mut prompt).await;
 
     stream
         .write_all(sse_headers().as_bytes())
@@ -506,7 +600,7 @@ pub(crate) async fn handle_chat_endpoint(
             )
             .await?;
         }
-        handle_codex_app_server_chat(
+        let prompt_succeeded = handle_codex_app_server_chat(
             &mut stream,
             &state,
             session_id.as_deref(),
@@ -515,12 +609,25 @@ pub(crate) async fn handle_chat_endpoint(
             &prepared_attachments.paths,
         )
         .await?;
+        if prompt_succeeded {
+            acknowledge_peer_messages(
+                &state,
+                session_id.as_deref(),
+                &auth,
+                &pending_peer_message_ids,
+            )
+            .await;
+        }
         let _ = stream.shutdown().await;
         cleanup_prepared_attachments(prepared_attachments).await;
         return Ok(());
     }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
-    let (client_tools, client_tool_names) = client_tool_definitions(&chat);
+    let (mut client_tools, client_tool_names) = client_tool_definitions(&chat);
+    // Gateway-handled session-messaging tools give an agent turn the same reach
+    // the loopback endpoints give a UI client. They are answered inline below
+    // through the tool-response channel, under this turn's AuthContext.
+    client_tools.extend(session_messaging_tool_definitions());
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -553,6 +660,12 @@ pub(crate) async fn handle_chat_endpoint(
         }
     };
 
+    if let Some(session_id) = session_id.clone() {
+        agent
+            .set_session_context(Some(session_id), "chat", false)
+            .map_err(|error| error.to_string())?;
+    }
+
     if let Some(session_id) = session_id.as_deref() {
         send_sse(
             &mut stream,
@@ -581,19 +694,20 @@ pub(crate) async fn handle_chat_endpoint(
         cleanup_prepared_attachments(prepared_attachments).await;
         return Ok(());
     }
-
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
     let mut last_usage = None;
     let mut response_started = false;
     let mut thinking_started = false;
     let mut terminal_sent = false;
+    let mut turn_completed_successfully = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut assistant_tools: Vec<Value> = Vec::new();
     let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
         let terminal_status = native_chat_terminal_status(&event);
+        let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
@@ -605,6 +719,23 @@ pub(crate) async fn handle_chat_endpoint(
             | FromAgent::CodexNativeDecision { .. }
             | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
+            FromAgent::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            } => {
+                send_sse(
+                    &mut stream,
+                    &managed_gateway_receipt_status(
+                        request_id,
+                        record_id,
+                        lineage_id,
+                        record_status,
+                    ),
+                )
+                .await?;
+            }
             FromAgent::CodexSessionState {
                 state,
                 thread_id,
@@ -773,13 +904,61 @@ pub(crate) async fn handle_chat_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                if client_tool_names.contains(&tool.to_lowercase()) {
+                // Gateway-handled session-messaging tools. The native runner is
+                // blocked on the tool-response channel (these definitions carry
+                // `requires_approval: true`), so answering here with a
+                // `ToolResult` supplies the outcome without the runner ever
+                // trying to execute an unknown tool. Tenancy is enforced inside
+                // the handler under this turn's AuthContext, and the sender is
+                // always this turn's session id, so the model cannot forge a
+                // different `from` session.
+                if is_session_messaging_tool(&tool) {
+                    let result = handle_session_messaging_tool_call(
+                        &state,
+                        &auth,
+                        session_id.as_deref(),
+                        turn_scope.as_deref(),
+                        &call_id,
+                        &tool,
+                        &args,
+                    )
+                    .await;
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_start",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": args
+                        }),
+                    )
+                    .await?;
+                    // `ExecutionSource::RemoteClient` keeps peer-authored text
+                    // (peer titles) inside the runner's untrusted-content
+                    // envelope. `FromAgent::ToolEnd` closes out the metadata.
+                    let _ = agent.tool_response_sender().send((
+                        call_id.clone(),
+                        true,
+                        Some(result),
+                        ExecutionSource::RemoteClient,
+                        None,
+                    ));
+                } else if client_tool_names.contains(&tool.to_lowercase()) {
                     client_tool_call_ids.insert(call_id.clone());
                     state
                         .pending_tool_responses
                         .lock()
                         .await
                         .insert(call_id.clone(), agent.tool_response_sender());
+                    if let Some(owner) =
+                        PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                    {
+                        state
+                            .pending_tool_response_sessions
+                            .lock()
+                            .await
+                            .insert(call_id.clone(), owner);
+                    }
                     send_sse(
                         &mut stream,
                         &serde_json::json!({
@@ -831,6 +1010,15 @@ pub(crate) async fn handle_chat_endpoint(
                                 .lock()
                                 .await
                                 .insert(call_id.clone(), agent.tool_response_sender());
+                            if let Some(owner) =
+                                PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                            {
+                                state
+                                    .pending_tool_response_sessions
+                                    .lock()
+                                    .await
+                                    .insert(call_id.clone(), owner);
+                            }
                             send_sse(
                                 &mut stream,
                                 &serde_json::json!({
@@ -897,6 +1085,11 @@ pub(crate) async fn handle_chat_endpoint(
                 call_id, success, ..
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .pending_tool_response_sessions
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 state
                     .completed_client_tool_results
                     .lock()
@@ -1020,6 +1213,11 @@ pub(crate) async fn handle_chat_endpoint(
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
                 state
+                    .pending_tool_response_sessions
+                    .lock()
+                    .await
+                    .remove(&call_id);
+                state
                     .completed_client_tool_results
                     .lock()
                     .await
@@ -1093,6 +1291,7 @@ pub(crate) async fn handle_chat_endpoint(
                 .await?;
                 send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
                 terminal_sent = true;
+                turn_completed_successfully = acknowledge_pending_peer_messages;
                 break;
             }
             FromAgent::TurnInterrupted { reason, .. } => {
@@ -1134,6 +1333,16 @@ pub(crate) async fn handle_chat_endpoint(
         send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
     }
 
+    if turn_completed_successfully {
+        acknowledge_peer_messages(
+            &state,
+            session_id.as_deref(),
+            &auth,
+            &pending_peer_message_ids,
+        )
+        .await;
+    }
+
     let _ = stream.shutdown().await;
     cleanup_prepared_attachments(prepared_attachments).await;
     Ok(())
@@ -1145,14 +1354,16 @@ pub(crate) async fn handle_chat_websocket_endpoint(
     head: RequestHead,
     state: AppState,
 ) -> Result<(), String> {
-    let Some(auth) = auth_context(&head, &state.config) else {
-        let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
-        stream
-            .write_all(&response)
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
+    let auth = match authorized_context(&head, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => {
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
     };
 
     if !origin_allowed(&head) {
@@ -1221,6 +1432,17 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             return Ok(());
         }
     };
+    if let Err(error) = validate_client_tool_names(&chat) {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": error }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
 
     let Some(latest) = chat.messages.last() else {
         send_ws_json(
@@ -1256,7 +1478,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         let _ = stream.shutdown().await;
         return Ok(());
     }
-    let prompt = build_prompt_from_chat(&chat);
+    let mut prompt = build_prompt_from_chat(&chat);
     let system_prompt = system_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
@@ -1274,18 +1496,23 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             return Ok(());
         }
     };
-    if let Err(error) = record_chat_user_message(&state, &chat, &auth).await {
-        cleanup_prepared_attachments(prepared_attachments).await;
-        send_ws_json(
-            &mut stream,
-            &serde_json::json!({ "type": "error", "message": error }),
-        )
-        .await?;
-        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-        send_ws_close(&mut stream).await?;
-        let _ = stream.shutdown().await;
-        return Ok(());
-    }
+    let turn_scope = match record_chat_user_message(&state, &chat, &auth).await {
+        Ok(turn_scope) => turn_scope,
+        Err(error) => {
+            cleanup_prepared_attachments(prepared_attachments).await;
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+    let pending_peer_message_ids =
+        prepend_pending_peer_messages(&state, session_id.as_deref(), &auth, &mut prompt).await;
 
     let model = selected_chat_model(&chat, &state).await;
     if let Some(codex_model) = codex_app_server_model_id(&model) {
@@ -1300,7 +1527,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             )
             .await?;
         }
-        handle_codex_app_server_chat_ws(
+        let prompt_succeeded = handle_codex_app_server_chat_ws(
             &mut stream,
             &state,
             session_id.as_deref(),
@@ -1309,13 +1536,26 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             &prepared_attachments.paths,
         )
         .await?;
+        if prompt_succeeded {
+            acknowledge_peer_messages(
+                &state,
+                session_id.as_deref(),
+                &auth,
+                &pending_peer_message_ids,
+            )
+            .await;
+        }
         send_ws_close(&mut stream).await?;
         let _ = stream.shutdown().await;
         cleanup_prepared_attachments(prepared_attachments).await;
         return Ok(());
     }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
-    let (client_tools, client_tool_names) = client_tool_definitions(&chat);
+    let (mut client_tools, client_tool_names) = client_tool_definitions(&chat);
+    // Gateway-handled session-messaging tools give an agent turn the same reach
+    // the loopback endpoints give a UI client. They are answered inline below
+    // through the tool-response channel, under this turn's AuthContext.
+    client_tools.extend(session_messaging_tool_definitions());
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -1349,6 +1589,12 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         }
     };
 
+    if let Some(session_id) = session_id.clone() {
+        agent
+            .set_session_context(Some(session_id), "chat", false)
+            .map_err(|error| error.to_string())?;
+    }
+
     send_ws_json(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
     send_ws_json(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
 
@@ -1367,19 +1613,20 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         cleanup_prepared_attachments(prepared_attachments).await;
         return Ok(());
     }
-
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
     let mut last_usage = None;
     let mut response_started = false;
     let mut thinking_started = false;
     let mut terminal_sent = false;
+    let mut turn_completed_successfully = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut assistant_tools: Vec<Value> = Vec::new();
     let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
         let terminal_status = native_chat_terminal_status(&event);
+        let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
@@ -1391,6 +1638,23 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             | FromAgent::CodexNativeDecision { .. }
             | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
+            FromAgent::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &managed_gateway_receipt_status(
+                        request_id,
+                        record_id,
+                        lineage_id,
+                        record_status,
+                    ),
+                )
+                .await?;
+            }
             FromAgent::CodexSessionState {
                 state,
                 thread_id,
@@ -1545,13 +1809,61 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                if client_tool_names.contains(&tool.to_lowercase()) {
+                // Gateway-handled session-messaging tools. The native runner is
+                // blocked on the tool-response channel (these definitions carry
+                // `requires_approval: true`), so answering here with a
+                // `ToolResult` supplies the outcome without the runner ever
+                // trying to execute an unknown tool. Tenancy is enforced inside
+                // the handler under this turn's AuthContext, and the sender is
+                // always this turn's session id, so the model cannot forge a
+                // different `from` session.
+                if is_session_messaging_tool(&tool) {
+                    let result = handle_session_messaging_tool_call(
+                        &state,
+                        &auth,
+                        session_id.as_deref(),
+                        turn_scope.as_deref(),
+                        &call_id,
+                        &tool,
+                        &args,
+                    )
+                    .await;
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_start",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": args
+                        }),
+                    )
+                    .await?;
+                    // `ExecutionSource::RemoteClient` keeps peer-authored text
+                    // (peer titles) inside the runner's untrusted-content
+                    // envelope. `FromAgent::ToolEnd` closes out the metadata.
+                    let _ = agent.tool_response_sender().send((
+                        call_id.clone(),
+                        true,
+                        Some(result),
+                        ExecutionSource::RemoteClient,
+                        None,
+                    ));
+                } else if client_tool_names.contains(&tool.to_lowercase()) {
                     client_tool_call_ids.insert(call_id.clone());
                     state
                         .pending_tool_responses
                         .lock()
                         .await
                         .insert(call_id.clone(), agent.tool_response_sender());
+                    if let Some(owner) =
+                        PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                    {
+                        state
+                            .pending_tool_response_sessions
+                            .lock()
+                            .await
+                            .insert(call_id.clone(), owner);
+                    }
                     send_ws_json(
                         &mut stream,
                         &serde_json::json!({
@@ -1606,6 +1918,15 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                                 .lock()
                                 .await
                                 .insert(call_id.clone(), agent.tool_response_sender());
+                            if let Some(owner) =
+                                PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                            {
+                                state
+                                    .pending_tool_response_sessions
+                                    .lock()
+                                    .await
+                                    .insert(call_id.clone(), owner);
+                            }
                             send_ws_json(
                                 &mut stream,
                                 &serde_json::json!({
@@ -1672,6 +1993,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 call_id, success, ..
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .pending_tool_response_sessions
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 state
                     .completed_client_tool_results
                     .lock()
@@ -1795,6 +2121,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
                 state
+                    .pending_tool_response_sessions
+                    .lock()
+                    .await
+                    .remove(&call_id);
+                state
                     .completed_client_tool_results
                     .lock()
                     .await
@@ -1859,6 +2190,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 .await?;
                 send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
                 terminal_sent = true;
+                turn_completed_successfully = acknowledge_pending_peer_messages;
                 break;
             }
             FromAgent::TurnInterrupted { reason, .. } => {
@@ -1898,6 +2230,16 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         )
         .await?;
         send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+    }
+
+    if turn_completed_successfully {
+        acknowledge_peer_messages(
+            &state,
+            session_id.as_deref(),
+            &auth,
+            &pending_peer_message_ids,
+        )
+        .await;
     }
 
     send_ws_close(&mut stream).await?;
@@ -2451,16 +2793,43 @@ pub(crate) fn sse_headers() -> String {
 
 #[cfg(test)]
 mod chat_stream_tests {
-    use super::native_chat_terminal_status;
+    use super::{
+        managed_gateway_receipt_status, native_chat_acknowledges_peer_messages,
+        native_chat_terminal_status,
+    };
     use maestro_tui::agent::FromAgent;
 
     #[test]
+    fn managed_gateway_receipt_status_contains_safe_camel_case_fields() {
+        let status = managed_gateway_receipt_status(
+            "request-1".to_string(),
+            "record-1".to_string(),
+            "lineage-1".to_string(),
+            "planned".to_string(),
+        );
+
+        assert_eq!(status["type"], "status");
+        assert_eq!(status["status"], "managed_gateway_receipt");
+        assert_eq!(status["details"]["requestId"], "request-1");
+        assert_eq!(status["details"]["recordId"], "record-1");
+        assert_eq!(status["details"]["lineageId"], "lineage-1");
+        assert_eq!(status["details"]["recordStatus"], "planned");
+        assert!(
+            !status
+                .to_string()
+                .contains("managed_inference_authorization")
+        );
+    }
+
+    #[test]
     fn native_chat_requires_explicit_turn_terminal() {
-        assert!(native_chat_terminal_status(&FromAgent::ResponseEnd {
-            response_id: "done".to_string(),
-            usage: None,
-        })
-        .is_none());
+        assert!(
+            native_chat_terminal_status(&FromAgent::ResponseEnd {
+                response_id: "done".to_string(),
+                usage: None,
+            })
+            .is_none()
+        );
         assert!(matches!(
             native_chat_terminal_status(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
@@ -2473,6 +2842,37 @@ mod chat_stream_tests {
                 message: "unexpected eof".to_string(),
             }),
             Some(Err(message)) if message.contains("unexpected eof")
+        ));
+    }
+
+    #[test]
+    fn native_chat_failures_leave_peer_messages_pending_for_redelivery() {
+        assert!(!native_chat_acknowledges_peer_messages(
+            &FromAgent::ResponseEnd {
+                response_id: "partial".to_string(),
+                usage: None,
+            }
+        ));
+        assert!(!native_chat_acknowledges_peer_messages(
+            &FromAgent::ProviderError {
+                kind: maestro_tui::ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                message: "authentication failed".to_string(),
+            }
+        ));
+        assert!(!native_chat_acknowledges_peer_messages(
+            &FromAgent::TurnInterrupted {
+                response_id: "interrupted".to_string(),
+                reason: "stream dropped".to_string(),
+            }
+        ));
+    }
+
+    #[test]
+    fn native_chat_successful_terminal_acknowledges_peer_messages() {
+        assert!(native_chat_acknowledges_peer_messages(
+            &FromAgent::TurnCompleted {
+                response_id: "completed".to_string(),
+            }
         ));
     }
 }

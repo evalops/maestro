@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use wait_timeout::ChildExt;
 
 pub const OP_REFERENCE_PREFIX: &str = "op://";

@@ -64,8 +64,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::panic;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::{
     cursor,

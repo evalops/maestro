@@ -4,18 +4,18 @@
 //! so ChatGPT OAuth refresh stays owned by Codex. Dynamic tools and approval
 //! server-requests are queued for the native agent to service.
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Map, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::codex_app_server::{
+    CodexAppServerClient, IncomingServerRequest, InitializeOptions, JsonRpcError, Notification,
+    ServerRequestWaitError, ThreadInjectItemsParams, ThreadStartParams, TurnStartParams,
     agent_message_completed_text, agent_message_text_from_notifications,
-    is_agent_message_notification, CodexAppServerClient, IncomingServerRequest, InitializeOptions,
-    JsonRpcError, Notification, ServerRequestWaitError, ThreadInjectItemsParams, ThreadStartParams,
-    TurnStartParams,
+    is_agent_message_notification,
 };
 use crate::codex_session::{
     CodexCapabilities, CodexSessionKey, CodexSessionManifest, CodexSessionOpen, CodexThreadBinding,
@@ -36,6 +36,20 @@ pub struct CodexAppServerTurnResult {
     /// surface full text through `item/completed`.
     pub assistant_text_is_full: bool,
     pub raw_completion: Value,
+    /// Provider-facing failure from `turn/completed` (`turn.status = failed`
+    /// and/or `turn.error`) or an `error` notification. Empty assistant text
+    /// with this set is a failed turn, not a transient empty completion.
+    pub failure: Option<String>,
+}
+
+impl CodexAppServerTurnResult {
+    /// Non-empty provider failure text, if Codex declared the turn failed.
+    pub fn provider_failure(&self) -> Option<&str> {
+        self.failure
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 /// One dynamic tool exposed to Codex app-server.
@@ -149,6 +163,7 @@ impl CodexAppServerTurnSession {
         cwd: Option<String>,
         approval_policy: Option<String>,
         sandbox: Option<String>,
+        session_id: Option<&str>,
         payload: CodexThreadPayload<'_>,
         state_root: &Path,
     ) -> Result<Self> {
@@ -162,7 +177,8 @@ impl CodexAppServerTurnSession {
             .unwrap_or_else(|| std::path::Path::new("."));
         let identity =
             crate::codex_identity::resolve_codex_identity(requested_profile.as_deref(), workspace)?;
-        let key = CodexSessionKey::new(&identity.profile_name, workspace, &model)?;
+        let key = CodexSessionKey::new(&identity.profile_name, workspace, &model)?
+            .with_session_id(session_id);
         let manifest = CodexSessionManifest {
             key,
             approval_policy: approval_policy.clone().unwrap_or_default(),
@@ -417,13 +433,18 @@ impl CodexAppServerTurnSession {
             .context("wait for turn completion")?;
 
         let (assistant_text, assistant_text_is_full) = self.take_assistant_text().await;
+        let errors = self.take_error_messages().await;
+        let raw_completion = completed.params;
+        let failure =
+            turn_failure_from_params(&raw_completion).or_else(|| errors.into_iter().next());
 
         Ok(CodexAppServerTurnResult {
             thread_id: self.thread_id.clone(),
             turn_id: turn_id.to_owned(),
             assistant_text,
             assistant_text_is_full,
-            raw_completion: completed.params,
+            raw_completion,
+            failure,
         })
     }
 
@@ -482,15 +503,31 @@ impl CodexAppServerTurnSession {
                 .await;
             if let Some(notification) = completed.into_iter().next() {
                 let (assistant_text, assistant_text_is_full) = self.take_assistant_text().await;
+                let errors = self.take_error_messages().await;
+                let raw_completion = notification.params.unwrap_or(Value::Null);
+                let failure =
+                    turn_failure_from_params(&raw_completion).or_else(|| errors.into_iter().next());
                 return Ok(TurnWaitEvent::Completed(CodexAppServerTurnResult {
                     thread_id: self.thread_id.clone(),
                     turn_id: turn_id.to_owned(),
                     assistant_text,
                     assistant_text_is_full,
-                    raw_completion: notification.params.unwrap_or(Value::Null),
+                    raw_completion,
+                    failure,
                 }));
             }
         }
+    }
+
+    async fn take_error_messages(&self) -> Vec<String> {
+        let notes = self
+            .client
+            .take_notifications_where(|note| note.method == "error")
+            .await;
+        notes
+            .iter()
+            .filter_map(error_notification_message)
+            .collect()
     }
 
     /// Drain recent agent message deltas without removing completion events.
@@ -704,6 +741,51 @@ fn notification_turn_id(params: &Value) -> Option<&str> {
         .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
         .or_else(|| params.get("id"))
         .and_then(Value::as_str)
+}
+
+fn error_object_message(error: &Value) -> Option<String> {
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn error_object_info(error: &Value) -> Option<&str> {
+    error
+        .get("codexErrorInfo")
+        .or_else(|| error.get("code"))
+        .and_then(Value::as_str)
+}
+
+fn error_notification_message(note: &Notification) -> Option<String> {
+    if note.method != "error" {
+        return None;
+    }
+    let params = note.params.as_ref()?;
+    let error = params.get("error").unwrap_or(params);
+    format_codex_turn_failure(Some(error), None)
+}
+
+fn format_codex_turn_failure(error: Option<&Value>, status: Option<&str>) -> Option<String> {
+    let message = error.and_then(error_object_message);
+    let info = error.and_then(error_object_info);
+    if status == Some("failed") || message.is_some() || info == Some("usageLimitExceeded") {
+        Some(message.unwrap_or_else(|| match info {
+            Some(info) => format!("Codex turn failed ({info})"),
+            None => "Codex turn failed".to_owned(),
+        }))
+    } else {
+        None
+    }
+}
+
+fn turn_failure_from_params(params: &Value) -> Option<String> {
+    let turn = params.get("turn").unwrap_or(params);
+    let status = turn.get("status").and_then(Value::as_str);
+    let error = turn.get("error").or_else(|| params.get("error"));
+    format_codex_turn_failure(error, status)
 }
 
 fn assistant_text_from_notifications(notes: &[Notification]) -> (String, bool) {
@@ -1035,6 +1117,37 @@ pub fn codex_thread_model_id(model: &str) -> String {
     }
 }
 
+/// Retire the exact persistent binding before a standing prompt changes.
+///
+/// App-server exposes standing `developerInstructions` only on `thread/start`;
+/// resuming the existing binding would therefore preserve stale instructions.
+/// The caller must also invalidate its live session and restore semantic
+/// history before the next turn.
+pub fn retire_persistent_thread_for_prompt_change(
+    model: &str,
+    cwd: &str,
+    session_id: Option<&str>,
+) -> Result<bool> {
+    if !model_should_use_app_server_turns(model) {
+        return Ok(false);
+    }
+    let requested_profile =
+        crate::service_connections::selected_delegated_profile_from_env("openai-codex")?;
+    let identity = crate::codex_identity::resolve_codex_identity(
+        requested_profile.as_deref(),
+        std::path::Path::new(cwd),
+    )?;
+    let key = CodexSessionKey::new(
+        identity.profile_name,
+        std::path::Path::new(cwd),
+        codex_thread_model_id(model),
+    )?
+    .with_session_id(session_id);
+    let state_root = crate::path_utils::maestro_home_dir()
+        .context("Maestro home is unavailable for Codex thread bindings")?;
+    CodexThreadBinding::quarantine_at(&state_root, &key)
+}
+
 /// Map native tool definitions into app-server dynamic tool specs.
 pub fn dynamic_tools_from_native(
     tools: &HashMap<String, crate::agent::ToolDefinition>,
@@ -1235,6 +1348,59 @@ mod tests {
             assistant_text_from_notifications(&notes),
             ("full answer".to_owned(), true)
         );
+    }
+
+    #[test]
+    fn failed_turn_completion_is_a_provider_failure_not_empty_text() {
+        let params = json!({
+            "threadId": "thr-1",
+            "turn": {
+                "id": "turn-1",
+                "status": "failed",
+                "error": {
+                    "message": "You've hit your usage limit. try again later.",
+                    "codexErrorInfo": "usageLimitExceeded"
+                },
+                "items": []
+            }
+        });
+        let failure = turn_failure_from_params(&params).expect("failed turn");
+        assert!(failure.contains("usage limit"), "{failure}");
+        assert!(!failure.contains("empty_assistant"));
+    }
+
+    #[test]
+    fn error_notification_usage_limit_is_a_provider_failure() {
+        let note = Notification {
+            method: "error".to_owned(),
+            params: Some(json!({
+                "error": {
+                    "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.",
+                    "codexErrorInfo": "usageLimitExceeded",
+                    "additionalDetails": null
+                },
+                "willRetry": false,
+                "threadId": "thr-1",
+                "turnId": "turn-1"
+            })),
+        };
+        let failure = error_notification_message(&note).expect("error notification");
+        assert!(failure.contains("usage limit"), "{failure}");
+        assert!(!failure.contains("empty_assistant"));
+    }
+
+    #[test]
+    fn failed_turn_without_message_uses_codex_error_info() {
+        let params = json!({
+            "turn": {
+                "id": "turn-1",
+                "status": "failed",
+                "error": { "codexErrorInfo": "usageLimitExceeded" },
+                "items": []
+            }
+        });
+        let failure = turn_failure_from_params(&params).expect("failed turn");
+        assert_eq!(failure, "Codex turn failed (usageLimitExceeded)");
     }
 
     #[test]

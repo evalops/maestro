@@ -15,9 +15,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "code-writer",
         skill_id: "maestro.subagent.code-writer",
-        display_name: "Maestro code writer subagent",
-        description:
-            "Delegate bounded implementation work to a target-owned Maestro coding child agent.",
+        display_name: "Deixic Code writer subagent",
+        description: "Delegate bounded implementation work to a target-owned Deixic Code child agent.",
         tags: &["maestro", "subagent", "code", "write"],
         #[cfg(test)]
         type_aliases: &["worker", "coder", "code", "code-writer", "default"],
@@ -34,9 +33,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "code-review",
         skill_id: "maestro.subagent.code-review",
-        display_name: "Maestro code review subagent",
-        description:
-            "Delegate code review and risk analysis to a target-owned Maestro review child agent.",
+        display_name: "Deixic Code review subagent",
+        description: "Delegate code review and risk analysis to a target-owned Deixic Code review child agent.",
         tags: &["maestro", "subagent", "code", "review"],
         #[cfg(test)]
         type_aliases: &[
@@ -52,8 +50,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "test-runner",
         skill_id: "maestro.subagent.test-runner",
-        display_name: "Maestro test runner subagent",
-        description: "Delegate test execution, failure triage, and result artifact capture to a target-owned Maestro child agent.",
+        display_name: "Deixic Code test runner subagent",
+        description: "Delegate test execution, failure triage, and result artifact capture to a target-owned Deixic Code child agent.",
         tags: &["maestro", "subagent", "test", "ci"],
         #[cfg(test)]
         type_aliases: &["test", "qa", "ci", "ci-monitor", "test-runner"],
@@ -69,8 +67,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "browser-qa",
         skill_id: "maestro.subagent.browser-qa",
-        display_name: "Maestro browser QA subagent",
-        description: "Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Maestro child agent.",
+        display_name: "Deixic Code browser QA subagent",
+        description: "Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Deixic Code child agent.",
         tags: &["maestro", "subagent", "browser", "qa", "evidence"],
         #[cfg(test)]
         type_aliases: &[
@@ -94,8 +92,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "repo-explorer",
         skill_id: "maestro.subagent.repo-explorer",
-        display_name: "Maestro repo explorer subagent",
-        description: "Delegate repository inspection and context gathering to a target-owned Maestro exploration child agent.",
+        display_name: "Deixic Code repo explorer subagent",
+        description: "Delegate repository inspection and context gathering to a target-owned Deixic Code exploration child agent.",
         tags: &["maestro", "subagent", "repo", "explore"],
         #[cfg(test)]
         type_aliases: &[
@@ -118,8 +116,8 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
     CodexSubagentDispatchLane {
         lane_id: "release-shepherd",
         skill_id: "maestro.subagent.release-shepherd",
-        display_name: "Maestro release shepherd subagent",
-        description: "Delegate release, rollout, and merge-follow-through work to a target-owned Maestro child agent.",
+        display_name: "Deixic Code release shepherd subagent",
+        description: "Delegate release, rollout, and merge-follow-through work to a target-owned Deixic Code child agent.",
         tags: &["maestro", "subagent", "release", "deploy"],
         #[cfg(test)]
         type_aliases: &["release", "release-shepherd"],

@@ -918,6 +918,7 @@ tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t maestro-install)"
 cosign_path="$tmpdir/cosign"
 stage=""
 launcher_stage=""
+canonical_launcher_stage=""
 cleanup() {
   rm -rf "$tmpdir"
   if [[ -n "$stage" ]]; then
@@ -925,6 +926,9 @@ cleanup() {
   fi
   if [[ -n "$launcher_stage" ]]; then
     rm -f "$launcher_stage"
+  fi
+  if [[ -n "$canonical_launcher_stage" ]]; then
+    rm -f "$canonical_launcher_stage"
   fi
 }
 trap cleanup EXIT
@@ -1145,6 +1149,20 @@ chmod 755 "$launcher_stage"
 mv -f "$launcher_stage" "$install_dir/maestro"
 launcher_stage=""
 
-printf 'Installed native Maestro %s to %s\n' "$release_version" "$install_dir/maestro" >&2
+canonical_launcher_stage="$install_dir/.deixic-code.install.$$"
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+	printf 'install_dir=%s\n' "$install_dir_quoted"
+	# The Maestro launcher remains the compatibility owner for update and
+	# rollback repointing. Deixic Code is the stable customer entrypoint.
+	# shellcheck disable=SC2016
+	printf '%s\n' 'exec "$install_dir/maestro" "$@"'
+} > "$canonical_launcher_stage"
+chmod 755 "$canonical_launcher_stage"
+mv -f "$canonical_launcher_stage" "$install_dir/deixic-code"
+canonical_launcher_stage=""
+
+printf 'Installed Deixic Code %s to %s\n' "$release_version" "$install_dir/deixic-code" >&2
+printf 'The maestro command remains available as a compatibility alias at %s.\n' "$install_dir/maestro" >&2
 printf 'Release files retained under %s for rollback.\n' "$release_root" >&2
-"$install_dir/maestro" --version
+"$install_dir/deixic-code" --version

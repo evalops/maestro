@@ -14,10 +14,11 @@ use crate::headless::{
 };
 use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 use crate::hosted_runner::{
-    load_hosted_runner_session_replay, prepare_hosted_runner, start_prepared_hosted_runner,
-    validate_startup_runtime_receipt_binding, AgentSupervisorHostedRunnerMessageExecutor,
-    HostedRunnerConfig, HostedRunnerConfigError, HostedRunnerHandle,
+    AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerConfigError,
+    HostedRunnerHandle, load_hosted_runner_session_replay, prepare_hosted_runner,
+    start_prepared_hosted_runner, validate_startup_runtime_receipt_binding,
 };
+use maestro_runtime::{TelemetryConfig, TelemetryGuard};
 
 const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v3";
 const HEADLESS_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -26,8 +27,8 @@ const MAX_HOSTED_LAUNCH_SPEC_FILE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "maestro hosted-runner",
-    about = "Run the Rust Maestro hosted remote-runner runtime"
+    name = "deixic-code hosted-runner",
+    about = "Run the Deixic Code hosted remote-runner runtime"
 )]
 pub struct HostedRunnerCliArgs {
     /// Versioned JSON launch descriptor. Legacy CLI/env coordinates cannot be
@@ -268,17 +269,13 @@ pub struct HostedRunnerCliRuntime {
 /// and the `maestro-tui hosted-runner` compatibility entrypoint. The latter is
 /// the immutable binary used by Platform's E2E harness, so keeping setup here
 /// prevents the two supported launch paths from producing different traces.
-pub fn init_hosted_runner_tracing() {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .with_env_filter(env_filter)
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+pub fn init_hosted_runner_tracing() -> TelemetryGuard {
+    TelemetryGuard::init(TelemetryConfig::new(
+        "maestro-hosted-runner",
+        env!("CARGO_PKG_VERSION"),
+        "info",
+        "local",
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,7 +374,7 @@ where
         && first_env(&merged_env, &["MAESTRO_WEB_REQUIRE_KEY"]).as_deref() != Some("0");
     if auth_required && runner.auth_token.is_none() && runner.workload_identity.is_none() {
         anyhow::bail!(
-            "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY; set MAESTRO_WEB_REQUIRE_KEY=0 only for local testing"
+            "deixic-code hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY; set MAESTRO_WEB_REQUIRE_KEY=0 only for local testing"
         );
     }
     // The hosted resident owns one attested child generation. If that child
@@ -566,7 +563,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    init_hosted_runner_tracing();
+    let _telemetry = init_hosted_runner_tracing();
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let runtime = match start_hosted_runner_cli_runtime(args, &env).await {
         Ok(runtime) => runtime,
@@ -601,7 +598,7 @@ where
 async fn wait_for_shutdown_signal() -> Result<HostedRunnerShutdownSignal> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut hangup = signal(SignalKind::hangup())?;
@@ -1203,7 +1200,7 @@ async fn await_headless_ready(
                             &model,
                             expected_provider,
                             &provider,
-                        )
+                        );
                     }
                     AgentEvent::Error {
                         message,
@@ -1382,7 +1379,7 @@ mod tests {
         let listen = format!("127.0.0.1:{}", unused_tcp_port());
         let config = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_cleanup",
                 "--workspace-root",
@@ -1458,7 +1455,7 @@ mod tests {
 
         let error = match start_hosted_runner_cli_runtime(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_activation_cleanup",
                 "--workspace-root",
@@ -1517,7 +1514,7 @@ mod tests {
         ]);
         let config = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_cli",
                 "--owner-instance-id",
@@ -1579,18 +1576,22 @@ mod tests {
         );
         assert!(!config.supervisor.auto_reconnect);
         assert_eq!(config.agent_id.as_deref(), Some("agent_cli"));
-        assert!(config
-            .supervisor
-            .transport
-            .env
-            .iter()
-            .any(|(key, value)| { key == "MAESTRO_AGENT_ID" && value == "agent_cli" }));
-        assert!(config
-            .supervisor
-            .transport
-            .env
-            .iter()
-            .any(|(key, value)| { key == "MAESTRO_PROFILE" && value == "sandbox" }));
+        assert!(
+            config
+                .supervisor
+                .transport
+                .env
+                .iter()
+                .any(|(key, value)| { key == "MAESTRO_AGENT_ID" && value == "agent_cli" })
+        );
+        assert!(
+            config
+                .supervisor
+                .transport
+                .env
+                .iter()
+                .any(|(key, value)| { key == "MAESTRO_PROFILE" && value == "sandbox" })
+        );
         assert!(config.supervisor.transport.env.iter().any(|(key, value)| {
             key == "MAESTRO_CAUSAL_RECEIPT_ID" && value == "causal.receipt:platform-1"
         }));
@@ -1651,7 +1652,7 @@ mod tests {
 
         let (config, resolved_env) = resolve_hosted_runner_launch_config_with_env(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -1694,12 +1695,14 @@ mod tests {
         let encoded = serde_json::to_string(&launch_spec).expect("launch spec JSON");
         assert!(encoded.contains(secret_file.to_string_lossy().as_ref()));
         assert!(!encoded.contains(sentinel));
-        assert!(!config
-            .supervisor
-            .transport
-            .env
-            .iter()
-            .any(|(_, value)| value == sentinel));
+        assert!(
+            !config
+                .supervisor
+                .transport
+                .env
+                .iter()
+                .any(|(_, value)| value == sentinel)
+        );
 
         document["secretFiles"]["managedGatewayAccessToken"] =
             json!(workspace.path().join("managed-gateway-token"));
@@ -1710,16 +1713,18 @@ mod tests {
         .expect("orphaned managed secret descriptor file");
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
             &HashMap::new(),
         )
         .expect_err("orphaned managed gateway secret must fail closed");
-        assert!(error
-            .to_string()
-            .contains("managedGatewayAccessToken requires a managed model launch contract"));
+        assert!(
+            error
+                .to_string()
+                .contains("managedGatewayAccessToken requires a managed model launch contract")
+        );
         assert!(!error.to_string().contains(sentinel));
     }
 
@@ -1736,7 +1741,7 @@ mod tests {
         ]);
         let (config, resolved_env) = resolve_hosted_runner_launch_config_with_env(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "legacy-runner",
                 "--workspace-root",
@@ -1789,7 +1794,7 @@ mod tests {
             ),
             ("PORT".to_string(), "3000".to_string()),
         ]);
-        let config = resolve_hosted_runner_launch_config(["maestro hosted-runner"], &env)
+        let config = resolve_hosted_runner_launch_config(["deixic-code hosted-runner"], &env)
             .expect("generic PORT must not conflict with descriptor coordinates");
         assert_eq!(config.runner.runner_session_id, "runner");
 
@@ -1804,13 +1809,13 @@ mod tests {
             ),
         ]);
         let error =
-            resolve_hosted_runner_launch_config(["maestro hosted-runner"], &conflicting_env)
+            resolve_hosted_runner_launch_config(["deixic-code hosted-runner"], &conflicting_env)
                 .expect_err("descriptor must not mix env coordinates");
         assert!(error.to_string().contains("cannot be combined"));
 
         let conflicting_cli = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
                 "--runner-session-id",
@@ -1861,16 +1866,18 @@ mod tests {
 
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
             &HashMap::new(),
         )
         .expect_err("outbound rendezvous must require workload identity");
-        assert!(error
-            .to_string()
-            .contains("outbound rendezvous requires projected workload identity"));
+        assert!(
+            error
+                .to_string()
+                .contains("outbound rendezvous requires projected workload identity")
+        );
         assert!(!error.to_string().contains("descriptor-secret"));
     }
 
@@ -1901,7 +1908,7 @@ mod tests {
 
         let config = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -1924,7 +1931,7 @@ mod tests {
         .expect("blank descriptor file");
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -1942,7 +1949,7 @@ mod tests {
         .expect("blank workspace descriptor file");
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -1984,7 +1991,7 @@ mod tests {
 
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -2002,7 +2009,7 @@ mod tests {
         .expect("blank agent descriptor file");
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -2028,7 +2035,7 @@ mod tests {
         .expect("invalid endpoint descriptor file");
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -2070,7 +2077,7 @@ mod tests {
 
         let error = resolve_hosted_runner_launch_config(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--config",
                 descriptor.to_str().expect("descriptor path"),
             ],
@@ -2096,9 +2103,11 @@ mod tests {
         assert!(child_env.iter().any(|(key, value)| {
             key == "MAESTRO_EVALOPS_ACCESS_TOKEN" && value == "tenant-token"
         }));
-        assert!(!child_env
-            .iter()
-            .any(|(key, _)| key == "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"));
+        assert!(
+            !child_env
+                .iter()
+                .any(|(key, _)| key == "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE")
+        );
     }
 
     #[test]
@@ -2184,9 +2193,11 @@ mod tests {
         ]);
 
         let error = validate_resident_contract(&env).expect_err("stale revision must fail");
-        assert!(error
-            .to_string()
-            .contains(RESIDENT_MODEL_READY_CONTRACT_REVISION));
+        assert!(
+            error
+                .to_string()
+                .contains(RESIDENT_MODEL_READY_CONTRACT_REVISION)
+        );
     }
 
     #[test]
@@ -2255,7 +2266,7 @@ mod tests {
     fn cli_requires_auth_by_default_even_on_loopback() {
         let workspace = tempdir().expect("workspace");
         let args = [
-            "maestro hosted-runner",
+            "deixic-code hosted-runner",
             "--runner-session-id",
             "mrs_auth",
             "--workspace-root",
@@ -2311,7 +2322,7 @@ mod tests {
 
         let runtime = start_hosted_runner_cli_runtime(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_real",
                 "--workspace-root",
@@ -2345,10 +2356,12 @@ mod tests {
         assert_eq!(drain["status"], "drained");
         assert_eq!(drain["reason"], "process_shutdown");
         assert_eq!(drain["requested_by"], "maestro-hosted-runner");
-        assert!(drain["manifest_path"]
-            .as_str()
-            .map(|path| PathBuf::from(path).is_file())
-            .unwrap_or(false));
+        assert!(
+            drain["manifest_path"]
+                .as_str()
+                .map(|path| PathBuf::from(path).is_file())
+                .unwrap_or(false)
+        );
 
         let post_drain_identity: serde_json::Value = reqwest::get(format!(
             "{}/.well-known/evalops/remote-runner/identity",
@@ -2400,7 +2413,7 @@ mod tests {
         let source_listen = format!("127.0.0.1:{source_port}");
         let source = start_hosted_runner_cli_runtime(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_source",
                 "--workspace-root",
@@ -2632,7 +2645,7 @@ mod tests {
         let restored_listen = format!("127.0.0.1:{restored_port}");
         let restored = start_hosted_runner_cli_runtime(
             [
-                "maestro hosted-runner",
+                "deixic-code hosted-runner",
                 "--runner-session-id",
                 "mrs_restored",
                 "--workspace-root",

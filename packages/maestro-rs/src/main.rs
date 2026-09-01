@@ -1,6 +1,6 @@
 use anyhow::Result;
-use maestro::{classify, Command};
-use maestro_runtime_gateway::{serve, RuntimeGatewayConfig};
+use maestro::{Command, classify};
+use maestro_runtime_gateway::{RuntimeGatewayConfig, serve};
 use std::path::{Path, PathBuf};
 
 // Process hardening must run before `main` — and therefore before the Tokio
@@ -36,8 +36,8 @@ fn configure_web_static_root() {
     }
 }
 
-const HELP: &str = "Maestro\n\nUsage:\n  maestro [options] [prompt]\n  maestro exec <prompt>\n  maestro -w <name> [prompt]\n  maestro doctor [--json] [--live] [--model <provider/model>]\n  maestro setup [--json] [--live] [--model <provider/model>]\n  maestro --headless\n  maestro web [--port <port>]\n  maestro hosted-runner [options]\n\nCommon commands:\n  maestro setup       Check authentication and show the next setup step\n  maestro config      Inspect or change Maestro configuration\n  maestro models      List available models and providers\n  maestro sessions    List, export, or import saved sessions\n  maestro scenario    Run or inspect scripted scenarios\n  maestro run         Inspect or replay a saved session\n\nAdvanced commands:\n  maestro codex       Manage Codex authentication and app-server access\n  maestro mcp         Configure MCP servers\n  maestro plugins     Inspect and manage plugins\n  maestro connections Manage API keys and delegated accounts\n  maestro init        Register an EvalOps agent integration\n\nOptions:\n  -w, --worktree <name>  Run the session in a new git worktree at ../<repo>-wt-<name>\n                         on a new branch; clean worktrees are removed on exit, dirty ones kept\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required.";
-const VERSION: &str = concat!("maestro ", env!("CARGO_PKG_VERSION"));
+const HELP: &str = "Deixic Code\n\nUsage:\n  deixic-code [options] [prompt]\n  deixic-code exec <prompt>\n  deixic-code -w <name> [prompt]\n  deixic-code doctor [--json] [--live] [--model <provider/model>]\n  deixic-code setup [--json] [--live] [--model <provider/model>]\n  deixic-code --headless\n  deixic-code web [--port <port>]\n  deixic-code hosted-runner [options]\n\nCommon commands:\n  deixic-code setup       Check authentication and show the next setup step\n  deixic-code config      Inspect or change Deixic Code configuration\n  deixic-code models      List available models and providers\n  deixic-code sessions    List, export, or import saved sessions\n  deixic-code scenario    Run or inspect scripted scenarios\n  deixic-code run         Inspect or replay a saved session\n\nAdvanced commands:\n  deixic-code codex       Manage Codex authentication and app-server access\n  deixic-code mcp         Configure MCP servers\n  deixic-code plugins     Inspect and manage plugins\n  deixic-code connections Manage API keys and delegated accounts\n  deixic-code init        Register a Deixic agent integration\n\nCompatibility:\n  maestro remains available as an alias; MAESTRO_* variables and .maestro paths are unchanged.\n\nOptions:\n  -w, --worktree <name>  Run the session in a new git worktree at ../<repo>-wt-<name>\n                         on a new branch; clean worktrees are removed on exit, dirty ones kept\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required.";
+const VERSION: &str = concat!("deixic-code ", env!("CARGO_PKG_VERSION"));
 
 fn sync_command_output(command: &Command) -> Option<&'static str> {
     match command {
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sync_command_output, web_static_root, HELP, VERSION};
+    use super::{HELP, VERSION, sync_command_output, web_static_root};
     use maestro::Command;
     use std::{fs, path::PathBuf};
 

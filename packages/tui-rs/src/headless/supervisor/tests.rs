@@ -9,8 +9,8 @@ use crate::headless::{
 use std::collections::VecDeque;
 use std::fs;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 #[cfg(unix)]
@@ -83,9 +83,9 @@ async fn write_http_response(
     body: &str,
 ) {
     let response = format!(
-            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
+        "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
     let _ = socket.write_all(response.as_bytes()).await;
     let _ = socket.shutdown().await;
 }
@@ -390,9 +390,11 @@ fn health_transitions_after_silence() {
     supervisor.health_status = HealthStatus::Healthy;
     supervisor.last_response = Some(start);
 
-    assert!(supervisor
-        .due_health_transition(start + Duration::from_secs(29))
-        .is_none());
+    assert!(
+        supervisor
+            .due_health_transition(start + Duration::from_secs(29))
+            .is_none()
+    );
     assert!(matches!(
         supervisor.due_health_transition(start + Duration::from_secs(30)),
         Some(SupervisorEvent::HealthChanged {
@@ -400,9 +402,11 @@ fn health_transitions_after_silence() {
         })
     ));
     assert_eq!(supervisor.health(), HealthStatus::Degraded);
-    assert!(supervisor
-        .due_health_transition(start + Duration::from_secs(34))
-        .is_none());
+    assert!(
+        supervisor
+            .due_health_transition(start + Duration::from_secs(34))
+            .is_none()
+    );
     assert!(matches!(
         supervisor.due_health_transition(start + Duration::from_secs(35)),
         Some(SupervisorEvent::HealthChanged {
@@ -428,9 +432,11 @@ fn remote_viewer_skips_silence_health_timeouts() {
     supervisor.last_response = Some(start);
 
     assert!(supervisor.next_health_deadline().is_none());
-    assert!(supervisor
-        .due_health_transition(start + Duration::from_secs(35))
-        .is_none());
+    assert!(
+        supervisor
+            .due_health_transition(start + Duration::from_secs(35))
+            .is_none()
+    );
     assert_eq!(supervisor.health(), HealthStatus::Healthy);
 }
 
@@ -455,9 +461,11 @@ fn compacting_remote_sessions_use_extended_silence_deadline() {
         supervisor.next_health_deadline(),
         Some(start + REMOTE_COMPACTION_SILENCE_TIMEOUT)
     );
-    assert!(supervisor
-        .due_health_transition(start + Duration::from_secs(35))
-        .is_none());
+    assert!(
+        supervisor
+            .due_health_transition(start + Duration::from_secs(35))
+            .is_none()
+    );
     assert_eq!(supervisor.health(), HealthStatus::Healthy);
 }
 
@@ -873,6 +881,7 @@ fn test_supervisor_builder_restores_session_replay() {
             tool_grant: None,
         }),
         semantic_conversation: None,
+        last_workspace_capability_set: None,
     };
 
     let supervisor = SupervisorBuilder::new().session_replay(replay).build();
@@ -891,6 +900,7 @@ fn session_replay_does_not_override_explicit_remote_session_id() {
         },
         last_init: None,
         semantic_conversation: None,
+        last_workspace_capability_set: None,
     };
 
     let supervisor = SupervisorBuilder::new()
@@ -990,6 +1000,7 @@ fn replay_without_recorder_clears_history_after_unsupported_live_snapshot() {
             role: maestro_ai::Role::User,
             content: maestro_ai::MessageContent::text("stale reconnect history"),
         }]),
+        last_workspace_capability_set: None,
     };
     let mut supervisor =
         AgentSupervisor::new(SupervisorConfig::default()).with_session_replay(replay);
@@ -1084,6 +1095,7 @@ fn resume_recorded_session_rebuilds_metadata_after_corruption() {
         .record_sent(&ToAgentMessage::Prompt {
             content: "Recovered title".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .expect("record prompt");
     recorder.flush().expect("flush");
@@ -1142,18 +1154,26 @@ fn session_recorder_keeps_last_init_in_sync_with_sent_messages() {
 fn session_recorder_failures_are_reported_once_until_a_write_recovers() {
     let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
 
-    assert!(supervisor
-        .session_recorder_error_to_report(Err(std::io::Error::other("disk full")))
-        .is_some());
-    assert!(supervisor
-        .session_recorder_error_to_report(Err(std::io::Error::other("disk still full")))
-        .is_none());
-    assert!(supervisor
-        .session_recorder_error_to_report(Ok(()))
-        .is_none());
-    assert!(supervisor
-        .session_recorder_error_to_report(Err(std::io::Error::other("disk full again")))
-        .is_some());
+    assert!(
+        supervisor
+            .session_recorder_error_to_report(Err(std::io::Error::other("disk full")))
+            .is_some()
+    );
+    assert!(
+        supervisor
+            .session_recorder_error_to_report(Err(std::io::Error::other("disk still full")))
+            .is_none()
+    );
+    assert!(
+        supervisor
+            .session_recorder_error_to_report(Ok(()))
+            .is_none()
+    );
+    assert!(
+        supervisor
+            .session_recorder_error_to_report(Err(std::io::Error::other("disk full again")))
+            .is_some()
+    );
 }
 
 /// Regression test for the recorder-diagnostic blocking finding: a plain
@@ -1878,6 +1898,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
         },
         last_init: Some(init.clone()),
         semantic_conversation: None,
+        last_workspace_capability_set: None,
     };
 
     let mut supervisor = AgentSupervisor::new(config).with_session_replay(replay);
@@ -1954,7 +1975,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn reconnect_replays_last_init_config() {
+async fn reconnect_replays_last_init_and_matching_accepted_capability_set() {
     let temp = tempfile::tempdir().expect("tempdir");
     let script_path = create_test_headless_script(temp.path()).expect("script");
     let sessions_dir = temp.path().join("sessions");
@@ -1978,6 +1999,43 @@ async fn reconnect_replays_last_init_config() {
     let mut supervisor = AgentSupervisor::new(config).with_session_recorder(recorder);
     supervisor.connect().await.expect("connect");
     supervisor.init(init.clone()).expect("initial init");
+    let capability = ApplyWorkspaceCapabilitySet {
+        organization_id: "org-1".to_string(),
+        workspace_id: "workspace-1".to_string(),
+        runner_session_id: "runner-1".to_string(),
+        runtime_generation: 7,
+        activation_generation: 3,
+        workspace_snapshot_digest: "sha256:snapshot".to_string(),
+        workspace_skill_set_digest: "sha256:skills".to_string(),
+        capability_set_digest: "sha256:catalog".to_string(),
+        workspace_instructions: vec!["Use the workspace review skill.".to_string()],
+        admitted_catalog: Vec::new(),
+        admission_receipt_id: "admission-3".to_string(),
+    };
+    supervisor
+        .send(ToAgentMessage::ApplyWorkspaceCapabilitySet {
+            request: capability.clone(),
+        })
+        .expect("send capability set");
+    let receipt = WorkspaceCapabilitySetApplied {
+        schema_version: "evalops.maestro.workspace-capability-set.v1".to_string(),
+        organization_id: capability.organization_id.clone(),
+        workspace_id: capability.workspace_id.clone(),
+        runner_session_id: capability.runner_session_id.clone(),
+        runtime_generation: capability.runtime_generation,
+        activation_generation: capability.activation_generation,
+        effective_catalog_digest: capability.capability_set_digest.clone(),
+        accepted_entry_digests: Vec::new(),
+        rejected_entries: Vec::new(),
+        replay_cursor: workspace_capability_replay_cursor(&capability),
+        applied_at: 123,
+        controller_binding_sha256: "sha256:binding".to_string(),
+        provider_prompt_sha256: "sha256:provider-prompt".to_string(),
+        staged_for_next_turn: false,
+        idempotent: false,
+    };
+    let _ =
+        supervisor.apply_agent_message(FromAgentMessage::WorkspaceCapabilitySetApplied { receipt });
 
     supervisor.disconnect();
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2014,6 +2072,17 @@ async fn reconnect_replays_last_init_config() {
         assert_eq!(thinking_level, init.thinking_level);
         assert_eq!(approval_mode, init.approval_mode);
     }
+
+    let logged_capabilities: Vec<_> = SessionReader::load(&sessions_dir, &session_id)
+        .expect("reload session")
+        .sent_messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            ToAgentMessage::ApplyWorkspaceCapabilitySet { request } => Some(request.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(logged_capabilities, vec![capability.clone(), capability]);
 }
 
 #[tokio::test]
@@ -2868,9 +2937,9 @@ async fn remote_auto_reconnect_reuses_previous_connection_id_without_take_contro
         Some("cap_remote")
     );
     assert!(
-            connection_requests[1].get("takeControl").is_none(),
-            "unexpected remote reconnects should reclaim their prior connection id before forcing controller takeover"
-        );
+        connection_requests[1].get("takeControl").is_none(),
+        "unexpected remote reconnects should reclaim their prior connection id before forcing controller takeover"
+    );
 
     supervisor.disconnect();
 }
@@ -3416,9 +3485,9 @@ async fn auto_remote_reconnect_waits_for_disconnect_completion_before_next_boots
         .nth(1)
         .expect("second bootstrap marker");
     assert!(
-            disconnect_end_index < second_bootstrap_index,
-            "auto reconnect should wait for remote disconnect completion before bootstrapping a replacement"
-        );
+        disconnect_end_index < second_bootstrap_index,
+        "auto reconnect should wait for remote disconnect completion before bootstrapping a replacement"
+    );
 
     supervisor.disconnect();
 }

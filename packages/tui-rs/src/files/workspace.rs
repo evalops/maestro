@@ -215,11 +215,7 @@ fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
     let _ = child.kill();
     let _ = child.wait();
 
-    if files.is_empty() {
-        None
-    } else {
-        Some(files)
-    }
+    if files.is_empty() { None } else { Some(files) }
 }
 
 /// Try to list files using find (streamed + timed, same budget as ripgrep).
@@ -265,11 +261,7 @@ fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
     let _ = child.kill();
     let _ = child.wait();
 
-    if files.is_empty() {
-        None
-    } else {
-        Some(files)
-    }
+    if files.is_empty() { None } else { Some(files) }
 }
 
 /// Manual directory traversal
@@ -434,9 +426,11 @@ mod tests {
         symlink(outside.path(), &link_path).unwrap();
 
         let files = manual_traverse(dir.path(), 100);
-        assert!(!files
-            .iter()
-            .any(|file| file.relative_path.starts_with("outside_link")));
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.relative_path.starts_with("outside_link"))
+        );
     }
 
     #[cfg(unix)]
@@ -477,9 +471,11 @@ mod tests {
         symlink(&outside_file, &link_path).unwrap();
 
         let files = manual_traverse(dir.path(), 100);
-        assert!(!files
-            .iter()
-            .any(|file| file.relative_path.contains("outside_file.txt")));
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.relative_path.contains("outside_file.txt"))
+        );
     }
 
     #[cfg(unix)]
@@ -494,9 +490,11 @@ mod tests {
         symlink(&outside_file, &link_path).unwrap();
 
         if let Some(files) = try_ripgrep(dir.path(), 100) {
-            assert!(!files
-                .iter()
-                .any(|file| file.relative_path.contains("outside_file.txt")));
+            assert!(
+                !files
+                    .iter()
+                    .any(|file| file.relative_path.contains("outside_file.txt"))
+            );
         }
     }
 }

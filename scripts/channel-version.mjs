@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export function channelRelease({ stableVersion, channel, ordinal }) {
 	const match = SEMVER.exec(stableVersion);

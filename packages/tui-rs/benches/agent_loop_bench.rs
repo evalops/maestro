@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig};
 use maestro_tui::ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
 use maestro_tui::state::ApprovalMode;
@@ -24,7 +24,7 @@ async fn run_scripted_session(
         approval_mode: ApprovalMode::Yolo,
         ..NativeAgentConfig::default()
     };
-    let (agent, mut events) = NativeAgent::new_with_client(config, client).expect("agent");
+    let (agent, mut events) = NativeAgent::new_with_test_client(config, client).expect("agent");
 
     for prompt in prompts {
         agent.prompt(prompt, vec![]).await.expect("prompt");

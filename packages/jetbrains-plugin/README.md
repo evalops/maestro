@@ -1,6 +1,6 @@
-# Maestro JetBrains Plugin
+# Deixic Code JetBrains Plugin
 
-JetBrains IDE integration for [Maestro](https://github.com/evalops/maestro), the AI coding assistant.
+JetBrains IDE integration for [Deixic Code](https://github.com/evalops/maestro), the AI coding assistant. The existing repository and package URLs remain compatibility coordinates.
 
 ## Features
 
@@ -27,19 +27,19 @@ This plugin supports all JetBrains IDEs based on IntelliJ Platform 2024.3+:
 
 ## Requirements
 
-1. **Maestro Server** - The plugin connects to a running Maestro server
+1. **Deixic Code Server** - The plugin connects to a running Deixic Code server
 2. **JDK 17+** - Required for building the plugin
 
 ## Getting Started
 
-### 1. Start the Maestro Server
+### 1. Start the Deixic Code Server
 
 ```bash
-# Install Maestro CLI
+# Install Deixic Code from the retained compatibility package
 npm install -g @evalops/maestro
 
-# Start the web server
-maestro web
+# Start the web server with the canonical command
+deixic-code web
 ```
 
 The server will start on `http://localhost:8080` by default.
@@ -48,7 +48,7 @@ The server will start on `http://localhost:8080` by default.
 
 #### From Marketplace (Recommended)
 1. Open **Settings** → **Plugins** → **Marketplace**
-2. Search for "Maestro"
+2. Search for "Deixic Code"
 3. Click **Install**
 
 #### From Source
@@ -63,16 +63,16 @@ Then install via **Settings** → **Plugins** → ⚙️ → **Install Plugin fr
 
 ### 3. Configure the Plugin
 
-1. Open **Settings** → **Tools** → **Maestro**
+1. Open **Settings** → **Tools** → **Deixic Code**
 2. Set the **API Endpoint** (default: `http://localhost:8080`)
 3. Choose your **Default Model** (e.g., `claude-sonnet-4-5`)
 
-### 4. Use Maestro
+### 4. Use Deixic Code
 
-- Open the **Maestro** tool window (right sidebar)
+- Open the **Deixic Code** tool window (right sidebar; its stable internal ID remains `Maestro`)
 - Type your message and press **Ctrl+Enter** to send
 - Use **Ctrl+Alt+C** to add files to context
-- Use **Ctrl+Shift+C** to focus the Maestro window
+- Use **Ctrl+Shift+C** to focus the Deixic Code window
 
 ## Keyboard Shortcuts
 
@@ -80,11 +80,11 @@ Then install via **Settings** → **Plugins** → ⚙️ → **Install Plugin fr
 |--------|----------|
 | Send message | Ctrl+Enter |
 | Add file to context | Ctrl+Alt+C |
-| Focus Maestro | Ctrl+Shift+C |
+| Focus Deixic Code | Ctrl+Shift+C |
 
 ## IDE-Specific Features
 
-When connected to the Maestro server, the plugin provides IDE-aware tools:
+When connected to the Deixic Code server, the plugin provides IDE-aware tools:
 
 | Tool | Description |
 |------|-------------|
@@ -137,7 +137,7 @@ src/main/kotlin/com/evalops/maestro/
 
 ### "Disconnected" Status
 
-1. Ensure the Maestro server is running: `maestro web`
+1. Ensure the Deixic Code server is running: `deixic-code web`
 2. Check the API endpoint in settings matches the server URL
 3. Look for errors in **Help** → **Diagnostic Tools** → **Debug Log**
 

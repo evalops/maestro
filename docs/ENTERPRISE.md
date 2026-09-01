@@ -79,14 +79,15 @@ maestro codex login
 ```
 
 The runtime gateway stays loopback-open, or uses `MAESTRO_WEB_API_KEY` for a
-non-loopback bind. That key authenticates the browser to this process. It is
-not a provider key.
+non-loopback bind. That key authenticates health and non-tenant process routes;
+production session and chat routes additionally require tenant-bearing JWT or
+trusted-proxy identity. It is not a provider key.
 
 ## Runtime-gateway authentication
 
 See [Threat model](THREAT_MODEL.md). Supported authenticators:
 
-- `MAESTRO_WEB_API_KEY` (static process key, unrestricted)
+- `MAESTRO_WEB_API_KEY` (static process key; non-tenant routes only in production)
 - identity JWT (`MAESTRO_JWT_SECRET` or `MAESTRO_JWT_JWKS_URL`)
 - trusted-proxy adapter (`MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN` plus identity headers)
 - HMAC session cookie derived from a prior successful auth

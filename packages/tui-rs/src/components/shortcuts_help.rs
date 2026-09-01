@@ -768,11 +768,12 @@ mod tests {
     fn test_shortcuts_help_uses_custom_queue_binding_label() {
         let help = ShortcutsHelp::new_with_queue_binding_label("Shift+Left");
 
-        assert!(help
-            .shortcuts
-            .iter()
-            .any(|shortcut| shortcut.keys == "Shift+Left"
-                && shortcut.description == "Edit last queued follow-up"));
+        assert!(
+            help.shortcuts
+                .iter()
+                .any(|shortcut| shortcut.keys == "Shift+Left"
+                    && shortcut.description == "Edit last queued follow-up")
+        );
         assert!(help.shortcuts.iter().any(|shortcut| {
             shortcut.keys == "Tab"
                 && shortcut.description == "Submit message / queue follow-up"
@@ -789,24 +790,27 @@ mod tests {
             edit_last_queued_follow_up: "Ctrl+T".to_string(),
         });
 
-        assert!(help
-            .shortcuts
-            .iter()
-            .any(|shortcut| shortcut.keys == "Ctrl+O"
-                && shortcut.description == "Open command palette"));
+        assert!(
+            help.shortcuts
+                .iter()
+                .any(|shortcut| shortcut.keys == "Ctrl+O"
+                    && shortcut.description == "Open command palette")
+        );
         assert!(help.shortcuts.iter().any(
             |shortcut| shortcut.keys == "Ctrl+P" && shortcut.description == "Open file search"
         ));
-        assert!(help
-            .shortcuts
-            .iter()
-            .any(|shortcut| shortcut.keys == "Shift+Left"
-                && shortcut.description == "Toggle last tool call expand"));
-        assert!(help
-            .shortcuts
-            .iter()
-            .any(|shortcut| shortcut.keys == "Ctrl+T"
-                && shortcut.description == "Edit last queued follow-up"));
+        assert!(
+            help.shortcuts
+                .iter()
+                .any(|shortcut| shortcut.keys == "Shift+Left"
+                    && shortcut.description == "Toggle last tool call expand")
+        );
+        assert!(
+            help.shortcuts
+                .iter()
+                .any(|shortcut| shortcut.keys == "Ctrl+T"
+                    && shortcut.description == "Edit last queued follow-up")
+        );
     }
 
     #[test]
@@ -869,10 +873,12 @@ mod tests {
 
         let filtered = help.filtered_shortcuts();
         assert!(!filtered.is_empty());
-        assert!(filtered
-            .iter()
-            .any(|s| s.keys.to_lowercase().contains("enter")
-                || s.description.to_lowercase().contains("enter")));
+        assert!(
+            filtered
+                .iter()
+                .any(|s| s.keys.to_lowercase().contains("enter")
+                    || s.description.to_lowercase().contains("enter"))
+        );
 
         help.clear_filter();
         assert!(help.filter.is_none());
@@ -886,9 +892,11 @@ mod tests {
 
         let filtered = help.filtered_shortcuts();
         assert!(!filtered.is_empty());
-        assert!(filtered
-            .iter()
-            .all(|s| s.category == ShortcutCategory::Input));
+        assert!(
+            filtered
+                .iter()
+                .all(|s| s.category == ShortcutCategory::Input)
+        );
     }
 
     #[test]

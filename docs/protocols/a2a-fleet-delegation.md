@@ -52,10 +52,9 @@ projection attributes so Platform discovery, heartbeats, and later task
 delegations can join the same trace. Hosted default registration requires
 `MAESTRO_A2A_PUBLIC_URL` or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST`
 so Platform does not publish an unroutable local bind address; explicit opt-in
-can still use local fallbacks for development. When no workspace ID is configured,
-the loop falls back to the organization ID, matching the rest of the Platform
-client behavior. Missing Platform configuration leaves local/offline Maestro
-unchanged.
+  can still use local fallbacks for development. An explicit workspace ID is
+  required for the loop; it never derives workspace scope from the organization
+  ID. Missing Platform configuration leaves local/offline Maestro unchanged.
 
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
@@ -64,6 +63,12 @@ as an operator projection over durable agent/objective/run state rather than as
 the run itself: the task id is the protocol handle, `contextId` is the durable
 conversation/work envelope, and Maestro stores the peer-local transcript needed
 to resume, reply, audit, or wait later.
+
+Waiting uses the peer's `tasks/{id}:subscribe` SSE stream as the primary update
+path. Maestro reconciles with a bounded task lookup if that stream disconnects
+and reconnects within the original wait deadline. Interval polling is retained
+only for peers that explicitly report that task subscription is unsupported;
+task lookups also remain the bounded compatibility and reconciliation fallback.
 
 `delegate --platform` is the production-verifiable path for remote Maestro
 work. It submits `agents.v1.AgentService/Delegate` with the coordinator agent,
@@ -303,14 +308,22 @@ The peer registry remains:
 ~/.maestro/a2a/peers.json
 ```
 
-The task ledger defaults to:
+The task-ledger compatibility path defaults to:
 
 ```text
 ~/.maestro/a2a/tasks.json
 ```
 
 `MAESTRO_A2A_TASKS_FILE` overrides the ledger path. `CODEX_A2A_TASKS_FILE` is
-accepted as a migration alias.
+accepted as a migration alias; CLI `--tasks` remains highest precedence. Both
+the CLI and runtime gateway derive the authoritative SQLite database by adding
+`.sqlite3` to that path (the default is `tasks.json.sqlite3`). The database uses
+WAL, a five-second busy timeout, and a versioned schema. On first open, the
+complete JSON document is imported in the same transaction that records import
+completion. A failed transaction is retried on restart. After a successful
+import the source JSON is neither changed nor deleted, and later restarts do
+not import it again. Task payloads remain canonical JSON rows so unknown fields,
+transcripts, artifacts, tenant metadata, and ordering survive migration.
 
 A2A `message:stream` and task subscription responses emit deterministic SSE
 `id:` fields derived from the context id, task id, event kind, status timestamp,

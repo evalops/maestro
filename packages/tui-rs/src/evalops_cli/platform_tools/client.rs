@@ -2,9 +2,9 @@ use std::env;
 use std::fmt::{self, Write as _};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::{Client, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -12,10 +12,10 @@ use crate::init_cli::load_evalops_snapshot;
 
 use super::provision::load_provisioned_credential;
 use super::{
-    approval_wait_ms, ShellArguments, DEFAULT_APPROVAL_POLL_MS, DEFAULT_HTTP_TIMEOUT_MS, GET_PATH,
-    HTTP_TIMEOUT_ENV_VARS, LIST_PATH, PLATFORM_SERVICE_PATH, PLATFORM_TOOL_CAPABILITY,
-    PLATFORM_TOOL_NAME, PLATFORM_TOOL_NAMESPACE, RESULT_SCHEMA, RESUME_PATH, RUN_ENV_VARS,
-    SERVER_NAME, SESSION_ENV_VARS, TOOL_NAME,
+    DEFAULT_APPROVAL_POLL_MS, DEFAULT_HTTP_TIMEOUT_MS, GET_PATH, HTTP_TIMEOUT_ENV_VARS, LIST_PATH,
+    PLATFORM_SERVICE_PATH, PLATFORM_TOOL_CAPABILITY, PLATFORM_TOOL_NAME, PLATFORM_TOOL_NAMESPACE,
+    RESULT_SCHEMA, RESUME_PATH, RUN_ENV_VARS, SERVER_NAME, SESSION_ENV_VARS, ShellArguments,
+    TOOL_NAME, approval_wait_ms,
 };
 
 const BASE_URL_ENV_VARS: &[&str] = &[
@@ -116,7 +116,7 @@ impl PlatformConfig {
                     .map(|credential| credential.api_key)
             })
             .context(
-                "missing least-privilege ToolExecution credential (run `maestro evalops platform-tools configure` or set TOOL_EXECUTION_SERVICE_TOKEN)",
+                "missing least-privilege ToolExecution credential (run `deixic-code evalops platform-tools configure` or set TOOL_EXECUTION_SERVICE_TOKEN)",
             )?;
         let organization_id = first_env(ORGANIZATION_ENV_VARS)
             .or_else(|| {
@@ -127,7 +127,8 @@ impl PlatformConfig {
             .context("missing Platform organization id")?;
         let workspace_id = first_env(WORKSPACE_ENV_VARS)
             .or_else(|| agent_mcp.and_then(|metadata| metadata.workspace_id.clone()))
-            .unwrap_or_else(|| organization_id.clone());
+            .and_then(non_empty)
+            .context("missing Platform workspace id")?;
         let run_id = first_env(RUN_ENV_VARS)
             .or_else(|| agent_mcp.and_then(|metadata| metadata.run_id.clone()))
             .context("missing durable AgentRun id (set MAESTRO_AGENT_RUN_ID)")?;
@@ -501,7 +502,7 @@ pub(super) fn safe_execution_summary(
             summary["approvalRequestId"] = json!(bounded_identifier(request_id));
         }
         summary["nextAction"] = json!(
-            "Approve in Platform, or run `maestro evalops platform-tools resume <execution-id> --approve`."
+            "Approve in Platform, or run `deixic-code evalops platform-tools resume <execution-id> --approve`."
         );
     }
     if state == "TOOL_EXECUTION_STATE_SUCCEEDED" {
@@ -576,6 +577,11 @@ fn stable_digest(parts: &[&str]) -> String {
             write!(&mut digest, "{byte:02x}").expect("writing to String cannot fail");
             digest
         })
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 #[cfg(test)]
@@ -707,5 +713,15 @@ mod tests {
         assert!(ServiceUrls::resolve("https://user:secret@platform.example").is_err());
         assert!(ServiceUrls::resolve("https://platform.example?token=secret").is_err());
         assert!(ServiceUrls::resolve("http://127.0.0.1:3000").is_ok());
+    }
+
+    #[test]
+    fn platform_tool_execution_requires_workspace_scope() {
+        let error = non_empty(" ".to_owned()).context("missing Platform workspace id");
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            "missing Platform workspace id"
+        );
+        assert_eq!(non_empty(" ws_1 ".to_owned()).as_deref(), Some("ws_1"));
     }
 }

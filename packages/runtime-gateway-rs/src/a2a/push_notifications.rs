@@ -1,18 +1,18 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Map, Value};
 use sha2::Sha256;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
 use crate::auth::AuthContext;
 use crate::http::{
-    json_response, percent_decode_component, read_request_body, response_with_extra_headers,
-    RequestHead,
+    RequestHead, json_response, percent_decode_component, read_request_body,
+    response_with_extra_headers,
 };
-use crate::{env_u64, now_rfc3339, trimmed_env, truthy_env, AppState};
+use crate::{AppState, env_bool, env_u64, now_rfc3339, trimmed_env};
 
 // Agent-runtime derives a per-workspace HMAC token from the shared secret and
 // sends that in X-A2a-Notification-Token instead of the raw secret. See
@@ -37,14 +37,25 @@ fn workspace_notification_token(secret: &str, workspace_id: &str) -> Option<Stri
 
 use super::ledger::persist_a2a_tasks;
 use super::tasks::{
-    a2a_agent_message, a2a_artifact_update_event, a2a_error_response, a2a_status_update_event,
-    a2a_task_is_terminal, a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id,
-    publish_a2a_task_update, A2ASendMessageRequest, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
+    A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY, A2ASendMessageRequest, a2a_agent_message,
+    a2a_artifact_update_event, a2a_error_response, a2a_status_update_event, a2a_task_is_terminal,
+    a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id, publish_a2a_task_update,
 };
 
 const A2A_PUSH_NOTIFICATION_CONFIG_LIMIT: usize = 16;
 const A2A_DEFAULT_PUSH_TIMEOUT_MS: u64 = 10_000;
 const PLATFORM_A2A_PUSH_PATH: &str = "/api/platform/a2a/push";
+
+/// The platform callback is a service-auth exception to user route auth. It
+/// is accepted only with a workspace-bound callback token (or a raw token
+/// pinned to the one workspace configured for this process) while the process
+/// is pinned to one configured organization. Every durable task it writes is
+/// rebound to that tenant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlatformA2APushServiceAuth {
+    pub(crate) organization_id: String,
+    pub(crate) workspace_id: String,
+}
 
 pub(crate) fn is_platform_a2a_push_endpoint(head: &RequestHead) -> bool {
     head.path == PLATFORM_A2A_PUSH_PATH
@@ -148,9 +159,10 @@ pub(crate) async fn handle_platform_a2a_push_endpoint(
             "Allow: POST, OPTIONS\r\n",
         );
     }
-    if let Err(response) = validate_platform_a2a_push_callback_auth(&head) {
-        return response;
-    }
+    let service_auth = match validate_platform_a2a_push_callback_auth(&head) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
     let body = match read_request_body(stream, initial, &head).await {
         Ok(body) => body,
         Err(error) => return a2a_error_response(400, "INVALID_REQUEST", &error),
@@ -165,13 +177,15 @@ pub(crate) async fn handle_platform_a2a_push_endpoint(
             );
         }
     };
-    match record_platform_a2a_push_payload(state, payload).await {
+    match record_platform_a2a_push_payload(state, payload, &service_auth).await {
         Ok(accepted) => json_response(202, &accepted),
         Err(message) => a2a_error_response(400, "INVALID_REQUEST", &message),
     }
 }
 
-fn validate_platform_a2a_push_callback_auth(head: &RequestHead) -> Result<(), Vec<u8>> {
+fn validate_platform_a2a_push_callback_auth(
+    head: &RequestHead,
+) -> Result<PlatformA2APushServiceAuth, Vec<u8>> {
     let Some(expected) = platform_a2a_push_callback_token() else {
         return Err(json_response(
             503,
@@ -183,23 +197,45 @@ fn validate_platform_a2a_push_callback_auth(head: &RequestHead) -> Result<(), Ve
             }),
         ));
     };
+    let Some(workspace_id) = platform_a2a_push_request_workspace(head) else {
+        return Err(tenant_binding_required_response());
+    };
+    if let Some(configured_workspace) = platform_a2a_push_configured_workspace() {
+        if configured_workspace != workspace_id {
+            return Err(tenant_binding_mismatch_response());
+        }
+    }
     let Some(provided) = platform_a2a_push_request_token(head) else {
         return Err(unauthorized_callback_token_response());
     };
-    if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-        return Ok(());
-    }
+    let raw_token = constant_time_eq(provided.as_bytes(), expected.as_bytes());
     // Agent-runtime derives a per-workspace HMAC token from the same shared
     // secret when X-Evalops-Workspace-Id is present and the callback
     // host/path is allowed; accept that variant too.
-    if let Some(workspace_id) = platform_a2a_push_request_workspace(head) {
-        if let Some(derived) = workspace_notification_token(&expected, &workspace_id) {
-            if constant_time_eq(provided.as_bytes(), derived.as_bytes()) {
-                return Ok(());
-            }
-        }
+    let derived_token = workspace_notification_token(&expected, &workspace_id)
+        .is_some_and(|derived| constant_time_eq(provided.as_bytes(), derived.as_bytes()));
+    if !raw_token && !derived_token {
+        return Err(unauthorized_callback_token_response());
     }
-    Err(unauthorized_callback_token_response())
+    // A raw shared token has no tenant claim. Keep the compatibility path
+    // only when deployment pins the process to one workspace; derived tokens
+    // carry the workspace binding cryptographically.
+    if raw_token && platform_a2a_push_configured_workspace().is_none() {
+        return Err(tenant_binding_required_response());
+    }
+    let Some(configured_organization) = platform_a2a_push_configured_organization() else {
+        return Err(tenant_binding_required_response());
+    };
+    let Some(organization_id) = platform_a2a_push_request_organization(head) else {
+        return Err(tenant_binding_required_response());
+    };
+    if organization_id != configured_organization {
+        return Err(tenant_binding_mismatch_response());
+    }
+    Ok(PlatformA2APushServiceAuth {
+        organization_id,
+        workspace_id,
+    })
 }
 
 fn unauthorized_callback_token_response() -> Vec<u8> {
@@ -209,6 +245,30 @@ fn unauthorized_callback_token_response() -> Vec<u8> {
             "error": {
                 "code": "UNAUTHORIZED",
                 "message": "A2A push callback token is invalid"
+            }
+        }),
+    )
+}
+
+fn tenant_binding_required_response() -> Vec<u8> {
+    json_response(
+        403,
+        &serde_json::json!({
+            "error": {
+                "code": "TENANT_BINDING_REQUIRED",
+                "message": "A2A push callback requires organization- and workspace-bound service credentials"
+            }
+        }),
+    )
+}
+
+fn tenant_binding_mismatch_response() -> Vec<u8> {
+    json_response(
+        403,
+        &serde_json::json!({
+            "error": {
+                "code": "TENANT_BINDING_MISMATCH",
+                "message": "A2A push callback tenant does not match the configured service tenant"
             }
         }),
     )
@@ -240,6 +300,37 @@ fn platform_a2a_push_request_workspace(head: &RequestHead) -> Option<String> {
     None
 }
 
+fn platform_a2a_push_request_organization(head: &RequestHead) -> Option<String> {
+    for header in ["x-evalops-organization-id", "x-organization-id"] {
+        if let Some(value) = head
+            .headers
+            .get(header)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn platform_a2a_push_configured_workspace() -> Option<String> {
+    [
+        "MAESTRO_WORKSPACE_ID",
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+    ]
+    .iter()
+    .find_map(|name| trimmed_env(name))
+}
+
+fn platform_a2a_push_configured_organization() -> Option<String> {
+    ["MAESTRO_ORGANIZATION_ID", "MAESTRO_EVALOPS_ORG_ID"]
+        .iter()
+        .find_map(|name| trimmed_env(name))
+}
+
 fn platform_a2a_push_callback_token() -> Option<String> {
     trimmed_env("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN")
         .or_else(|| trimmed_env("MAESTRO_A2A_CALLBACK_TOKEN"))
@@ -265,18 +356,29 @@ fn platform_a2a_push_request_token(head: &RequestHead) -> Option<String> {
 pub(crate) async fn record_platform_a2a_push_payload(
     state: &AppState,
     payload: Value,
+    service_auth: &PlatformA2APushServiceAuth,
 ) -> Result<Value, String> {
     let object = payload
         .as_object()
         .ok_or_else(|| "A2A push payload must be a JSON object".to_string())?;
     if let Some(task) = object.get("task") {
         let task_id = task_id_from_task(task)?;
-        let task = task.clone();
-        {
-            let mut tasks = state.a2a_tasks.lock().await;
-            tasks.insert(task_id.clone(), task.clone());
+        let mut task = task.clone();
+        bind_platform_a2a_task_tenant(&mut task, service_auth)?;
+        let mut tasks = state.a2a_tasks.lock().await;
+        if let Some(existing) = tasks.get(&task_id) {
+            // A record already exists under this id. Enforce that the
+            // caller's callback tenant owns it before replacing it wholesale,
+            // mirroring the guarantee the statusUpdate/artifactUpdate branches
+            // get by carrying the existing task's metadata forward through
+            // `apply_platform_a2a_status_update`. Without this, a callback
+            // token holder for workspace A could overwrite and republish
+            // workspace B's task by supplying B's task id and A's headers.
+            validate_platform_a2a_task_tenant(existing, service_auth)?;
         }
+        tasks.insert(task_id.clone(), task.clone());
         publish_a2a_task_update(state, &task).await;
+        drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
             "accepted": true,
@@ -285,8 +387,19 @@ pub(crate) async fn record_platform_a2a_push_payload(
         }));
     }
     if let Some(status_update) = object.get("statusUpdate") {
-        let task = apply_platform_a2a_status_update(state, status_update).await?;
+        let task_id = status_update
+            .as_object()
+            .and_then(|object| optional_string_field(object, "taskId"))
+            .ok_or_else(|| "A2A statusUpdate taskId is required".to_string())?;
+        let mut tasks = state.a2a_tasks.lock().await;
+        if let Some(existing) = tasks.get(&task_id) {
+            validate_platform_a2a_task_tenant(existing, service_auth)?;
+        }
+        let mut task = platform_a2a_task_with_status_update(tasks.get(&task_id), status_update)?;
+        bind_platform_a2a_task_tenant(&mut task, service_auth)?;
+        tasks.insert(task_id, task.clone());
         publish_a2a_task_update(state, &task).await;
+        drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
             "accepted": true,
@@ -295,8 +408,20 @@ pub(crate) async fn record_platform_a2a_push_payload(
         }));
     }
     if let Some(artifact_update) = object.get("artifactUpdate") {
-        let task = apply_platform_a2a_artifact_update(state, artifact_update).await?;
+        let task_id = artifact_update
+            .as_object()
+            .and_then(|object| optional_string_field(object, "taskId"))
+            .ok_or_else(|| "A2A artifactUpdate taskId is required".to_string())?;
+        let mut tasks = state.a2a_tasks.lock().await;
+        if let Some(existing) = tasks.get(&task_id) {
+            validate_platform_a2a_task_tenant(existing, service_auth)?;
+        }
+        let mut task =
+            platform_a2a_task_with_artifact_update(tasks.get(&task_id), artifact_update)?;
+        bind_platform_a2a_task_tenant(&mut task, service_auth)?;
+        tasks.insert(task_id, task.clone());
         publish_a2a_task_update(state, &task).await;
+        drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
             "accepted": true,
@@ -307,8 +432,96 @@ pub(crate) async fn record_platform_a2a_push_payload(
     Err("A2A push payload must include statusUpdate, artifactUpdate, or task".to_string())
 }
 
+fn validate_platform_a2a_task_tenant(
+    task: &Value,
+    service_auth: &PlatformA2APushServiceAuth,
+) -> Result<(), String> {
+    let metadata = task
+        .as_object()
+        .and_then(|task| task.get("metadata"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "A2A platform task has no durable callback tenant".to_string())?;
+    let workspace = ["workspaceId", "workspace_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "A2A platform task has no durable callback workspace".to_string())?;
+    let organization = ["organizationId", "organization_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "A2A platform task has no durable callback organization".to_string())?;
+    if workspace != service_auth.workspace_id {
+        return Err("A2A platform task workspace does not match callback tenant".to_string());
+    }
+    if organization != service_auth.organization_id {
+        return Err("A2A platform task organization does not match callback tenant".to_string());
+    }
+    Ok(())
+}
+
+fn bind_platform_a2a_task_tenant(
+    task: &mut Value,
+    service_auth: &PlatformA2APushServiceAuth,
+) -> Result<(), String> {
+    let metadata = task
+        .as_object_mut()
+        .ok_or_else(|| "A2A platform task must be an object".to_string())?
+        .entry("metadata")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let metadata = metadata
+        .as_object_mut()
+        .ok_or_else(|| "A2A platform task metadata must be an object".to_string())?;
+    let existing_workspace = ["workspaceId", "workspace_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if existing_workspace.is_some_and(|value| value != service_auth.workspace_id.as_str()) {
+        return Err("A2A platform task workspace does not match callback tenant".to_string());
+    }
+    metadata.insert(
+        "workspaceId".to_string(),
+        Value::String(service_auth.workspace_id.clone()),
+    );
+    let existing_organization = ["organizationId", "organization_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match existing_organization {
+        Some(existing) if existing != service_auth.organization_id.as_str() => {
+            Err("A2A platform task organization does not match callback tenant".to_string())
+        }
+        _ => {
+            metadata.insert(
+                "organizationId".to_string(),
+                Value::String(service_auth.organization_id.clone()),
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn apply_platform_a2a_status_update(
     state: &AppState,
+    status_update: &Value,
+) -> Result<Value, String> {
+    let task_id = status_update
+        .as_object()
+        .and_then(|object| optional_string_field(object, "taskId"))
+        .ok_or_else(|| "A2A statusUpdate taskId is required".to_string())?;
+    let mut tasks = state.a2a_tasks.lock().await;
+    let task = platform_a2a_task_with_status_update(tasks.get(&task_id), status_update)?;
+    tasks.insert(task_id, task.clone());
+    Ok(task)
+}
+
+fn platform_a2a_task_with_status_update(
+    existing: Option<&Value>,
     status_update: &Value,
 ) -> Result<Value, String> {
     let object = status_update
@@ -328,24 +541,38 @@ pub(crate) async fn apply_platform_a2a_status_update(
             );
         }
     }
-    let mut tasks = state.a2a_tasks.lock().await;
     let context_id = optional_string_field(object, "contextId")
-        .or_else(|| tasks.get(&task_id).and_then(task_context_id))
+        .or_else(|| existing.and_then(task_context_id))
         .unwrap_or_else(|| task_id.clone());
-    let task = tasks
-        .entry(task_id.clone())
-        .or_insert_with(|| empty_platform_a2a_task(&task_id, &context_id));
+    let mut task = existing
+        .cloned()
+        .unwrap_or_else(|| empty_platform_a2a_task(&task_id, &context_id));
     task["id"] = Value::String(task_id);
     task["contextId"] = Value::String(context_id);
     task["status"] = status;
     if let Some(metadata) = object.get("metadata") {
-        upsert_task_metadata_field(task, "lastPlatformStatusUpdate", metadata.clone());
+        upsert_task_metadata_field(&mut task, "lastPlatformStatusUpdate", metadata.clone());
     }
-    Ok(task.clone())
+    Ok(task)
 }
 
+#[cfg(test)]
 pub(crate) async fn apply_platform_a2a_artifact_update(
     state: &AppState,
+    artifact_update: &Value,
+) -> Result<Value, String> {
+    let task_id = artifact_update
+        .as_object()
+        .and_then(|object| optional_string_field(object, "taskId"))
+        .ok_or_else(|| "A2A artifactUpdate taskId is required".to_string())?;
+    let mut tasks = state.a2a_tasks.lock().await;
+    let task = platform_a2a_task_with_artifact_update(tasks.get(&task_id), artifact_update)?;
+    tasks.insert(task_id, task.clone());
+    Ok(task)
+}
+
+fn platform_a2a_task_with_artifact_update(
+    existing: Option<&Value>,
     artifact_update: &Value,
 ) -> Result<Value, String> {
     let object = artifact_update
@@ -357,20 +584,19 @@ pub(crate) async fn apply_platform_a2a_artifact_update(
         .filter(|artifact| artifact.is_object())
         .cloned()
         .ok_or_else(|| "A2A artifactUpdate artifact is required".to_string())?;
-    let mut tasks = state.a2a_tasks.lock().await;
     let context_id = optional_string_field(object, "contextId")
-        .or_else(|| tasks.get(&task_id).and_then(task_context_id))
+        .or_else(|| existing.and_then(task_context_id))
         .unwrap_or_else(|| task_id.clone());
-    let task = tasks
-        .entry(task_id.clone())
-        .or_insert_with(|| empty_platform_a2a_task(&task_id, &context_id));
+    let mut task = existing
+        .cloned()
+        .unwrap_or_else(|| empty_platform_a2a_task(&task_id, &context_id));
     task["id"] = Value::String(task_id);
     task["contextId"] = Value::String(context_id);
-    append_task_artifact(task, artifact);
+    append_task_artifact(&mut task, artifact);
     if let Some(metadata) = object.get("metadata") {
-        upsert_task_metadata_field(task, "lastPlatformArtifactUpdate", metadata.clone());
+        upsert_task_metadata_field(&mut task, "lastPlatformArtifactUpdate", metadata.clone());
     }
-    Ok(task.clone())
+    Ok(task)
 }
 
 fn task_id_from_task(task: &Value) -> Result<String, String> {
@@ -462,7 +688,7 @@ fn append_task_artifact(task: &mut Value, artifact: Value) {
 }
 
 pub(super) fn dispatch_a2a_push_notifications(task: &Value) {
-    if truthy_env("MAESTRO_A2A_PUSH_DISABLE_DELIVERY") {
+    if env_bool("MAESTRO_A2A_PUSH_DISABLE_DELIVERY").unwrap_or(false) {
         return;
     }
     let configs = a2a_task_push_notification_configs(task);
@@ -750,7 +976,7 @@ fn a2a_push_notification_resolution(
         .map_err(|error| format!("A2A push notification config url is invalid: {error}"))?;
     match parsed.scheme() {
         "https" => {}
-        "http" if truthy_env("MAESTRO_A2A_PUSH_ALLOW_INSECURE") => {}
+        "http" if env_bool("MAESTRO_A2A_PUSH_ALLOW_INSECURE").unwrap_or(false) => {}
         _ => {
             return Err(
                 "A2A push notification config url must use HTTPS unless MAESTRO_A2A_PUSH_ALLOW_INSECURE=1"
@@ -762,7 +988,7 @@ fn a2a_push_notification_resolution(
         .host_str()
         .ok_or_else(|| "A2A push notification config url must include a host".to_string())?;
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let allow_private = truthy_env("MAESTRO_A2A_PUSH_ALLOW_PRIVATE");
+    let allow_private = env_bool("MAESTRO_A2A_PUSH_ALLOW_PRIVATE").unwrap_or(false);
     if !allow_private && a2a_push_host_is_private(host) {
         return Err(
             "A2A push notification config url host is private; set MAESTRO_A2A_PUSH_ALLOW_PRIVATE=1 for local development"
@@ -820,66 +1046,16 @@ pub(crate) fn a2a_push_select_pinned_addr(
 /// Returns true if `addr` is private, reserved, or otherwise not a routable
 /// public target for an A2A push notification callback.
 ///
-/// Kept in sync with `maestro_tui::tools::net_guard::is_blocked_ip` (the
-/// canonical implementation used by `web_fetch`/`extract_document`); this
-/// crate does not currently depend on that module path being public, so the
-/// range checks are duplicated here rather than shared. If you change one,
-/// change both.
+/// This delegates to `maestro_tui::tools::net_guard::is_blocked_ip`, the one
+/// SSRF address policy in this workspace. It used to duplicate the range list
+/// here with a "if you change one, change both" comment, and the two copies
+/// had drifted: this one did not block the 6to4 (`2002::/16`,
+/// `192.88.99.0/24`), NAT64 (`64:ff9b::/32`), documentation
+/// (`2001:db8::/32`, `3fff::/20`, `192.0.2.0/24`, `198.51.100.0/24`,
+/// `203.0.113.0/24`), site-local (`fec0::/10`), discard-only (`100::/64`), or
+/// IETF protocol assignment (`2001::/23`, including Teredo) ranges.
 pub(crate) fn a2a_push_ip_is_private(addr: IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(addr) => a2a_push_ipv4_is_private(addr),
-        IpAddr::V6(addr) => {
-            if let Some(mapped) = addr.to_ipv4_mapped() {
-                return a2a_push_ipv4_is_private(mapped);
-            }
-            if let Some(compat) = a2a_push_ipv4_compatible_addr(addr) {
-                return a2a_push_ipv4_is_private(compat);
-            }
-            addr.is_loopback()
-                || addr.is_unspecified()
-                || addr.is_multicast()
-                || addr.segments()[0] & 0xfe00 == 0xfc00 // fc00::/7 unique local
-                || addr.segments()[0] & 0xffc0 == 0xfe80 // fe80::/10 link-local
-        }
-    }
-}
-
-fn a2a_push_ipv4_is_private(addr: Ipv4Addr) -> bool {
-    let octets = addr.octets();
-    addr.is_loopback()
-        || addr.is_private()
-        || addr.is_link_local()
-        || addr.is_multicast()
-        || addr.is_broadcast()
-        || addr.is_unspecified()
-        // 100.64.0.0/10 (RFC 6598 Shared Address Space / CGNAT). This
-        // fleet's Tailscale network lives in this range and
-        // `is_private()` does not cover it; Alibaba Cloud's instance
-        // metadata endpoint (100.100.100.200) sits inside it too.
-        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
-        // 0.0.0.0/8 ("this network"). `is_unspecified()` only matches
-        // the exact all-zero address.
-        || octets[0] == 0
-        // 192.0.0.0/24 (IETF protocol assignments, RFC 6890).
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        // 198.18.0.0/15 (benchmarking, RFC 2544).
-        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
-        // 240.0.0.0/4 (reserved for future use).
-        || octets[0] >= 240
-}
-
-/// Decode a deprecated "IPv4-compatible" IPv6 address (`::a.b.c.d`, distinct
-/// from the IPv4-mapped `::ffff:a.b.c.d` form already handled via
-/// `to_ipv4_mapped`).
-fn a2a_push_ipv4_compatible_addr(addr: Ipv6Addr) -> Option<Ipv4Addr> {
-    let octets = addr.octets();
-    if octets[..12].iter().all(|octet| *octet == 0) {
-        Some(Ipv4Addr::new(
-            octets[12], octets[13], octets[14], octets[15],
-        ))
-    } else {
-        None
-    }
+    maestro_tui::tools::net_guard::is_blocked_ip(addr)
 }
 
 fn a2a_task_with_push_notification_config(task: &Value, config: Value) -> Result<Value, String> {

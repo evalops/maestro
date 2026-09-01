@@ -103,6 +103,37 @@ error distinctions.
 
 For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers are `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- --help`, `npm run check:scenario-replay-gate`, and `npm test`.
 
+The hosted Computer console is available from the CLI and TUI. A handoff freezes
+explicit files, artifacts, and/or the current remote diff into Computer's
+tenant-scoped immutable package store:
+
+```sh
+maestro computer handoff create <source-task-id> <target-thread-id> \
+  [--file path] [--artifact id] [--include-diff]
+maestro computer handoff list <target-thread-id>
+maestro computer handoff read <target-thread-id> <package-id>
+```
+
+The source task must be a durable hosted Computer task in the active managed
+account/workspace. The client rejects empty selections and path traversal before
+the network call; Computer remains authoritative for tenant authorization, workspace
+reads, package bounds, persistence, and digest verification.
+
+The top-level TUI command `/handoff` sends a prompt to the default A2A peer,
+records the accepted task in the shared A2A ledger, and posts its terminal
+response back into the current transcript:
+
+```text
+/handoff <prompt>
+/handoff --peer <name> <prompt>
+/handoff --source-task <source-task-id> --target-thread <target-thread-id> \
+  [--file path] [--artifact id] [--include-diff] -- <prompt>
+```
+
+The prompt does not require quotes. The package flags are optional as a group.
+When any package flag is present, both IDs and at least one file, artifact, or
+diff selection are required.
+
 ## Common Errors & Remedies
 
 - **File not found** (read/write/list/search): resolve paths from the configured

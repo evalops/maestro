@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use crate::a2a_skill_catalog::a2a_executable_subagent_dispatch_lanes;
 use crate::{
-    a2a_agent_skills, a2a_public_base_url_for_config, trimmed_env, truthy_env, Config,
-    A2A_PROTOCOL_VERSION, EVALOPS_A2A_EXTENSION_URI,
+    A2A_PROTOCOL_VERSION, Config, EVALOPS_A2A_EXTENSION_URI, a2a_agent_skills,
+    a2a_public_base_url_for_config, env_bool, trimmed_env,
 };
+use maestro_runtime::{TraceHeaders, client_span, record_outcome, trace_headers_for_span};
 
 const A2A_PLATFORM_DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 60_000;
 const A2A_PLATFORM_DEFAULT_TIMEOUT_MS: u64 = 2_500;
@@ -118,8 +119,7 @@ pub(crate) fn resolve_a2a_platform_registration_config(
         "MAESTRO_EVALOPS_WORKSPACE_ID",
         "EVALOPS_WORKSPACE_ID",
         "MAESTRO_WORKSPACE_ID",
-    ])
-    .or_else(|| organization_id.clone());
+    ]);
     let explicit_public_endpoint_url = first_trimmed_env(&[
         "MAESTRO_A2A_PUBLIC_URL",
         "MAESTRO_CONTROL_PUBLIC_URL",
@@ -138,6 +138,9 @@ pub(crate) fn resolve_a2a_platform_registration_config(
     }
     if organization_id.is_none() {
         missing.push("EvalOps organization id");
+    }
+    if workspace_id.is_none() {
+        missing.push("EvalOps workspace id");
     }
     if a2a_platform_registration_enabled_by_hosted_default()
         && explicit_public_endpoint_url.is_none()
@@ -222,7 +225,8 @@ pub(crate) fn a2a_platform_registration_enabled() -> bool {
     if let Some(value) = explicit_a2a_platform_registration_enabled() {
         return value;
     }
-    truthy_env("MAESTRO_HOSTED_RUNNER_MODE") || truthy_env("MAESTRO_HOSTED_RUNNER")
+    env_bool("MAESTRO_HOSTED_RUNNER_MODE").unwrap_or(false)
+        || env_bool("MAESTRO_HOSTED_RUNNER").unwrap_or(false)
 }
 
 fn explicit_a2a_platform_registration_enabled() -> Option<bool> {
@@ -236,7 +240,8 @@ fn explicit_a2a_platform_registration_enabled() -> Option<bool> {
 
 fn a2a_platform_registration_enabled_by_hosted_default() -> bool {
     explicit_a2a_platform_registration_enabled().is_none()
-        && (truthy_env("MAESTRO_HOSTED_RUNNER_MODE") || truthy_env("MAESTRO_HOSTED_RUNNER"))
+        && (env_bool("MAESTRO_HOSTED_RUNNER_MODE").unwrap_or(false)
+            || env_bool("MAESTRO_HOSTED_RUNNER").unwrap_or(false))
 }
 
 pub(crate) fn register_or_update_a2a_platform_agent(
@@ -276,6 +281,29 @@ fn post_platform_connect_json(
     path: &str,
     body: &Value,
 ) -> Result<Value, String> {
+    let parent = TraceHeaders::from_values(
+        registration.traceparent.as_deref(),
+        registration.tracestate.as_deref(),
+    );
+    let span = client_span("POST", path, &parent);
+    let started = std::time::Instant::now();
+    let result =
+        span.in_scope(|| post_platform_connect_json_inner(registration, path, body, &span));
+    record_outcome(
+        &span,
+        if result.is_ok() { "success" } else { "error" },
+        started.elapsed(),
+        result.as_ref().err().map(|_| "platform_callback_error"),
+    );
+    result
+}
+
+fn post_platform_connect_json_inner(
+    registration: &A2APlatformRegistrationConfig,
+    path: &str,
+    body: &Value,
+    span: &tracing::Span,
+) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(registration.timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
@@ -293,11 +321,15 @@ fn post_platform_connect_json(
     if let Some(owner_id) = registration.owner_id.as_deref() {
         request = request.header("X-EvalOps-Actor-ID", owner_id);
     }
-    if let Some(traceparent) = registration.traceparent.as_deref() {
-        request = request.header("traceparent", traceparent);
-        if let Some(tracestate) = registration.tracestate.as_deref() {
-            request = request.header("tracestate", tracestate);
-        }
+    let child = trace_headers_for_span(
+        span,
+        &TraceHeaders::from_values(
+            registration.traceparent.as_deref(),
+            registration.tracestate.as_deref(),
+        ),
+    );
+    for (key, value) in child.header_map().iter() {
+        request = request.header(key, value);
     }
     let response = request
         .json(body)
@@ -656,14 +688,6 @@ fn trace_context_from_env() -> (Option<String>, Option<String>) {
     }
 
     (None, None)
-}
-
-fn env_bool(name: &str) -> Option<bool> {
-    trimmed_env(name).and_then(|value| match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    })
 }
 
 fn env_u64_from_names(names: &[&str], default: u64) -> u64 {

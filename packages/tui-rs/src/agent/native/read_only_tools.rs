@@ -322,15 +322,21 @@ mod tests {
         let results = execute_native_read_only_tool_wave(tool_executor, &tx, &pending, None).await;
 
         assert_eq!(results.len(), 4);
-        assert!(results
-            .values()
-            .all(|result| matches!(result.outcome, ToolOutcome::Succeeded { .. })));
-        assert!(results
-            .values()
-            .all(|result| result.model_content().contains("{{CRED:")));
-        assert!(results.values().all(|result| credential_vault
-            .resolve_all(&result.model_content())
-            .contains("ghs_123456789012345678901234567890123456")));
+        assert!(
+            results
+                .values()
+                .all(|result| matches!(result.outcome, ToolOutcome::Succeeded { .. }))
+        );
+        assert!(
+            results
+                .values()
+                .all(|result| result.model_content().contains("{{CRED:"))
+        );
+        assert!(results.values().all(|result| {
+            credential_vault
+                .resolve_all(&result.model_content())
+                .contains("ghs_123456789012345678901234567890123456")
+        }));
 
         let mut starts = 0;
         let mut ends = 0;

@@ -20,6 +20,9 @@ mod tests {
         ToolRetryDecisionAction, UtilityCommandTerminalMode, UtilityFileSearchMatch,
         UtilityFileWatchChangeType,
     };
+    use crate::headless::workspace_capabilities::{
+        ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied, WorkspacePromptCapability,
+    };
     use crate::headless::{
         ClientToolResultContent, FromAgentMessage, GovernedToolGrant as RuntimeGovernedToolGrant,
         HeadlessErrorType, ServerRequestType, ToAgentMessage, TokenUsage, ToolResult,
@@ -29,7 +32,7 @@ mod tests {
     use super::maestro::v1::from_agent_envelope::Payload as FromPayload;
     use super::maestro::v1::to_agent_envelope::Payload;
     use super::maestro::v1::{
-        CodeMode, FromAgentEnvelope, GovernedInitMessage,
+        ApplyWorkspaceCapabilitySetMessage, CodeMode, FromAgentEnvelope, GovernedInitMessage,
         GovernedToolGrant as ProtoGovernedToolGrant, HelloMessage, NativeToolCapability,
         ProviderErrorMessage, ProviderStreamErrorKind, ResponseAcceptedMessage, ServerCapabilities,
         ToAgentEnvelope, ToolEndMessage, ToolResponseMessage, TurnCompletedMessage,
@@ -56,6 +59,7 @@ mod tests {
             grant_hash: "hash".into(),
             signing_key_id: "key".into(),
             grant_signature: "signature".into(),
+            identity_authorization: None,
             native_tool_ids: vec!["read".into()],
             external_tools: vec![],
             connection_bindings: vec![],
@@ -70,6 +74,7 @@ mod tests {
                 capabilities: None,
                 role: None,
                 opt_out_notifications: None,
+                controller_binding: None,
             },
             ToAgentMessage::Init {
                 system_prompt: None,
@@ -90,18 +95,50 @@ mod tests {
             ToAgentMessage::Prompt {
                 content: "prompt".into(),
                 attachments: None,
+                managed_inference_authorization: None,
             },
             ToAgentMessage::GovernedPrompt {
                 content: "governed prompt".into(),
                 attachments: None,
                 code_mode: crate::headless::CodeMode::GovernedCode,
                 tool_grant: test_grant(),
+                managed_inference_authorization: None,
             },
             ToAgentMessage::GovernedSteer {
                 content: "governed steer".into(),
                 attachments: None,
                 code_mode: crate::headless::CodeMode::GovernedCode,
                 tool_grant: test_grant(),
+                managed_inference_authorization: None,
+            },
+            ToAgentMessage::ApplyWorkspaceCapabilitySet {
+                request: ApplyWorkspaceCapabilitySet {
+                    organization_id: "org-1".into(),
+                    workspace_id: "workspace-1".into(),
+                    runner_session_id: "runner-1".into(),
+                    runtime_generation: 1,
+                    activation_generation: 1,
+                    workspace_snapshot_digest: "sha256:snapshot".into(),
+                    workspace_skill_set_digest: "sha256:skills".into(),
+                    capability_set_digest: "sha256:set".into(),
+                    workspace_instructions: vec!["Use the selected workspace guidance.".into()],
+                    admitted_catalog: vec![WorkspacePromptCapability {
+                        qualified_id: "workspace.review".into(),
+                        name: "review".into(),
+                        scope: "workspace".into(),
+                        revision_digest: "sha256:revision".into(),
+                        body_digest: "sha256:body".into(),
+                        trigger_patterns: vec!["review".into()],
+                        user_invocable: true,
+                        pinned_prompt_only: true,
+                        title: "Review".into(),
+                        description: "Review workspace changes.".into(),
+                        instructions: vec!["Apply the review checklist.".into()],
+                        body: "Apply the review checklist.".into(),
+                        entry_digest: "sha256:entry".into(),
+                    }],
+                    admission_receipt_id: "admission-1".into(),
+                },
             },
             ToAgentMessage::Interrupt,
             ToAgentMessage::ToolResponse {
@@ -197,6 +234,7 @@ mod tests {
             ToAgentMessage::Steer {
                 content: "steer".into(),
                 attachments: None,
+                managed_inference_authorization: None,
             },
         ]
     }
@@ -211,6 +249,7 @@ mod tests {
             | ToAgentMessage::GovernedPrompt { .. }
             | ToAgentMessage::Steer { .. }
             | ToAgentMessage::GovernedSteer { .. }
+            | ToAgentMessage::ApplyWorkspaceCapabilitySet { .. }
             | ToAgentMessage::Interrupt
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
@@ -231,6 +270,25 @@ mod tests {
 
     fn live_from_agent_messages() -> Vec<FromAgentMessage> {
         vec![
+            FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: WorkspaceCapabilitySetApplied {
+                    schema_version: "evalops.maestro.workspace-prompt-capability-set.v1".into(),
+                    organization_id: "org-1".into(),
+                    workspace_id: "workspace-1".into(),
+                    runner_session_id: "runner-1".into(),
+                    runtime_generation: 1,
+                    activation_generation: 1,
+                    effective_catalog_digest: "sha256:capabilities".into(),
+                    accepted_entry_digests: vec!["sha256:capability".into()],
+                    rejected_entries: vec![],
+                    replay_cursor: "1:sha256:capabilities".into(),
+                    applied_at: 1,
+                    controller_binding_sha256: "sha256:binding".into(),
+                    provider_prompt_sha256: "sha256:prompt".into(),
+                    staged_for_next_turn: false,
+                    idempotent: false,
+                },
+            },
             FromAgentMessage::HelloOk {
                 protocol_version: "2026-08-08".into(),
                 controller_binding_version: None,
@@ -455,6 +513,16 @@ mod tests {
                 kind: maestro_ai::ProviderStreamErrorKind::TransientProtocol,
                 message: "provider".into(),
             },
+            FromAgentMessage::DelegationEvent {
+                event: maestro_runtime::DelegationEvent::from_subagent_lifecycle(
+                    "event-1",
+                    "delegation-1",
+                    1,
+                    "completed",
+                    Some("done"),
+                    None,
+                ),
+            },
             FromAgentMessage::ConversationSnapshot {
                 protocol_version: "snapshot-v1".into(),
                 messages: vec![],
@@ -486,6 +554,8 @@ mod tests {
             FromAgentMessage::ConversationSnapshot { .. }
             | FromAgentMessage::HelloOk { .. }
             | FromAgentMessage::ResponseAccepted { .. }
+            | FromAgentMessage::ManagedGatewayReceipt { .. }
+            | FromAgentMessage::WorkspaceCapabilitySetApplied { .. }
             | FromAgentMessage::Ready { .. }
             | FromAgentMessage::ResponseStart { .. }
             | FromAgentMessage::ResponseChunk { .. }
@@ -506,6 +576,7 @@ mod tests {
             | FromAgentMessage::ServerRequestResolved { .. }
             | FromAgentMessage::Error { .. }
             | FromAgentMessage::ProviderError { .. }
+            | FromAgentMessage::DelegationEvent { .. }
             | FromAgentMessage::Status { .. }
             | FromAgentMessage::Compaction { .. }
             | FromAgentMessage::SessionInfo { .. }
@@ -1018,6 +1089,7 @@ mod tests {
             Payload::GovernedPrompt(_) => "governed_prompt",
             Payload::GovernedSteer(_) => "governed_steer",
             Payload::GovernedClientToolResult(_) => "governed_client_tool_result",
+            Payload::ApplyWorkspaceCapabilitySet(_) => "apply_workspace_capability_set",
         }
     }
 
@@ -1055,6 +1127,8 @@ mod tests {
             FromPayload::TurnInterrupted(_) => "turn_interrupted",
             FromPayload::ProviderError(_) => "provider_error",
             FromPayload::GovernedClientToolRequest(_) => "governed_client_tool_request",
+            FromPayload::DelegationEvent(_) => "delegation_event",
+            FromPayload::WorkspaceCapabilitySetApplied(_) => "workspace_capability_set_applied",
         }
     }
 
@@ -1082,6 +1156,7 @@ mod tests {
             Payload::GovernedPrompt(Default::default()),
             Payload::GovernedSteer(Default::default()),
             Payload::GovernedClientToolResult(Default::default()),
+            Payload::ApplyWorkspaceCapabilitySet(ApplyWorkspaceCapabilitySetMessage::default()),
         ];
         let to_names = to_payloads
             .into_iter()
@@ -1135,6 +1210,8 @@ mod tests {
             FromPayload::TurnInterrupted(Default::default()),
             FromPayload::ProviderError(Default::default()),
             FromPayload::GovernedClientToolRequest(Default::default()),
+            FromPayload::DelegationEvent(Default::default()),
+            FromPayload::WorkspaceCapabilitySetApplied(Default::default()),
         ];
         let from_names = from_payloads
             .into_iter()

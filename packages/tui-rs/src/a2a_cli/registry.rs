@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::client::A2AServiceConfig;
-use super::pairing::{normalize_a2a_base_url, peer_connection_from_payload, PairingPayload};
+use super::pairing::{PairingPayload, normalize_a2a_base_url, peer_connection_from_payload};
 use crate::path_utils::{env_path, maestro_home_dir, resolve_env_path};
 use crate::skill_cli::write_atomic;
 
@@ -79,6 +79,7 @@ pub struct UpsertPeerOptions {
     pub make_default: bool,
     pub token_env: Option<String>,
     pub token_file: Option<String>,
+    pub session_id: Option<String>,
     pub workspace_id: Option<String>,
     pub organization_id: Option<String>,
     pub registry_path: Option<String>,
@@ -252,7 +253,11 @@ pub fn upsert_peer_from_pairing_payload(
             .workspace_id
             .or_else(|| previous.as_ref().and_then(|p| p.workspace_id.clone())),
         agent_id: previous.as_ref().and_then(|p| p.agent_id.clone()),
-        session_id: previous.as_ref().and_then(|p| p.session_id.clone()),
+        session_id: options
+            .session_id
+            .map(|session_id| session_id.trim().to_owned())
+            .filter(|session_id| !session_id.is_empty())
+            .or_else(|| previous.as_ref().and_then(|p| p.session_id.clone())),
         actor_id: previous.as_ref().and_then(|p| p.actor_id.clone()),
         timeout_ms: previous.as_ref().and_then(|p| p.timeout_ms),
         max_attempts: previous.as_ref().and_then(|p| p.max_attempts),
@@ -296,7 +301,7 @@ pub fn resolve_peer(name: Option<&str>, options: ResolvePeerOptions) -> Result<R
     )?;
     let entry = registry.peers.get(&resolved_name).cloned().with_context(|| {
         format!(
-            "Unknown A2A peer \"{resolved_name}\". Run \"maestro a2a peers\" to list registered peers."
+            "Unknown A2A peer \"{resolved_name}\". Run \"deixic-code a2a peers\" to list registered peers."
         )
     })?;
     let token = options
