@@ -547,7 +547,11 @@ async fn handle_a2a_task_subscribe(
         .write_all(sse_headers().as_bytes())
         .await
         .map_err(|error| error.to_string())?;
-    send_a2a_stream_response(stream, &serde_json::json!({ "task": current.clone() })).await?;
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "task": a2a_public_task(&current) }),
+    )
+    .await?;
     send_a2a_stream_response(
         stream,
         &serde_json::json!({ "statusUpdate": a2a_status_update_event(&current) }),
