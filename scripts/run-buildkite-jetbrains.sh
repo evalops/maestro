@@ -35,9 +35,9 @@ cd packages/jetbrains-plugin
 # heap, and the host OOM-killer then SIGKILLs the job (exit 137) or the
 # daemon vanishes (exit 1) mid-:compileKotlin. 2g fits hosted linux-large
 # without tripping the previous unbounded-heap killer. Cold hosted agents
-# still need to fetch the IntelliJ SDK, so allow 25m before treating the
-# job as stuck.
-timeout --signal=TERM --kill-after=30s 25m \
+# fetch the IntelliJ SDK from scratch; 40m stays under the 45m job
+# timeout and avoids the inner timeout SIGKILL looking like an OOM.
+timeout --signal=TERM --kill-after=30s 40m \
   ./gradlew check buildPlugin --no-daemon \
   -Dorg.gradle.workers.max=1 \
   -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=384m -XX:+ExitOnOutOfMemoryError"
