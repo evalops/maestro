@@ -28,6 +28,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
+use maestro_runtime::{TelemetryConfig, TelemetryGuard};
 use ring::signature::{ED25519, UnparsedPublicKey};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1241,7 +1242,33 @@ fn apply_init_settings(
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
+/// Installs the structured logger for the headless server process.
+///
+/// The hosted runner spawns `maestro-tui --headless` as a child process with
+/// inherited stderr, and that child had no tracing subscriber of its own. Every
+/// `tracing` event the agent emitted was therefore discarded, including the
+/// `maestro.llm` events that name why a provider stream failed to open. A turn
+/// could fail with `provider_error kind=transient_protocol` and leave no log
+/// line anywhere in the fleet explaining the cause.
+///
+/// The logger writes to stderr only: headless stdout carries the protocol
+/// frames and must stay machine-readable. When a subscriber is already
+/// installed — the `maestro-tui hosted-runner` compatibility entrypoint
+/// installs one before dispatching — this returns `None` and leaves it alone.
+fn init_headless_tracing() -> Option<TelemetryGuard> {
+    if tracing::dispatcher::has_been_set() {
+        return None;
+    }
+    Some(TelemetryGuard::init(TelemetryConfig::new(
+        "maestro-headless",
+        env!("CARGO_PKG_VERSION"),
+        "info",
+        "local",
+    )))
+}
+
 pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> {
+    let _telemetry = init_headless_tracing();
     let mut state = HeadlessState::new(model_override);
     prepare_headless_local_model_with(
         &state.model,

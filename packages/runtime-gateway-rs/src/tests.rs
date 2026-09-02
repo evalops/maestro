@@ -8912,6 +8912,108 @@ async fn a2a_task_subscribe_times_out_active_stream() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a2a_task_subscribe_first_frame_redacts_push_notification_credentials() {
+    let _guard = ENV_LOCK.lock().await;
+    let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
+    let previous_heartbeat = env::var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS").ok();
+    env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "40");
+    env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", "10");
+    let state = test_app_state_with_sessions(HashMap::new());
+    let initial_task = a2a_task_value(
+        "maestro-task-redacted-subscribe",
+        "ctx-1",
+        "TASK_STATE_WORKING",
+        a2a_agent_message("ctx-1", "working"),
+        vec![a2a_agent_message("ctx-1", "working")],
+        Vec::new(),
+        serde_json::json!({
+            "pushNotificationConfigs": [{
+                "id": "notify-1",
+                "taskId": "maestro-task-redacted-subscribe",
+                "url": "https://hooks.example/a2a",
+                "token": "subscribe-webhook-token",
+                "authentication": {
+                    "schemes": ["bearer"],
+                    "credentials": "subscribe-webhook-bearer"
+                }
+            }]
+        }),
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert("maestro-task-redacted-subscribe".to_string(), initial_task);
+    let request = "GET /tasks/maestro-task-redacted-subscribe:subscribe HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+    let initial = request.as_bytes().to_vec();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (mut client, server) = tcp_stream_pair().await;
+    let state_for_run = state.clone();
+    let run = tokio::spawn(async move {
+        handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+    });
+    let mut response_bytes = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        client.read_to_end(&mut response_bytes),
+    )
+    .await
+    .expect("subscribe response should close after timeout")
+    .expect("subscribe response should be readable");
+    run.await
+        .expect("subscribe task should join")
+        .expect("subscribe endpoint should succeed");
+    let response = String::from_utf8(response_bytes).expect("response should be utf-8");
+
+    assert!(
+        !response.contains("subscribe-webhook-token"),
+        "subscribe stream leaked the raw push-notification token: {response}"
+    );
+    assert!(
+        !response.contains("subscribe-webhook-bearer"),
+        "subscribe stream leaked the raw push-notification credentials: {response}"
+    );
+
+    let first_task_frame = response
+        .split("\n\n")
+        .find(|frame| frame.contains("event: task\n"))
+        .expect("subscribe stream should open with a task frame");
+    let payload: Value = serde_json::from_str(
+        first_task_frame
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("task frame should carry a data line"),
+    )
+    .expect("task frame data should be json");
+    let config = &payload["task"]["metadata"]["pushNotificationConfigs"][0];
+    assert_eq!(config["token"], "<redacted>");
+    assert_eq!(config["authentication"]["credentials"], "<redacted>");
+    assert_eq!(config["url"], "https://hooks.example/a2a");
+    assert_eq!(config["id"], "notify-1");
+
+    let stored_tasks = state.a2a_tasks.lock().await;
+    let stored_config =
+        &stored_tasks["maestro-task-redacted-subscribe"]["metadata"]["pushNotificationConfigs"][0];
+    assert_eq!(stored_config["token"], "subscribe-webhook-token");
+    assert_eq!(
+        stored_config["authentication"]["credentials"],
+        "subscribe-webhook-bearer"
+    );
+    drop(stored_tasks);
+
+    if let Some(previous_timeout) = previous_timeout {
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", previous_timeout);
+    } else {
+        env::remove_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS");
+    }
+    if let Some(previous_heartbeat) = previous_heartbeat {
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", previous_heartbeat);
+    } else {
+        env::remove_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a2a_task_subscribe_reconciles_current_task_after_broadcast_lag() {
     let base_state = test_app_state_with_sessions(HashMap::new());
     let (a2a_task_events, _) = broadcast::channel(1);
