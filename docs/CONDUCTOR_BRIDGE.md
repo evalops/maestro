@@ -1,12 +1,12 @@
 # Conductor Bridge (Local Development)
 
 This guide describes how to connect the Conductor Chrome extension to a local
-Maestro web server during development, plus an optional native messaging host
-that can launch and monitor Maestro automatically.
+Deixic Code web server during development, plus an optional native messaging host
+that can launch and monitor Deixic Code automatically.
 
 ## Quick Start (HTTP Bridge)
 
-1. Start Maestro's web server, allowing your Conductor extension's origin:
+1. Start Deixic Code's web server, allowing your Conductor extension's origin:
 
 ```bash
 MAESTRO_WEB_REQUIRE_REDIS=0 \
@@ -19,18 +19,18 @@ MAESTRO_WEB_REQUIRE_REDIS=0 \
 `MAESTRO_WEB_ORIGIN="*"`: it tells the server to accept every origin, so any
 page you visit while the server is running can call the local agent runtime.
 
-2. In Conductor settings, enable "Maestro Bridge" and set:
+2. In Conductor settings, enable "Maestro Bridge" (the extension's legacy compatibility label) and set:
 
 ```
 http://localhost:8080
 ```
 
 Conductor will fetch `/api/models` and stream `/api/chat` responses from the
-Maestro server.
+Deixic Code server.
 
 ## Capabilities (Client-Side Tools)
 
-When the Conductor extension is connected, Maestro can delegate browser actions
+When the Conductor extension is connected, Deixic Code can delegate browser actions
 to the client. These tools execute inside the browser context and return results
 to the server.
 
@@ -68,7 +68,7 @@ values; the client should re-observe before retrying.
 
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
-Maestro ships a local native messaging host script at:
+Deixic Code ships a local native messaging host script at:
 
 ```
 composer/scripts/bridge/native-host.js
@@ -114,7 +114,7 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `MAESTRO_BRIDGE_BASE_URL` | Base URL to probe/launch | `http://localhost:8080` |
-| `MAESTRO_BRIDGE_COMMAND` | Command to launch Maestro | `maestro` |
+| `MAESTRO_BRIDGE_COMMAND` | Command to launch Deixic Code | `maestro` |
 | `MAESTRO_BRIDGE_ARGS` | Extra args (JSON array or space-delimited) | empty |
 | `MAESTRO_BRIDGE_POLL_MS` | Status poll interval (ms) | `2000` |
 | `MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS` | Launch timeout (ms) | `15000` |
@@ -124,7 +124,7 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 | `MAESTRO_BRIDGE_PLATFORM_RUN_ID` | Fallback Platform run ID when the Conductor receipt does not include one | empty |
 | `MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS` | Agent Runtime event write timeout (ms) | `2000` |
 
-When the host launches Maestro, and unless the variable is already set, it
+When the host launches Deixic Code, and unless the variable is already set, it
 sets:
 
 ```
@@ -137,7 +137,7 @@ messaging host, or from `CONDUCTOR_EXTENSION_ID`. When neither is available the
 host leaves `MAESTRO_WEB_ORIGIN` unset so the server keeps its built-in
 localhost allowlist; it never falls back to `*`.
 
-The host does not set `MAESTRO_WEB_REQUIRE_KEY`. Maestro's default loopback bind
+The host does not set `MAESTRO_WEB_REQUIRE_KEY`. Deixic Code's default loopback bind
 already runs without an API key, and forcing the kill switch on would strip auth
 from a non-loopback bind an operator configured deliberately.
 
@@ -150,7 +150,7 @@ invalid Platform receipts.
 ## Notes
 
 - The HTTP bridge supports Conductor client tools (browser automation) because
-  the Maestro web server exposes the client tool API.
+  the Deixic Code web server exposes the client tool API.
 - Never use `MAESTRO_WEB_ORIGIN="*"`, in development or production.
 
 ## Security & CORS Guidance

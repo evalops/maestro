@@ -3,7 +3,7 @@ name = "maestro-runtime"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Transport-neutral native runtime contracts for Maestro"
+description = "Transport-neutral native runtime contracts for Deixic Code"
 
 [dependencies]
 anyhow.workspace = true

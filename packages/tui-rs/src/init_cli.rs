@@ -407,7 +407,7 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
         status(options, "Reusing stored EvalOps agent API key");
     }
 
-    status(options, "Registering Maestro with EvalOps agent MCP");
+    status(options, "Registering Deixic Code with EvalOps agent MCP");
     let mut agent_client = AgentMcpClient::connect(
         &endpoint.endpoint,
         api_key
@@ -667,7 +667,7 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
     let registration_response = client
         .post(format!("{identity}/register"))
         .json(&json!({
-            "client_name": "Maestro CLI",
+            "client_name": "Deixic Code CLI",
             "redirect_uris": [&callback_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
@@ -675,7 +675,7 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
         }))
         .send()
         .await
-        .context("register Maestro OAuth client")?;
+        .context("register Deixic Code OAuth client")?;
     let registration_status = registration_response.status();
     let registration_body = registration_response.text().await.unwrap_or_default();
     if !registration_status.is_success() {
@@ -837,7 +837,7 @@ async fn read_callback(
     write_http(
         stream,
         200,
-        "Authentication successful. You can close this window and return to Maestro.",
+        "Authentication successful. You can close this window and return to Deixic Code.",
     )
     .await?;
     Ok(Some(CallbackResult { code }))
@@ -1728,7 +1728,7 @@ fn format_success(result: &InitResult) -> String {
     };
     let authenticated_as = result.authenticated_as.as_deref().unwrap_or("EvalOps");
     [
-        "EvalOps Maestro bootstrap".to_owned(),
+        "Deixic Code bootstrap".to_owned(),
         String::new(),
         format!("✓ Authenticated as {authenticated_as}"),
         format!("✓ {key_mode} managed inference key"),

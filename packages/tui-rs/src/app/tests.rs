@@ -1869,7 +1869,10 @@ fn test_show_help_uses_maestro_branding() {
     app.show_help();
 
     let last = app.state.messages.last().expect("help message");
-    assert!(last.content.contains("Maestro TUI - Keyboard Shortcuts"));
+    assert!(
+        last.content
+            .contains("Deixic Code TUI - Keyboard Shortcuts")
+    );
     assert!(!last.content.contains("Composer TUI - Keyboard Shortcuts"));
 }
 
@@ -2904,7 +2907,7 @@ fn test_system_prompt_includes_rlm_and_mailbox_context() {
 
     assert!(prompt.contains("RLM context variables"));
     assert!(prompt.contains("{{plan}}"));
-    assert!(prompt.contains("Pending Maestro mailbox messages"));
+    assert!(prompt.contains("Pending Deixic Code mailbox messages"));
     assert!(prompt.contains("report ready"));
 }
 

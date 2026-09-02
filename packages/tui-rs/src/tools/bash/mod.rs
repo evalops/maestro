@@ -196,7 +196,7 @@ impl BashSpawnFailure {
     fn user_message(&self) -> String {
         match self {
             Self::SandboxSetup(detail) => format!(
-                "Blocked by Maestro's native sandbox before the command ran ({detail}). \
+                "Blocked by Deixic Code's native sandbox before the command ran ({detail}). \
                  The command did NOT execute. This usually means the sandbox itself \
                  could not be applied on this host (for example, Landlock is \
                  unavailable) rather than your command being denied. To retry this \
@@ -1465,7 +1465,7 @@ impl BashTool {
                 },
                 "bypass_sandbox": {
                     "type": "boolean",
-                    "description": "Only set to true when retrying a command that just failed with a sandbox-blocked result, to run it once without Maestro's native OS sandbox. Always requires human approval; never set this speculatively.",
+                    "description": "Only set to true when retrying a command that just failed with a sandbox-blocked result, to run it once without Deixic Code's native OS sandbox. Always requires human approval; never set this speculatively.",
                     "default": false
                 }
             },
@@ -2093,7 +2093,7 @@ impl BashTool {
                             // writes should have worked, sending them
                             // toward an unnecessary `bypass_sandbox` retry.
                             message.push_str(&format!(
-                                "\n\n[sandbox] This command ran inside Maestro's native OS \
+                                "\n\n[sandbox] This command ran inside Deixic Code's native OS \
                                  sandbox ({}). If this failure looks like an unexpected \
                                  permission error, it may be the sandbox denying a write \
                                  outside the workspace or a network call, rather than a \
@@ -2271,7 +2271,7 @@ mod tests {
     fn sandbox_setup_failure_is_typed_not_a_nul_delimited_string() {
         let sandbox = BashSpawnFailure::SandboxSetup("Landlock unavailable".to_string());
         let message = sandbox.user_message();
-        assert!(message.starts_with("Blocked by Maestro's native sandbox"));
+        assert!(message.starts_with("Blocked by Deixic Code's native sandbox"));
         assert!(message.contains("Landlock unavailable"));
 
         let spawn = BashSpawnFailure::Spawn("No such file or directory".to_string());

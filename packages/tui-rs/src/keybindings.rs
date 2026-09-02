@@ -578,7 +578,7 @@ fn generate_keybindings_template() -> String {
         "{}\n",
         serde_json::to_string_pretty(&json!({
             "$docs": "https://github.com/evalops/maestro",
-            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Maestro.",
+            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Deixic Code.",
             "version": 1,
             "bindings": bindings,
             "rustBindings": rust_bindings,

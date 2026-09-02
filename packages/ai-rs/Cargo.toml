@@ -3,7 +3,7 @@ name = "maestro-ai"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "AI provider client layer for Maestro (Anthropic, Bedrock, OpenAI, Google, Vertex)"
+description = "AI provider client layer for Deixic Code (Anthropic, Bedrock, OpenAI, Google, Vertex)"
 
 [lib]
 name = "maestro_ai"

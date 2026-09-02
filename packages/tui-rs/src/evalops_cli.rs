@@ -206,7 +206,7 @@ fn hosted_orb_smoke_credential(
 }
 
 async fn login() -> Result<i32> {
-    println!("Maestro EvalOps Login");
+    println!("Deixic Code EvalOps Login");
     match perform_evalops_login().await {
         Ok(()) => {
             println!("EvalOps credentials saved successfully.");

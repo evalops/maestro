@@ -3,7 +3,7 @@ name = "maestro-tui"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Native terminal UI renderer for Maestro"
+description = "Native terminal UI renderer for Deixic Code"
 
 [[bin]]
 name = "maestro-tui"

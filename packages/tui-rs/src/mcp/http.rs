@@ -697,7 +697,7 @@ impl HttpConnection {
             Duration::from_millis(500),
             self.send_notification(&McpNotification::cancelled(
                 request_id,
-                "Maestro turn cancelled",
+                "Deixic Code turn cancelled",
             )),
         )
         .await;

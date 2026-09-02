@@ -1,6 +1,6 @@
-# Contributing to Maestro
+# Contributing to Deixic Code
 
-Maestro is developed as one Rust workspace with a thin npm distribution wrapper.
+Deixic Code is developed as one Rust workspace with a thin npm distribution wrapper.
 
 ## Setup
 

@@ -1283,7 +1283,7 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Provider credentials and sign-ins used by Maestro."),
+        Line::from("Provider credentials and sign-ins used by Deixic Code."),
     ]);
     frame.render_widget(header, layout[0]);
 

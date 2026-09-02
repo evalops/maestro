@@ -158,7 +158,7 @@ async fn provision_credential() -> Result<ProvisionedCredential> {
     let registration_response = client
         .post(format!("{identity}/register"))
         .json(&json!({
-            "client_name": "Maestro Platform Tools",
+            "client_name": "Deixic Code Platform Tools",
             "redirect_uris": [&callback_uri],
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
@@ -437,7 +437,7 @@ async fn read_callback(
     write_http(
         stream,
         200,
-        "Platform tools authorized. You can close this window and return to Maestro.",
+        "Platform tools authorized. You can close this window and return to Deixic Code.",
     )
     .await?;
     Ok(Some(CallbackResult { code }))

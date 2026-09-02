@@ -216,9 +216,9 @@ async fn resume_command(args: &[String]) -> Result<i32> {
         .map(str::to_owned)
         .unwrap_or_else(|| {
             if approve {
-                "Approved from Maestro Platform tools CLI".to_string()
+                "Approved from Deixic Code Platform tools CLI".to_string()
             } else {
-                "Denied from Maestro Platform tools CLI".to_string()
+                "Denied from Deixic Code Platform tools CLI".to_string()
             }
         });
     if reason.len() > MAX_REASON_BYTES {

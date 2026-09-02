@@ -981,7 +981,7 @@ impl McpConnection {
             () = cancel.cancelled() => {
                 self.pending.lock().await.remove(&id);
                 let notification =
-                    McpNotification::cancelled(id, "Maestro turn cancelled");
+                    McpNotification::cancelled(id, "Deixic Code turn cancelled");
                 let delivery = tokio::time::timeout(
                     Duration::from_millis(500),
                     self.send_raw(&notification),

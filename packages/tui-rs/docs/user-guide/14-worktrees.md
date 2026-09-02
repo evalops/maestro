@@ -1,6 +1,6 @@
 # Worktrees
 
-Maestro can run a whole session inside a fresh git worktree, Droid-style: pass `-w <name>` (or `--worktree <name>`) and the agent works on a new branch in a sibling checkout, isolated from your main tree.
+Deixic Code can run a whole session inside a fresh git worktree, Droid-style: pass `-w <name>` (or `--worktree <name>`) and the agent works on a new branch in a sibling checkout, isolated from your main tree.
 
 ---
 
@@ -39,7 +39,7 @@ Worktrees are created next to the repository, not inside it:
 - Fails with a clear message if the branch or target path already exists.
 - The entire session — agent tools, sessions, hooks, config — runs with the worktree as its working directory.
 - On exit, a clean worktree (no uncommitted changes, no untracked files) is removed and its branch deleted. If the branch picked up commits, the worktree is removed but the branch is kept.
-- A dirty worktree is kept, and Maestro prints its path and branch so you can find it.
+- A dirty worktree is kept, and Deixic Code prints its path and branch so you can find it.
 
 ---
 

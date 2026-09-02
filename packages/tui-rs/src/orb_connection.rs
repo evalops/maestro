@@ -388,7 +388,7 @@ pub fn managed_mcp_health_detail(connection: &ServiceConnection) -> Result<Strin
         .authority
         .clone();
     Ok(format!(
-        "externally managed by {authority}; Maestro validated metadata only and did not probe remote authentication or reachability"
+        "externally managed by {authority}; Deixic Code validated metadata only and did not probe remote authentication or reachability"
     ))
 }
 

@@ -663,9 +663,32 @@ impl ContextCompactor {
         }
 
         let tokens = self.estimate_tokens(messages);
-        let threshold =
-            (self.config.max_context_tokens as f64 * self.config.auto_compact_threshold) as u64;
-        tokens > threshold
+        tokens > self.auto_compact_threshold_tokens()
+    }
+
+    /// Token count above which proactive auto-compaction triggers.
+    ///
+    /// `auto_compact_threshold` is a fraction of `max_context_tokens`, so at the
+    /// default 0.85 this is 85% of the window.
+    fn auto_compact_threshold_tokens(&self) -> u64 {
+        (self.config.max_context_tokens as f64 * self.config.auto_compact_threshold) as u64
+    }
+
+    /// Token count above which `compact_with_tokens` actually compacts.
+    ///
+    /// This is the auto-compact threshold when auto-compaction is enabled, and
+    /// the full context window otherwise. `should_auto_compact` and
+    /// `compact_with_tokens` therefore agree: every caller that compacts because
+    /// `should_auto_compact` returned true gets a compaction rather than an
+    /// unchanged message list. Clamped to `max_context_tokens` so a threshold
+    /// configured above 1.0 cannot push the trigger past the window.
+    fn compaction_trigger_tokens(&self) -> u64 {
+        if self.config.auto_compact_enabled {
+            self.auto_compact_threshold_tokens()
+                .min(self.config.max_context_tokens)
+        } else {
+            self.config.max_context_tokens
+        }
     }
 
     /// Get the current token usage as a percentage of max capacity
@@ -735,13 +758,21 @@ impl ContextCompactor {
     /// This method finds the optimal cut point based on token budget while
     /// respecting turn boundaries. Tool calls and their results are kept together.
     ///
+    /// Compaction runs once the estimated token count passes the auto-compact
+    /// threshold (`auto_compact_threshold` of `max_context_tokens`, 85% by
+    /// default), matching [`ContextCompactor::should_auto_compact`]. When
+    /// auto-compaction is disabled the trigger is the full context window.
+    ///
     /// Returns a `CompactionResult` with information about whether a turn was split.
     #[must_use]
     pub fn compact_with_tokens(&self, messages: &[Message]) -> CompactionResult {
         let total_tokens = self.estimate_tokens(messages);
 
-        // Check if compaction is needed
-        if total_tokens <= self.config.max_context_tokens {
+        // Check if compaction is needed. This uses the same trigger point as
+        // `should_auto_compact` so the proactive path in the agent turn loop
+        // does not announce "Auto-compaction triggered" and then return the
+        // message list untouched between the threshold and the full window.
+        if total_tokens <= self.compaction_trigger_tokens() {
             return CompactionResult {
                 messages: messages.to_vec(),
                 summary: None,
@@ -2231,6 +2262,82 @@ mod tests {
         let messages = vec![make_user_message(&"a".repeat(4000))];
 
         assert!(compactor.should_auto_compact(&messages));
+    }
+
+    /// Ten alternating messages of `chars_each` characters, which the fallback
+    /// bytes/4 counter charges at `chars_each / 4` tokens apiece.
+    fn conversation_of(chars_each: usize) -> Vec<Message> {
+        (0..10)
+            .map(|index| {
+                if index % 2 == 0 {
+                    make_user_message(&"a".repeat(chars_each))
+                } else {
+                    make_assistant_message(&"b".repeat(chars_each))
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compact_with_tokens_compacts_between_threshold_and_window() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            keep_recent_tokens: 200,
+            auto_compact_enabled: true,
+            auto_compact_threshold: 0.85, // 850 tokens
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // ~890 tokens, so above the 850-token threshold and below the window.
+        let messages = conversation_of(356);
+        let usage = compactor.usage_percentage(&messages);
+        assert!(
+            usage > 85.0 && usage < 100.0,
+            "fixture must sit between the threshold and the window, got {usage:.1}%"
+        );
+
+        assert!(compactor.should_auto_compact(&messages));
+
+        let result = compactor.compact_with_tokens(&messages);
+        assert!(
+            result.was_compacted(),
+            "compact_with_tokens must compact whenever should_auto_compact is true"
+        );
+        assert!(result.compacted_count > 0);
+        assert!(result.summary.is_some());
+        assert!(result.messages.len() < messages.len());
+    }
+
+    #[test]
+    fn compact_with_tokens_leaves_conversations_below_the_threshold_alone() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            keep_recent_tokens: 200,
+            auto_compact_enabled: true,
+            auto_compact_threshold: 0.85,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // ~500 tokens, half the window.
+        let messages = conversation_of(200);
+        let usage = compactor.usage_percentage(&messages);
+        assert!(
+            usage > 45.0 && usage < 55.0,
+            "fixture must sit near half the window, got {usage:.1}%"
+        );
+
+        assert!(!compactor.should_auto_compact(&messages));
+
+        let result = compactor.compact_with_tokens(&messages);
+        assert!(!result.was_compacted());
+        assert_eq!(result.messages.len(), messages.len());
+        assert!(result.summary.is_none());
+        assert_eq!(
+            compactor.estimate_tokens(&result.messages),
+            compactor.estimate_tokens(&messages)
+        );
     }
 
     #[test]

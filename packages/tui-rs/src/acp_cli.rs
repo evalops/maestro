@@ -131,7 +131,7 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                         },
                         "agentInfo": {
                             "name": "maestro",
-                            "title": "Maestro",
+                            "title": "Deixic Code",
                             "version": env!("CARGO_PKG_VERSION")
                         }
                     }),
@@ -544,18 +544,20 @@ async fn execute_prompt(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().context("failed to launch Maestro agent")?;
-    let mut child_stdin = child.stdin.take().context("missing Maestro stdin")?;
+    let mut child = command
+        .spawn()
+        .context("failed to launch Deixic Code agent")?;
+    let mut child_stdin = child.stdin.take().context("missing Deixic Code stdin")?;
     child_stdin
         .write_all(prompt.as_bytes())
         .await
-        .context("failed to send prompt to Maestro agent")?;
+        .context("failed to send prompt to Deixic Code agent")?;
     child_stdin
         .shutdown()
         .await
-        .context("failed to close Maestro agent stdin")?;
-    let mut child_stdout = child.stdout.take().context("missing Maestro stdout")?;
-    let mut child_stderr = child.stderr.take().context("missing Maestro stderr")?;
+        .context("failed to close Deixic Code agent stdin")?;
+    let mut child_stdout = child.stdout.take().context("missing Deixic Code stdout")?;
+    let mut child_stderr = child.stderr.take().context("missing Deixic Code stderr")?;
     let stderr_task = tokio::spawn(async move {
         let mut bytes = Vec::new();
         child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
@@ -565,7 +567,7 @@ async fn execute_prompt(
     let mut buffer = [0_u8; 4096];
     loop {
         let read = tokio::select! {
-            read = child_stdout.read(&mut buffer) => read.context("failed to read Maestro output")?,
+            read = child_stdout.read(&mut buffer) => read.context("failed to read Deixic Code output")?,
             _ = &mut cancelled => {
                 let _ = child.kill().await;
                 return Ok(None);
@@ -587,14 +589,14 @@ async fn execute_prompt(
     let status = child
         .wait()
         .await
-        .context("failed to wait for Maestro agent")?;
+        .context("failed to wait for Deixic Code agent")?;
     let stderr = stderr_task
         .await
-        .context("failed to join Maestro stderr reader")??;
+        .context("failed to join Deixic Code stderr reader")??;
     if !status.success() {
         let message = String::from_utf8_lossy(&stderr).trim().to_string();
         anyhow::bail!(
-            "Maestro agent exited with {}: {message}",
+            "Deixic Code agent exited with {}: {message}",
             status.code().unwrap_or(1)
         );
     }

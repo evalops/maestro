@@ -1260,7 +1260,7 @@ fn install_release(
     if let Some(release_url) = release_url {
         command.env("MAESTRO_RELEASE_BASE_URL", release_url);
     }
-    run_with_timeout(&mut command, "signed Maestro installer")
+    run_with_timeout(&mut command, "signed Deixic Code installer")
 }
 
 fn install(
@@ -1680,17 +1680,22 @@ fn verify_retained_release(release: &VerifiedRelease) -> Result<()> {
         .arg("--version")
         .env("MAESTRO_SKIP_STARTUP_UPDATE", "1")
         .output()
-        .with_context(|| format!("Failed to verify retained Maestro {}", release.version_text))?;
+        .with_context(|| {
+            format!(
+                "Failed to verify retained Deixic Code {}",
+                release.version_text
+            )
+        })?;
     if !output.status.success() {
         bail!(
-            "Retained Maestro {} failed its version check",
+            "Retained Deixic Code {} failed its version check",
             release.version_text
         );
     }
     let reported = String::from_utf8_lossy(&output.stdout);
     if !reported_version_matches(&reported, &release.version_text) {
         bail!(
-            "Retained Maestro reported the wrong version: expected {}, got {}",
+            "Retained Deixic Code reported the wrong version: expected {}, got {}",
             release.version_text,
             reported.trim()
         );
@@ -1777,7 +1782,7 @@ fn select_rollback_release(
     requested: Option<&str>,
 ) -> Result<VerifiedRelease> {
     let current_version = Version::parse(current.trim())
-        .with_context(|| format!("Current Maestro version is not valid semver: {current}"))?;
+        .with_context(|| format!("Current Deixic Code version is not valid semver: {current}"))?;
     let releases = list_verified_releases(data_dir)?;
     if let Some(requested) = requested {
         let requested_version = Version::parse(requested.trim())
@@ -1834,7 +1839,7 @@ struct AtomicWriteOutcome {
 fn atomic_write_executable(path: &Path, contents: &[u8]) -> Result<AtomicWriteOutcome> {
     let parent = path
         .parent()
-        .context("stable Maestro launcher has no parent directory")?;
+        .context("stable Deixic Code launcher has no parent directory")?;
     fs::create_dir_all(parent)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".maestro-update-")
@@ -1851,7 +1856,7 @@ fn atomic_write_executable(path: &Path, contents: &[u8]) -> Result<AtomicWriteOu
     let temporary_path = temporary.into_temp_path();
     fs::rename(&temporary_path, path).with_context(|| {
         format!(
-            "Failed to atomically repoint the Maestro launcher {}",
+            "Failed to atomically repoint the Deixic Code launcher {}",
             path.display()
         )
     })?;
@@ -1929,12 +1934,12 @@ fn acquire_update_lock(context: &InstallContext) -> Result<Option<StartupUpdateL
     };
     let lock = try_acquire_startup_update_lock(&state_path).with_context(|| {
         format!(
-            "Failed to lock Maestro update state {}",
+            "Failed to lock Deixic Code update state {}",
             state_path.display()
         )
     })?;
     if lock.is_none() {
-        bail!("Another Maestro update is already in progress");
+        bail!("Another Deixic Code update is already in progress");
     }
     Ok(lock)
 }

@@ -105,7 +105,7 @@ pub fn create_pairing_payload_from_agent_card(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         })
-        .unwrap_or_else(|| "Maestro A2A Peer".into());
+        .unwrap_or_else(|| "Deixic Code A2A Peer".into());
 
     let now = chrono::Utc::now();
     let expires_at = now + chrono::Duration::milliseconds(ttl_ms.max(1) as i64);

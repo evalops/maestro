@@ -143,7 +143,7 @@ fn remove_server_from_root(root: &mut Value) -> Result<()> {
 
 pub(super) fn configured_message(path: &Path) -> String {
     format!(
-        "Configured {SERVER_DISPLAY_NAME} in {}. Restart Maestro to load `mcp__{SERVER_NAME}__computer_shell`.",
+        "Configured {SERVER_DISPLAY_NAME} in {}. Restart Deixic Code to load `mcp__{SERVER_NAME}__computer_shell`.",
         path.display()
     )
 }

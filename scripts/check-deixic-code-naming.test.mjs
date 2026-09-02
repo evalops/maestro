@@ -45,3 +45,19 @@ test("the guard rejects stale customer-facing Maestro display copy", () => {
 	const problems = findDeixicCodeNamingProblems(root, new Map([[path, content]]));
 	assert(problems.some((problem) => problem.includes("stale display text")));
 });
+
+test("the guard rejects stale Maestro copy in contributor documentation", () => {
+	const path = "CONTRIBUTING.md";
+	const content = readFileSync(new URL(`../${path}`, import.meta.url), "utf8")
+		.replace("# Contributing to Deixic Code", "# Contributing to Maestro");
+	const problems = findDeixicCodeNamingProblems(root, new Map([[path, content]]));
+	assert(problems.some((problem) => problem.includes("# Contributing to Maestro")));
+});
+
+test("the guard rejects stale Maestro copy in runtime messages", () => {
+	const path = "packages/runtime-gateway-rs/src/a2a/tasks.rs";
+	const content = readFileSync(new URL(`../${path}`, import.meta.url), "utf8")
+		.replace("Deixic Code is working on the A2A task", "Maestro is working on the A2A task");
+	const problems = findDeixicCodeNamingProblems(root, new Map([[path, content]]));
+	assert(problems.some((problem) => problem.includes("Maestro is working on the A2A task")));
+});

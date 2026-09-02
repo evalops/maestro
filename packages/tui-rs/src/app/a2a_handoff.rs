@@ -118,7 +118,7 @@ impl App {
                         .map(|package_id| format!(" with Computer package `{package_id}`"))
                         .unwrap_or_default();
                     self.state.add_system_message(format!(
-                        "Handoff sent to `{peer}` as task `{task_id}`{package}. Maestro is following it in the background."
+                        "Handoff sent to `{peer}` as task `{task_id}`{package}. Deixic Code is following it in the background."
                     ));
                     self.report_a2a_ledger_warning(ledger_warning);
                 }

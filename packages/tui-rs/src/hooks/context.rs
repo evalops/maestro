@@ -127,7 +127,7 @@ pub fn render_hook_context(
 #[must_use]
 pub fn render_hook_context_error(error: &HookContextTooLarge) -> String {
     format!(
-        "<{HOOK_CONTEXT_TAG}>\nMaestro dropped this hook's additional context: {error}.\n</{HOOK_CONTEXT_TAG}>"
+        "<{HOOK_CONTEXT_TAG}>\nDeixic Code dropped this hook's additional context: {error}.\n</{HOOK_CONTEXT_TAG}>"
     )
 }
 
@@ -191,7 +191,7 @@ mod tests {
 
         let visible = render_hook_context_error(&error);
         assert!(visible.contains("10001"), "{visible}");
-        assert!(visible.contains("Maestro dropped"), "{visible}");
+        assert!(visible.contains("Deixic Code dropped"), "{visible}");
     }
 
     #[test]
