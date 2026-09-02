@@ -146,13 +146,14 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
   assert.match(tooling, /! -f \.github\/workflows\/sync-public-release-mirror\.yml/);
 });
 
-test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
+test("JetBrains validation fails fast and retries stuck-JVM exits", () => {
+  assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 1[\s\S]*limit: 1/);
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
   assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon \\/);
   assert.match(jetbrains, /org\.gradle\.workers\.max=1/);
   assert.match(
     jetbrains,
-    /org\.gradle\.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=256m -XX:\+ExitOnOutOfMemoryError"/,
+    /org\.gradle\.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=384m -XX:\+ExitOnOutOfMemoryError"/,
   );
 });
 

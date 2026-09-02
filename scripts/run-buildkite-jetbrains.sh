@@ -32,10 +32,11 @@ fi
 java -version
 cd packages/jetbrains-plugin
 # Bound the Gradle JVM. Empty jvmargs let HotSpot pick a huge ergonomic
-# heap on the heavy workers, and the host OOM-killer then SIGKILLs the
-# job (Buildkite 114/351, exit 137) mid-:test. Keep the 10m timeout so a
-# stuck IntelliJ download still dies cleanly.
+# heap, and the host OOM-killer then SIGKILLs the job (exit 137) or the
+# daemon vanishes (exit 1) mid-:compileKotlin. 2g fits hosted linux-large
+# without tripping the previous unbounded-heap killer. Keep the 10m
+# timeout so a stuck IntelliJ download still dies cleanly.
 timeout --signal=TERM --kill-after=30s 10m \
   ./gradlew check buildPlugin --no-daemon \
   -Dorg.gradle.workers.max=1 \
-  -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError"
+  -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=384m -XX:+ExitOnOutOfMemoryError"
