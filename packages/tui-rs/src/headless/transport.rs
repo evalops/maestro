@@ -81,8 +81,8 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::local_controller_capabilities;
@@ -291,6 +291,7 @@ impl AgentTransport {
             capabilities: Some(local_controller_capabilities()),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: None,
+            controller_binding: None,
         })?;
         Ok(transport)
     }
@@ -370,6 +371,7 @@ impl AgentTransport {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: None,
+            managed_inference_authorization: None,
         })
     }
 
@@ -405,6 +407,7 @@ impl AgentTransport {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: Some(attachments),
+            managed_inference_authorization: None,
         })
     }
 

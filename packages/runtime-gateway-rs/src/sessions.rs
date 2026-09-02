@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_messaging::{message_targets_session, persist_message_store_snapshot};
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct SessionCreateRequest {
@@ -27,6 +28,10 @@ pub(super) struct SessionRecord {
     pub(super) id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) workspace_id: Option<String>,
     pub(super) title: String,
     pub(super) created_at: String,
     pub(super) updated_at: String,
@@ -70,8 +75,9 @@ pub(super) async fn handle_session_endpoint(
             return handle_shared_session_get(state, shared_path).await;
         }
     }
-    let Some(auth) = auth_context(head, &state.config) else {
-        return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
+    let auth = match authorized_context(head, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return response,
     };
     match head.method.as_str() {
         "GET" if head.path == "/api/sessions" => json_response(
@@ -96,7 +102,8 @@ pub(super) async fn handle_session_endpoint(
                     }
                 }
             };
-            let session = create_session_record(request.title, auth.subject.clone());
+            let mut session = create_session_record(request.title, auth.subject.clone());
+            bind_session_to_auth(&mut session, &auth);
             let value = session_full_value(&session);
             {
                 state
@@ -198,6 +205,9 @@ pub(super) async fn handle_session_endpoint(
             if session_path.tail.is_some() {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
+            // Message sends acquire these locks in this order. Keep the same
+            // order so no send can race with the durable session removal.
+            let _message_persist = state.session_messages_persist_lock.lock().await;
             let mut sessions = state.sessions.lock().await;
             let Some(session) = sessions.sessions.get(session_path.id) else {
                 return json_response(404, &serde_json::json!({ "error": "Session not found" }));
@@ -205,9 +215,36 @@ pub(super) async fn handle_session_endpoint(
             if !session_visible_to_auth(session, &auth) {
                 return json_response(404, &serde_json::json!({ "error": "Session not found" }));
             }
+            let removed_session = session.clone();
             sessions.sessions.remove(session_path.id);
+            let session_snapshot = sessions.clone();
+            if let Err(error) = persist_session_store_snapshot(state, &session_snapshot).await {
+                sessions
+                    .sessions
+                    .insert(removed_session.id.clone(), removed_session.clone());
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": format!("failed to delete session: {error}") }),
+                );
+            }
+
+            // Session removal is committed. Inbox cleanup is best-effort: on
+            // failure retain the now-inaccessible messages for startup
+            // reconciliation rather than claiming the session is still live.
+            let mut messages = state.session_messages.lock().await;
+            let before_messages = messages.clone();
+            if let Some(inbox) = messages.messages_by_to_session.get_mut(&removed_session.id) {
+                inbox.retain(|message| !message_targets_session(message, &removed_session));
+                if inbox.is_empty() {
+                    messages.messages_by_to_session.remove(&removed_session.id);
+                }
+            }
+            if let Err(error) = persist_message_store_snapshot(state, &messages).await {
+                *messages = before_messages;
+                eprintln!("failed to clean up deleted session inbox: {error}");
+            }
+            drop(messages);
             drop(sessions);
-            persist_session_store(state).await;
             response_with_extra_headers_and_length(204, "application/json", &[], "", 0)
         }
         _ => json_response(405, &serde_json::json!({ "error": "Method not allowed" })),
@@ -219,10 +256,25 @@ pub(super) async fn handle_pending_request_resume_endpoint(
     initial: &mut Vec<u8>,
     head: &RequestHead,
     state: &AppState,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let Some(request_id) = pending_request_id_from_resume_path(&head.path) else {
         return json_response(404, &serde_json::json!({ "error": "Not found" }));
     };
+    // Verify the caller may see the session that owns this pending request
+    // before delivering the decision. Without this, any tenant-bound principal
+    // could approve or inject a result into another tenant's blocked tool turn
+    // by enumerating derived request ids. Loopback development stays permissive.
+    if tenant_enforcement_active(&state.config)
+        && !pending_request_owner_visible(state, &request_id, auth).await
+    {
+        // Fail closed and do not disclose existence, matching the 404 tenancy
+        // convention used by the session endpoints.
+        return json_response(
+            404,
+            &serde_json::json!({ "error": format!("No active pending request: {request_id}") }),
+        );
+    }
     let body = match read_request_body(stream, initial, head).await {
         Ok(body) => body,
         Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
@@ -257,6 +309,11 @@ pub(super) async fn handle_pending_request_resume_endpoint(
             &serde_json::json!({ "error": format!("No active pending request: {request_id}") }),
         );
     };
+    state
+        .pending_tool_response_sessions
+        .lock()
+        .await
+        .remove(&request_id);
     let (approved, result) = pending_tool_response_from_payload(&payload);
     let completed_client_tool_result = result.as_ref().map(|result| result.success);
     if let Some(success) = completed_client_tool_result {
@@ -319,7 +376,13 @@ pub(super) async fn load_session_store(path: &Path) -> (SessionStore, bool) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             (SessionStore::default(), true)
         }
-        Err(_) => (SessionStore::default(), true),
+        Err(error) => {
+            eprintln!(
+                "failed to read session store at {}: {error}; leaving the file untouched",
+                path.display()
+            );
+            (SessionStore::default(), false)
+        }
     }
 }
 
@@ -371,17 +434,29 @@ pub(super) async fn persist_session_store(state: &AppState) {
         );
         return;
     }
-    let _persist = state.session_persist_lock.lock().await;
     let store = state.sessions.lock().await.clone();
-    if let Some(parent) = state.config.session_store_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    if let Err(error) =
-        crate::migrations::atomic_write_validated_json(&state.config.session_store_path, &store)
-            .await
-    {
+    if let Err(error) = persist_session_store_snapshot(state, &store).await {
         eprintln!("failed to persist session store atomically: {error}");
     }
+}
+
+pub(super) async fn persist_session_store_snapshot(
+    state: &AppState,
+    store: &SessionStore,
+) -> Result<(), String> {
+    if !state.session_store_persist_enabled {
+        return Err(format!(
+            "{} did not parse on startup",
+            state.config.session_store_path.display()
+        ));
+    }
+    let _persist = state.session_persist_lock.lock().await;
+    if let Some(parent) = state.config.session_store_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    crate::migrations::atomic_write_validated_json(&state.config.session_store_path, store).await
 }
 
 pub(super) async fn persist_shared_sessions(state: &AppState) {
@@ -401,6 +476,8 @@ pub(super) fn create_session_record(title: Option<String>, owner: Option<String>
     SessionRecord {
         id: new_session_id(),
         owner,
+        organization_id: None,
+        workspace_id: None,
         title: normalize_title(title).unwrap_or_else(|| "New Chat".to_string()),
         created_at: now.clone(),
         updated_at: now,
@@ -417,12 +494,110 @@ pub(super) fn normalize_title(title: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Whether `auth` may act on the pending request identified by `request_id`.
+///
+/// Resolves the session or authenticated principal that owns the blocked agent
+/// turn from [`AppState::pending_tool_response_sessions`]. Session-owned turns
+/// apply the same [`session_visible_to_auth`] check the session endpoints use;
+/// sessionless turns require the exact subject and tenant binding captured when
+/// the request was accepted. Unrestricted principals (the loopback static admin
+/// key) always pass. A request whose owner is unknown fails closed.
+pub(crate) async fn pending_request_owner_visible(
+    state: &AppState,
+    request_id: &str,
+    auth: &AuthContext,
+) -> bool {
+    if auth.unrestricted {
+        return true;
+    }
+    let owner_session = state
+        .pending_tool_response_sessions
+        .lock()
+        .await
+        .get(request_id)
+        .cloned();
+    match owner_session {
+        Some(PendingToolResponseOwner::Session(session_id)) => state
+            .sessions
+            .lock()
+            .await
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| session_visible_to_auth(session, auth)),
+        Some(PendingToolResponseOwner::Principal {
+            subject,
+            organization_id,
+            workspace_id,
+        }) => {
+            auth.subject.as_ref() == Some(&subject)
+                && auth.organization_id == organization_id
+                && auth.workspace_id == workspace_id
+        }
+        None => false,
+    }
+}
+
 pub(super) fn session_visible_to_auth(session: &SessionRecord, auth: &AuthContext) -> bool {
-    auth.unrestricted
-        || auth
-            .subject
-            .as_deref()
-            .is_some_and(|subject| session.owner.as_deref() == Some(subject))
+    if auth.unrestricted {
+        return true;
+    }
+    let Some(subject) = auth.subject.as_deref() else {
+        return false;
+    };
+    if session.owner.as_deref() != Some(subject) {
+        return false;
+    }
+    match (
+        session.organization_id.as_deref(),
+        session.workspace_id.as_deref(),
+    ) {
+        (Some(session_org), Some(session_workspace)) => {
+            auth.organization_id.as_deref() == Some(session_org)
+                && auth.workspace_id.as_deref() == Some(session_workspace)
+        }
+        // Legacy records without tenant metadata remain visible only to
+        // legacy subject-only principals; tenant-bound identities fail closed.
+        (None, None) => auth.organization_id.is_none() && auth.workspace_id.is_none(),
+        _ => false,
+    }
+}
+
+/// `value` when it is present and not the empty string, otherwise `None`.
+/// Tenant identifiers are treated as absent when empty so an empty
+/// `organization_id`/`workspace_id` can never match another empty one.
+fn non_empty_str(value: Option<&str>) -> Option<&str> {
+    value.filter(|inner| !inner.is_empty())
+}
+
+/// Whether `session` is addressable as a session-messaging peer by `auth`.
+///
+/// This is deliberately weaker than [`session_visible_to_auth`]: it drops the
+/// owner check so a caller can address a peer session owned by a different
+/// subject, but it requires that both principals share the SAME non-empty
+/// `organization_id` AND the SAME non-empty `workspace_id`. Legacy records that
+/// carry no tenant metadata (`organization_id`/`workspace_id` both `None` or
+/// empty) fail closed and are never addressable by a scoped principal. An
+/// unrestricted principal (static admin key) addresses every session.
+pub(super) fn session_addressable_by_auth(session: &SessionRecord, auth: &AuthContext) -> bool {
+    if auth.unrestricted {
+        return true;
+    }
+    let session_org = non_empty_str(session.organization_id.as_deref());
+    let session_workspace = non_empty_str(session.workspace_id.as_deref());
+    let auth_org = non_empty_str(auth.organization_id.as_deref());
+    let auth_workspace = non_empty_str(auth.workspace_id.as_deref());
+    match (session_org, session_workspace, auth_org, auth_workspace) {
+        (Some(session_org), Some(session_workspace), Some(auth_org), Some(auth_workspace)) => {
+            session_org == auth_org && session_workspace == auth_workspace
+        }
+        // Legacy `(None, None)` peers and any partially-bound record fail closed.
+        _ => false,
+    }
+}
+
+pub(super) fn bind_session_to_auth(session: &mut SessionRecord, auth: &AuthContext) {
+    session.organization_id = auth.organization_id.clone();
+    session.workspace_id = auth.workspace_id.clone();
 }
 
 pub(super) async fn session_summaries(state: &AppState, auth: &AuthContext) -> Vec<Value> {

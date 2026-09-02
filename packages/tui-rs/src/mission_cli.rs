@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::path_utils::{env_path, maestro_home_dir};
 use crate::skill_cli::write_atomic;
@@ -2440,10 +2440,12 @@ mod tests {
                 snapshot.features[0].get("id").and_then(Value::as_str),
                 Some("feature-1")
             );
-            assert!(snapshot
-                .progress_log
-                .iter()
-                .any(|e| e.message.as_deref() == Some("keep me")));
+            assert!(
+                snapshot
+                    .progress_log
+                    .iter()
+                    .any(|e| e.message.as_deref() == Some("keep me"))
+            );
             let repaired: Value =
                 serde_json::from_str(&fs::read_to_string(root.join("deep/features.json")).unwrap())
                     .unwrap();
@@ -2541,10 +2543,12 @@ mod tests {
                 .get_snapshot()
                 .unwrap();
             assert_eq!(snapshot.state, MissionState::Running);
-            assert!(snapshot
-                .progress_log
-                .iter()
-                .any(|e| e.message.as_deref() == Some("hello world")));
+            assert!(
+                snapshot
+                    .progress_log
+                    .iter()
+                    .any(|e| e.message.as_deref() == Some("hello world"))
+            );
         });
     }
 
@@ -2558,12 +2562,16 @@ mod tests {
             Some("2026-06-19T00:00:00.000Z"),
         )
         .unwrap();
-        assert!(fs::read_to_string(&layout.mission_markdown)
-            .unwrap()
-            .contains("# Launch"));
-        assert!(fs::read_to_string(&layout.validation_contract_markdown)
-            .unwrap()
-            .contains("Validation Contract"));
+        assert!(
+            fs::read_to_string(&layout.mission_markdown)
+                .unwrap()
+                .contains("# Launch")
+        );
+        assert!(
+            fs::read_to_string(&layout.validation_contract_markdown)
+                .unwrap()
+                .contains("Validation Contract")
+        );
         assert!(layout.features_json.exists());
         assert!(layout.services_yaml.exists());
     }

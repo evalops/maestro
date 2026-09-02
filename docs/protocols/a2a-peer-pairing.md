@@ -23,6 +23,42 @@ maestro a2a peers
 maestro a2a send mac-mini "Review this branch and report the top risk" --wait
 ```
 
+Inside the TUI, `/handoff` uses the same named-session transport, waits in the
+background, and posts the default peer's terminal response into the transcript:
+
+```text
+/handoff Review this branch and report the top risk
+```
+
+Use `/handoff --peer mac-mini <prompt>` to override the default peer.
+
+Use `--session-id <id>` when a named peer, such as `chief`, must send every
+message with one configured remote Maestro session identity. The client uses
+the value for both A2A `contextId` and `metadata.sessionId`; the receiving
+runtime uses that validated context identity to select a persistent Codex
+thread. Repeated messages with the same identity resume that binding, while
+different identities use separate bindings. Turns for one identity are ordered
+to prevent concurrent writers from racing the same Codex thread; different
+identities can run in parallel. Bindings are scoped by the authenticated peer,
+organization, and workspace. Without a configured session ID, each new send or
+delegation receives a new context-specific binding. Native turns without any
+session context retain the legacy profile/workspace/model binding behavior.
+
+`/handoff` can also attach an explicit hosted Computer package. Maestro first
+asks Computer to freeze the selected remote files, artifacts, and/or diff, then
+sends only the package ID, digest, and target thread ID through A2A metadata.
+The receiving agent is instructed to read that exact package through its
+managed Computer connection before acting:
+
+```text
+/handoff --source-task <source-task-id> --target-thread <target-thread-id> \
+  --file src/lib.rs --include-diff -- continue the implementation
+```
+
+Maestro does not infer either Computer ID from the A2A session identity. A
+missing source task, target thread, selection, managed connection, manifest, or
+matching target fails before the handoff message is sent.
+
 If the peer requires auth, attach an auth source while accepting the code:
 
 ```sh

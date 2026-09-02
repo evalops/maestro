@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 #[cfg(feature = "hot-reload")]
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 
 /// Event indicating hooks should be reloaded
 #[derive(Debug, Clone)]

@@ -479,8 +479,10 @@ fn map_claude_permission(rule: &str) -> Result<Vec<String>, String> {
         Some(index) if tokens[index] == "*" && index == tokens.len() - 1 => {
             let prefix: Vec<String> = tokens[..index].to_vec();
             if prefix.is_empty() {
-                Err("`Bash(*)` matches every command; execpolicy prefix rules cannot express that"
-                    .to_string())
+                Err(
+                    "`Bash(*)` matches every command; execpolicy prefix rules cannot express that"
+                        .to_string(),
+                )
             } else {
                 Ok(prefix)
             }

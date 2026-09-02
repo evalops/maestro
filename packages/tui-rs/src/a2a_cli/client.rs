@@ -1,11 +1,12 @@
-//! Minimal A2A HTTP client for Agent Card discovery, message send, and task poll.
+//! Minimal A2A HTTP client for Agent Card discovery, message send, and task subscription.
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use anyhow::{Context, Result, bail};
+use futures::StreamExt;
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub struct A2AServiceConfig {
@@ -176,18 +177,268 @@ pub async fn wait_for_task(
 ) -> Result<A2ATask> {
     let deadline = std::time::Instant::now() + Duration::from_millis(max_wait_ms);
     let mut last = get_task(config, task_id).await?;
-    while !is_terminal_state(&last.status.state) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(interval_ms.max(100))).await;
-        last = get_task(config, task_id).await?;
+    let mut reconnect_delay = Duration::from_millis(100);
+    if is_terminal_state(&last.status.state) {
+        return Ok(last);
     }
-    if !is_terminal_state(&last.status.state) {
-        bail!(
-            "Timed out waiting for A2A task {}; last state {}",
-            task_id,
+
+    loop {
+        match subscribe_until_disconnect(config, task_id, &mut last, deadline).await? {
+            SubscribeOutcome::Terminal => return Ok(last),
+            SubscribeOutcome::Unsupported => {
+                return poll_until_terminal(config, task_id, last, deadline, interval_ms).await;
+            }
+            SubscribeOutcome::Disconnected => {
+                last = get_task_before_deadline(config, task_id, deadline).await?;
+                if is_terminal_state(&last.status.state) {
+                    return Ok(last);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(
+                    reconnect_delay
+                        .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                )
+                .await;
+                reconnect_delay = reconnect_delay
+                    .saturating_mul(2)
+                    .min(Duration::from_secs(2));
+            }
+        }
+    }
+    timeout_error(task_id, &last)
+}
+
+enum SubscribeOutcome {
+    Terminal,
+    Unsupported,
+    Disconnected,
+}
+
+const A2A_SSE_EVENT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const A2A_ERROR_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
+async fn subscribe_until_disconnect(
+    config: &A2AServiceConfig,
+    task_id: &str,
+    last: &mut A2ATask,
+    deadline: std::time::Instant,
+) -> Result<SubscribeOutcome> {
+    let url = format!(
+        "{}/tasks/{}:subscribe",
+        config.base_url.trim_end_matches('/'),
+        urlencoding::encode(task_id.trim())
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(config.timeout_ms.max(1_000)))
+        .build()
+        .context("build A2A subscription client")?;
+    let mut headers = build_headers(config)?;
+    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+    let response = match tokio::time::timeout(
+        deadline.saturating_duration_since(std::time::Instant::now()),
+        client.get(&url).headers(headers).send(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Timed out waiting for A2A task {task_id}; last state {}",
             last.status.state
+        )
+    })? {
+        Ok(response) => response,
+        Err(_) => return Ok(SubscribeOutcome::Disconnected),
+    };
+    if matches!(response.status().as_u16(), 404 | 405 | 501) {
+        return Ok(SubscribeOutcome::Unsupported);
+    }
+    if response.status().is_server_error() || matches!(response.status().as_u16(), 408 | 429) {
+        return Ok(SubscribeOutcome::Disconnected);
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = parse_error_detail(&read_error_body(response, deadline).await?);
+        bail!(
+            "Platform A2A subscription failed with {status}{}{}",
+            if detail.is_empty() { "" } else { ": " },
+            detail
         );
     }
-    Ok(last)
+
+    let mut parser = SseParser::default();
+    let mut stream = response.bytes_stream();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return timeout_error(task_id, last);
+        }
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                for event in parser.push(&chunk)? {
+                    if apply_stream_response(last, &event)? {
+                        return Ok(SubscribeOutcome::Terminal);
+                    }
+                }
+            }
+            Ok(Some(Err(_))) => return Ok(SubscribeOutcome::Disconnected),
+            Ok(None) if is_terminal_state(&last.status.state) => {
+                // Some older peers end the stream cleanly after their terminal
+                // status and never send a full-task envelope. We consumed every
+                // event before EOF, including any artifact updates; preserve
+                // that compatibility without treating a transport error as
+                // authoritative completion.
+                return Ok(SubscribeOutcome::Terminal);
+            }
+            Ok(None) => return Ok(SubscribeOutcome::Disconnected),
+            Err(_) => return timeout_error(task_id, last),
+        }
+    }
+}
+
+async fn read_error_body(
+    response: reqwest::Response,
+    deadline: std::time::Instant,
+) -> Result<String> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            bail!("Timed out reading A2A subscription error response");
+        }
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                let available = A2A_ERROR_BODY_LIMIT_BYTES.saturating_sub(body.len());
+                body.extend_from_slice(&chunk[..chunk.len().min(available)]);
+                if body.len() == A2A_ERROR_BODY_LIMIT_BYTES {
+                    break;
+                }
+            }
+            Ok(Some(Err(error))) => {
+                return Err(error).context("read A2A subscription error response");
+            }
+            Ok(None) => break,
+            Err(_) => bail!("Timed out reading A2A subscription error response"),
+        }
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn poll_until_terminal(
+    config: &A2AServiceConfig,
+    task_id: &str,
+    mut last: A2ATask,
+    deadline: std::time::Instant,
+    interval_ms: u64,
+) -> Result<A2ATask> {
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(
+            Duration::from_millis(interval_ms.max(100))
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        )
+        .await;
+        last = get_task_before_deadline(config, task_id, deadline).await?;
+        if is_terminal_state(&last.status.state) {
+            return Ok(last);
+        }
+    }
+    timeout_error(task_id, &last)
+}
+
+async fn get_task_before_deadline(
+    config: &A2AServiceConfig,
+    task_id: &str,
+    deadline: std::time::Instant,
+) -> Result<A2ATask> {
+    tokio::time::timeout(
+        deadline.saturating_duration_since(std::time::Instant::now()),
+        get_task(config, task_id),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out reconciling A2A task {task_id}"))?
+}
+
+fn timeout_error<T>(task_id: &str, last: &A2ATask) -> Result<T> {
+    bail!(
+        "Timed out waiting for A2A task {}; last state {}",
+        task_id,
+        last.status.state
+    )
+}
+
+#[derive(Default)]
+struct SseParser {
+    buffer: Vec<u8>,
+    data: Vec<String>,
+    data_bytes: usize,
+    _id: Option<String>,
+}
+
+impl SseParser {
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>> {
+        if self.buffer.len().saturating_add(chunk.len()) > A2A_SSE_EVENT_LIMIT_BYTES {
+            bail!("A2A SSE event exceeded {A2A_SSE_EVENT_LIMIT_BYTES} bytes");
+        }
+        self.buffer.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.buffer.drain(..=newline).collect::<Vec<_>>();
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            let line = std::str::from_utf8(&line).context("A2A SSE line was not UTF-8")?;
+            if line.is_empty() {
+                if !self.data.is_empty() {
+                    events.push(std::mem::take(&mut self.data).join("\n"));
+                    self.data_bytes = 0;
+                }
+                self._id = None;
+            } else if !line.starts_with(':') {
+                let (field, value) = line.split_once(':').unwrap_or((line, ""));
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                match field {
+                    "data" => {
+                        self.data_bytes = self
+                            .data_bytes
+                            .saturating_add(value.len())
+                            .saturating_add(1);
+                        if self.data_bytes > A2A_SSE_EVENT_LIMIT_BYTES {
+                            bail!("A2A SSE event exceeded {A2A_SSE_EVENT_LIMIT_BYTES} bytes");
+                        }
+                        self.data.push(value.to_string());
+                    }
+                    "id" if !value.contains('\0') => self._id = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        Ok(events)
+    }
+}
+
+fn apply_stream_response(last: &mut A2ATask, data: &str) -> Result<bool> {
+    let value: Value = serde_json::from_str(data).context("decode A2A SSE data")?;
+    let value = value.get("result").unwrap_or(&value);
+    if let Some(task) = value.get("task") {
+        *last = parse_task(task.clone())?;
+        return Ok(is_terminal_state(&last.status.state));
+    } else if let Some(update) = value.get("statusUpdate") {
+        if let Some(status) = update.get("status") {
+            last.status =
+                serde_json::from_value(status.clone()).context("parse A2A status update")?;
+        }
+    } else if let Some(update) = value.get("artifactUpdate") {
+        if let Some(artifact) = update.get("artifact") {
+            let artifact: A2AArtifact =
+                serde_json::from_value(artifact.clone()).context("parse A2A artifact update")?;
+            last.artifacts.get_or_insert_with(Vec::new).push(artifact);
+        }
+    }
+    // A terminal status update can precede artifactUpdate and the final task.
+    // Only the authoritative full-task event completes the subscription.
+    Ok(false)
 }
 
 pub fn extract_task_text(task: &A2ATask) -> Option<String> {

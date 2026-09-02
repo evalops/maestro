@@ -100,7 +100,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use maestro_tui::agent::safety::{SafetyConfig, SafetyController, SafetyVerdict};
-use maestro_tui::execpolicy::{parse_command, parse_policy, Decision};
+use maestro_tui::execpolicy::Decision;
+use maestro_tui::execpolicy::{parse_command, parse_policy};
 
 /// Closed canonical set of shipped fixtures. Adding a fixture
 /// here is the one required Rust-side change when a new failure shape

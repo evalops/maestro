@@ -2,7 +2,7 @@
 
 use std::io::{self, IsTerminal, Write};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::doctor::{CheckStatus, DoctorReport};
@@ -65,15 +65,21 @@ fn parse_options(args: &[String]) -> Result<SetupOptions> {
 
 pub fn build_setup_report(doctor: DoctorReport) -> SetupReport {
     let selected_provider = doctor.selected_model.provider.as_str();
-    let mode_failed = doctor
+    let credential_mode = doctor
         .checks
         .iter()
-        .any(|check| check.id == "credential_mode" && check.status == CheckStatus::Fail);
+        .find(|check| check.id == "credential_mode");
+    let mode_failed = credential_mode.is_some_and(|check| check.status == CheckStatus::Fail);
     let mut next_steps = Vec::new();
 
     if mode_failed {
-        for (id, reason, command) in crate::credential_mode::setup_next_commands(selected_provider)
-        {
+        let identity_required =
+            credential_mode.is_some_and(|check| check.summary == "EvalOps Identity is required");
+        for (id, reason, command) in crate::credential_mode::setup_next_commands(
+            selected_provider,
+            identity_required,
+            !identity_required,
+        ) {
             push_step(&mut next_steps, id, &command, reason.to_owned());
         }
     }
@@ -85,25 +91,25 @@ pub fn build_setup_report(doctor: DoctorReport) -> SetupReport {
             "config" if check.status == CheckStatus::Fail => push_step(
                 &mut next_steps,
                 "config",
-                "maestro config validate",
+                "deixic-code config validate",
                 check.summary.clone(),
             ),
             "model_catalog" if check.status == CheckStatus::Fail => push_step(
                 &mut next_steps,
                 "model",
-                "maestro models",
+                "deixic-code models",
                 check.summary.clone(),
             ),
             "codex_tools" if check.status == CheckStatus::Fail => push_step(
                 &mut next_steps,
                 "codex-tools",
-                "maestro codex doctor",
+                "deixic-code codex doctor",
                 check.summary.clone(),
             ),
             "live_metadata" if check.status == CheckStatus::Fail => push_step(
                 &mut next_steps,
                 "live-metadata",
-                "maestro doctor --live",
+                "deixic-code doctor --live",
                 check.summary.clone(),
             ),
             _ => {}
@@ -129,12 +135,21 @@ fn push_step(steps: &mut Vec<SetupStep>, id: &str, command: &str, reason: String
     });
 }
 
+async fn ensure_evalops_identity() -> Result<()> {
+    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
+    let env = std::env::vars().collect();
+    if crate::credential_mode::platform_session_from(snapshot.as_ref(), &env).is_none() {
+        crate::init_cli::perform_evalops_login().await?;
+    }
+    Ok(())
+}
+
 pub async fn run_setup(args: &[String]) -> Result<i32> {
     let options = match parse_options(args) {
         Ok(options) => options,
         Err(error) if error.to_string() == "help" => {
             println!(
-                "Usage: maestro setup [--json] [--live] [--model <provider/model>] [--platform|--byok]"
+                "Usage: deixic-code setup [--json] [--live] [--model <provider/model>] [--platform|--byok]"
             );
             return Ok(0);
         }
@@ -146,10 +161,11 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if options.platform {
         crate::init_cli::perform_evalops_login().await?;
-        println!("EvalOps login saved. Run maestro to start a managed session.");
+        println!("EvalOps Identity login saved. Run deixic-code to start a session.");
         return Ok(0);
     }
     if options.byok {
+        ensure_evalops_identity().await?;
         crate::connections_cli::run_add_wizard(None)?;
         return Ok(0);
     }
@@ -159,7 +175,7 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(i32::from(!report.ready));
     }
-    println!("Maestro Setup (schema v{})", report.schema_version);
+    println!("Deixic Code Setup (schema v{})", report.schema_version);
     println!(
         "Model: {} ({}, {})",
         report.doctor.selected_model.requested,
@@ -167,14 +183,17 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         report.doctor.selected_model.protocol
     );
     if report.ready {
-        println!("Ready: Platform session or local API key is configured.");
-        println!("Run maestro to start a session.");
+        println!(
+            "Ready: EvalOps Identity is configured with managed inference or a local provider credential."
+        );
+        println!("Run deixic-code to start a session.");
         return Ok(0);
     }
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        println!("Choose how to authenticate:");
-        println!("  1. Sign in to EvalOps");
-        println!("  2. Use your own API key");
+        println!("EvalOps Identity is required before Deixic Code can run.");
+        println!("Choose how to continue:");
+        println!("  1. Sign in and use managed inference");
+        println!("  2. Sign in, then use your own API key");
         print!("Selection [1/2]: ");
         let _ = io::stdout().flush();
         let mut selection = String::new();
@@ -182,10 +201,11 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         match selection.trim() {
             "1" | "" => {
                 crate::init_cli::perform_evalops_login().await?;
-                println!("EvalOps login saved. Run maestro to start a managed session.");
+                println!("EvalOps Identity login saved. Run deixic-code to start a session.");
                 return Ok(0);
             }
             "2" => {
+                ensure_evalops_identity().await?;
                 crate::connections_cli::run_add_wizard(None)?;
                 return Ok(0);
             }
@@ -231,15 +251,15 @@ mod tests {
     }
 
     #[test]
-    fn setup_turns_missing_credentials_into_platform_or_byok_steps() {
+    fn setup_requires_identity_before_any_provider_setup() {
         let result = build_setup_report(report(
             "openai",
             vec![
                 check(
                     "credential_mode",
                     CheckStatus::Fail,
-                    "no EvalOps session and no local API key",
-                    Some("Run `maestro setup`"),
+                    "EvalOps Identity is required",
+                    Some("Run `deixic-code evalops login`"),
                 ),
                 check(
                     "provider",
@@ -257,9 +277,8 @@ mod tests {
         ));
 
         assert!(!result.ready);
-        assert_eq!(result.next_steps.len(), 2);
-        assert_eq!(result.next_steps[0].command, "maestro evalops login");
-        assert_eq!(result.next_steps[1].command, "maestro connections add");
+        assert_eq!(result.next_steps.len(), 1);
+        assert_eq!(result.next_steps[0].command, "deixic-code evalops login");
     }
 
     #[test]
@@ -269,14 +288,14 @@ mod tests {
             vec![check(
                 "credential_mode",
                 CheckStatus::Fail,
-                "no EvalOps session and no local API key",
+                "no usable managed or local provider credential",
                 None,
             )],
         ));
 
         assert!(!result.ready);
-        assert_eq!(result.next_steps[0].command, "maestro evalops login");
-        assert_eq!(result.next_steps[1].command, "maestro codex login");
+        assert_eq!(result.next_steps.len(), 1);
+        assert_eq!(result.next_steps[0].command, "deixic-code codex login");
     }
 
     #[test]

@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::LazyLock;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::codex_app_server::{
     AccountReadResult, CodexAppServerClient, InitializeOptions, LoginFlow, ThreadResumeParams,
@@ -51,7 +51,7 @@ pub async fn run_codex(args: &[String]) -> Result<i32> {
         Ok(command) => command,
         Err(_) => {
             eprintln!(
-                "Unknown codex subcommand. Try \"maestro codex login\", \"logout\", \"status\", \"ready\", or \"doctor\"."
+                "Unknown codex subcommand. Try \"deixic-code codex login\", \"logout\", \"status\", \"ready\", or \"doctor\"."
             );
             return Ok(1);
         }
@@ -436,9 +436,12 @@ async fn spawn_for_identity(
 
 fn login_command(identity: &crate::codex_identity::CodexIdentitySelection) -> String {
     if identity.profile_name == "default" {
-        "maestro codex login".to_owned()
+        "deixic-code codex login".to_owned()
     } else {
-        format!("maestro codex login --profile {}", identity.profile_name)
+        format!(
+            "deixic-code codex login --profile {}",
+            identity.profile_name
+        )
     }
 }
 
@@ -450,7 +453,7 @@ async fn handle_login(params: &[String]) -> Result<i32> {
         .iter()
         .any(|p| matches!(p.as_str(), "--force" | "--refresh"));
 
-    println!("Maestro OpenAI Codex Login");
+    println!("Deixic Code OpenAI Codex Login");
     let identity = requested_identity(params)?;
     let client = spawn_for_identity(&identity).await?;
     let result = login_with_client(&client, device_flow, force_login).await;
@@ -477,7 +480,7 @@ async fn login_with_client(
                     "OpenAI Codex is already signed in{}.",
                     account_label(&account)
                 );
-                println!("Run \"maestro codex login --force\" to start a new sign-in flow.");
+                println!("Run \"deixic-code codex login --force\" to start a new sign-in flow.");
                 return Ok(0);
             }
             Ok(_) => {}
@@ -597,7 +600,7 @@ async fn handle_status(params: &[String]) -> Result<i32> {
 }
 
 async fn handle_doctor(params: &[String]) -> Result<i32> {
-    println!("Maestro Codex Doctor");
+    println!("Deixic Code Codex Doctor");
     let identity = requested_identity(params)?;
     let client = spawn_for_identity(&identity).await?;
     let mut exit_code = 0;
@@ -1175,8 +1178,8 @@ mod tests {
         }
     }
 
-    fn resume_unsupported_compatibility(
-    ) -> crate::agent::codex_app_server_turns::CodexCompatibilityReport {
+    fn resume_unsupported_compatibility()
+    -> crate::agent::codex_app_server_turns::CodexCompatibilityReport {
         crate::agent::codex_app_server_turns::CodexCompatibilityReport {
             protocol_version: "2025-01-01".to_owned(),
             resume: false,
@@ -1255,9 +1258,11 @@ mod tests {
     fn read_only_profile_excludes_mutation_tools() {
         let selected = select_codex_tool_profile(&CODING_TOOLS_FIXTURE.tools, "read-only");
         assert_eq!(selected.len(), profile_tool_names("read-only").len());
-        assert!(!selected
-            .iter()
-            .any(|t| t.name == "write" || t.name == "bash"));
+        assert!(
+            !selected
+                .iter()
+                .any(|t| t.name == "write" || t.name == "bash")
+        );
     }
 
     #[test]
@@ -1269,10 +1274,11 @@ mod tests {
         for (spec, tool) in compiled.specs.iter().zip(selected.iter()) {
             assert_eq!(spec.input_schema["type"], "object");
             assert!(spec.input_schema.get("anyOf").is_none());
-            assert!(spec
-                .name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+            assert!(
+                spec.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            );
             // Live schemas retain real properties (not empty stubs).
             if tool
                 .parameters
@@ -1303,10 +1309,12 @@ mod tests {
         assert_eq!(compiled.specs[0].name, "maestro_mcp");
         assert_eq!(compiled.bindings[0].original_name, "mcp");
         assert_eq!(compiled.specs[1].name, "ticket_lookup");
-        assert!(compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "renamed_tool"));
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "renamed_tool")
+        );
     }
 
     #[test]
@@ -1388,10 +1396,12 @@ mod tests {
         let evaluated = evaluate_readiness(report);
         assert_eq!(evaluated.exit_code, 1);
         assert!(!evaluated.ready);
-        assert!(evaluated
-            .optional
-            .iter()
-            .any(|optional| optional.name == "resume" && !optional.ready));
+        assert!(
+            evaluated
+                .optional
+                .iter()
+                .any(|optional| optional.name == "resume" && !optional.ready)
+        );
     }
 
     #[test]
@@ -1541,10 +1551,12 @@ mod tests {
         ])
         .await;
 
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("--model may only be specified once"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--model may only be specified once")
+        );
     }
 
     #[tokio::test]
@@ -1755,10 +1767,12 @@ mod tests {
         let evaluation = evaluate_readiness(task.await.unwrap().unwrap());
         assert_eq!(evaluation.exit_code, 0);
         assert!(evaluation.binding.detail.contains("unvalidated"));
-        assert!(evaluation
-            .optional
-            .iter()
-            .any(|check| check.name == "resume" && !check.ready));
+        assert!(
+            evaluation
+                .optional
+                .iter()
+                .any(|check| check.name == "resume" && !check.ready)
+        );
         let extra =
             tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_request()).await;
         match extra {
@@ -1778,9 +1792,11 @@ mod tests {
             }),
         }]);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.contains("unsupported_schema_keyword")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("unsupported_schema_keyword"))
+        );
     }
 
     #[tokio::test]
@@ -2045,7 +2061,7 @@ mod tests {
         let subcommands = ["login", "logout", "status"];
         assert!(
             subcommands.contains(&"login"),
-            "maestro codex login must stay a first-class subcommand"
+            "deixic-code codex login must stay a first-class subcommand"
         );
     }
 }

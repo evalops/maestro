@@ -225,7 +225,7 @@ pub fn is_path_contained(
                     Err(_) => {
                         return PathContainment::Escaped {
                             reason: format!("Cannot resolve path: {e}"),
-                        }
+                        };
                     }
                 }
             } else {
@@ -982,6 +982,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_expands_tilde() {
+        let _guard = crate::config::test_process_env_lock();
         let Some(home) = dirs::home_dir() else {
             return;
         };
@@ -991,6 +992,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_expands_tilde_backslash() {
+        let _guard = crate::config::test_process_env_lock();
         let Some(home) = dirs::home_dir() else {
             return;
         };

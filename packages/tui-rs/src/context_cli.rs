@@ -20,15 +20,16 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::config::load_config;
 use crate::mcp::{
-    load_mcp_config, McpClient, McpConfig, McpConfigScope, McpPrompt, McpServerConfig, McpTransport,
+    McpClient, McpConfig, McpConfigScope, McpPrompt, McpServerConfig, McpTransport,
+    append_managed_mcp_connections, load_mcp_config,
 };
 use crate::path_utils::{env_path, maestro_home_dir};
 
@@ -126,6 +127,8 @@ struct UnifiedContextManifestEntry {
 struct UnifiedContextManifest {
     protocol_version: String,
     version: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    manifest_sha256: String,
     cwd: String,
     project_docs: PromptProjectDocManifest,
     entries: Vec<UnifiedContextManifestEntry>,
@@ -656,6 +659,7 @@ fn summarize_redacted_url(url: Option<&str>) -> Option<JsonValue> {
 fn scope_name(scope: McpConfigScope) -> &'static str {
     match scope {
         McpConfigScope::User => "user",
+        McpConfigScope::Managed => "managed",
         McpConfigScope::Local => "local",
         McpConfigScope::Project => "project",
         McpConfigScope::Enterprise => "enterprise",
@@ -677,6 +681,9 @@ fn remote_trust(url: Option<&str>) -> &'static str {
     let Ok(url) = Url::parse(url) else {
         return "unknown";
     };
+    if crate::orb_connection::validate_hosted_orb_endpoint(url.as_str()).is_ok() {
+        return "official";
+    }
     match url.host_str().unwrap_or_default() {
         "mcp.evalops.dev" | "api.evalops.dev" => "official",
         "" => "unknown",
@@ -927,6 +934,14 @@ fn parse_mcp_server_value(
         .get("authPreset")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let connection_ref = obj
+        .get("connectionRef")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let credential_ref = obj
+        .get("credentialRef")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let supports_parallel_tool_calls = obj
         .get("supportsParallelToolCalls")
         .and_then(|v| v.as_bool());
@@ -948,6 +963,9 @@ fn parse_mcp_server_value(
         headers,
         headers_helper,
         auth_preset,
+        connection_ref,
+        credential_ref,
+        managed_generation: None,
         supports_parallel_tool_calls,
         requires_project_approval,
         timeout,
@@ -960,6 +978,7 @@ fn parse_mcp_server_value(
 fn load_mcp_config_for_cwd(cwd: &Path) -> McpConfig {
     let mut config = load_mcp_config(Some(cwd));
     try_load_maestro_project_mcp(cwd, &mut config);
+    append_managed_mcp_connections(&mut config);
     config
 }
 
@@ -1167,9 +1186,11 @@ async fn load_runtime_mcp_entries(
 ) -> Vec<UnifiedContextManifestEntry> {
     let config = load_mcp_config_for_cwd(cwd);
     let mut connect_errors: HashMap<String, String> = HashMap::new();
-
     for server in &config.servers {
-        if let Err(error) = client.connect(server.clone()).await {
+        if let Err(error) = client
+            .connect_with_workspace_trust(server.clone(), Some(cwd))
+            .await
+        {
             connect_errors.insert(server.name.clone(), error.to_string());
         }
     }
@@ -1234,14 +1255,15 @@ fn load_unified_context_manifest(cwd: &Path) -> Result<UnifiedContextManifest> {
     let mut entries = project_doc_entries(&project_docs);
     entries.extend(load_configured_mcp_entries(&cwd, &mut diagnostics));
 
-    Ok(UnifiedContextManifest {
+    Ok(finalize_context_manifest(UnifiedContextManifest {
         protocol_version: PROTOCOL_VERSION.into(),
         version: 1,
+        manifest_sha256: String::new(),
         cwd: cwd.display().to_string(),
         project_docs,
         entries,
         diagnostics,
-    })
+    }))
 }
 
 async fn load_unified_context_manifest_live(
@@ -1255,14 +1277,27 @@ async fn load_unified_context_manifest_live(
     // When runtime status is present, TS skips configured-only MCP entries.
     entries.extend(load_runtime_mcp_entries(&cwd, client, &mut diagnostics).await);
 
-    Ok(UnifiedContextManifest {
+    Ok(finalize_context_manifest(UnifiedContextManifest {
         protocol_version: PROTOCOL_VERSION.into(),
         version: 1,
+        manifest_sha256: String::new(),
         cwd: cwd.display().to_string(),
         project_docs,
         entries,
         diagnostics,
-    })
+    }))
+}
+
+fn finalize_context_manifest(mut manifest: UnifiedContextManifest) -> UnifiedContextManifest {
+    let value = serde_json::to_value(&manifest).expect("context manifests are serializable");
+    manifest.manifest_sha256 = crate::evidence::canonical_json_sha256(&value);
+    manifest
+}
+
+/// Build the exact redacted context manifest persisted in a native session header.
+pub(crate) fn load_unified_context_manifest_json(cwd: &Path) -> Result<JsonValue> {
+    serde_json::to_value(load_unified_context_manifest(cwd)?)
+        .context("failed to serialize unified context manifest")
 }
 
 async fn load_context_manifest_for_command(
@@ -1481,6 +1516,7 @@ fn format_bytes(n: usize) -> String {
 fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Prompt context for {}", manifest.cwd));
+    lines.push(format!("Generation: {}", manifest.manifest_sha256));
     let budget = match manifest.project_docs.max_bytes {
         None => format!(
             "{} bytes used (unlimited)",
@@ -1685,6 +1721,9 @@ mod tests {
             headers: HashMap::from([("Authorization".to_string(), "secret".to_string())]),
             headers_helper: Some("credential-helper".to_string()),
             auth_preset: Some("evalops".to_string()),
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
             supports_parallel_tool_calls: Some(true),
             requires_project_approval: Some(true),
             timeout: Some(5_000),
@@ -1702,6 +1741,14 @@ mod tests {
         assert_eq!(metadata["requiresProjectApproval"], true);
         assert_eq!(metadata["remoteTrust"], "official");
         assert!(!serde_json::to_string(&metadata).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn mcp_manifest_marks_canonical_hosted_orb_as_official() {
+        assert_eq!(
+            remote_trust(Some(crate::orb_connection::HOSTED_ORB_MCP_ENDPOINT)),
+            "official"
+        );
     }
 
     #[test]
@@ -1732,6 +1779,7 @@ mod tests {
 
         let manifest = load_unified_context_manifest(root.path()).unwrap();
         assert_eq!(manifest.version, 1);
+        assert!(manifest.manifest_sha256.starts_with("sha256:"));
         assert_eq!(
             manifest.cwd,
             resolve_path_buf(root.path().to_path_buf())
@@ -1744,6 +1792,19 @@ mod tests {
         assert_eq!(first.source_kind, "project");
         assert_eq!(first.precedence_index, 0);
         assert!(manifest.entries.iter().any(|e| e.kind == "project_doc"));
+    }
+
+    #[test]
+    fn manifest_generation_changes_with_context_content() {
+        let root = tempdir().unwrap();
+        let rules = root.path().join("AGENTS.md");
+        write_file(&rules, "first rules");
+        let first = load_unified_context_manifest(root.path()).unwrap();
+
+        write_file(&rules, "second rules");
+        let second = load_unified_context_manifest(root.path()).unwrap();
+
+        assert_ne!(first.manifest_sha256, second.manifest_sha256);
     }
 
     #[test]
@@ -1965,7 +2026,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn live_mcp_enriches_manifest_with_runtime_entries() {
+    async fn live_mcp_denies_untrusted_project_servers() {
         let root = tempdir().unwrap();
         write_file(&root.path().join("AGENTS.md"), "root rules");
         let server_script = root.path().join("fake_mcp_server.py");
@@ -2000,28 +2061,35 @@ for line in sys.stdin:
             .find(|e| e.id == "mcp_server:fake")
             .expect("runtime server entry");
         assert_eq!(server.source, "mcp_runtime");
-        assert_eq!(server.status, "connected");
+        assert_eq!(server.status, "error");
         let meta = server.metadata.as_ref().unwrap();
-        assert_eq!(meta.get("toolCount").and_then(|v| v.as_u64()), Some(1));
-        assert_eq!(meta.get("resourceCount").and_then(|v| v.as_u64()), Some(1));
-        assert_eq!(meta.get("promptCount").and_then(|v| v.as_u64()), Some(1));
-
-        assert!(manifest.entries.iter().any(|e| {
-            e.id == "mcp_resource:fake:file://docs/readme" && e.status == "available"
+        assert_eq!(
+            meta.get("error").unwrap(),
+            &json!({ "present": true, "redacted": true })
+        );
+        assert!(
+            !manifest
+                .entries
+                .iter()
+                .any(|e| e.id == "mcp_resource:fake:file://docs/readme")
+        );
+        assert!(
+            !manifest
+                .entries
+                .iter()
+                .any(|e| e.id == "mcp_prompt:fake:greet")
+        );
+        assert!(manifest.diagnostics.iter().any(|d| {
+            d.code == "mcp_runtime_unavailable" && d.entry_id.as_deref() == Some("mcp_server:fake")
         }));
-        let prompt = manifest
-            .entries
-            .iter()
-            .find(|e| e.id == "mcp_prompt:fake:greet")
-            .expect("prompt entry");
-        assert_eq!(prompt.label, "Greet");
-        assert_eq!(prompt.source, "mcp_runtime");
 
         // Runtime mode replaces configured-only entries (TS loadConfiguredMcpEntries skip).
-        assert!(!manifest
-            .entries
-            .iter()
-            .any(|e| e.id == "mcp_server:fake" && e.source == "mcp_config"));
+        assert!(
+            !manifest
+                .entries
+                .iter()
+                .any(|e| e.id == "mcp_server:fake" && e.source == "mcp_config")
+        );
     }
 
     #[tokio::test]
@@ -2067,7 +2135,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn live_mcp_diff_connects_both_sides() {
+    async fn live_mcp_diff_denies_untrusted_project_servers_on_both_sides() {
         let before_root = tempdir().unwrap();
         let after_root = tempdir().unwrap();
         write_file(&before_root.path().join("AGENTS.md"), "before rules");
@@ -2108,11 +2176,17 @@ for line in sys.stdin:
                 .iter()
                 .find(|e| e.id == "mcp_server:fake")
                 .expect("runtime server");
-            assert_eq!(server.status, "connected");
-            assert!(manifest
-                .entries
-                .iter()
-                .any(|e| e.kind == "mcp_resource" && e.server_name.as_deref() == Some("fake")));
+            assert_eq!(server.status, "error");
+            assert!(
+                !manifest
+                    .entries
+                    .iter()
+                    .any(|e| e.kind == "mcp_resource" && e.server_name.as_deref() == Some("fake"))
+            );
+            assert!(manifest.diagnostics.iter().any(|d| {
+                d.code == "mcp_runtime_unavailable"
+                    && d.entry_id.as_deref() == Some("mcp_server:fake")
+            }));
         }
 
         let diff = diff_unified_context_manifests(&before, &after);

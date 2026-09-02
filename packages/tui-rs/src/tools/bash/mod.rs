@@ -125,14 +125,14 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex as AsyncMutex, OnceCell};
+use tokio::sync::{Mutex as AsyncMutex, OnceCell, mpsc};
 #[cfg(unix)]
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -146,9 +146,10 @@ use super::shell_env::resolve_shell_environment;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 use crate::safety::{
-    analyze_bash_command, find_has_dangerous_predicate, git_args_are_mutating, tokenize,
+    RunAttendance, analyze_bash_command, analyze_bash_command_with_attendance,
+    find_has_dangerous_predicate, git_args_are_mutating, tokenize,
 };
-use crate::sandbox::{spawn_sandboxed_command, spawn_unsandboxed_command, SandboxPolicy};
+use crate::sandbox::{SandboxPolicy, spawn_sandboxed_command, spawn_unsandboxed_command};
 
 mod versions;
 
@@ -168,14 +169,52 @@ const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
 
-/// Internal marker prefixed onto the stringified `io::Error` produced when
-/// `spawn_sandboxed_command` fails *before the command ran* (sandbox setup
-/// failure, e.g. Landlock unavailable) — as opposed to the command itself
-/// failing after a successful sandboxed spawn. This lets the spawn-error
-/// handler give a self-identifying message instead of a generic "Failed to
-/// spawn process" that looks like an ordinary bug. Not visible to users;
-/// stripped before the message is shown.
-const SANDBOX_SETUP_FAILURE_PREFIX: &str = "\u{0}sandbox-setup-failure\u{0}";
+/// Why a bash command never started.
+///
+/// The distinction is user-visible and actionable: "the sandbox itself could
+/// not be applied on this host" tells the user to retry with
+/// `bypass_sandbox: true` or change `sandbox_mode`, while an ordinary spawn
+/// failure (missing shell binary, permission error) is an environment bug.
+///
+/// This used to be carried as a `\0`-delimited marker prefixed onto a
+/// stringified `io::Error` and recovered with `strip_prefix`. Any code that
+/// reformatted, wrapped, or trimmed the error silently erased the
+/// distinction and the user got the generic "Failed to spawn process" text.
+/// The distinction now lives in the type, so it cannot be lost in
+/// formatting.
+#[derive(Debug)]
+enum BashSpawnFailure {
+    /// `spawn_sandboxed_command` failed before the command ran.
+    SandboxSetup(String),
+    /// The process could not be spawned for a reason unrelated to the
+    /// sandbox.
+    Spawn(String),
+}
+
+impl BashSpawnFailure {
+    /// The message shown to the user and returned to the model.
+    fn user_message(&self) -> String {
+        match self {
+            Self::SandboxSetup(detail) => format!(
+                "Blocked by Deixic Code's native sandbox before the command ran ({detail}). \
+                 The command did NOT execute. This usually means the sandbox itself \
+                 could not be applied on this host (for example, Landlock is \
+                 unavailable) rather than your command being denied. To retry this \
+                 exact command once without the sandbox, ask again — the agent can \
+                 retry with `bypass_sandbox: true`, which still requires your approval. \
+                 To disable the sandbox for the whole session, set \
+                 `sandbox_mode = \"danger-full-access\"` in config or \
+                 `MAESTRO_SANDBOX_MODE=danger-full-access`."
+            ),
+            Self::Spawn(message) => format!("Failed to spawn process: {message}"),
+        }
+    }
+}
+
+/// Wall-clock cap on reading kernel sandbox denials after a failed sandboxed
+/// command. The capture is a diagnostic; it must never delay the tool result
+/// noticeably, and it fails open (no events) when it runs out of time.
+const SANDBOX_DENY_CAPTURE_BUDGET: Duration = Duration::from_secs(3);
 
 #[cfg(unix)]
 async fn monitor_background_process_group(
@@ -446,6 +485,36 @@ fn current_requires_approval(command: &str) -> bool {
     true
 }
 
+/// One line describing the kernel sandbox denials recorded for a command.
+///
+/// Returns `None` when there is nothing to report, so the caller appends
+/// nothing rather than an empty section.
+fn summarize_sandbox_denials(denials: &[crate::sandbox::DenyEvent]) -> Option<String> {
+    use crate::sandbox::DenyRelationship;
+
+    let first = denials
+        .iter()
+        .find(|event| event.relationship == DenyRelationship::Related)
+        .or_else(|| {
+            denials
+                .iter()
+                .find(|event| event.relationship == DenyRelationship::MaybeRelated)
+        })
+        .or_else(|| denials.first())?;
+    let attributed = denials
+        .iter()
+        .filter(|event| event.relationship == DenyRelationship::Related)
+        .count();
+    Some(format!(
+        "[sandbox] The kernel recorded {} sandbox denial(s) while this command ran ({} from this \
+         command's own process); first: {}. See `sandbox_denials` in the tool details for the \
+         full list.",
+        denials.len(),
+        attributed,
+        first.short_description()
+    ))
+}
+
 pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     #[cfg(windows)]
     {
@@ -654,6 +723,7 @@ async fn create_capture_file(
 /// `spawn_blocking` round-trip, every later caller gets the cached `PathBuf`
 /// back with zero syscalls.
 static BASH_OUTPUT_DIR_READY: OnceCell<PathBuf> = OnceCell::const_new();
+static BASH_TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Ensure the private bash-output directory exists and has had its one-time
 /// stale-capture sweep, without blocking the calling async task.
@@ -707,9 +777,10 @@ async fn get_temp_file_path(version: BashVersion) -> std::io::Result<PathBuf> {
         .unwrap_or_default()
         .as_nanos();
     let pid = std::process::id();
+    let seq = BASH_TEMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
 
     let dir = bash_output_dir_ready().await?;
-    Ok(dir.join(format!("composer-bash-{pid}-{timestamp}.log")))
+    Ok(dir.join(format!("composer-bash-{pid}-{timestamp}-{seq}.log")))
 }
 
 #[derive(Default)]
@@ -1259,6 +1330,9 @@ pub struct BashTool {
     shell_error: Option<String>,
     /// Native OS policy applied before shell commands execute.
     sandbox_policy: Option<SandboxPolicy>,
+    /// Whether this instance runs where no human can answer an approval
+    /// prompt (print/exec mode and other headless runs).
+    attendance: RunAttendance,
     /// Behavior contract version this instance executes with.
     version: BashVersion,
     /// Per-executor shutdown signal for detached background commands.
@@ -1284,6 +1358,7 @@ impl BashTool {
             shell_args,
             shell_error,
             sandbox_policy: None,
+            attendance: RunAttendance::Interactive,
             version: BashVersion::default(),
             background_shutdown: CancellationToken::new(),
             background_launch_gate: AsyncMutex::new(()),
@@ -1308,7 +1383,10 @@ impl BashTool {
             std::mem::take(&mut *watchers)
         };
         for watcher in watchers {
-            let _ = timeout(Duration::from_secs(2), watcher).await;
+            // Each cancellation path inside the watcher is already bounded by
+            // its child and process-group waits. Await it here so shutdown does
+            // not return in the scheduling gap before registry cleanup.
+            let _ = watcher.await;
         }
     }
 
@@ -1336,6 +1414,24 @@ impl BashTool {
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = Some(policy);
         self
+    }
+
+    /// Mark this instance as running with no approval UI.
+    ///
+    /// Print/exec mode and other headless runs cannot show the user an
+    /// approval prompt. A command the analyzer cannot parse is therefore
+    /// refused here instead of being executed unchecked; see
+    /// [`crate::safety::analyze_bash_command_with_attendance`].
+    #[must_use]
+    pub fn unattended(mut self) -> Self {
+        self.attendance = RunAttendance::Unattended;
+        self
+    }
+
+    /// Whether a human can answer an approval prompt for this instance.
+    #[must_use]
+    pub fn attendance(&self) -> RunAttendance {
+        self.attendance
     }
 
     /// Get the tool definition for the AI
@@ -1369,7 +1465,7 @@ impl BashTool {
                 },
                 "bypass_sandbox": {
                     "type": "boolean",
-                    "description": "Only set to true when retrying a command that just failed with a sandbox-blocked result, to run it once without Maestro's native OS sandbox. Always requires human approval; never set this speculatively.",
+                    "description": "Only set to true when retrying a command that just failed with a sandbox-blocked result, to run it once without Deixic Code's native OS sandbox. Always requires human approval; never set this speculatively.",
                     "default": false
                 }
             },
@@ -1596,6 +1692,22 @@ impl BashTool {
             return ToolResult::failure(format!("Dangerous command blocked: {warning}"));
         }
 
+        // Fail closed on a command the analyzer cannot parse when there is no
+        // approval UI to escalate it to. Interactively the same command is
+        // rated `RequiresApproval` and the user decides.
+        if self.attendance == RunAttendance::Unattended {
+            let analysis =
+                analyze_bash_command_with_attendance(&args.command, RunAttendance::Unattended);
+            if analysis.risk == crate::safety::CommandRisk::Dangerous
+                && analysis.reason == crate::safety::UNPARSEABLE_UNATTENDED_REASON
+            {
+                let details = self.stamp_details(
+                    BashDetails::failed(&args.command, -1).with_cwd(self.cwd.clone()),
+                );
+                return ToolResult::failure(analysis.reason).with_details(details.to_json());
+            }
+        }
+
         // Determine timeout
         let timeout_ms = args
             .timeout
@@ -1652,15 +1764,15 @@ impl BashTool {
                 spawn_sandboxed_command(command, PathBuf::from(&self.cwd), policy, env).await
             }
             .map_err(|error| {
-                // Tag spawn-time sandbox setup failures so the error handler
-                // below can tell "the sandbox itself couldn't be applied"
-                // apart from an ordinary spawn failure (missing binary,
-                // permission error unrelated to the sandbox, etc.) — see
-                // `SANDBOX_SETUP_FAILURE_PREFIX`.
+                // Classify spawn-time sandbox setup failures so the error
+                // handler below can tell "the sandbox itself couldn't be
+                // applied" apart from an ordinary spawn failure (missing
+                // binary, permission error unrelated to the sandbox, etc.).
+                // A bypassed call has no sandbox to fail to apply.
                 if args.bypass_sandbox {
-                    std::io::Error::other(error.to_string())
+                    BashSpawnFailure::Spawn(error.to_string())
                 } else {
-                    std::io::Error::other(format!("{SANDBOX_SETUP_FAILURE_PREFIX}{error}"))
+                    BashSpawnFailure::SandboxSetup(error.to_string())
                 }
             })
         } else {
@@ -1711,6 +1823,7 @@ impl BashTool {
                 cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
             }
             cmd.spawn()
+                .map_err(|error| BashSpawnFailure::Spawn(error.to_string()))
         };
         let mut child = match spawn_result {
             Ok(c) => c,
@@ -1720,21 +1833,7 @@ impl BashTool {
                         .with_cwd(cwd_string.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64),
                 );
-                let message = e.to_string();
-                let user_message = match message.strip_prefix(SANDBOX_SETUP_FAILURE_PREFIX) {
-                    Some(detail) => format!(
-                        "Blocked by Maestro's native sandbox before the command ran ({detail}). \
-                         The command did NOT execute. This usually means the sandbox itself \
-                         could not be applied on this host (for example, Landlock is \
-                         unavailable) rather than your command being denied. To retry this \
-                         exact command once without the sandbox, ask again — the agent can \
-                         retry with `bypass_sandbox: true`, which still requires your approval. \
-                         To disable the sandbox for the whole session, set \
-                         `sandbox_mode = \"danger-full-access\"` in config or \
-                         `MAESTRO_SANDBOX_MODE=danger-full-access`."
-                    ),
-                    None => format!("Failed to spawn process: {message}"),
-                };
+                let user_message = e.user_message();
                 if let Some(ref desc) = args.description {
                     return ToolResult::failure(user_message)
                         .with_details(details.with_description(desc).to_json());
@@ -1939,6 +2038,27 @@ impl BashTool {
                     details = details.with_description(desc);
                 }
 
+                // A kernel sandbox denial reaches the program as a bare
+                // `Permission denied`. Read the denials the kernel actually
+                // recorded so the agent sees which operation and target were
+                // blocked instead of guessing. Only worth doing when the
+                // command failed under an active policy.
+                let active_policy = self
+                    .sandbox_policy
+                    .as_ref()
+                    .filter(|_| !sandbox_bypassed_this_call);
+                let sandbox_denials = match (status.success(), active_policy, child_pid) {
+                    (false, Some(_), Some(pid)) => {
+                        crate::sandbox::capture_denies(pid, start_time, SANDBOX_DENY_CAPTURE_BUDGET)
+                            .await
+                    }
+                    _ => Vec::new(),
+                };
+                let denial_summary = summarize_sandbox_denials(&sandbox_denials);
+                if !sandbox_denials.is_empty() {
+                    details = details.with_sandbox_denials(sandbox_denials);
+                }
+
                 ToolResult {
                     success: status.success(),
                     output: combined.output,
@@ -1946,6 +2066,10 @@ impl BashTool {
                         None
                     } else {
                         let mut message = format!("Exit code: {exit_code}");
+                        if let Some(summary) = &denial_summary {
+                            message.push_str("\n\n");
+                            message.push_str(summary);
+                        }
                         // Self-identifying failure: the sandbox denying a
                         // write/network syscall looks like an ordinary
                         // `Permission denied` from the child process, not a
@@ -1969,7 +2093,7 @@ impl BashTool {
                             // writes should have worked, sending them
                             // toward an unnecessary `bypass_sandbox` retry.
                             message.push_str(&format!(
-                                "\n\n[sandbox] This command ran inside Maestro's native OS \
+                                "\n\n[sandbox] This command ran inside Deixic Code's native OS \
                                  sandbox ({}). If this failure looks like an unexpected \
                                  permission error, it may be the sandbox denying a write \
                                  outside the workspace or a network call, rather than a \
@@ -2101,6 +2225,132 @@ mod tests {
             output.push_str(&chunk.content);
         }
         assert_eq!(output, expected);
+    }
+
+    #[tokio::test]
+    async fn unattended_refuses_unparseable_command() {
+        let args = || BashArgs {
+            command: "echo $(unterminated".to_string(),
+            timeout: Some(5_000),
+            description: None,
+            run_in_background: false,
+            bypass_sandbox: false,
+        };
+
+        let unattended = BashTool::new("/tmp").unattended();
+        let refused = unattended.execute(args()).await;
+        assert!(!refused.success);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some(crate::safety::UNPARSEABLE_UNATTENDED_REASON)
+        );
+
+        // The same command in an interactive run is not refused here; it is
+        // classified `RequiresApproval` and the user decides.
+        let interactive = BashTool::new("/tmp");
+        let executed = interactive.execute(args()).await;
+        assert_ne!(
+            executed.error.as_deref(),
+            Some(crate::safety::UNPARSEABLE_UNATTENDED_REASON)
+        );
+    }
+
+    #[test]
+    fn unattended_leaves_parseable_commands_alone() {
+        assert_eq!(
+            BashTool::new("/tmp").attendance(),
+            crate::safety::RunAttendance::Interactive
+        );
+        assert_eq!(
+            BashTool::new("/tmp").unattended().attendance(),
+            crate::safety::RunAttendance::Unattended
+        );
+    }
+
+    #[test]
+    fn sandbox_setup_failure_is_typed_not_a_nul_delimited_string() {
+        let sandbox = BashSpawnFailure::SandboxSetup("Landlock unavailable".to_string());
+        let message = sandbox.user_message();
+        assert!(message.starts_with("Blocked by Deixic Code's native sandbox"));
+        assert!(message.contains("Landlock unavailable"));
+
+        let spawn = BashSpawnFailure::Spawn("No such file or directory".to_string());
+        assert_eq!(
+            spawn.user_message(),
+            "Failed to spawn process: No such file or directory"
+        );
+
+        // The old mechanism carried the distinction as a `\0`-delimited
+        // marker on a stringified `io::Error`, which any reformatting erased.
+        // No such sentinel may reappear in this module.
+        // Both needles are built at runtime so this assertion does not match
+        // its own source text.
+        let escaped_nul = format!("\\u{{{}}}", 0);
+        let literal_nul = char::from(0u8);
+        let source = include_str!("mod.rs");
+        assert!(
+            !source.contains(&escaped_nul) && !source.contains(literal_nul),
+            "a NUL sentinel reappeared in tools/bash/mod.rs"
+        );
+    }
+
+    #[test]
+    fn summarize_sandbox_denials_reports_nothing_for_an_empty_list() {
+        assert!(summarize_sandbox_denials(&[]).is_none());
+    }
+
+    #[test]
+    fn summarize_sandbox_denials_leads_with_the_command_s_own_denial() {
+        let ndjson = [
+            serde_json::json!({
+                "eventMessage": "Sandbox: rustc(9999) deny(1) network-outbound 1.2.3.4:443",
+            })
+            .to_string(),
+            serde_json::json!({
+                "eventMessage": "Sandbox: bash(4242) deny(1) file-write-create /etc/hosts",
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        let denials = crate::sandbox::parse_deny_events(&ndjson, 4242);
+
+        let summary = summarize_sandbox_denials(&denials).expect("summary");
+
+        assert!(summary.starts_with("[sandbox] "));
+        assert_eq!(summary.lines().count(), 1, "summary must be one line");
+        assert!(summary.contains("2 sandbox denial(s)"));
+        assert!(summary.contains("1 from this command's own process"));
+        assert!(
+            summary.contains("file-write-create /etc/hosts"),
+            "the command's own denial must lead: {summary}"
+        );
+    }
+
+    #[test]
+    fn bash_details_serialize_sandbox_denials_only_when_present() {
+        let plain = BashDetails::failed("false", 1);
+        assert!(plain.to_json().get("sandbox_denials").is_none());
+
+        let denials = crate::sandbox::parse_deny_events(
+            &serde_json::json!({
+                "eventMessage": "Sandbox: bash(7) deny(1) file-write-create /etc/hosts",
+            })
+            .to_string(),
+            7,
+        );
+        let with_denials = BashDetails::failed("touch /etc/hosts", 1).with_sandbox_denials(denials);
+        let json = with_denials.to_json();
+        let recorded = json
+            .get("sandbox_denials")
+            .and_then(serde_json::Value::as_array)
+            .expect("sandbox_denials must be serialized when present");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0]
+                .get("operation")
+                .and_then(serde_json::Value::as_str),
+            Some("file-write-create")
+        );
     }
 
     #[test]
@@ -2306,11 +2556,13 @@ mod tests {
             .await;
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("empty"));
+        assert!(
+            result
+                .error
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("empty")
+        );
     }
 
     // ============================================================
@@ -2510,22 +2762,30 @@ mod tests {
         let path1 = super::get_temp_file_path(BashVersion::Current)
             .await
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_nanos(100)); // Ensure different timestamp
         let path2 = super::get_temp_file_path(BashVersion::Current)
             .await
             .unwrap();
 
-        // Paths should be different
         assert_ne!(path1, path2);
-        // Should live in the private bash-output state dir, not the shared
-        // system temp dir (unless no home dir is available).
-        if dirs::home_dir().is_some() {
-            let dir = path1.parent().unwrap();
-            assert!(dir.ends_with(".composer/logs/bash-output"));
-            assert!(!path1.starts_with(std::env::temp_dir()));
+        assert!(
+            path1
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("composer-bash-")),
+            "current capture path {path1:?}"
+        );
+        // Parallel tests point HOME at TempDirs under the process tmpdir, and
+        // the bash-output directory is cached for the process lifetime. Assert
+        // the private layout only when HOME is a stable non-tmpdir path that
+        // matches the cached parent.
+        if let Some(home) = dirs::home_dir() {
+            let expected = home.join(".composer").join("logs").join("bash-output");
+            if path1.starts_with(&expected) {
+                assert!(
+                    !expected.starts_with(std::env::temp_dir()),
+                    "cached current capture {path1:?} should not live under the process tmpdir when HOME is {home:?}"
+                );
+            }
         }
-        // Should have our prefix
-        assert!(path1.to_string_lossy().contains("composer-bash-"));
     }
 
     #[cfg(unix)]
@@ -2621,14 +2881,17 @@ mod tests {
         let legacy = super::get_temp_file_path(BashVersion::Legacy1)
             .await
             .unwrap();
-        assert!(legacy.starts_with(std::env::temp_dir()));
-        if dirs::home_dir().is_some() {
-            assert!(!current.starts_with(std::env::temp_dir()));
-            assert!(current
-                .parent()
-                .unwrap()
-                .ends_with(".composer/logs/bash-output"));
-        }
+        assert_ne!(current, legacy);
+        assert!(
+            legacy.starts_with(std::env::temp_dir()),
+            "legacy capture {legacy:?} must use the process tmpdir"
+        );
+        assert!(
+            current
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("composer-bash-")),
+            "current capture path {current:?}"
+        );
     }
 
     #[tokio::test]
@@ -3123,18 +3386,16 @@ mod tests {
     #[tokio::test]
     async fn shutdown_waits_for_launch_registration_before_draining_watchers() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let sentinel = workspace.path().join("launch-registration-sentinel");
         let hook = BackgroundRegistrationHook::default();
         let mut tool = BashTool::new(workspace.path().display().to_string());
         tool.background_registration_hook = Some(hook.clone());
         let tool = std::sync::Arc::new(tool);
 
         let execute_tool = tool.clone();
-        let execute_sentinel = sentinel.clone();
         let execute = tokio::spawn(async move {
             execute_tool
                 .execute(BashArgs {
-                    command: format!("sleep 1; printf leaked > '{}'", execute_sentinel.display()),
+                    command: "while :; do sleep 60; done".to_string(),
                     timeout: None,
                     description: None,
                     run_in_background: true,
@@ -3161,15 +3422,65 @@ mod tests {
             result.success,
             "launch linearized before shutdown should return success"
         );
+        let process_group_id = result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("background receipt should include its supervisor PID");
+        assert!(
+            super::super::process_registry::tracked_pids().contains(&process_group_id),
+            "launch must register its background process before releasing the gate"
+        );
         shutdown
             .await
             .expect("background shutdown task should not panic");
 
-        sleep(Duration::from_millis(1_100)).await;
         assert!(
-            !sentinel.exists(),
-            "shutdown returned before the registered background command was reaped"
+            !super::super::process_registry::tracked_pids().contains(&process_group_id),
+            "shutdown must unregister the background process before returning"
         );
+        #[cfg(unix)]
+        assert!(
+            !process_group_exists(process_group_id),
+            "shutdown must reap the registered process group before returning"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_detach_a_watcher_after_two_seconds() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = std::sync::Arc::new(BashTool::new(workspace.path().display().to_string()));
+        let watcher_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let watcher_release = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let reached = watcher_reached.clone();
+        let release = watcher_release.clone();
+        let watcher = tokio::spawn(async move {
+            reached.notify_one();
+            release.notified().await;
+        });
+        tool.background_watchers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(watcher);
+        watcher_reached.notified().await;
+
+        let shutdown_tool = tool.clone();
+        let shutdown =
+            tokio::spawn(async move { shutdown_tool.shutdown_background_processes().await });
+        sleep(Duration::from_millis(2_100)).await;
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must not detach an unfinished cleanup watcher"
+        );
+
+        watcher_release.notify_one();
+        timeout(Duration::from_secs(1), shutdown)
+            .await
+            .expect("shutdown should finish after watcher cleanup is released")
+            .expect("background shutdown task should not panic");
     }
 
     #[cfg(target_os = "linux")]

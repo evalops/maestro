@@ -8,7 +8,7 @@ use anyhow::Result;
 use reqwest::header::AUTHORIZATION;
 use tokio::sync::mpsc;
 
-use super::client::{provider_model_name, AiClient, AiProvider};
+use super::client::{AiClient, AiProvider, CancellableStream, provider_model_name};
 use super::kimi::KimiK3Client;
 use super::openai_base;
 use super::types::{Message, RequestConfig, StreamEvent};
@@ -84,8 +84,16 @@ impl OpenAiClient {
         self.managed_gateway || self.base.is_managed_gateway()
     }
 
+    pub(crate) fn managed_gateway_scope(&self) -> Option<(&str, &str)> {
+        self.base.managed_gateway_scope()
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.base.set_managed_request_lineage(lineage_id);
+    }
+
+    pub(crate) fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
+        self.base.set_managed_inference_authorization(authorization);
     }
 
     #[cfg(test)]
@@ -100,18 +108,6 @@ impl OpenAiClient {
     ) -> Self {
         self.base = self.base.with_response_open_timeout_for_test(timeout);
         self
-    }
-
-    pub(crate) fn with_managed_gateway_context(
-        mut self,
-        organization_id: &str,
-        provider_ref: serde_json::Value,
-    ) -> Result<Self> {
-        self.base = self
-            .base
-            .with_managed_gateway_context(organization_id, provider_ref)?;
-        self.managed_gateway = true;
-        Ok(self)
     }
 
     pub(crate) fn with_managed_gateway_scope(
@@ -198,6 +194,21 @@ impl OpenAiClient {
 
         route_is_moonshot || endpoint_is_moonshot
     }
+
+    pub(crate) async fn stream_with_producer(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<CancellableStream> {
+        if let Some(client) = self
+            .kimi_k3
+            .as_ref()
+            .filter(|_| self.uses_native_kimi_k3(&config.model))
+        {
+            return client.stream(messages, config).await.map(Into::into);
+        }
+        self.base.stream_with_producer(messages, config).await
+    }
 }
 
 impl AiClient for OpenAiClient {
@@ -206,14 +217,10 @@ impl AiClient for OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-        if let Some(client) = self
-            .kimi_k3
-            .as_ref()
-            .filter(|_| self.uses_native_kimi_k3(&config.model))
-        {
-            return client.stream(messages, config).await;
-        }
-        self.base.stream(messages, config).await
+        Ok(self
+            .stream_with_producer(messages, config)
+            .await?
+            .into_receiver())
     }
 
     fn provider(&self) -> AiProvider {
@@ -247,8 +254,9 @@ mod tests {
             OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
                 .unwrap()
                 .with_route_provider("moonshot")
-                .with_managed_gateway_context(
+                .with_managed_gateway_scope(
                     "org_123",
+                    "workspace_456",
                     serde_json::json!({
                         "provider": "moonshot",
                         "environment": "production",

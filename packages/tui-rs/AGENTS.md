@@ -21,7 +21,7 @@ This is a **native Rust TUI** with a fully native agent runtime, AI provider cli
 
 ### Key Design Decisions
 
-1. **Native Agent Architecture**: AI communication, tool execution, and streaming live entirely in Rust (`agent/`, `ai/`, `tools/`). This enables a standalone binary and avoids cross-process latency. A Node hook bridge exists only for running TS hooks when enabled.
+1. **Native Agent Architecture**: AI communication, tool execution, and streaming live entirely in Rust (`agent/`, `tools/`). This enables a standalone binary and avoids cross-process latency. A Node hook bridge exists only for running TS hooks when enabled.
 
 2. **Cursor Positioning**: Uses native terminal cursor (adapted from OpenAI Codex) rather than inline cursor rendering. See `components/textarea.rs` for the implementation.
 
@@ -403,5 +403,6 @@ pub enum SessionEntry {
 
 ## Known Issues / TODOs
 
-1. Headless protocol integration is partial (not wired into the default TUI runtime yet)
+1. Headless/RPC mode is routed through the native Rust entrypoint and runtime;
+   keep its protocol and request-parity tests aligned with the interactive agent.
 2. MCP support exists, but parity and UX with the TypeScript surfaces is still evolving

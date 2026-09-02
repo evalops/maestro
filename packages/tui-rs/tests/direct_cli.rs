@@ -1,15 +1,20 @@
 use std::process::Command;
 
+fn maestro_tui_binary() -> std::ffi::OsString {
+    std::env::var_os("CARGO_BIN_EXE_maestro-tui")
+        .expect("Cargo must provide the maestro-tui integration-test binary")
+}
+
 #[test]
 fn direct_binary_help_remains_a_successful_early_exit() {
-    let output = Command::new(env!("CARGO_BIN_EXE_maestro-tui"))
+    let output = Command::new(maestro_tui_binary())
         .arg("--help")
         .output()
         .expect("run maestro-tui --help");
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage:"));
-    assert!(stdout.contains("Usage: maestro"));
+    assert!(stdout.contains("Usage: deixic-code"));
     assert!(!stdout.contains("maestro-tui"));
 }
 
@@ -25,7 +30,7 @@ fn direct_binary_supported_noninteractive_commands_exit_successfully() {
     ];
 
     for &(args, marker) in cases {
-        let output = Command::new(env!("CARGO_BIN_EXE_maestro-tui"))
+        let output = Command::new(maestro_tui_binary())
             .args(args)
             .output()
             .unwrap_or_else(|error| panic!("run maestro-tui {}: {error}", args.join(" ")));

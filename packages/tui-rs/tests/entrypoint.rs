@@ -13,8 +13,8 @@
 //! here instead of shipping.
 
 use maestro_tui::entrypoint::{
-    classify_agent_entry, classify_clap_dispatch, native_utility_tokens, AgentEntry, ClapDispatch,
-    NATIVE_UTILITY_COMMANDS,
+    AgentEntry, ClapDispatch, NATIVE_UTILITY_COMMANDS, classify_agent_entry,
+    classify_clap_dispatch, native_utility_tokens,
 };
 use std::ffi::OsString;
 
@@ -29,8 +29,8 @@ fn argv(words: &[&str]) -> Vec<OsString> {
 fn every_native_utility_command_routes_to_the_utility_handler() {
     assert_eq!(
         NATIVE_UTILITY_COMMANDS.len(),
-        37,
-        "this test's evidence baseline is 37 utility commands; update it deliberately \
+        40,
+        "this test's evidence baseline is 40 utility commands; update it deliberately \
          if the canonical table changes size"
     );
 

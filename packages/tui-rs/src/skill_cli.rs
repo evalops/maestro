@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -100,7 +100,7 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
                 }
                 index += 1;
             }
-            value if value.starts_with('-') => bail!("Unknown maestro skill option: {value}"),
+            value if value.starts_with('-') => bail!("Unknown deixic-code skill option: {value}"),
             value if parsed.command.is_none() => parsed.command = Some(value.to_owned()),
             value => parsed.positionals.push(value.to_owned()),
         }
@@ -111,7 +111,7 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
 
 fn print_help() {
     println!(
-        "maestro skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help"
+        "deixic-code skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help"
     );
 }
 
@@ -587,7 +587,7 @@ fn list_skills(json: bool) -> Result<i32> {
 }
 
 fn inspect_skill(name: Option<&str>, _json: bool) -> Result<i32> {
-    let name = name.context("maestro skill inspect requires a skill name")?;
+    let name = name.context("deixic-code skill inspect requires a skill name")?;
     let (skills, _) = loaded_skills();
     let skill = skills
         .iter()
@@ -1215,7 +1215,7 @@ pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
 }
 
 fn scaffold(name: Option<&str>, args: &SkillArgs) -> Result<i32> {
-    let name = name.context("maestro skill new requires a skill name")?;
+    let name = name.context("deixic-code skill new requires a skill name")?;
     let valid = !name.is_empty()
         && name.len() <= 64
         && name.split('-').all(|part| {
@@ -1327,7 +1327,7 @@ pub async fn run_skill(args: &[String]) -> Result<i32> {
             parsed.json,
             parsed.describe_toolbox,
         ),
-        other => bail!("Unknown maestro skill command: {other}"),
+        other => bail!("Unknown deixic-code skill command: {other}"),
     }
 }
 
@@ -1474,9 +1474,11 @@ mod tests {
         let json = serde_json::to_value(issue).expect("serialize load issue");
         assert_eq!(json["code"], "MISSING_FRONTMATTER");
         assert_eq!(json["path"], "/tmp/example/SKILL.md");
-        assert!(json["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("Missing frontmatter")));
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Missing frontmatter"))
+        );
     }
 
     #[test]

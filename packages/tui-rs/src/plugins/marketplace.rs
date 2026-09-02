@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// Trust tier shown to the operator before install.
@@ -77,17 +77,6 @@ pub fn builtin_catalog() -> Vec<MarketplaceEntry> {
             source: "https://github.com/vercel/vercel-plugin".into(),
             homepage: Some("https://vercel.com/docs/agent-resources/vercel-plugin".into()),
             keywords: vec!["vercel".into(), "deployment".into(), "nextjs".into()],
-        },
-        MarketplaceEntry {
-            id: "evalops-sample".into(),
-            display_name: "EvalOps Sample Skills".into(),
-            tier: MarketplaceTier::Official,
-            description:
-                "Placeholder official entry: install any local path under ~/.maestro/plugins."
-                    .into(),
-            source: "local:~/.maestro/plugins".into(),
-            homepage: None,
-            keywords: vec!["evalops".into(), "official".into()],
         },
     ]
 }
@@ -164,11 +153,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_curated_and_official() {
+    fn catalog_contains_only_installable_entries() {
         let cat = builtin_catalog();
         assert!(cat.iter().any(|e| e.tier == MarketplaceTier::Curated));
-        assert!(cat.iter().any(|e| e.tier == MarketplaceTier::Official));
         assert!(find_entry(&cat, "superpowers").is_some());
+        assert!(cat.iter().all(|entry| !entry.source.starts_with("local:")));
+        assert!(find_entry(&cat, "evalops-sample").is_none());
     }
 
     #[test]

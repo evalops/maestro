@@ -12,7 +12,7 @@ import com.intellij.openapi.project.DumbAware
 class OpenSettingsAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
-        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, "Maestro")
+        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, "Deixic Code")
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

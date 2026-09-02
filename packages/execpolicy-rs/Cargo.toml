@@ -3,7 +3,7 @@ name = "maestro-execpolicy"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Dependency-light command execution policy parser for Maestro"
+description = "Dependency-light command execution policy parser for Deixic Code"
 
 [lib]
 name = "maestro_execpolicy"

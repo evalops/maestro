@@ -4,13 +4,14 @@
 //! This module bridges the hook registry with tool execution.
 
 use super::{
-    config::{load_hook_config, HookSource, LoadedHook, LoadedHookConfig},
+    config::{HookSource, LoadedHook, LoadedHookConfig, load_hook_config},
     lua::LuaHookExecutor,
+    matcher::{ToolMatcher, matcher_or_match_all},
     overflow::{OverflowDetector, OverflowStatus},
     registry::{HookRegistry, SafetyHook},
     types::{
-        EvalGateHook, EvalGateInput, HookEventType, HookResult, OnErrorHook, OnErrorInput,
-        OverflowHook, OverflowInput, PermissionRequestHook, PermissionRequestInput,
+        EvalGateHook, EvalGateInput, HookEventType, HookOutput, HookResult, OnErrorHook,
+        OnErrorInput, OverflowHook, OverflowInput, PermissionRequestHook, PermissionRequestInput,
         PostMessageHook, PostMessageInput, PostToolUseHook, PostToolUseInput, PreMessageHook,
         PreMessageInput, PreToolUseHook, PreToolUseInput, SessionEndHook, SessionEndInput,
         SessionStartHook, SessionStartInput, StopFailureHook, StopFailureInput, SubagentStartHook,
@@ -25,7 +26,7 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -78,6 +79,12 @@ pub struct IntegratedHookSystem {
     cwd: String,
     /// Session ID
     session_id: Option<String>,
+    /// Canonical JSONL path for the active persisted session.
+    transcript_path: Option<String>,
+    transcript_checkpoint_size: Option<u64>,
+    organization_id: Option<String>,
+    workspace_id: Option<String>,
+    session_history: Option<Arc<MaestroSessionHistoryHook>>,
     /// Whether hooks are enabled
     enabled: bool,
     /// Session start time
@@ -97,11 +104,158 @@ struct PromptHook {
     prompt: String,
 }
 
+/// Product-owned Session History capture enabled by a verified Maestro login.
+///
+/// Unlike configured hooks, this carries the bearer only in memory and calls
+/// the shared capture library directly. A workspace cannot replace the
+/// command or observe the credential.
+#[derive(Clone)]
+struct MaestroSessionHistoryHook {
+    organization_id: String,
+    workspace_id: String,
+    access_token: String,
+    endpoint: Option<String>,
+    state_dir: PathBuf,
+}
+
+impl MaestroSessionHistoryHook {
+    fn capture(
+        &self,
+        event_name: &str,
+        session_id: Option<&str>,
+        cwd: &str,
+        transcript_path: Option<&str>,
+        transcript_size_before: Option<u64>,
+    ) {
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let event = maestro_session_history::MaestroTranscriptEvent {
+            event_name: event_name.to_string(),
+            source_session_id: session_id.to_string(),
+            cwd: PathBuf::from(cwd),
+            transcript_path: transcript_path.map(PathBuf::from),
+            transcript_size_before,
+            organization_id: self.organization_id.clone(),
+            workspace_id: self.workspace_id.clone(),
+            endpoint: self.endpoint.clone(),
+            access_token: Some(self.access_token.clone()),
+            model: None,
+        };
+        if let Err(error) =
+            maestro_session_history::capture_maestro_event(event, Some(&self.state_dir))
+        {
+            eprintln!("[session-history] capture deferred: {error}");
+        }
+    }
+}
+
+impl SessionStartHook for MaestroSessionHistoryHook {
+    fn on_session_start(&self, input: &SessionStartInput) -> HookResult {
+        self.capture(
+            &input.hook_event_name,
+            input.session_id.as_deref(),
+            &input.cwd,
+            None,
+            None,
+        );
+        HookResult::Continue
+    }
+}
+
+impl SessionEndHook for MaestroSessionHistoryHook {
+    fn on_session_end(&self, input: &SessionEndInput) -> HookResult {
+        self.capture(
+            &input.hook_event_name,
+            input.session_id.as_deref(),
+            &input.cwd,
+            input.transcript_path.as_deref(),
+            None,
+        );
+        HookResult::Continue
+    }
+}
+
+impl PostMessageHook for MaestroSessionHistoryHook {
+    fn on_post_message(&self, input: &PostMessageInput) -> HookResult {
+        // `ResponseEnd` and this hook are emitted by the native-agent task, while
+        // the TUI appends and flushes the assistant message after it consumes
+        // `ResponseEnd`. Waiting for that file growth on the agent task blocks
+        // the runtime that must deliver the event, so the transcript only grows
+        // after the wait times out. Keep configured PostMessage hooks synchronous,
+        // but let this product-owned observer wait off-task for the canonical
+        // persistence boundary. SessionEnd remains a synchronous final retry.
+        let hook = self.clone();
+        let input = input.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("maestro-session-history".to_string())
+            .spawn(move || {
+                hook.capture(
+                    &input.hook_event_name,
+                    input.session_id.as_deref(),
+                    &input.cwd,
+                    input.transcript_path.as_deref(),
+                    input.transcript_size_before,
+                );
+            })
+        {
+            eprintln!(
+                "[session-history] capture deferred: could not start capture worker: {error}"
+            );
+        }
+        HookResult::Continue
+    }
+}
+
 impl UserPromptSubmitHook for PromptHook {
     fn on_user_prompt_submit(&self, _input: &UserPromptSubmitInput) -> HookResult {
         HookResult::InjectContext {
             context: self.prompt.clone(),
         }
+    }
+}
+
+/// A configured fail-closed WASM policy whose backend could not be loaded.
+///
+/// Keeping this as a normal registry hook makes the unavailable state
+/// observable at the same boundary as a loaded policy: a tool call cannot
+/// proceed while the configured enforcement hook is missing.
+struct UnavailableWasmHook {
+    path: PathBuf,
+    tools: ToolMatcher,
+    reason: String,
+}
+
+/// A hook configuration error must not turn configured policy into an allow.
+///
+/// Configuration is assembled before hooks are registered. If any trusted
+/// source fails that load, no partial set is available to enforce, so block
+/// tool execution until the configuration is corrected.
+struct HookConfigLoadFailure {
+    reason: String,
+}
+
+impl PreToolUseHook for HookConfigLoadFailure {
+    fn on_pre_tool_use(&self, _input: &PreToolUseInput) -> HookResult {
+        HookResult::Block {
+            reason: format!("Hook configuration failed to load: {}", self.reason),
+        }
+    }
+}
+
+impl PreToolUseHook for UnavailableWasmHook {
+    fn on_pre_tool_use(&self, _input: &PreToolUseInput) -> HookResult {
+        HookResult::Block {
+            reason: format!(
+                "Required WASM hook {} is unavailable: {}",
+                self.path.display(),
+                self.reason
+            ),
+        }
+    }
+
+    fn matches(&self, tool_name: &str) -> bool {
+        self.tools.matches(tool_name)
     }
 }
 
@@ -118,7 +272,7 @@ enum ExternalHookSource {
 /// deadline, keeping a slow hook from blocking the agent indefinitely.
 struct ExternalHook {
     event: HookEventType,
-    tools: Vec<String>,
+    tools: ToolMatcher,
     source: ExternalHookSource,
     timeout: Duration,
     working_dir: std::path::PathBuf,
@@ -195,11 +349,7 @@ impl ExternalHookInput for PostToolUseInput {
 
 impl ExternalHook {
     fn matches_tool(&self, tool_name: &str) -> bool {
-        self.tools.is_empty()
-            || self
-                .tools
-                .iter()
-                .any(|tool| tool.eq_ignore_ascii_case(tool_name))
+        self.tools.matches(tool_name)
     }
 
     /// Whether this hook may observe a tool result with the given status.
@@ -234,12 +384,12 @@ impl ExternalHook {
             }
         };
         let source = self.source.clone();
-        let event_name = format!("{:?}", self.event);
+        let event = self.event;
+        let event_name = format!("{event:?}");
         let tool_name = tool_name.map(str::to_owned);
         let working_dir = self.working_dir.clone();
         let timeout = self.timeout.max(Duration::from_millis(1));
         let worker_timeout = timeout.saturating_add(Duration::from_millis(100));
-        let worker_event_name = event_name.clone();
         let (sender, receiver) = mpsc::channel();
 
         std::thread::spawn(move || {
@@ -247,12 +397,12 @@ impl ExternalHook {
                 ExternalHookSource::Command(command) => run_external_command(
                     &command,
                     &payload,
-                    &worker_event_name,
+                    event,
                     tool_name.as_deref(),
                     &working_dir,
                     timeout,
                 ),
-                ExternalHookSource::Http(url) => run_external_http(&url, &payload, timeout),
+                ExternalHookSource::Http(url) => run_external_http(&url, &payload, event, timeout),
             };
             let _ = sender.send(result);
         });
@@ -330,11 +480,12 @@ fn camel_case_key(key: &str) -> Option<String> {
 fn run_external_command(
     command: &str,
     payload: &[u8],
-    event_name: &str,
+    event: HookEventType,
     tool_name: Option<&str>,
     working_dir: &Path,
     timeout: Duration,
 ) -> HookResult {
+    let event_name = format!("{event:?}");
     #[cfg(windows)]
     let mut process = {
         let mut command_builder = ProcessCommand::new("cmd");
@@ -353,7 +504,7 @@ fn run_external_command(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("HOOK_EVENT_NAME", event_name);
+        .env("HOOK_EVENT_NAME", &event_name);
     // The payload always goes to stdin below. The environment copy is
     // bounded, and dropped entirely when it would not fit, because an
     // oversized entry fails the spawn instead of the hook.
@@ -482,7 +633,7 @@ fn run_external_command(
         };
     }
 
-    parse_external_hook_output(&stdout.text)
+    parse_external_hook_output(event, &stdout.text)
 }
 
 /// Kill a hook process and everything it started.
@@ -580,7 +731,7 @@ fn collect_hook_output(
         Ok(Ok(())) | Err(RecvTimeoutError::Timeout) => {}
         Ok(Err(error)) => return Err(error.to_string()),
         Err(RecvTimeoutError::Disconnected) => {
-            return Err(format!("{stream_name} reader panicked"))
+            return Err(format!("{stream_name} reader panicked"));
         }
     }
     let buffer = reader
@@ -593,7 +744,12 @@ fn collect_hook_output(
     })
 }
 
-fn run_external_http(url: &str, payload: &[u8], timeout: Duration) -> HookResult {
+fn run_external_http(
+    url: &str,
+    payload: &[u8],
+    event: HookEventType,
+    timeout: Duration,
+) -> HookResult {
     let client = match reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()
@@ -637,7 +793,7 @@ fn run_external_http(url: &str, payload: &[u8], timeout: Duration) -> HookResult
             reason: format!("HTTP hook returned {status}: {}", body.text.trim()),
         };
     }
-    parse_external_hook_output(&body.text)
+    parse_external_hook_output(event, &body.text)
 }
 
 /// Read an HTTP hook response under the same cap as command-hook output.
@@ -661,30 +817,137 @@ fn read_bounded_http_body(
     })
 }
 
-fn parse_external_hook_output(output: &str) -> HookResult {
+/// How strictly external-hook output is held to the typed schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookOutputMode {
+    /// Report the schema violation and fall back to the legacy value-walking
+    /// parser. This is the compatibility default.
+    Lenient,
+    /// Refuse the hook output. The operation the hook guards is blocked.
+    Strict,
+}
+
+/// Environment variable that opts a session into [`HookOutputMode::Strict`].
+pub const STRICT_HOOK_OUTPUT_ENV: &str = "MAESTRO_STRICT_HOOK_OUTPUT";
+
+/// Resolve the compatibility mode for hook output.
+///
+/// Default is [`HookOutputMode::Lenient`]: a hook whose output does not match
+/// the typed schema still works, and the violation is printed once per
+/// execution. Setting `MAESTRO_STRICT_HOOK_OUTPUT` to `1` or `true` refuses
+/// that output instead.
+fn hook_output_mode() -> HookOutputMode {
+    match std::env::var(STRICT_HOOK_OUTPUT_ENV) {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            if value == "1" || value == "true" || value == "yes" {
+                HookOutputMode::Strict
+            } else {
+                HookOutputMode::Lenient
+            }
+        }
+        Err(_) => HookOutputMode::Lenient,
+    }
+}
+
+fn parse_external_hook_output(event: HookEventType, output: &str) -> HookResult {
+    parse_external_hook_output_with_mode(event, output, hook_output_mode())
+}
+
+/// Deserialize a hook's stdout (or HTTP response body) into [`HookOutput`] and
+/// validate it against `event`.
+///
+/// Runs one response validator per hook step instead of walking an untyped value.
+///
+/// Three things change relative to the previous value-walking parser:
+///
+/// - Output that is not a JSON object no longer becomes model context. A shell
+///   hook that prints a stray `set -x` line used to have that line injected
+///   into the conversation.
+/// - Unknown keys are reported, so `modifedInput` is a visible error rather
+///   than a field that is skipped.
+/// - `modifiedInput` must be a JSON object and only `PreToolUse` may return it.
+fn parse_external_hook_output_with_mode(
+    event: HookEventType,
+    output: &str,
+    mode: HookOutputMode,
+) -> HookResult {
     let output = output.trim();
     if output.is_empty() {
         return HookResult::Continue;
     }
 
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
-        return HookResult::InjectContext {
-            context: output.to_string(),
-        };
-    };
-    let Some(object) = value.as_object() else {
-        return value
-            .as_str()
-            .map_or(HookResult::Continue, |context| HookResult::InjectContext {
-                context: context.to_string(),
-            });
+    let value = match serde_json::from_str::<serde_json::Value>(output) {
+        Ok(value) => value,
+        Err(error) => {
+            return reject_or_fall_back(
+                event,
+                mode,
+                &format!("output is not JSON: {error}"),
+                || HookResult::InjectContext {
+                    context: output.to_string(),
+                },
+            );
+        }
     };
 
-    // The documented external-hook contract (docs/design/HOOKS_SYSTEM.md,
-    // "Hook Output Format") nests the per-event decision fields inside
-    // `hookSpecificOutput` with camelCase keys. Read that envelope first so a
-    // compliant hook is honored, then fall back to Maestro's flat snake_case
-    // aliases so existing hooks keep working.
+    if !value.is_object() {
+        return reject_or_fall_back(event, mode, "output is not a JSON object", || {
+            value
+                .as_str()
+                .map_or(HookResult::Continue, |context| HookResult::InjectContext {
+                    context: context.to_string(),
+                })
+        });
+    }
+
+    match serde_json::from_value::<HookOutput>(value.clone()) {
+        Ok(typed) => match typed.validate_for(event) {
+            Ok(result) => result,
+            Err(error) => reject_or_fall_back(event, mode, &format!("{error}"), || {
+                legacy_parse_external_hook_output(&value)
+            }),
+        },
+        Err(error) => reject_or_fall_back(
+            event,
+            mode,
+            &format!("output does not match the hook output schema: {error}"),
+            || legacy_parse_external_hook_output(&value),
+        ),
+    }
+}
+
+/// Apply the configured compatibility mode to a rejected hook response.
+fn reject_or_fall_back(
+    event: HookEventType,
+    mode: HookOutputMode,
+    detail: &str,
+    fallback: impl FnOnce() -> HookResult,
+) -> HookResult {
+    match mode {
+        HookOutputMode::Strict => HookResult::Block {
+            reason: format!("External {event:?} hook returned invalid output: {detail}"),
+        },
+        HookOutputMode::Lenient => {
+            eprintln!(
+                "[hooks] External {event:?} hook returned invalid output: {detail}. \
+                 Accepting it under the compatibility parser; set \
+                 {STRICT_HOOK_OUTPUT_ENV}=1 to refuse it."
+            );
+            fallback()
+        }
+    }
+}
+
+/// The pre-schema parser used by lenient compatibility mode.
+///
+/// It reads whichever key spelling it finds and accepts any JSON type, which
+/// preserves existing hook contracts while strict mode enforces the schema.
+fn legacy_parse_external_hook_output(value: &serde_json::Value) -> HookResult {
+    let Some(object) = value.as_object() else {
+        return HookResult::Continue;
+    };
+
     let specific = object
         .get("hookSpecificOutput")
         .or_else(|| object.get("hook_specific_output"))
@@ -707,9 +970,6 @@ fn parse_external_hook_output(output: &str) -> HookResult {
         || matches!(decision, Some("block" | "deny" | "reject"))
         || matches!(permission_decision, Some("deny"))
         || object.get("continue").and_then(serde_json::Value::as_bool) == Some(false);
-    // `permissionDecision: "ask"` asks a human to decide. External hooks have
-    // no interactive path in the Rust TUI, so the tool call is refused rather
-    // than silently allowed.
     let confirmation_requested = matches!(permission_decision, Some("ask"));
 
     if blocked || confirmation_requested {
@@ -752,9 +1012,6 @@ fn parse_external_hook_output(output: &str) -> HookResult {
         };
     }
 
-    // EvalGate structured outcomes (docs/design/HOOKS_SYSTEM.md). A failed
-    // evaluation becomes Block so the tool result is reported as failed; a
-    // successful score/rationale is injected as context for the model.
     let eval_passed = specific_field("passed", "passed")
         .or_else(|| object.get("passed"))
         .and_then(serde_json::Value::as_bool);
@@ -936,6 +1193,11 @@ impl IntegratedHookSystem {
             overflow_detector: OverflowDetector::new(),
             cwd: cwd.to_string(),
             session_id: None,
+            transcript_path: None,
+            transcript_checkpoint_size: None,
+            organization_id: None,
+            workspace_id: None,
+            session_history: None,
             enabled: true,
             session_start: None,
             turn_count: 0,
@@ -958,10 +1220,14 @@ impl IntegratedHookSystem {
     /// Create and load hooks from configuration files
     #[must_use]
     pub fn load_from_config(cwd: &str) -> Self {
+        Self::from_config_result(cwd, load_hook_config(Path::new(cwd)))
+    }
+
+    fn from_config_result(cwd: &str, config_result: Result<LoadedHookConfig>) -> Self {
         let mut system = Self::new(cwd);
 
         // Load config
-        match load_hook_config(Path::new(cwd)) {
+        match config_result {
             Ok(config) => {
                 system.enabled = config.settings.enabled;
                 system.timeout = Duration::from_millis(config.settings.timeout_ms);
@@ -970,7 +1236,7 @@ impl IntegratedHookSystem {
 
                 if !config.hooks.is_empty() {
                     eprintln!(
-                        "[hooks] Loaded {} hooks from {:?}",
+                        "[hooks] Configured {} hooks from {:?}",
                         config.hooks.len(),
                         config.source_paths
                     );
@@ -978,6 +1244,11 @@ impl IntegratedHookSystem {
             }
             Err(e) => {
                 eprintln!("[hooks] Warning: Failed to load config: {e}");
+                system
+                    .registry
+                    .register_pre_tool_use(Arc::new(HookConfigLoadFailure {
+                        reason: format!("{e:#}"),
+                    }));
             }
         }
 
@@ -1022,16 +1293,32 @@ impl IntegratedHookSystem {
                     }
                 }
                 HookSource::Wasm(path) => {
-                    if let Err(e) = self.wasm_executor_mut().load_plugin(
-                        path,
-                        hook.definition.event,
-                        hook.definition.tools.clone(),
-                    ) {
+                    let required = hook.definition.fail_closed();
+                    let timeout = self.timeout;
+                    let load_result = {
+                        let executor = self.wasm_executor_mut();
+                        executor.set_timeout(timeout);
+                        executor.load_plugin_with_policy(
+                            path,
+                            hook.definition.event,
+                            hook.definition.tools.clone(),
+                            required,
+                        )
+                    };
+                    if let Err(e) = load_result {
                         eprintln!(
                             "[hooks] Failed to load WASM plugin {}: {}",
                             path.display(),
                             e
                         );
+                        if required && hook.definition.event == HookEventType::PreToolUse {
+                            self.registry
+                                .register_pre_tool_use(Arc::new(UnavailableWasmHook {
+                                    path: path.clone(),
+                                    tools: matcher_or_match_all(&hook.definition.tools),
+                                    reason: e.to_string(),
+                                }));
+                        }
                     }
                 }
                 HookSource::Command(_) | HookSource::Http(_) => {
@@ -1049,7 +1336,7 @@ impl IntegratedHookSystem {
         };
         let external = Arc::new(ExternalHook {
             event: hook.definition.event,
-            tools: hook.definition.tools.clone(),
+            tools: matcher_or_match_all(&hook.definition.tools),
             source,
             timeout: hook.definition.timeout_ms.map_or(self.timeout, |timeout| {
                 Duration::from_millis(timeout.max(1))
@@ -1104,6 +1391,9 @@ impl IntegratedHookSystem {
             self.enabled = config.settings.enabled;
             self.timeout = Duration::from_millis(config.settings.timeout_ms);
             self.log_file = config.settings.log_file.clone();
+            if let Some(wasm) = self.wasm_executor.as_mut() {
+                wasm.set_timeout(self.timeout);
+            }
         }
 
         Ok(ReloadResult {
@@ -1114,7 +1404,69 @@ impl IntegratedHookSystem {
 
     /// Set session ID for hook context
     pub fn set_session_id(&mut self, session_id: Option<String>) {
+        self.set_session_context(session_id, None);
+    }
+
+    /// Set the active persisted session identity and canonical JSONL path.
+    pub fn set_session_context(
+        &mut self,
+        session_id: Option<String>,
+        transcript_path: Option<String>,
+    ) {
         self.session_id = session_id;
+        self.transcript_checkpoint_size = transcript_path.as_deref().map(|path| {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        });
+        self.transcript_path = transcript_path;
+    }
+
+    /// Snapshot the canonical JSONL immediately before `ResponseEnd` tells the
+    /// UI to persist the assistant response. The file may already contain the
+    /// current user message, so the previous capture boundary is not precise
+    /// enough for this synchronization point.
+    pub fn checkpoint_transcript_before_response(&mut self) {
+        self.transcript_checkpoint_size = self
+            .transcript_path
+            .as_deref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .or(self.transcript_checkpoint_size);
+    }
+
+    /// Attach the tenant scope resolved from the authenticated Identity session.
+    /// External hooks receive identifiers only; bearer credentials remain out of
+    /// the hook payload.
+    pub fn set_identity_context(
+        &mut self,
+        organization_id: Option<String>,
+        workspace_id: Option<String>,
+    ) {
+        self.organization_id = organization_id;
+        self.workspace_id = workspace_id;
+    }
+
+    /// Enable zero-configuration Session History capture for the authenticated
+    /// tenant. This is registered by Maestro itself after Identity verification;
+    /// repository hook configuration is not involved.
+    pub fn enable_authenticated_session_history(
+        &mut self,
+        organization_id: String,
+        workspace_id: String,
+        access_token: String,
+        endpoint: Option<String>,
+        state_dir: PathBuf,
+    ) {
+        self.set_identity_context(Some(organization_id.clone()), Some(workspace_id.clone()));
+        let hook = Arc::new(MaestroSessionHistoryHook {
+            organization_id,
+            workspace_id,
+            access_token,
+            endpoint,
+            state_dir,
+        });
+        self.session_history = Some(hook);
     }
 
     /// Point `log_event` at a file so dispatches become assertable in tests.
@@ -1149,17 +1501,22 @@ impl IntegratedHookSystem {
         self.session_start = Some(Instant::now());
         self.turn_count = 0;
 
-        if !self.enabled {
-            return HookResult::Continue;
-        }
-
         let input = SessionStartInput {
             hook_event_name: "SessionStart".to_string(),
             cwd: self.cwd.clone(),
             session_id: self.session_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             source: source.to_string(),
+            organization_id: self.organization_id.clone(),
+            workspace_id: self.workspace_id.clone(),
         };
+
+        if let Some(hook) = &self.session_history {
+            let _ = hook.on_session_start(&input);
+        }
+        if !self.enabled {
+            return HookResult::Continue;
+        }
 
         self.log_event(
             "SessionStart",
@@ -1170,10 +1527,6 @@ impl IntegratedHookSystem {
 
     /// Signal session end
     pub fn on_session_end(&mut self, reason: &str) -> HookResult {
-        if !self.enabled {
-            return HookResult::Continue;
-        }
-
         let duration_ms = self
             .session_start
             .map_or(0, |s| s.elapsed().as_millis() as u64);
@@ -1182,11 +1535,21 @@ impl IntegratedHookSystem {
             hook_event_name: "SessionEnd".to_string(),
             cwd: self.cwd.clone(),
             session_id: self.session_id.clone(),
+            transcript_path: self.transcript_path.clone(),
+            organization_id: self.organization_id.clone(),
+            workspace_id: self.workspace_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             reason: reason.to_string(),
             duration_ms,
             turn_count: self.turn_count,
         };
+
+        if let Some(hook) = &self.session_history {
+            let _ = hook.on_session_end(&input);
+        }
+        if !self.enabled {
+            return HookResult::Continue;
+        }
 
         self.log_event(
             "SessionEnd",
@@ -1509,14 +1872,14 @@ impl IntegratedHookSystem {
         duration_ms: u64,
         stop_reason: Option<&str>,
     ) -> HookResult {
-        if !self.enabled {
-            return HookResult::Continue;
-        }
-
         let input = PostMessageInput {
             hook_event_name: "PostMessage".to_string(),
             cwd: self.cwd.clone(),
             session_id: self.session_id.clone(),
+            transcript_path: self.transcript_path.clone(),
+            transcript_size_before: self.transcript_checkpoint_size,
+            organization_id: self.organization_id.clone(),
+            workspace_id: self.workspace_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             response: response.to_string(),
             input_tokens,
@@ -1524,6 +1887,19 @@ impl IntegratedHookSystem {
             duration_ms,
             stop_reason: stop_reason.map(String::from),
         };
+
+        if let Some(hook) = &self.session_history {
+            let _ = hook.on_post_message(&input);
+        }
+        self.transcript_checkpoint_size = self
+            .transcript_path
+            .as_deref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .or(self.transcript_checkpoint_size);
+        if !self.enabled {
+            return HookResult::Continue;
+        }
 
         self.log_event(
             "PostMessage",
@@ -1826,6 +2202,9 @@ impl ReloadResult {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "wasm"))]
+    use crate::hooks::config::{HookDefinition, HookSettings};
+
     use super::*;
 
     #[test]
@@ -1835,6 +2214,99 @@ mod tests {
 
         let stats = system.stats();
         assert_eq!(stats.native_hooks, 0);
+    }
+
+    #[test]
+    fn config_load_failure_blocks_pre_tool_use() {
+        let mut system = IntegratedHookSystem::from_config_result(
+            "/tmp",
+            Err(anyhow::anyhow!("invalid project matcher")),
+        );
+
+        assert!(matches!(
+            system.execute_pre_tool_use("Read", "call-1", &serde_json::json!({})),
+            HookResult::Block { reason }
+                if reason.contains("Hook configuration failed to load")
+                    && reason.contains("invalid project matcher")
+        ));
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    #[test]
+    fn configured_required_wasm_is_not_active_and_fails_closed_without_backend() {
+        let path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join("missing-required-policy.wasm");
+        let config = LoadedHookConfig {
+            settings: HookSettings::default(),
+            hooks: vec![LoadedHook {
+                definition: HookDefinition {
+                    event: HookEventType::PreToolUse,
+                    tools: vec!["Bash".to_string()],
+                    command: None,
+                    http: None,
+                    prompt: None,
+                    lua: None,
+                    lua_file: None,
+                    wasm: Some(path.to_string_lossy().into_owned()),
+                    timeout_ms: None,
+                    enabled: true,
+                    required: None,
+                    description: None,
+                    working_dir: None,
+                },
+                source: HookSource::Wasm(path),
+            }],
+            source_paths: Vec::new(),
+            skipped_untrusted_paths: Vec::new(),
+        };
+        let mut system = IntegratedHookSystem::new("/tmp");
+        system.load_hooks_from_config(&config);
+
+        assert_eq!(system.stats().wasm_plugins, 0);
+        assert!(matches!(
+            system.execute_pre_tool_use("bash", "call-1", &serde_json::json!({})),
+            HookResult::Block { reason } if reason.contains("unavailable")
+        ));
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    #[test]
+    fn configured_advisory_wasm_remains_advisory_without_backend() {
+        let plugin = tempfile::NamedTempFile::new().unwrap();
+        let path = plugin.path().to_path_buf();
+        let config = LoadedHookConfig {
+            settings: HookSettings::default(),
+            hooks: vec![LoadedHook {
+                definition: HookDefinition {
+                    event: HookEventType::PreToolUse,
+                    tools: Vec::new(),
+                    command: None,
+                    http: None,
+                    prompt: None,
+                    lua: None,
+                    lua_file: None,
+                    wasm: Some(path.to_string_lossy().into_owned()),
+                    timeout_ms: None,
+                    enabled: true,
+                    required: Some(false),
+                    description: None,
+                    working_dir: None,
+                },
+                source: HookSource::Wasm(path),
+            }],
+            source_paths: Vec::new(),
+            skipped_untrusted_paths: Vec::new(),
+        };
+        let mut system = IntegratedHookSystem::new("/tmp");
+        system.load_hooks_from_config(&config);
+
+        assert_eq!(system.stats().wasm_plugins, 0);
+        assert!(matches!(
+            system.execute_pre_tool_use("Bash", "call-1", &serde_json::json!({})),
+            HookResult::Continue
+        ));
     }
 
     #[test]
@@ -1888,15 +2360,15 @@ mod tests {
     #[test]
     fn external_hook_output_supports_block_modify_and_context() {
         assert!(matches!(
-            parse_external_hook_output(r#"{"block":true,"reason":"nope"}"#),
+            parse_external_hook_output(HookEventType::PreToolUse, r#"{"block":true,"reason":"nope"}"#),
             HookResult::Block { reason } if reason == "nope"
         ));
         assert!(matches!(
-            parse_external_hook_output(r#"{"modified_input":{"safe":true}}"#),
+            parse_external_hook_output(HookEventType::PreToolUse, r#"{"modified_input":{"safe":true}}"#),
             HookResult::ModifyInput { new_input } if new_input == serde_json::json!({"safe": true})
         ));
         assert!(matches!(
-            parse_external_hook_output(r#"{"additional_context":"remember this"}"#),
+            parse_external_hook_output(HookEventType::PreToolUse, r#"{"additional_context":"remember this"}"#),
             HookResult::InjectContext { context } if context == "remember this"
         ));
     }
@@ -1905,18 +2377,21 @@ mod tests {
     fn external_hook_output_honors_eval_gate_structured_fields() {
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::EvalGate,
                 r#"{"hookSpecificOutput":{"passed":false,"rationale":"bad result"}}"#
             ),
             HookResult::Block { reason } if reason == "bad result"
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::EvalGate,
                 r#"{"hookSpecificOutput":{"score":0.2,"threshold":0.8}}"#
             ),
             HookResult::Block { reason } if reason == "score 0.2 below threshold 0.8"
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::EvalGate,
                 r#"{"hookSpecificOutput":{"passed":true,"score":0.9,"threshold":0.8,"rationale":"looks good"}}"#
             ),
             HookResult::InjectContext { context }
@@ -1924,6 +2399,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::EvalGate,
                 r#"{"hookSpecificOutput":{"assertions":[{"name":"fmt","passed":false}]}}"#
             ),
             HookResult::Block { reason } if reason == "EvalGate assertion failed"
@@ -1935,7 +2411,7 @@ mod tests {
     fn external_command_hook_receives_input_and_can_block() {
         let hook = ExternalHook {
             event: HookEventType::PreToolUse,
-            tools: vec!["Bash".to_string()],
+            tools: ToolMatcher::compile(&["Bash".to_string()]).unwrap(),
             source: ExternalHookSource::Command(
                 "printf '{\"block\":true,\"reason\":\"policy\"}'".to_string(),
             ),
@@ -1964,12 +2440,14 @@ mod tests {
         // nests these fields under `hookSpecificOutput` using camelCase keys.
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PreToolUse,
                 r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"writes outside the workspace"}}"#
             ),
             HookResult::Block { reason } if reason == "writes outside the workspace"
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PreToolUse,
                 r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}"#
             ),
             HookResult::Block { reason } if reason == "Blocked by external hook"
@@ -1978,24 +2456,28 @@ mod tests {
         // rather than fall through to Continue.
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PreToolUse,
                 r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}"#
             ),
             HookResult::Block { .. }
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PreToolUse,
                 r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","modifiedInput":{"command":"ls"}}}"#
             ),
             HookResult::ModifyInput { new_input } if new_input == serde_json::json!({"command": "ls"})
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PostToolUse,
                 r#"{"hookSpecificOutput":{"hookEventName":"PostToolUse","contextToAdd":"remember this"}}"#
             ),
             HookResult::InjectContext { context } if context == "remember this"
         ));
         assert!(matches!(
             parse_external_hook_output(
+                HookEventType::PreToolUse,
                 r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#
             ),
             HookResult::Continue
@@ -2003,11 +2485,11 @@ mod tests {
         // The documented top-level envelope carries the block reason in
         // `message`, as in the design doc's own example hook script.
         assert!(matches!(
-            parse_external_hook_output(r#"{"continue":false,"message":"Dangerous command blocked"}"#),
+            parse_external_hook_output(HookEventType::PreToolUse, r#"{"continue":false,"message":"Dangerous command blocked"}"#),
             HookResult::Block { reason } if reason == "Dangerous command blocked"
         ));
         assert!(matches!(
-            parse_external_hook_output(r#"{"decision":"reject","message":"policy"}"#),
+            parse_external_hook_output(HookEventType::PreToolUse, r#"{"decision":"reject","message":"policy"}"#),
             HookResult::Block { reason } if reason == "policy"
         ));
     }
@@ -2017,7 +2499,7 @@ mod tests {
     fn external_command_hook_denies_through_the_documented_envelope() {
         let hook = ExternalHook {
             event: HookEventType::PreToolUse,
-            tools: vec!["Bash".to_string()],
+            tools: ToolMatcher::compile(&["Bash".to_string()]).unwrap(),
             source: ExternalHookSource::Command(
                 "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"policy\"}}'"
                     .to_string(),
@@ -2045,7 +2527,7 @@ mod tests {
     fn external_command_hook(event: HookEventType, command: &str) -> ExternalHook {
         ExternalHook {
             event,
-            tools: Vec::new(),
+            tools: ToolMatcher::default(),
             source: ExternalHookSource::Command(command.to_string()),
             timeout: Duration::from_secs(5),
             working_dir: std::env::current_dir().expect("current directory"),
@@ -2092,7 +2574,7 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         let hook = ExternalHook {
             event: HookEventType::PreToolUse,
-            tools: Vec::new(),
+            tools: ToolMatcher::default(),
             // Never reads stdin and outlives the deadline. If the payload
             // write runs ahead of the killable wait it blocks once the pipe
             // fills, the kill never happens, and this command runs to
@@ -2144,7 +2626,7 @@ mod tests {
             "printf '{\"additional_context\":\"%s/%s/%s\"}' \
              \"${#INPUT_JSON}\" \"${INPUT_JSON_OMITTED:-unset}\" \"$(cat | wc -c | tr -d ' ')\"",
             &payload,
-            "PreToolUse",
+            HookEventType::PreToolUse,
             None,
             &std::env::current_dir().expect("current directory"),
             Duration::from_secs(10),
@@ -2167,7 +2649,7 @@ mod tests {
             "printf '{\"additional_context\":\"%s/%s\"}' \
              \"${#INPUT_JSON}\" \"${INPUT_JSON_OMITTED:-unset}\"",
             &payload,
-            "PreToolUse",
+            HookEventType::PreToolUse,
             None,
             &std::env::current_dir().expect("current directory"),
             Duration::from_secs(10),
@@ -2430,6 +2912,125 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn session_end_hook_receives_the_active_transcript_path() {
+        // Session History can only capture Maestro's canonical JSONL when the
+        // lifecycle adapter receives the exact active file. A session id alone
+        // is insufficient because callers may use a custom sessions directory.
+        let hook = external_command_hook(
+            HookEventType::SessionEnd,
+            "grep -q '\"transcriptPath\":\"/tmp/maestro-session.jsonl\"' && \
+             printf '{\"block\":true,\"reason\":\"read transcript path\"}'",
+        );
+        let mut system = IntegratedHookSystem::new("/tmp");
+        system.registry.register_session_end(Arc::new(hook));
+        system.set_session_context(
+            Some("session-history-1".to_string()),
+            Some("/tmp/maestro-session.jsonl".to_string()),
+        );
+        system.set_identity_context(
+            Some("org-identity".to_string()),
+            Some("workspace-identity".to_string()),
+        );
+
+        assert!(matches!(
+            system.on_session_end("exit"),
+            HookResult::Block { reason } if reason == "read transcript path"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_message_hook_receives_the_active_transcript_path() {
+        // A completed turn must be independently spoolable before SessionEnd;
+        // otherwise a crash after this hook loses the latest durable JSONL.
+        let hook = external_command_hook(
+            HookEventType::PostMessage,
+            "body=$(cat); printf '%s' \"$body\" | grep -q '\"transcriptPath\":\"/tmp/maestro-session.jsonl\"' && \
+             printf '%s' \"$body\" | grep -q '\"organizationId\":\"org-identity\"' && \
+             printf '%s' \"$body\" | grep -q '\"workspaceId\":\"workspace-identity\"' && \
+             printf '{\"block\":true,\"reason\":\"read transcript path\"}'",
+        );
+        let mut system = IntegratedHookSystem::new("/tmp");
+        system.registry.register_post_message(Arc::new(hook));
+        system.set_session_context(
+            Some("session-history-1".to_string()),
+            Some("/tmp/maestro-session.jsonl".to_string()),
+        );
+        system.set_identity_context(
+            Some("org-identity".to_string()),
+            Some("workspace-identity".to_string()),
+        );
+
+        assert!(matches!(
+            system.execute_post_message("done", 10, 5, 100, Some("stop")),
+            HookResult::Block { reason } if reason == "read transcript path"
+        ));
+    }
+
+    #[test]
+    fn authenticated_session_history_is_a_builtin_hook() {
+        let temp = tempfile::tempdir().unwrap();
+        let transcript = temp.path().join("session.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        let state = temp.path().join("session-history");
+        let mut system = IntegratedHookSystem::new(temp.path().to_str().unwrap());
+        system.enable_authenticated_session_history(
+            "org-identity".to_string(),
+            "workspace-identity".to_string(),
+            "access-token".to_string(),
+            None,
+            state.clone(),
+        );
+        system.disable();
+        system.set_session_context(
+            Some("maestro-native-session".to_string()),
+            Some(transcript.to_string_lossy().into_owned()),
+        );
+        std::fs::write(&transcript, "{\"type\":\"user\",\"text\":\"go\"}\n").unwrap();
+        system.checkpoint_transcript_before_response();
+        let started = Instant::now();
+        assert!(matches!(
+            system.execute_post_message("captured", 1, 1, 1, Some("stop")),
+            HookResult::Continue
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "built-in capture must not block the task that delivers ResponseEnd"
+        );
+
+        // Model the real TUI ordering: only after PostMessage returns can the
+        // app consume ResponseEnd and flush the assistant entry.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        file.write_all(b"{\"type\":\"assistant\",\"text\":\"captured\"}\n")
+            .unwrap();
+        file.flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let manifests = loop {
+            let manifests = std::fs::read_dir(state.join("transcripts"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("manifest.json"))
+                .filter(|path| path.is_file())
+                .collect::<Vec<_>>();
+            if !manifests.is_empty() || Instant::now() >= deadline {
+                break manifests;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(manifests.len(), 1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifests[0]).unwrap()).unwrap();
+        assert_eq!(manifest["organization_id"], "org-identity");
+        assert_eq!(manifest["workspace_id"], "workspace-identity");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_hook_that_backgrounds_a_descendant_returns_without_waiting_for_it() {
         // The shell answers and exits immediately, but the backgrounded
         // descendant inherits stdout and holds the pipe open for 10s.
@@ -2479,7 +3080,7 @@ mod tests {
         // deadline left it running, and it created the marker afterwards.
         let hook = ExternalHook {
             event: HookEventType::PreToolUse,
-            tools: Vec::new(),
+            tools: ToolMatcher::default(),
             source: ExternalHookSource::Command(format!(
                 "(sleep 1; : > {}) & sleep 5",
                 marker.display()
@@ -2541,6 +3142,7 @@ mod tests {
         let result = run_external_http(
             &format!("http://{address}/hook"),
             b"{}",
+            HookEventType::PreToolUse,
             Duration::from_secs(10),
         );
         assert!(
@@ -2555,7 +3157,7 @@ mod tests {
     fn external_command_hook_drains_both_pipes_with_a_bounded_capture() {
         let hook = ExternalHook {
             event: HookEventType::PreToolUse,
-            tools: Vec::new(),
+            tools: ToolMatcher::default(),
             source: ExternalHookSource::Command(
                 "head -c 2000000 /dev/zero; head -c 2000000 /dev/zero >&2; printf '{\"additional_context\":\"ok\"}'"
                     .to_string(),
@@ -2577,5 +3179,90 @@ mod tests {
             hook.on_pre_tool_use(&input),
             HookResult::Block { reason } if reason.contains("output exceeded")
         ));
+    }
+
+    #[test]
+    fn non_json_stdout_is_not_injected_into_context_under_strict_mode() {
+        let result = parse_external_hook_output_with_mode(
+            HookEventType::PreToolUse,
+            "+ rm -rf /tmp/scratch",
+            HookOutputMode::Strict,
+        );
+        match result {
+            HookResult::Block { reason } => assert!(reason.contains("not JSON"), "{reason}"),
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_json_stdout_still_injects_under_lenient_mode() {
+        assert!(matches!(
+            parse_external_hook_output_with_mode(
+                HookEventType::PreToolUse,
+                "note for the model",
+                HookOutputMode::Lenient,
+            ),
+            HookResult::InjectContext { context } if context == "note for the model"
+        ));
+    }
+
+    #[test]
+    fn unknown_key_is_refused_in_strict_mode_and_warned_in_lenient_mode() {
+        let payload = r#"{"modifedInput":{"command":"ls"}}"#;
+        match parse_external_hook_output_with_mode(
+            HookEventType::PreToolUse,
+            payload,
+            HookOutputMode::Strict,
+        ) {
+            HookResult::Block { reason } => assert!(reason.contains("modifedInput"), "{reason}"),
+            other => panic!("expected Block, got {other:?}"),
+        }
+        assert!(matches!(
+            parse_external_hook_output_with_mode(
+                HookEventType::PreToolUse,
+                payload,
+                HookOutputMode::Lenient,
+            ),
+            HookResult::Continue
+        ));
+    }
+
+    #[test]
+    fn out_of_domain_permission_is_refused_in_strict_mode() {
+        let payload = r#"{"hookSpecificOutput":{"permissionDecision":"ask"}}"#;
+        match parse_external_hook_output_with_mode(
+            HookEventType::SessionStart,
+            payload,
+            HookOutputMode::Strict,
+        ) {
+            HookResult::Block { reason } => assert!(reason.contains("SessionStart"), "{reason}"),
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_object_modified_input_is_refused_in_strict_mode() {
+        match parse_external_hook_output_with_mode(
+            HookEventType::PreToolUse,
+            r#"{"modifiedInput":"rm -rf /"}"#,
+            HookOutputMode::Strict,
+        ) {
+            HookResult::Block { reason } => assert!(reason.contains("JSON object"), "{reason}"),
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_only_fires_for_tools_its_regex_matches() {
+        let hook = ExternalHook {
+            event: HookEventType::PreToolUse,
+            tools: ToolMatcher::compile(&["Write.*".to_string()]).unwrap(),
+            source: ExternalHookSource::Command("true".to_string()),
+            timeout: Duration::from_secs(1),
+            working_dir: std::env::current_dir().unwrap(),
+        };
+        assert!(hook.matches_tool("Write"));
+        assert!(hook.matches_tool("WriteFile"));
+        assert!(!hook.matches_tool("Read"));
     }
 }

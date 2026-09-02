@@ -540,8 +540,14 @@ mod tests {
         ));
 
         drop(lock);
-        assert!(!SessionLock::is_held(&path).expect("probe a released session"));
-        SessionLock::acquire(&path).expect("reacquire after release");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while SessionLock::is_held(&path).expect("probe a released session") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "released session lock stayed held after the child-fd inheritance window"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

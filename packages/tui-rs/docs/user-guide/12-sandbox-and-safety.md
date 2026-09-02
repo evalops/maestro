@@ -1,6 +1,6 @@
 # Sandbox and Safety
 
-Maestro runs tools on your machine. Safety layers include the action firewall, approval modes, optional OS sandboxing, and safe/plan modes. Canonical detail: [Safety](../../../../docs/SAFETY.md) and [Threat Model](../../../../docs/THREAT_MODEL.md).
+Deixic Code runs tools on your machine. Safety layers include the action firewall, approval modes, optional OS sandboxing, and safe/plan modes. Canonical detail: [Safety](../../../../docs/SAFETY.md) and [Threat Model](../../../../docs/THREAT_MODEL.md).
 
 ---
 
@@ -103,7 +103,7 @@ Platform enforcement (summary):
 | Native Rust runtime | Linux | Landlock + seccomp backend |
 | Native Rust runtime | macOS | Seatbelt path in sandbox module |
 
-If `native` or `docker` cannot be enforced, Maestro fails closed unless unsafe fallback is explicitly enabled (`MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK=1`).
+If `native` or `docker` cannot be enforced, Deixic Code fails closed unless unsafe fallback is explicitly enabled (`MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK=1`).
 
 ---
 

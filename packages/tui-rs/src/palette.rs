@@ -142,7 +142,7 @@ pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 
 /// Theme colors
 pub mod theme {
-    use super::{best_color, Color};
+    use super::{Color, best_color};
 
     // Text hierarchy
     #[must_use]

@@ -35,6 +35,8 @@ event = "PreToolUse"
 tools = ["Bash"]
 description = "WASM safety plugin"
 wasm = "~/.maestro/plugins/safety_plugin.wasm"
+# PreToolUse WASM policies fail closed by default; set required = false for advisory hooks.
+required = true
 ```
 
 ## Plugin Interface

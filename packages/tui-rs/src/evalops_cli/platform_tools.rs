@@ -8,9 +8,9 @@
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
@@ -19,7 +19,7 @@ mod config;
 mod protocol;
 mod provision;
 
-use client::{execution_state, safe_execution_summary, PlatformClient};
+use client::{PlatformClient, execution_state, safe_execution_summary};
 use protocol::{
     initialize_result, jsonrpc_error, jsonrpc_result, mcp_tool_result, tool_definition,
     write_jsonrpc,
@@ -135,7 +135,7 @@ pub async fn run(args: &[String]) -> Result<i32> {
 }
 
 fn help_text() -> &'static str {
-    "maestro evalops platform-tools\n\
+    "deixic-code evalops platform-tools\n\
   maestro evalops platform-tools configure [--rotate-key]\n\
       Authorize exact ToolExecution scopes, provision a least-privilege key,\n\
       and install the user-scoped EvalOps Platform MCP server.\n\
@@ -216,9 +216,9 @@ async fn resume_command(args: &[String]) -> Result<i32> {
         .map(str::to_owned)
         .unwrap_or_else(|| {
             if approve {
-                "Approved from Maestro Platform tools CLI".to_string()
+                "Approved from Deixic Code Platform tools CLI".to_string()
             } else {
-                "Denied from Maestro Platform tools CLI".to_string()
+                "Denied from Deixic Code Platform tools CLI".to_string()
             }
         });
     if reason.len() > MAX_REASON_BYTES {
@@ -487,24 +487,30 @@ mod tests {
 
     #[test]
     fn shell_argument_validation_is_fail_closed() {
-        assert!(validate_shell_arguments(&ShellArguments {
-            operation_id: String::new(),
-            command: "echo hi".to_string(),
-            timeout_ms: None,
-        })
-        .is_err());
-        assert!(validate_shell_arguments(&ShellArguments {
-            operation_id: "invalid operation".to_string(),
-            command: "echo hi".to_string(),
-            timeout_ms: None,
-        })
-        .is_err());
-        assert!(validate_shell_arguments(&ShellArguments {
-            operation_id: "valid-op".to_string(),
-            command: "echo hi".to_string(),
-            timeout_ms: Some(0),
-        })
-        .is_err());
+        assert!(
+            validate_shell_arguments(&ShellArguments {
+                operation_id: String::new(),
+                command: "echo hi".to_string(),
+                timeout_ms: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_shell_arguments(&ShellArguments {
+                operation_id: "invalid operation".to_string(),
+                command: "echo hi".to_string(),
+                timeout_ms: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_shell_arguments(&ShellArguments {
+                operation_id: "valid-op".to_string(),
+                command: "echo hi".to_string(),
+                timeout_ms: Some(0),
+            })
+            .is_err()
+        );
     }
 
     #[test]

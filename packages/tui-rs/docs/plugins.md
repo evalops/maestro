@@ -12,7 +12,8 @@ metadata only; Maestro owns secret resolution, leases, and runtime injection.
 
 ```text
 <plugin-root>/
-  plugin.json          # optional manifest
+  plugin.json          # optional native manifest
+  .plugin/plugin.json  # optional OpenHands / Claude Code compatible manifest
   skills/              # SKILL.md packages
   commands/            # markdown command templates
   hooks/hooks.json or hooks.toml
@@ -30,9 +31,13 @@ metadata only; Maestro owns secret resolution, leases, and runtime injection.
 When two plugins share a name, the higher-priority origin wins (project over
 user; Maestro over composer).
 
-## `plugin.json`
+## Manifest
 
 All fields are optional. Missing paths fall back to conventions.
+Maestro also accepts the same manifest at `.plugin/plugin.json`, so existing
+OpenHands and Claude Code plugin packages can be installed without repackaging.
+When both files exist, the root `plugin.json` is authoritative; an invalid
+root manifest fails closed instead of falling through to another identity.
 
 ```json
 {

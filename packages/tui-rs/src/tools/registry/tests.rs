@@ -8,10 +8,10 @@ use crate::hooks::{HookResult, PostToolUseHook, PreToolUseHook};
 use crate::tools::details;
 use crate::tools::inline::{InlineToolDef, InlineToolSource, ToolAnnotations};
 use crate::tools::registry::execute::{
+    MAX_PROCESS_STDERR_BYTES, MAX_PROCESS_STDOUT_LINE_BYTES,
     build_windows_grep_fallback_process_from_shell_config, build_windows_grep_shell_command,
     build_windows_list_shell_command, process_succeeded_or_truncated, run_grep_with_fallback,
-    run_process_limited_stdout_lines, run_pure_blocking, MAX_PROCESS_STDERR_BYTES,
-    MAX_PROCESS_STDOUT_LINE_BYTES,
+    run_process_limited_stdout_lines, run_pure_blocking,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -33,6 +33,83 @@ fn test_inline_tool(name: &str, command: &str) -> InlineTool {
         source_path: std::path::PathBuf::from(".composer/tools.json"),
         source: InlineToolSource::Project,
     }
+}
+
+/// Tempdirs under a gitignored CI cache make ripgrep hide every fixture file.
+/// `/tmp` is outside the checkout, so `rg --files` / content search see them.
+fn isolated_tempdir() -> tempfile::TempDir {
+    #[cfg(unix)]
+    {
+        let tmp = Path::new("/tmp");
+        if tmp.is_dir() {
+            return tempfile::Builder::new()
+                .prefix("maestro-tool-")
+                .tempdir_in(tmp)
+                .expect("tempdir in /tmp");
+        }
+    }
+    tempfile::tempdir().expect("tempdir")
+}
+
+fn hosted_orb_server_for_snapshot(connection_ref: &str) -> crate::mcp::McpServerConfig {
+    serde_json::from_value(serde_json::json!({
+        "name": "orb",
+        "transport": "http",
+        "url": "https://orb.evalops.dev/mcp",
+        "connectionRef": connection_ref,
+        "credentialRef": "ref:orb/credential/00000000-0000-4000-8000-000000000001",
+        "enabled": true
+    }))
+    .expect("hosted Computer snapshot server")
+}
+
+#[test]
+fn hosted_orb_snapshot_binds_server_and_owner_from_same_configuration() {
+    let server_a = hosted_orb_server_for_snapshot("connection-a");
+    let config_a = crate::mcp::McpConfig {
+        servers: vec![server_a],
+    };
+    let snapshot = hosted_orb_connection_snapshot_with(&config_a, |server| {
+        let connection_ref = server
+            .connection_ref
+            .as_deref()
+            .expect("snapshot connection ref");
+        Ok(HostedOrbOwnerBinding {
+            organization_id: format!("org-{connection_ref}"),
+            workspace_id: format!("workspace-{connection_ref}"),
+            connection_ref: connection_ref.to_string(),
+            managed_generation: 1,
+        })
+    })
+    .expect("resolve hosted Computer snapshot");
+
+    let config_b = crate::mcp::McpConfig {
+        servers: vec![hosted_orb_server_for_snapshot("connection-b")],
+    };
+    assert_eq!(
+        config_b.servers[0].connection_ref.as_deref(),
+        Some("connection-b")
+    );
+    assert_eq!(
+        snapshot.server.connection_ref.as_deref(),
+        Some("connection-a")
+    );
+    assert_eq!(snapshot.owner_binding.organization_id, "org-connection-a");
+    assert_eq!(
+        snapshot.owner_binding.workspace_id,
+        "workspace-connection-a"
+    );
+    assert_eq!(snapshot.owner_binding.connection_ref, "connection-a");
+}
+
+fn ripgrep_available() -> bool {
+    std::process::Command::new("rg")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 struct ExploreHookAudit {
@@ -110,9 +187,17 @@ impl Drop for EnvGuard {
 }
 
 fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::io::Result<()> {
+    let mcp_servers = servers
+        .into_iter()
+        .filter_map(|mut server| {
+            let name = server.get("name")?.as_str()?.to_string();
+            server.as_object_mut()?.remove("name");
+            Some((name, server))
+        })
+        .collect::<serde_json::Map<_, _>>();
     std::fs::write(
         config_dir.join("mcp.json"),
-        serde_json::to_string(&serde_json::json!({ "servers": servers }))
+        serde_json::to_string(&serde_json::json!({ "mcpServers": mcp_servers }))
             .expect("serialize mcp config"),
     )
 }
@@ -316,6 +401,37 @@ fn read_counter(counter_path: &Path) -> usize {
         .unwrap_or(0)
 }
 
+struct TrustedWorkspaceGuard {
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+    previous_home: Option<std::ffi::OsString>,
+}
+
+impl Drop for TrustedWorkspaceGuard {
+    fn drop(&mut self) {
+        match self.previous_home.take() {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        crate::config::clear_global_config_cache();
+    }
+}
+
+async fn trust_workspace_for_test(workspace: &Path) -> TrustedWorkspaceGuard {
+    let lock = crate::config::test_process_env_lock_async().await;
+    let previous_home = std::env::var_os("HOME");
+    let home = workspace.join("test-home");
+    std::fs::create_dir_all(&home).expect("create test home");
+    // SAFETY: the process-env lock serializes tests that mutate HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    crate::config::clear_global_config_cache();
+    crate::config::set_workspace_trust_in_global_config(workspace, true)
+        .expect("trust test workspace");
+    TrustedWorkspaceGuard {
+        _lock: lock,
+        previous_home,
+    }
+}
+
 #[test]
 fn test_registry_has_default_tools() {
     let registry = ToolRegistry::new();
@@ -348,15 +464,17 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
         "cleanup_subagent",
         &serde_json::json!({"subagent_id": "child-1"})
     ));
-    assert!(registry
-        .missing_required(
-            "resume_subagent",
-            &serde_json::json!({
-                "subagent_id": "child-1",
-                "follow_up": "continue"
-            })
-        )
-        .is_empty());
+    assert!(
+        registry
+            .missing_required(
+                "resume_subagent",
+                &serde_json::json!({
+                    "subagent_id": "child-1",
+                    "follow_up": "continue"
+                })
+            )
+            .is_empty()
+    );
     for tool in [
         "list_subagents",
         "get_subagent",
@@ -661,6 +779,7 @@ async fn test_mcp_project_stdio_server_blocked_without_workspace_trust() {
 #[cfg(not(windows))]
 async fn test_mcp_status_retries_failed_servers_after_cooldown() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let _trust = trust_workspace_for_test(temp.path()).await;
     let config_dir = temp.path().join(".composer");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
 
@@ -697,6 +816,7 @@ async fn test_mcp_status_retries_failed_servers_after_cooldown() {
 #[cfg(not(windows))]
 async fn test_mcp_status_reloads_changed_server_config() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let _trust = trust_workspace_for_test(temp.path()).await;
     let config_dir = temp.path().join(".composer");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
 
@@ -729,6 +849,7 @@ async fn test_mcp_status_reloads_changed_server_config() {
 #[tokio::test]
 async fn test_mcp_status_clears_removed_server_state() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let _trust = trust_workspace_for_test(temp.path()).await;
     let config_dir = temp.path().join(".composer");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
 
@@ -746,26 +867,32 @@ async fn test_mcp_status_clears_removed_server_state() {
     let executor = ToolExecutor::new(temp.path().display().to_string());
 
     let _ = executor.mcp_status().await.expect("initial mcp status");
-    assert!(executor
-        .mcp_last_errors
-        .read()
-        .expect("mcp errors")
-        .contains_key(server_name));
+    assert!(
+        executor
+            .mcp_last_errors
+            .read()
+            .expect("mcp errors")
+            .contains_key(server_name)
+    );
 
     write_mcp_config(&config_dir, Vec::new()).expect("write empty mcp config");
 
     let statuses = executor.mcp_status().await.expect("updated mcp status");
     assert!(statuses.is_empty());
-    assert!(!executor
-        .mcp_last_errors
-        .read()
-        .expect("mcp errors")
-        .contains_key(server_name));
-    assert!(!executor
-        .mcp_synced_configs
-        .read()
-        .expect("mcp configs")
-        .contains_key(server_name));
+    assert!(
+        !executor
+            .mcp_last_errors
+            .read()
+            .expect("mcp errors")
+            .contains_key(server_name)
+    );
+    assert!(
+        !executor
+            .mcp_synced_configs
+            .read()
+            .expect("mcp configs")
+            .contains_key(server_name)
+    );
 }
 
 #[test]
@@ -790,15 +917,21 @@ fn test_ask_user_schema_declares_nested_array_items() {
     assert!(questions.get("minItems").is_none());
     assert!(questions.get("maxItems").is_none());
     assert_eq!(questions["items"]["properties"]["options"]["type"], "array");
-    assert!(questions["items"]["properties"]["options"]
-        .get("items")
-        .is_some());
-    assert!(questions["items"]["properties"]
-        .get("multi_select")
-        .is_none());
-    assert!(questions["items"]["properties"]
-        .get("multiSelect")
-        .is_some());
+    assert!(
+        questions["items"]["properties"]["options"]
+            .get("items")
+            .is_some()
+    );
+    assert!(
+        questions["items"]["properties"]
+            .get("multi_select")
+            .is_none()
+    );
+    assert!(
+        questions["items"]["properties"]
+            .get("multiSelect")
+            .is_some()
+    );
     assert_eq!(schema["properties"]["background"]["type"], "boolean");
     assert_eq!(schema["properties"]["deadlineSeconds"]["minimum"], 1);
     assert_eq!(
@@ -969,17 +1102,33 @@ async fn test_executor_read_file_binary_requires_base64() {
     let result = executor.execute("read", &args, None, "test-call").await;
 
     assert!(!result.success);
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("binary file detected"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("binary file detected")
+    );
 }
 
 #[tokio::test]
 #[cfg(not(windows))]
 async fn test_background_tasks_wait_for_rotation() {
+    let _lock = crate::config::test_process_env_lock_async().await;
     let _env_guard = EnvGuard::capture();
+    let maestro_home = tempfile::tempdir().unwrap();
+    let previous_maestro_home = std::env::var_os("MAESTRO_HOME");
+    std::env::set_var("MAESTRO_HOME", maestro_home.path());
+    struct MaestroHomeRestore(Option<std::ffi::OsString>);
+    impl Drop for MaestroHomeRestore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("MAESTRO_HOME", value),
+                None => std::env::remove_var("MAESTRO_HOME"),
+            }
+        }
+    }
+    let _maestro_home_restore = MaestroHomeRestore(previous_maestro_home);
     // MIN_LOG_BYTES is 50_000, so the limit must be at least that to enable rotation.
     // Write more data than the limit to guarantee rotation triggers.
     std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES", "50000");
@@ -1068,11 +1217,13 @@ async fn test_executor_read_file_too_large() {
     let result = executor.execute("read", &args, None, "test-call").await;
 
     assert!(!result.success);
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("too large"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("too large")
+    );
 }
 
 #[tokio::test]
@@ -1087,11 +1238,13 @@ async fn test_executor_read_pdf_rejects_oversized_input_before_parsing() {
     let result = executor.execute("read", &args, None, "test-call").await;
 
     assert!(!result.success);
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("too large"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("too large")
+    );
 }
 
 #[tokio::test]
@@ -1178,7 +1331,7 @@ async fn test_executor_unknown_tool() {
 
 #[tokio::test]
 async fn test_executor_grep_uses_ripgrep_without_shell_pipeline_status() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = isolated_tempdir();
     std::fs::write(dir.path().join("grep.txt"), "needle from grep").unwrap();
 
     let executor = ToolExecutor::new(dir.path().to_str().unwrap());
@@ -1195,7 +1348,7 @@ async fn test_executor_grep_uses_ripgrep_without_shell_pipeline_status() {
 
 #[tokio::test]
 async fn test_grep_falls_back_when_ripgrep_is_unavailable() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = isolated_tempdir();
     std::fs::write(dir.path().join("fallback.txt"), "needle from grep fallback").unwrap();
 
     let rg_args = vec![
@@ -1232,7 +1385,7 @@ async fn test_grep_falls_back_when_ripgrep_is_unavailable() {
 
 #[tokio::test]
 async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = isolated_tempdir();
     for index in 0..(MAX_GREP_LINES + 5) {
         std::fs::write(
             dir.path().join(format!("grep-limit-{index:03}.txt")),
@@ -1262,7 +1415,11 @@ async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
 
 #[tokio::test]
 async fn test_executor_find_uses_ripgrep_without_shell_pipeline_status() {
-    let dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let dir = isolated_tempdir();
     std::fs::write(dir.path().join("find-me.rs"), "mod found;").unwrap();
     std::fs::write(dir.path().join("skip.txt"), "not a rust file").unwrap();
 
@@ -1281,7 +1438,11 @@ async fn test_executor_find_uses_ripgrep_without_shell_pipeline_status() {
 
 #[tokio::test]
 async fn test_executor_find_enforces_limit_while_running_ripgrep() {
-    let dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let dir = isolated_tempdir();
     for index in 0..20 {
         std::fs::write(dir.path().join(format!("file-{index:02}.rs")), "mod found;").unwrap();
     }
@@ -1504,12 +1665,31 @@ async fn test_limited_process_reader_caps_stderr_capture() {
             .expect("stderr byte cap should drain without unbounded buffering");
 
     assert_eq!(result.stdout, "done");
+    // The reader keeps the first and last halves of an overlong stream and
+    // names the elided span between them, so a failure summary printed at the
+    // end of a build survives the cap.
     assert!(
-        result.stderr.len() <= MAX_PROCESS_STDERR_BYTES + "\n[stderr truncated]".len(),
+        result.stderr.len() <= MAX_PROCESS_STDERR_BYTES + 128,
         "stderr should be capped, got {} bytes",
         result.stderr.len()
     );
-    assert!(result.stderr.ends_with("[stderr truncated]"));
+    assert!(result.stderr.contains("[stderr truncated]"));
+    assert!(
+        result.stderr.contains("bytes elided ...]"),
+        "capped stderr must name the elided span: {}",
+        &result.stderr[..result.stderr.len().min(200)]
+    );
+    // `head -c ... /dev/zero` emits NUL bytes; the tail half must still be
+    // present after the marker.
+    let marker_end = result
+        .stderr
+        .find("bytes elided ...]")
+        .expect("elision marker present")
+        + "bytes elided ...]".len();
+    assert!(
+        result.stderr.len() > marker_end + 1,
+        "tail half must be retained after the marker"
+    );
     assert!(process_succeeded_or_truncated(&result, &[0]));
 }
 
@@ -1592,7 +1772,7 @@ async fn test_limited_process_reader_cancellation_kills_spawned_job_tree() {
 async fn test_successful_limited_process_reader_keeps_spawned_descendant_alive() {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -1764,8 +1944,12 @@ async fn test_executor_diff_enforces_limit_while_running_git_diff() {
 
 #[tokio::test]
 async fn test_executor_search_respects_cwd_argument() {
-    let executor_dir = tempfile::tempdir().unwrap();
-    let search_dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let executor_dir = isolated_tempdir();
+    let search_dir = isolated_tempdir();
     std::fs::write(
         search_dir.path().join("target.txt"),
         "needle from search cwd",
@@ -1787,7 +1971,11 @@ async fn test_executor_search_respects_cwd_argument() {
 
 #[tokio::test]
 async fn test_executor_search_supports_multiple_globs() {
-    let dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let dir = isolated_tempdir();
     std::fs::write(dir.path().join("match.ts"), "needle in ts").unwrap();
     std::fs::write(dir.path().join("match.js"), "needle in js").unwrap();
     std::fs::write(dir.path().join("skip.py"), "needle in py").unwrap();
@@ -1810,7 +1998,11 @@ async fn test_executor_search_supports_multiple_globs() {
 
 #[tokio::test]
 async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
-    let dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let dir = isolated_tempdir();
     for index in 0..20 {
         std::fs::write(
             dir.path().join(format!("search-limit-{index:02}.txt")),
@@ -1843,7 +2035,11 @@ async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
 
 #[tokio::test]
 async fn test_executor_search_max_results_does_not_globally_cap_file_output() {
-    let dir = tempfile::tempdir().unwrap();
+    if !ripgrep_available() {
+        eprintln!("skipping: rg is not on PATH");
+        return;
+    }
+    let dir = isolated_tempdir();
     for index in 0..3 {
         std::fs::write(
             dir.path().join(format!("search-max-results-{index}.txt")),
@@ -2432,20 +2628,26 @@ async fn explore_runs_nested_tool_hooks_for_each_operation() {
         serde_json::from_str(&output).expect("explore output should be JSON");
     assert_eq!(results.len(), 3);
     assert!(results[0]["success"].as_bool().unwrap());
-    assert!(results[0]["output"]
-        .as_str()
-        .unwrap()
-        .contains("allowed content"));
+    assert!(
+        results[0]["output"]
+            .as_str()
+            .unwrap()
+            .contains("allowed content")
+    );
     assert!(results[1]["success"].as_bool().unwrap());
-    assert!(results[1]["output"]
-        .as_str()
-        .unwrap()
-        .contains("allowed content"));
+    assert!(
+        results[1]["output"]
+            .as_str()
+            .unwrap()
+            .contains("allowed content")
+    );
     assert!(!results[2]["success"].as_bool().unwrap());
-    assert!(results[2]["error"]
-        .as_str()
-        .unwrap()
-        .contains("blocked by explore test hook"));
+    assert!(
+        results[2]["error"]
+            .as_str()
+            .unwrap()
+            .contains("blocked by explore test hook")
+    );
     assert_eq!(
         pre_calls.load(std::sync::atomic::Ordering::SeqCst),
         3,
@@ -2533,9 +2735,11 @@ async fn typed_bash_streaming_caps_live_output() {
         live_output.len()
     );
     assert!(live_output.contains("live output truncated"));
-    assert!(chunks[final_tail_start..]
-        .concat()
-        .contains("[Showing last "));
+    assert!(
+        chunks[final_tail_start..]
+            .concat()
+            .contains("[Showing last ")
+    );
 }
 
 #[tokio::test]
@@ -3168,14 +3372,18 @@ async fn new_executors_use_isolated_credential_vaults() {
     let result = first.execute("bash", &args, None, "call-1").await;
 
     assert!(result.output.contains("{{CRED:"));
-    assert!(first
-        .credential_vault()
-        .resolve_all(&result.output)
-        .contains(&token));
-    assert!(!second
-        .credential_vault()
-        .resolve_all(&result.output)
-        .contains(&token));
+    assert!(
+        first
+            .credential_vault()
+            .resolve_all(&result.output)
+            .contains(&token)
+    );
+    assert!(
+        !second
+            .credential_vault()
+            .resolve_all(&result.output)
+            .contains(&token)
+    );
 }
 
 #[test]
@@ -3675,6 +3883,8 @@ fn failed_mcp_cancellation_delivery_is_indeterminate_and_non_retryable() {
 
 #[tokio::test]
 async fn mcp_dispatch_propagates_cancellation_to_the_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _trust = trust_workspace_for_test(dir.path()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
     let addr = listener.local_addr().expect("server address");
     let (call_tx, mut call_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
@@ -3779,7 +3989,6 @@ async fn mcp_dispatch_propagates_cancellation_to_the_server() {
         }
     });
 
-    let dir = tempfile::tempdir().expect("tempdir");
     let config_dir = dir.path().join(".composer");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     write_mcp_config(
@@ -3868,4 +4077,164 @@ async fn explore_runs_independent_reads_in_one_call() {
     assert!(result.output.contains("alpha"));
     assert!(result.output.contains("beta"));
     assert_eq!(executor.cache_stats().misses, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Executor seam (tools/executor.rs)
+// ---------------------------------------------------------------------------
+
+/// Executor that records what reached it and answers with a fixed result, so
+/// a test can prove which tools cross the seam and which never do.
+#[derive(Default)]
+struct RecordingExecutor {
+    seen: std::sync::Mutex<Vec<crate::tools::executor::ToolInvocation>>,
+}
+
+impl RecordingExecutor {
+    fn calls(&self) -> Vec<crate::tools::executor::ToolInvocation> {
+        self.seen.lock().expect("recorder lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::executor::ToolExecutor for RecordingExecutor {
+    async fn execute(
+        &self,
+        invocation: crate::tools::executor::ToolInvocation,
+        _cancel: CancellationToken,
+        output: Option<crate::tools::executor::OutputSink>,
+    ) -> ToolResult {
+        if let Some(sink) = output.as_ref() {
+            sink.emit(
+                &invocation.call_id,
+                crate::tools::executor::OutputStream::Stdout,
+                "delegated",
+            );
+        }
+        self.seen.lock().expect("recorder lock").push(invocation);
+        ToolResult::success("delegated-result")
+    }
+
+    fn isolation(&self) -> crate::tools::executor::ToolIsolation {
+        crate::tools::executor::ToolIsolation::Process
+    }
+}
+
+#[tokio::test]
+async fn isolated_dispatch_receives_isolatable_tools_only() {
+    let dir = isolated_tempdir();
+    let recorder = Arc::new(RecordingExecutor::default());
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap())
+        .with_isolated_dispatch(recorder.clone() as Arc<dyn crate::tools::executor::ToolExecutor>);
+
+    let bash = executor
+        .execute(
+            "bash",
+            &serde_json::json!({"command": "echo hi"}),
+            None,
+            "c1",
+        )
+        .await;
+    assert!(bash.success);
+    assert_eq!(bash.output, "delegated-result");
+
+    // `todo` owns agent-visible state; it must never leave this process.
+    let todo = executor
+        .execute("todo", &serde_json::json!({"action": "list"}), None, "c2")
+        .await;
+    assert_ne!(todo.output, "delegated-result");
+
+    let calls = recorder.calls();
+    assert_eq!(calls.len(), 1, "only bash should have crossed the seam");
+    assert_eq!(calls[0].tool, "bash");
+    assert_eq!(calls[0].call_id, "c1");
+    assert_eq!(calls[0].cwd, dir.path());
+}
+
+#[tokio::test]
+async fn isolated_dispatch_runs_after_sandbox_denial_in_this_process() {
+    let dir = isolated_tempdir();
+    let recorder = Arc::new(RecordingExecutor::default());
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap())
+        .with_sandbox_policy(SandboxPolicy::ReadOnly)
+        .with_isolated_dispatch(recorder.clone() as Arc<dyn crate::tools::executor::ToolExecutor>);
+
+    let denied = executor
+        .execute(
+            "write",
+            &serde_json::json!({"file_path": dir.path().join("x.txt"), "content": "x"}),
+            None,
+            "denied",
+        )
+        .await;
+
+    assert!(!denied.success);
+    assert!(
+        recorder.calls().is_empty(),
+        "sandbox denial must be decided before the seam"
+    );
+}
+
+#[tokio::test]
+async fn isolated_dispatch_forwards_streamed_output_to_the_agent_channel() {
+    let dir = isolated_tempdir();
+    let recorder = Arc::new(RecordingExecutor::default());
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap())
+        .with_isolated_dispatch(recorder.clone() as Arc<dyn crate::tools::executor::ToolExecutor>);
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let result = executor
+        .execute(
+            "bash",
+            &serde_json::json!({"command": "echo hi"}),
+            Some(&tx),
+            "stream-call",
+        )
+        .await;
+    assert!(result.success);
+
+    let mut saw_delegated_chunk = false;
+    while let Ok(event) = rx.try_recv() {
+        if let FromAgent::ToolOutput { call_id, content } = event {
+            if call_id == "stream-call" && content == "delegated" {
+                saw_delegated_chunk = true;
+            }
+        }
+    }
+    assert!(saw_delegated_chunk, "streamed chunk should reach the agent");
+}
+
+#[tokio::test]
+async fn in_process_executor_matches_direct_dispatch() {
+    let dir = isolated_tempdir();
+    let file = dir.path().join("fixture.txt");
+    std::fs::write(&file, "seam-parity").unwrap();
+
+    let direct = ToolExecutor::new(dir.path().to_str().unwrap())
+        .execute(
+            "read",
+            &serde_json::json!({"file_path": file.display().to_string()}),
+            None,
+            "direct",
+        )
+        .await;
+
+    let through_seam =
+        crate::tools::executor::InProcessExecutor::new(dir.path().to_str().unwrap().to_string());
+    let seam_result = crate::tools::executor::ToolExecutor::execute(
+        &through_seam,
+        crate::tools::executor::ToolInvocation::new(
+            "seam",
+            "read",
+            serde_json::json!({"file_path": file.display().to_string()}),
+            dir.path(),
+        ),
+        CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(direct.success);
+    assert!(seam_result.success);
+    assert_eq!(direct.output, seam_result.output);
 }

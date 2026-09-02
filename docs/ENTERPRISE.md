@@ -1,23 +1,23 @@
-# Maestro Enterprise
+# Deixic Code Enterprise
 
 Updated: 2026-08-17
 
-Audience: operators deploying Maestro against EvalOps Platform, or locally with
+Audience: operators deploying Deixic Code against EvalOps Platform, or locally with
 bring-your-own-key (BYOK) provider credentials.
 
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Threat model](THREAT_MODEL.md)
 
 ## Product rule
 
-Maestro has two credential modes. A process must be in one of them before a
+Deixic Code has two credential modes. A process must be in one of them before a
 model turn starts.
 
 | Mode | How it is selected | Inference | Secrets |
 | --- | --- | --- | --- |
-| Platform | `maestro evalops login` or `MAESTRO_EVALOPS_ACCESS_TOKEN` + `MAESTRO_EVALOPS_ORG_ID` | `llm-gateway` with a `provider_ref` | Org keys live in Platform `keys`. Maestro does not unwrap them. |
+| Platform | `maestro evalops login` or `MAESTRO_EVALOPS_ACCESS_TOKEN` + `MAESTRO_EVALOPS_ORG_ID` | `llm-gateway` with a `provider_ref` | Org keys live in Platform `keys`. Deixic Code does not unwrap them. |
 | BYOK | No identity session, plus one usable local connection | Direct vendor APIs | Local keyring, env, file, 1Password, or delegated provider login. |
 
-There is no Maestro-owned password, user table, or RBAC implementation. Human
+There is no Deixic Code-owned password, user table, or RBAC implementation. Human
 login, org membership, and permission checks belong to Platform `identity`.
 Managed provider credentials belong to Platform `keys`. Managed inference
 belongs to `llm-gateway`.
@@ -79,14 +79,15 @@ maestro codex login
 ```
 
 The runtime gateway stays loopback-open, or uses `MAESTRO_WEB_API_KEY` for a
-non-loopback bind. That key authenticates the browser to this process. It is
-not a provider key.
+non-loopback bind. That key authenticates health and non-tenant process routes;
+production session and chat routes additionally require tenant-bearing JWT or
+trusted-proxy identity. It is not a provider key.
 
 ## Runtime-gateway authentication
 
 See [Threat model](THREAT_MODEL.md). Supported authenticators:
 
-- `MAESTRO_WEB_API_KEY` (static process key, unrestricted)
+- `MAESTRO_WEB_API_KEY` (static process key; non-tenant routes only in production)
 - identity JWT (`MAESTRO_JWT_SECRET` or `MAESTRO_JWT_JWKS_URL`)
 - trusted-proxy adapter (`MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN` plus identity headers)
 - HMAC session cookie derived from a prior successful auth
@@ -96,6 +97,6 @@ See [Threat model](THREAT_MODEL.md). Supported authenticators:
 
 ## What this file used to claim
 
-Earlier revisions described a Maestro-local password, bcrypt, Drizzle, and
+Earlier revisions described a Deixic Code-local password, bcrypt, Drizzle, and
 RBAC schema. That stack is not implemented and must not be added. Use
 Platform `identity` for org roles and `keys` for provider credentials.

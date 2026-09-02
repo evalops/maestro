@@ -28,7 +28,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
-use ring::signature::{UnparsedPublicKey, ED25519};
+use maestro_runtime::{TelemetryConfig, TelemetryGuard};
+use ring::signature::{ED25519, UnparsedPublicKey};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -36,12 +37,13 @@ use tokio::sync::mpsc;
 
 use crate::agent::protocol::ExecutionReceipt;
 use crate::agent::{
-    CredentialVault, ExecutionSource, FromAgent, MaxTokensSource, NativeAgent, NativeAgentConfig,
-    PromptKind, ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
+    CredentialVault, ExecutionSource, FromAgent, ManagedInferenceAuthorization, MaxTokensSource,
+    NativeAgent, NativeAgentConfig, PromptKind, ToolDefinition, ToolResponseConsumption,
+    ToolResponseMessage, ToolResult, managed_turn_lineage_id,
 };
 use crate::git;
 use crate::headless::controller_binding::{
-    controller_binding_from_hello_json, ControllerBindingReceipt, ControllerScopeExpectation,
+    ControllerBindingReceipt, ControllerScopeExpectation, controller_binding_from_hello_json,
 };
 use crate::headless::messages::{
     ApprovalMode, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
@@ -51,7 +53,7 @@ use crate::headless::messages::{
     UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
     UtilityFileSearchMatch,
 };
-use crate::headless::{native_server_capabilities, HEADLESS_PROTOCOL_VERSION};
+use crate::headless::{HEADLESS_PROTOCOL_VERSION, native_server_capabilities};
 
 /// Shared headless runtime metadata updated from Init / SessionInfo.
 #[derive(Debug, Default, Clone)]
@@ -71,6 +73,8 @@ struct RuntimeMeta {
     turn_active: bool,
     transcript_grade: crate::transcript::TranscriptGrade,
     response_chunks: Vec<(String, bool)>,
+    /// Last safe managed-Gateway evidence for the active turn.
+    managed_gateway_receipt: Option<maestro_ai::ManagedGatewayReceipt>,
     /// Detached consumption-receipt acknowledgement tasks. Shutdown drains
     /// these so a dropped receipt's protocol error and rollback are emitted
     /// before the process exits. Shared behind an `Arc` because `RuntimeMeta`
@@ -139,6 +143,9 @@ struct HeadlessState {
     init_applied: bool,
     governed_grant: Option<GovernedToolGrant>,
     controller_binding_sha256: Option<String>,
+    controller_binding: Option<ControllerBindingReceipt>,
+    workspace_capabilities: crate::headless::workspace_capabilities::WorkspaceCapabilityActivation,
+    next_prompt_queue_id: u64,
     ready_emitted: bool,
     meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
@@ -172,13 +179,13 @@ impl HeadlessState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
         let system_prompt = format!(
-            "You are Maestro, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
+            "You are Deixic Code, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
         );
         let session_id = env_session_id();
         Self {
             model,
             cwd,
-            system_prompt,
+            system_prompt: system_prompt.clone(),
             thinking_enabled: false,
             thinking_budget: 10_000,
             credential_vault: CredentialVault::new(),
@@ -186,6 +193,12 @@ impl HeadlessState {
             init_applied: false,
             governed_grant: None,
             controller_binding_sha256: None,
+            controller_binding: None,
+            workspace_capabilities:
+                crate::headless::workspace_capabilities::WorkspaceCapabilityActivation::new(
+                    system_prompt.clone(),
+                ),
+            next_prompt_queue_id: 1,
             ready_emitted: false,
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
@@ -200,6 +213,7 @@ impl HeadlessState {
                 turn_active: false,
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
+                managed_gateway_receipt: None,
                 receipt_tasks: Arc::new(Mutex::new(Vec::new())),
             })),
             agent: None,
@@ -252,9 +266,82 @@ impl HeadlessState {
             }
             (None, Some(next)) => {
                 self.controller_binding_sha256 = Some(next.to_string());
+                self.controller_binding = binding.cloned();
                 Ok(())
             }
         }
+    }
+
+    async fn apply_workspace_capability_set(
+        &mut self,
+        request: crate::headless::workspace_capabilities::ApplyWorkspaceCapabilitySet,
+    ) -> Result<crate::headless::workspace_capabilities::WorkspaceCapabilitySetApplied> {
+        let binding = self
+            .controller_binding
+            .as_ref()
+            .context("workspace prompt capabilities require an accepted controller binding")?
+            .clone();
+        let runner_session_id = required_governed_runtime_env("MAESTRO_RUNNER_SESSION_ID")?;
+        let turn_active = self
+            .meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turn_active;
+        let prepared = self
+            .workspace_capabilities
+            .prepare(
+                request,
+                &binding,
+                &binding.controller_context,
+                &runner_session_id,
+            )
+            .map_err(anyhow::Error::from)?;
+        if turn_active || prepared.is_idempotent() {
+            return Ok(self
+                .workspace_capabilities
+                .commit(prepared, &binding, turn_active));
+        }
+
+        let uses_app_server =
+            crate::agent::codex_app_server_turns::model_should_use_app_server_turns(&self.model);
+        let next_prompt = prepared.prompt().to_string();
+        if uses_app_server {
+            // Retire the old provider thread before committing the generation.
+            // Any failure leaves activation state untouched, so an identical
+            // retry must traverse rotation and installation again.
+            self.rotate_codex_agent_for_prompt_change().await?;
+        }
+        self.system_prompt = next_prompt;
+        if uses_app_server {
+            self.ensure_agent()?;
+            self.agent
+                .as_ref()
+                .context("provider prompt install requires a native agent")?
+                .ensure_provider_prompt_installed()
+                .await?;
+        } else if let Some(agent) = self.agent.as_ref() {
+            agent.set_system_prompt(self.system_prompt.clone())?;
+        }
+        Ok(self
+            .workspace_capabilities
+            .commit(prepared, &binding, false))
+    }
+
+    async fn rotate_codex_agent_for_prompt_change(&mut self) -> Result<()> {
+        let session_id = self.session_id();
+        crate::agent::codex_app_server_turns::retire_persistent_thread_for_prompt_change(
+            &self.model,
+            &self.cwd,
+            session_id.as_deref(),
+        )?;
+        if let Some(agent) = self.agent.take() {
+            agent.shutdown().await;
+        }
+        if let Some(task) = self.event_task.take() {
+            let _ = task.await;
+        }
+        self.tool_tx = None;
+        Ok(())
     }
 
     fn ensure_agent(&mut self) -> Result<&NativeAgent> {
@@ -281,6 +368,9 @@ impl HeadlessState {
                 // status quo explicitly rather than silently expanding this
                 // PR's scope to headless sandboxing.
                 sandbox_policy: None,
+                managed_mcp_policy: None,
+                max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
+                allow_unbounded_turn: false,
             };
             let (agent, mut event_rx) = if let Some(grant) = self.governed_grant.as_ref() {
                 let (allowed_tools, external_tools, bindings) = governed_agent_inputs(grant)?;
@@ -348,13 +438,19 @@ impl HeadlessState {
                 binding_mode = model_binding_mode(&self.model),
                 duration_ms = started.elapsed().as_millis() as u64,
             );
-            if !self.ready_emitted {
+            let emit_ready = !self.ready_emitted;
+            if emit_ready {
                 emit(&FromAgentMessage::Ready {
                     protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
                     model,
                     provider,
-                    session_id: Some(session_id),
+                    session_id: Some(session_id.clone()),
                 })?;
+            }
+            // This is a protocol identity, not a SessionManager transcript
+            // with an owner that deletes tool-output spills.
+            agent.set_session_context(Some(session_id.clone()), "headless", false)?;
+            if emit_ready {
                 agent.send_session_info(&self.cwd, self.session_id(), git_branch);
                 self.ready_emitted = true;
             }
@@ -507,6 +603,16 @@ fn is_sha256_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+fn is_plain_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_authorization_fingerprint(value: &str) -> bool {
+    value
+        .strip_prefix("authz_fingerprint_v1_")
+        .is_some_and(is_plain_sha256_digest)
+}
+
 fn is_normalized_authority_id(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
@@ -569,6 +675,7 @@ fn governed_agent_inputs(grant: &GovernedToolGrant) -> Result<GovernedAgentInput
         "turn_id": grant.turn_id,
         "run_id": grant.run_id,
         "runtime_generation": grant.runtime_generation,
+        "identity_authorization": grant.identity_authorization,
     }))?;
     let mut external_tools = Vec::with_capacity(grant.external_tools.len());
     let mut bindings = HashMap::new();
@@ -635,6 +742,31 @@ fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
     }
     if grant.not_before_ms > grant.expires_at_ms || grant.issued_at_ms > grant.expires_at_ms {
         anyhow::bail!("governed tool grant validity window is invalid");
+    }
+    let identity = grant
+        .identity_authorization
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("governed tool grant has no Identity authorization"))?;
+    if identity.schema_version != "identity.tool_authorization.v1"
+        || identity.organization_id != grant.organization_id
+        || identity.workspace_id != grant.workspace_id
+        || identity.application_id != "deixic"
+        || identity.audience != GOVERNED_GRANT_AUDIENCE
+        || identity.subject_id.trim().is_empty()
+        || identity.decision_id.trim().is_empty()
+        || identity.authorization_lineage_id.trim().is_empty()
+        || identity.policy_id.trim().is_empty()
+        || identity.policy_version.trim().is_empty()
+        || identity.revocation_epoch != grant.grant_epoch
+        || identity.expires_at_ms > grant.expires_at_ms
+        || identity.issued_at_ms > grant.issued_at_ms
+        || !is_sha256_digest(&identity.actor_chain_digest)
+        || !is_plain_sha256_digest(&identity.policy_digest)
+        || !is_authorization_fingerprint(&identity.authorization_fingerprint)
+        || !is_sha256_digest(&identity.capability_digest)
+        || !is_sha256_digest(&identity.action_digest)
+    {
+        anyhow::bail!("governed tool grant Identity authorization is invalid");
     }
     let mut native_ids = HashSet::new();
     let mut previous_native_id: Option<&str> = None;
@@ -805,6 +937,7 @@ fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Valu
         "not_before_ms": grant.not_before_ms,
         "expires_at_ms": grant.expires_at_ms,
         "signing_key_id": grant.signing_key_id,
+        "identity_authorization": grant.identity_authorization,
         "native_tool_ids": grant.native_tool_ids,
         "external_tools": grant.external_tools,
     });
@@ -914,6 +1047,13 @@ fn verify_governed_tool_grant_with_keys(
     if now_ms < grant.not_before_ms || now_ms > grant.expires_at_ms {
         anyhow::bail!("governed tool grant is not currently valid");
     }
+    if grant
+        .identity_authorization
+        .as_ref()
+        .is_none_or(|identity| now_ms > identity.expires_at_ms)
+    {
+        anyhow::bail!("governed Identity authorization is expired");
+    }
     let canonical = governed_grant_canonical_bytes(grant)?;
     let expected_hash = format!("sha256:{}", sha256_hex(&canonical));
     if !constant_time_eq(expected_hash.as_bytes(), grant.grant_hash.as_bytes()) {
@@ -951,16 +1091,66 @@ async fn submit_prompt_with_kind(
     content: String,
     attachments: Option<Vec<String>>,
     kind: PromptKind,
+    managed_inference_authorization: Option<ManagedInferenceAuthorization>,
 ) -> Result<()> {
     let atts = attachments.unwrap_or_default();
+    let queue_id = state.next_prompt_queue_id;
+    state.next_prompt_queue_id = state.next_prompt_queue_id.saturating_add(1);
+    let (turn_active, workspace_prompt, staged_workspace_prompt) = {
+        let turn_active = state
+            .meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turn_active;
+        (
+            turn_active,
+            state
+                .workspace_capabilities
+                .prompt_for_next_turn()
+                .to_string(),
+            state.workspace_capabilities.has_staged_set(),
+        )
+    };
+    let uses_app_server =
+        crate::agent::codex_app_server_turns::model_should_use_app_server_turns(&state.model);
+    if turn_active && staged_workspace_prompt && uses_app_server {
+        anyhow::bail!(
+            "a staged workspace prompt requires the active Codex turn to complete before the next prompt"
+        );
+    }
     let managed_request_lineage = state
         .governed_grant
         .as_ref()
         .map(managed_request_lineage_id);
+    if !turn_active {
+        state.system_prompt = workspace_prompt.clone();
+    }
+    if !turn_active && staged_workspace_prompt && uses_app_server {
+        state.rotate_codex_agent_for_prompt_change().await?;
+        state.ensure_agent()?;
+        state
+            .agent
+            .as_ref()
+            .context("staged provider prompt install requires a native agent")?
+            .ensure_provider_prompt_installed()
+            .await?;
+    }
     match state.agent_mut() {
         Ok(agent) => {
+            if turn_active {
+                agent.set_system_prompt_for_queued_prompt(queue_id, workspace_prompt.clone())?;
+            } else {
+                agent.set_system_prompt(workspace_prompt)?;
+            }
             if let Err(err) = agent
-                .prompt_with_kind_and_lineage(content, atts, kind, None, managed_request_lineage)
+                .prompt_with_kind_and_managed_context(
+                    content,
+                    atts,
+                    kind,
+                    Some(queue_id),
+                    managed_request_lineage,
+                    managed_inference_authorization,
+                )
                 .await
             {
                 emit(&FromAgentMessage::Error {
@@ -971,6 +1161,9 @@ async fn submit_prompt_with_kind(
                     error_type: Some(HeadlessErrorType::Protocol),
                 })?;
             } else {
+                if staged_workspace_prompt {
+                    state.workspace_capabilities.activate_staged_for_next_turn();
+                }
                 state
                     .meta
                     .lock()
@@ -992,18 +1185,13 @@ async fn submit_prompt_with_kind(
 }
 
 fn managed_request_lineage_id(grant: &GovernedToolGrant) -> String {
-    let mut material = b"maestro-managed-turn-v2".to_vec();
-    for value in [
-        grant.organization_id.as_str(),
-        grant.workspace_id.as_str(),
-        grant.thread_id.as_str(),
-        grant.run_id.as_str(),
-        grant.turn_id.as_str(),
-    ] {
-        material.extend_from_slice(&(value.len() as u64).to_be_bytes());
-        material.extend_from_slice(value.as_bytes());
-    }
-    format!("maestro-turn-v2:{}", sha256_hex(&material))
+    managed_turn_lineage_id(
+        &grant.organization_id,
+        &grant.workspace_id,
+        &grant.thread_id,
+        &grant.run_id,
+        &grant.turn_id,
+    )
 }
 
 fn apply_init_settings(
@@ -1015,13 +1203,16 @@ fn apply_init_settings(
     history: Option<Vec<crate::headless::messages::HistoryMessage>>,
 ) {
     state.init_applied = true;
+    let mut base_prompt = state.workspace_capabilities.base_prompt().to_string();
     if let Some(system_prompt) = system_prompt {
-        state.system_prompt = system_prompt;
+        base_prompt = system_prompt;
     }
     if let Some(append) = append_system_prompt {
-        state.system_prompt.push_str("\n\n");
-        state.system_prompt.push_str(&append);
+        base_prompt.push_str("\n\n");
+        base_prompt.push_str(&append);
     }
+    state.workspace_capabilities.set_base_prompt(base_prompt);
+    state.system_prompt = state.workspace_capabilities.current_prompt().to_string();
     if let Some(level) = thinking_level {
         let (enabled, budget) = match level {
             crate::headless::messages::ThinkingLevel::Off => (false, 0),
@@ -1051,7 +1242,33 @@ fn apply_init_settings(
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
+/// Installs the structured logger for the headless server process.
+///
+/// The hosted runner spawns `maestro-tui --headless` as a child process with
+/// inherited stderr, and that child had no tracing subscriber of its own. Every
+/// `tracing` event the agent emitted was therefore discarded, including the
+/// `maestro.llm` events that name why a provider stream failed to open. A turn
+/// could fail with `provider_error kind=transient_protocol` and leave no log
+/// line anywhere in the fleet explaining the cause.
+///
+/// The logger writes to stderr only: headless stdout carries the protocol
+/// frames and must stay machine-readable. When a subscriber is already
+/// installed — the `maestro-tui hosted-runner` compatibility entrypoint
+/// installs one before dispatching — this returns `None` and leaves it alone.
+fn init_headless_tracing() -> Option<TelemetryGuard> {
+    if tracing::dispatcher::has_been_set() {
+        return None;
+    }
+    Some(TelemetryGuard::init(TelemetryConfig::new(
+        "maestro-headless",
+        env!("CARGO_PKG_VERSION"),
+        "info",
+        "local",
+    )))
+}
+
 pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> {
+    let _telemetry = init_headless_tracing();
     let mut state = HeadlessState::new(model_override);
     prepare_headless_local_model_with(
         &state.model,
@@ -1108,6 +1325,10 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 continue;
             }
         };
+        if let Err(error) = msg.validate_managed_inference_authorization() {
+            protocol_error(None, error)?;
+            continue;
+        }
 
         match msg {
             ToAgentMessage::Hello {
@@ -1116,6 +1337,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 capabilities,
                 role,
                 opt_out_notifications,
+                controller_binding: _,
             } => {
                 // A client this build cannot serve must not get a session: the
                 // error is fatal and ends the stdio loop, so a client that
@@ -1236,6 +1458,17 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     message: "governed init applied".to_string(),
                 })?;
             }
+            ToAgentMessage::ApplyWorkspaceCapabilitySet { request } => {
+                match state.apply_workspace_capability_set(request).await {
+                    Ok(receipt) => {
+                        emit(&FromAgentMessage::WorkspaceCapabilitySetApplied { receipt })?;
+                    }
+                    Err(error) => protocol_error(
+                        None,
+                        format!("workspace prompt capability activation rejected: {error:#}"),
+                    )?,
+                }
+            }
             ToAgentMessage::RestoreConversation {
                 protocol_version,
                 messages,
@@ -1266,6 +1499,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
             ToAgentMessage::Prompt {
                 content,
                 attachments,
+                managed_inference_authorization,
             } => {
                 if state.governed_grant.is_some() {
                     protocol_error(
@@ -1274,14 +1508,21 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     )?;
                     continue;
                 }
-                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Prompt)
-                    .await?;
+                submit_prompt_with_kind(
+                    &mut state,
+                    content,
+                    attachments,
+                    PromptKind::Prompt,
+                    managed_inference_authorization,
+                )
+                .await?;
             }
             ToAgentMessage::GovernedPrompt {
                 content,
                 attachments,
                 code_mode,
                 tool_grant,
+                managed_inference_authorization,
             } => {
                 if let Err(error) = state
                     .apply_governed_grant(Some(code_mode), Some(tool_grant))
@@ -1290,12 +1531,19 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     protocol_error(None, format!("governed code turn rejected: {error:#}"))?;
                     continue;
                 }
-                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Prompt)
-                    .await?;
+                submit_prompt_with_kind(
+                    &mut state,
+                    content,
+                    attachments,
+                    PromptKind::Prompt,
+                    managed_inference_authorization,
+                )
+                .await?;
             }
             ToAgentMessage::Steer {
                 content,
                 attachments,
+                managed_inference_authorization,
             } => {
                 if state.governed_grant.is_some() {
                     protocol_error(
@@ -1304,14 +1552,21 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     )?;
                     continue;
                 }
-                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Steer)
-                    .await?;
+                submit_prompt_with_kind(
+                    &mut state,
+                    content,
+                    attachments,
+                    PromptKind::Steer,
+                    managed_inference_authorization,
+                )
+                .await?;
             }
             ToAgentMessage::GovernedSteer {
                 content,
                 attachments,
                 code_mode,
                 tool_grant,
+                managed_inference_authorization,
             } => {
                 if let Err(error) = state
                     .apply_governed_grant(Some(code_mode), Some(tool_grant))
@@ -1320,8 +1575,14 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     protocol_error(None, format!("governed code steer rejected: {error:#}"))?;
                     continue;
                 }
-                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Steer)
-                    .await?;
+                submit_prompt_with_kind(
+                    &mut state,
+                    content,
+                    attachments,
+                    PromptKind::Steer,
+                    managed_inference_authorization,
+                )
+                .await?;
             }
             ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
                 if let Some(agent) = state.agent.as_ref() {
@@ -2204,6 +2465,27 @@ async fn handle_agent_event(
                 messages,
             })?;
         }
+        FromAgent::ManagedGatewayReceipt {
+            request_id,
+            record_id,
+            lineage_id,
+            record_status,
+        } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .managed_gateway_receipt = Some(maestro_ai::ManagedGatewayReceipt {
+                request_id: request_id.clone(),
+                record_id: record_id.clone(),
+                lineage_id: lineage_id.clone(),
+                record_status: record_status.clone(),
+            });
+            emit(&FromAgentMessage::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            })?;
+        }
         FromAgent::Ready { model, provider } => {
             let session_id = meta
                 .lock()
@@ -2243,10 +2525,12 @@ async fn handle_agent_event(
                 session_id = ?session_id,
                 response_id = %response_id,
             );
-            meta.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .response_chunks
-                .clear();
+            let mut meta = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            meta.response_chunks.clear();
+            meta.managed_gateway_receipt = None;
+            drop(meta);
             emit(&FromAgentMessage::ResponseStart { response_id })?;
         }
         FromAgent::ResponseChunk {
@@ -3395,6 +3679,27 @@ mod tests {
         );
     }
 
+    /// A field Runner Host signs and this resident cannot represent must fail
+    /// deserialization and name itself.
+    ///
+    /// Without `deny_unknown_fields` serde drops it, `governed_grant_canonical_value`
+    /// rebuilds the grant without it, the recomputed hash no longer matches the
+    /// one Runner Host signed, and the resident answers `thread.append` with an
+    /// opaque `bad_request`. That is how mono #7674 reached production: the
+    /// deployed resident predated the `identity_authorization` field, dropped
+    /// it, and rejected every governed Dex turn without naming a cause.
+    #[test]
+    fn unknown_signed_grant_field_fails_loudly_instead_of_silently_rehashing() {
+        let mut value = serde_json::to_value(test_grant()).expect("serialize a governed grant");
+        value["future_authority_binding"] = serde_json::json!("sha256:unknown-to-this-resident");
+        let error = serde_json::from_value::<GovernedToolGrant>(value)
+            .expect_err("a signed field this resident cannot represent must not parse");
+        assert!(
+            error.to_string().contains("future_authority_binding"),
+            "deserialization error must name the unknown signed field: {error}"
+        );
+    }
+
     fn test_grant() -> GovernedToolGrant {
         let mut grant = GovernedToolGrant {
             envelope_version: 2,
@@ -3408,13 +3713,35 @@ mod tests {
             turn_id: "turn-1".to_string(),
             run_id: "run-1".to_string(),
             runtime_generation: 7,
-            grant_epoch: 3,
+            grant_epoch: 7,
             issued_at_ms: 900,
             not_before_ms: 900,
             expires_at_ms: 2_000,
             grant_hash: String::new(),
             signing_key_id: TEST_GRANT_KEY_ID.to_string(),
             grant_signature: String::new(),
+            identity_authorization: Some(
+                crate::headless::messages::IdentityToolAuthorizationEvidence {
+                    schema_version: "identity.tool_authorization.v1".into(),
+                    organization_id: "org-1".into(),
+                    workspace_id: "workspace-1".into(),
+                    application_id: "deixic".into(),
+                    subject_id: "user-1".into(),
+                    actor_chain_digest: format!("sha256:{}", "a".repeat(64)),
+                    decision_id: "decision-1".into(),
+                    authorization_lineage_id: "lineage-1".into(),
+                    policy_id: "policy-1".into(),
+                    policy_version: "v1".into(),
+                    policy_digest: "b".repeat(64),
+                    authorization_fingerprint: format!("authz_fingerprint_v1_{}", "c".repeat(64)),
+                    capability_digest: format!("sha256:{}", "d".repeat(64)),
+                    action_digest: format!("sha256:{}", "e".repeat(64)),
+                    audience: GOVERNED_GRANT_AUDIENCE.into(),
+                    issued_at_ms: 900,
+                    expires_at_ms: 2_000,
+                    revocation_epoch: 7,
+                },
+            ),
             native_tool_ids: vec!["bash".to_string()],
             external_tools: Vec::new(),
             connection_bindings: Vec::new(),
@@ -3453,7 +3780,7 @@ mod tests {
         let grant = test_grant();
         assert_eq!(
             grant.grant_hash,
-            "sha256:8d521b079076a547f048d28439d48d7e8081c2b7bfca47abfe8d0dc05ea1f298"
+            "sha256:69ae15d769fad4ef89358b3d90f648372c12b30c09d9fa9f8b3465ebcca0f046"
         );
         assert!(grant.grant_signature.starts_with("ed25519:"));
         let context = test_grant_context();
@@ -3478,6 +3805,40 @@ mod tests {
         sign_test_grant(&mut wrong_audience);
         assert!(
             verify_governed_tool_grant_with_keys(&wrong_audience, &context, 1_000, &keys).is_err()
+        );
+
+        let mut wrong_application = grant.clone();
+        wrong_application
+            .identity_authorization
+            .as_mut()
+            .expect("Identity authority")
+            .application_id = "browser-selected-app".into();
+        sign_test_grant(&mut wrong_application);
+        assert!(
+            verify_governed_tool_grant_with_keys(&wrong_application, &context, 1_000, &keys)
+                .is_err()
+        );
+
+        let mut stale_epoch = grant.clone();
+        stale_epoch
+            .identity_authorization
+            .as_mut()
+            .expect("Identity authority")
+            .revocation_epoch = 6;
+        sign_test_grant(&mut stale_epoch);
+        assert!(
+            verify_governed_tool_grant_with_keys(&stale_epoch, &context, 1_000, &keys).is_err()
+        );
+
+        let mut tampered_subject = grant.clone();
+        tampered_subject
+            .identity_authorization
+            .as_mut()
+            .expect("Identity authority")
+            .subject_id = "user-2".into();
+        assert!(
+            verify_governed_tool_grant_with_keys(&tampered_subject, &context, 1_000, &keys)
+                .is_err()
         );
 
         let wrong_scope = GovernedGrantVerificationContext {
@@ -3552,13 +3913,15 @@ mod tests {
 
         let mut tampered = grant.clone();
         tampered.connection_bindings[0].capabilities[1] = "releases.admin".into();
-        assert!(verify_governed_tool_grant_with_keys(
-            &tampered,
-            &test_grant_context(),
-            1_000,
-            &test_grant_keys(),
-        )
-        .is_err());
+        assert!(
+            verify_governed_tool_grant_with_keys(
+                &tampered,
+                &test_grant_context(),
+                1_000,
+                &test_grant_keys(),
+            )
+            .is_err()
+        );
 
         let mut unknown = grant.clone();
         unknown.external_tools[0].connection_binding_id = Some("unknown".into());
@@ -3616,13 +3979,10 @@ mod tests {
                 state: GovernedGrantPublicKeyState::Inactive,
             },
         )]);
-        assert!(verify_governed_tool_grant_with_keys(
-            &grant,
-            &test_grant_context(),
-            1_000,
-            &inactive
-        )
-        .is_err());
+        assert!(
+            verify_governed_tool_grant_with_keys(&grant, &test_grant_context(), 1_000, &inactive)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3843,25 +4203,29 @@ mod tests {
             client_instance_id: Some("client-2".to_string()),
             ..exact
         };
-        assert!(prepare_client_tool_result(
-            &meta,
-            "call-1".to_string(),
-            vec![],
-            false,
-            wrong_owner.clone()
-        )
-        .is_err());
+        assert!(
+            prepare_client_tool_result(
+                &meta,
+                "call-1".to_string(),
+                vec![],
+                false,
+                wrong_owner.clone()
+            )
+            .is_err()
+        );
         wrong_owner.client_instance_id = Some("client-1".to_string());
         prepare_client_tool_result(&meta, "call-1".to_string(), vec![], false, wrong_owner)
             .expect("exact owner/execution binding accepted once");
-        assert!(prepare_client_tool_result(
-            &meta,
-            "call-1".to_string(),
-            vec![],
-            false,
-            ClientToolResultBinding::default(),
-        )
-        .is_err());
+        assert!(
+            prepare_client_tool_result(
+                &meta,
+                "call-1".to_string(),
+                vec![],
+                false,
+                ClientToolResultBinding::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3885,11 +4249,12 @@ mod tests {
         .expect_err("governed result fields require a governed request binding");
 
         assert!(error.contains("no governed request binding"));
-        assert!(meta
-            .lock()
-            .expect("runtime metadata")
-            .pending_tool_calls
-            .contains("legacy-call"));
+        assert!(
+            meta.lock()
+                .expect("runtime metadata")
+                .pending_tool_calls
+                .contains("legacy-call")
+        );
     }
 
     #[test]
@@ -4037,17 +4402,19 @@ mod tests {
         .expect_err("closed native channel restores the exact result for retry");
         assert_eq!(first_terminal_count, 1);
 
-        assert!(prepare_client_tool_result(
-            &meta,
-            "call-retry".to_string(),
-            vec![ClientToolResultContent::Text {
-                text: "changed result".to_string(),
-            }],
-            false,
-            supplied.clone(),
-        )
-        .unwrap_err()
-        .contains("changed across retry"));
+        assert!(
+            prepare_client_tool_result(
+                &meta,
+                "call-retry".to_string(),
+                vec![ClientToolResultContent::Text {
+                    text: "changed result".to_string(),
+                }],
+                false,
+                supplied.clone(),
+            )
+            .unwrap_err()
+            .contains("changed across retry")
+        );
 
         let accepted =
             prepare_client_tool_result(&meta, "call-retry".to_string(), content, false, supplied)
@@ -4228,7 +4595,13 @@ mod tests {
             .arg("headless_server::tests::pod_shaped_managed_default_validates_before_qualified_ready")
             .arg("--exact")
             .arg("--nocapture")
+            .arg("--format")
+            .arg("terse")
             .env("MAESTRO_HEADLESS_MANAGED_READY_FIXTURE", "1")
+            .env(
+                "MAESTRO_IDENTITY_URL",
+                crate::credential_mode::test_identity_base_url(),
+            )
             .env_remove("MAESTRO_MODEL")
             .env_remove("OPENAI_API_KEY")
             .env("MAESTRO_DEFAULT_MODEL", "evalops/gpt-5.5")
@@ -4281,6 +4654,7 @@ mod tests {
         let root = tempfile::tempdir().expect("fixture root");
         let script = root.path().join("app-server.js");
         let log = root.path().join("app-server.log");
+        let home = root.path().join("maestro-home");
         std::fs::write(
             &script,
             r"const rl=require('readline').createInterface({input:process.stdin});
@@ -4303,6 +4677,16 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             .arg("--nocapture")
             .env("MAESTRO_HEADLESS_STEER_FIXTURE", "1")
             .env("MAESTRO_HEADLESS_STEER_LOG", &log)
+            .env(
+                "MAESTRO_IDENTITY_URL",
+                crate::credential_mode::test_identity_base_url(),
+            )
+            .env("MAESTRO_HOME", &home)
+            .env(
+                crate::credential_mode::ACCESS_TOKEN_ENV,
+                "fixture-evalops-access-token",
+            )
+            .env(crate::credential_mode::ORG_ID_ENV, "fixture-evalops-org")
             .env("MAESTRO_MODEL", "openai-codex/gpt-5.5")
             .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
             .env(
@@ -4363,6 +4747,552 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         let requests = std::fs::read_to_string(log).expect("app-server log");
         assert_eq!(requests.matches(r#""method":"turn/start""#).count(), 1);
         assert_eq!(requests.matches(r#""method":"turn/steer""#).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn staged_provider_rotation_failure_preserves_generation_for_retry() {
+        if std::env::var_os("MAESTRO_STAGED_ROTATION_RETRY_FIXTURE").is_some() {
+            let home = std::path::PathBuf::from(
+                std::env::var("MAESTRO_HOME").expect("fixture Maestro home"),
+            );
+            let workspace = std::path::PathBuf::from(
+                std::env::var("MAESTRO_STAGED_ROTATION_WORKSPACE").expect("fixture workspace"),
+            );
+            let log = std::path::PathBuf::from(
+                std::env::var("MAESTRO_STAGED_ROTATION_LOG").expect("fixture provider log"),
+            );
+            let mut state = HeadlessState::new(Some("openai-codex/gpt-5.5".to_string()));
+            state.cwd = workspace.to_string_lossy().into_owned();
+            state.system_prompt = "base prompt".to_string();
+            state
+                .workspace_capabilities
+                .set_base_prompt(state.system_prompt.clone());
+            state.ensure_agent().expect("create initial native agent");
+            state
+                .agent
+                .as_ref()
+                .expect("initial native agent")
+                .ensure_provider_prompt_installed()
+                .await
+                .expect("install initial provider prompt");
+
+            let context = crate::headless::controller_binding::ControllerContext {
+                schema_version:
+                    crate::headless::controller_binding::CONTROLLER_CONTEXT_SCHEMA_VERSION
+                        .to_string(),
+                controller_id: "evalops.platform".to_string(),
+                organization_id: "org-1".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                channel_id: None,
+                request_id: None,
+                lifetime_profile:
+                    crate::headless::controller_binding::ControllerLifetimeProfile::Resident,
+                runtime_generation: Some(7),
+            };
+            let binding = crate::headless::controller_binding::ControllerBindingReceipt {
+                binding_version: crate::headless::controller_binding::CONTROLLER_BINDING_VERSION
+                    .to_string(),
+                binding_sha256: "sha256:binding".to_string(),
+                controller_context: context.clone(),
+            };
+            let body = "Always apply the retry checklist.";
+            let mut request =
+                crate::headless::workspace_capabilities::ApplyWorkspaceCapabilitySet {
+                    organization_id: "org-1".to_string(),
+                    workspace_id: "workspace-1".to_string(),
+                    runner_session_id: "runner-1".to_string(),
+                    runtime_generation: 7,
+                    activation_generation: 2,
+                    workspace_snapshot_digest:
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_string(),
+                    workspace_skill_set_digest:
+                        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                            .to_string(),
+                    capability_set_digest: String::new(),
+                    workspace_instructions: vec!["Use generation two.".to_string()],
+                    admitted_catalog: vec![
+                        crate::headless::workspace_capabilities::WorkspacePromptCapability {
+                            qualified_id: "skill.retry".to_string(),
+                            name: "retry".to_string(),
+                            scope: "workspace".to_string(),
+                            revision_digest:
+                                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                                    .to_string(),
+                            body_digest: format!(
+                                "sha256:{:x}",
+                                sha2::Sha256::digest(body.as_bytes())
+                            ),
+                            trigger_patterns: vec!["retry".to_string()],
+                            user_invocable: true,
+                            pinned_prompt_only: true,
+                            title: "Retry".to_string(),
+                            description: "Prove staged retry.".to_string(),
+                            instructions: vec!["Apply the retry checklist.".to_string()],
+                            body: body.to_string(),
+                            entry_digest: String::new(),
+                        },
+                    ],
+                    admission_receipt_id: "admission-2".to_string(),
+                };
+            crate::headless::workspace_capabilities::recompute_request_digests(&mut request)
+                .expect("staged request digests");
+            let receipt = state
+                .workspace_capabilities
+                .apply(request, &binding, &context, "runner-1", true)
+                .expect("stage capability generation");
+            assert!(receipt.staged_for_next_turn);
+
+            let quarantine_blocker = home.join("codex/thread-bindings/quarantine");
+            std::fs::write(&quarantine_blocker, b"block retirement")
+                .expect("create quarantine blocker");
+            let first = submit_prompt_with_kind(
+                &mut state,
+                "first retry".to_string(),
+                None,
+                PromptKind::Prompt,
+                None,
+            )
+            .await;
+            assert!(first.is_err(), "blocked retirement must fail");
+            assert!(
+                state.workspace_capabilities.has_staged_set(),
+                "failed retirement must preserve the staged generation"
+            );
+
+            std::fs::remove_file(&quarantine_blocker).expect("remove quarantine blocker");
+            submit_prompt_with_kind(
+                &mut state,
+                "second retry".to_string(),
+                None,
+                PromptKind::Prompt,
+                None,
+            )
+            .await
+            .expect("same staged generation retries after retirement recovers");
+            assert!(
+                !state.workspace_capabilities.has_staged_set(),
+                "successful provider installation promotes the staged generation"
+            );
+            assert!(
+                std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .matches(r#""method":"thread/start""#)
+                    .count()
+                    >= 2,
+                "retry must install a replacement provider thread"
+            );
+            if let Some(agent) = state.agent.take() {
+                agent.shutdown().await;
+            }
+            if let Some(task) = state.event_task.take() {
+                let _ = task.await;
+            }
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("fixture root");
+        let script = root.path().join("app-server.js");
+        let log = root.path().join("app-server.log");
+        let home = root.path().join("maestro-home");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("fixture workspace");
+        std::fs::write(
+            &script,
+            r#"const rl=require("readline").createInterface({input:process.stdin});
+const fs=require("fs"); const log=process.env.MAESTRO_STAGED_ROTATION_LOG;
+function send(x){process.stdout.write(JSON.stringify(x)+"\n")}
+rl.on("line",line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+"\n");
+if(x.method==="initialize"){send({id:x.id,result:{protocolVersion:"2025-01-01",capabilities:{}}})}
+else if(x.method==="thread/start"){const n=(fs.readFileSync(log,"utf8").match(/"method":"thread\/start"/g)||[]).length;send({id:x.id,result:{thread:{id:"provider-thread-"+n}}})}
+else if(x.method==="thread/inject_items"){send({id:x.id,result:{}})}
+else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:{turn:{id:turnId}}});setTimeout(()=>send({method:"turn/completed",params:{turnId}}),5)}
+});"#,
+        )
+        .expect("app-server script");
+        let current = std::env::current_exe().expect("current test binary");
+        let output = std::process::Command::new(current)
+            .arg(
+                "headless_server::tests::staged_provider_rotation_failure_preserves_generation_for_retry",
+            )
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("MAESTRO_STAGED_ROTATION_RETRY_FIXTURE", "1")
+            .env("MAESTRO_STAGED_ROTATION_LOG", &log)
+            .env("MAESTRO_STAGED_ROTATION_WORKSPACE", &workspace)
+            .env(
+                "MAESTRO_IDENTITY_URL",
+                crate::credential_mode::test_identity_base_url(),
+            )
+            .env("MAESTRO_HOME", &home)
+            .env(
+                crate::credential_mode::ACCESS_TOKEN_ENV,
+                "fixture-evalops-access-token",
+            )
+            .env(crate::credential_mode::ORG_ID_ENV, "fixture-evalops-org")
+            .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+            .env(
+                "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                serde_json::to_string(&vec![script.display().to_string()])
+                    .expect("app-server args"),
+            )
+            .env("OPENAI_CODEX_TOKEN", "fixture-token")
+            .output()
+            .expect("run staged rotation retry fixture");
+        assert!(
+            output.status.success(),
+            "fixture stdout: {}; fixture stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let calls = std::fs::read_to_string(&log).expect("provider log");
+        assert_eq!(calls.matches(r#""method":"thread/start""#).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn resident_workspace_admission_receipt_joins_the_provider_observed_prompt() {
+        if std::env::var_os("MAESTRO_HEADLESS_WORKSPACE_PROMPT_FIXTURE").is_some() {
+            assert_eq!(
+                run_headless_server(None)
+                    .await
+                    .expect("headless workspace prompt fixture"),
+                0
+            );
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("fixture root");
+        let script = root.path().join("app-server.js");
+        let log = root.path().join("app-server.log");
+        let home = root.path().join("maestro-home");
+        let provider_ack_barrier = root.path().join("provider-thread-start.ack");
+        std::fs::write(
+            &script,
+            r#"const rl=require("readline").createInterface({input:process.stdin});
+const fs=require("fs"); const log=process.env.MAESTRO_HEADLESS_WORKSPACE_PROMPT_LOG;
+const barrier=process.env.MAESTRO_HEADLESS_WORKSPACE_PROMPT_BARRIER;
+function send(x){process.stdout.write(JSON.stringify(x)+"\n")}
+rl.on("line",line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+"\n");
+if(x.method==="initialize"){send({id:x.id,result:{protocolVersion:"2025-01-01",capabilities:{}}})}
+else if(x.method==="thread/start"){const threadCount=(fs.readFileSync(log,"utf8").match(/"method":"thread\/start"/g)||[]).length;const ack=()=>send({id:x.id,result:{thread:{id:"provider-thread-"+threadCount}}});if(threadCount===1&&barrier&&!fs.existsSync(barrier)){const timer=setInterval(()=>{if(fs.existsSync(barrier)){clearInterval(timer);ack()}},5)}else{ack()}}
+else if(x.method==="thread/inject_items"){send({id:x.id,result:{}})}
+else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:{turn:{id:turnId}}});setTimeout(()=>{send({method:"item/agentMessage/delta",params:{turnId,delta:"fixture answer"}});send({method:"turn/completed",params:{turnId}})},10)}
+});"#,
+        )
+        .expect("app-server script");
+
+        let mut request = crate::headless::workspace_capabilities::ApplyWorkspaceCapabilitySet {
+            organization_id: "org-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            runner_session_id: "runner-1".to_string(),
+            runtime_generation: 7,
+            activation_generation: 1,
+            workspace_snapshot_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            workspace_skill_set_digest:
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+            capability_set_digest: String::new(),
+            workspace_instructions: vec!["Use workspace review guidance.".to_string()],
+            admitted_catalog: vec![
+                crate::headless::workspace_capabilities::WorkspacePromptCapability {
+                    qualified_id: "skill.review".to_string(),
+                    name: "review".to_string(),
+                    scope: "workspace".to_string(),
+                    revision_digest:
+                        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                            .to_string(),
+                    body_digest: format!(
+                        "sha256:{:x}",
+                        sha2::Sha256::digest("Always report the review result.".as_bytes())
+                    ),
+                    trigger_patterns: vec!["review".to_string()],
+                    user_invocable: true,
+                    pinned_prompt_only: true,
+                    title: "Review".to_string(),
+                    description: "Review workspace changes.".to_string(),
+                    instructions: vec!["Apply the review checklist.".to_string()],
+                    body: "Always report the review result.".to_string(),
+                    entry_digest: String::new(),
+                },
+            ],
+            admission_receipt_id: "admission-1".to_string(),
+        };
+        crate::headless::workspace_capabilities::recompute_request_digests(&mut request)
+            .expect("fixture request digests");
+
+        let current = std::env::current_exe().expect("current test binary");
+        let stdout_path = root.path().join("headless.stdout");
+        let stderr_path = root.path().join("headless.stderr");
+        let mut child = std::process::Command::new(current)
+            .arg("headless_server::tests::resident_workspace_admission_receipt_joins_the_provider_observed_prompt")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("MAESTRO_HEADLESS_WORKSPACE_PROMPT_FIXTURE", "1")
+            .env("MAESTRO_HEADLESS_WORKSPACE_PROMPT_LOG", &log)
+            .env(
+                "MAESTRO_IDENTITY_URL",
+                crate::credential_mode::test_identity_base_url(),
+            )
+            .env("MAESTRO_HOME", &home)
+            .env(
+                "MAESTRO_HEADLESS_WORKSPACE_PROMPT_BARRIER",
+                &provider_ack_barrier,
+            )
+            .env("MAESTRO_MODEL", "openai-codex/gpt-5.5")
+            .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+            .env("MAESTRO_CODEX_APP_SERVER_ARGS_JSON", serde_json::to_string(&vec![script.display().to_string()]).expect("app server args"))
+            .env("OPENAI_CODEX_TOKEN", "fixture-token")
+            .env("MAESTRO_RUNNER_SESSION_ID", "runner-1")
+            .env("MAESTRO_SESSION_ID", "maestro-session-1")
+            .env(
+                crate::credential_mode::ACCESS_TOKEN_ENV,
+                "fixture-evalops-access-token",
+            )
+            .env("MAESTRO_EVALOPS_ORG_ID", "org-1")
+            .env("MAESTRO_EVALOPS_WORKSPACE_ID", "workspace-1")
+            .env("MAESTRO_EVALOPS_THREAD_ID", "thread-1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::from(std::fs::File::create(&stdout_path).expect("fixture stdout")))
+            .stderr(std::process::Stdio::from(std::fs::File::create(&stderr_path).expect("fixture stderr")))
+            .spawn()
+            .expect("spawn workspace prompt fixture");
+        let mut stdin = child.stdin.take().expect("fixture stdin");
+        use std::io::Write as _;
+        let wait_for_provider_turns = |expected: usize, child: &mut std::process::Child| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let calls = std::fs::read_to_string(&log).unwrap_or_default();
+                if calls.matches(r#""method":"turn/start""#).count() >= expected {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "provider did not observe {expected} turn(s): {calls}; headless stdout: {}; headless stderr: {}",
+                        std::fs::read_to_string(&stdout_path).unwrap_or_default(),
+                        std::fs::read_to_string(&stderr_path).unwrap_or_default(),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let wait_for_headless_messages =
+            |message_type: &str, expected: usize, child: &mut std::process::Child| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                loop {
+                    let output = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+                    let observed = output
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .filter(|message| message["type"] == message_type)
+                        .count();
+                    if observed >= expected {
+                        return;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!(
+                            "headless did not emit {expected} {message_type} message(s): {output}; provider calls: {}; headless stderr: {}",
+                            std::fs::read_to_string(&log).unwrap_or_default(),
+                            std::fs::read_to_string(&stderr_path).unwrap_or_default(),
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
+        let hello = json!({
+            "type": "hello", "protocol_version": "2026-08-08",
+            "controller_binding_version": crate::headless::controller_binding::CONTROLLER_BINDING_VERSION,
+            "controller_context": {
+                "schema_version": crate::headless::controller_binding::CONTROLLER_CONTEXT_SCHEMA_VERSION,
+                "controller_id": "evalops.platform", "organization_id": "org-1",
+                "workspace_id": "workspace-1", "thread_id": "thread-1",
+                "lifetime_profile": "resident", "runtime_generation": 7
+            },
+            "capability_manifest": {
+                "schema_version": "evalops.maestro.capability-manifest.v1",
+                "engine_kind": "maestro", "protocol_version": "2026-08-08",
+                "tool_protocol_version": "evalops.maestro.tool-bridge.v1",
+                "supported_tools": [], "native_tool_calls": true, "approvals": true,
+                "continuation": false, "cancellation": true, "idempotent_replay": true,
+                "streaming": true
+            }
+        });
+        writeln!(stdin, "{hello}").expect("write hello");
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"apply_workspace_capability_set","request":request})
+        )
+        .expect("write admission");
+        let provider_start_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .matches(r#""method":"thread/start""#)
+            .count()
+            < 1
+        {
+            assert!(
+                std::time::Instant::now() < provider_start_deadline,
+                "provider did not receive thread/start before acknowledgement barrier"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let early_receipts = std::fs::read_to_string(&stdout_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|message| message["type"] == "workspace_capability_set_applied")
+            .count();
+        assert_eq!(
+            early_receipts, 0,
+            "capability receipt must wait for provider thread/start acknowledgement"
+        );
+        std::fs::write(&provider_ack_barrier, b"ack").expect("release provider ack barrier");
+        wait_for_headless_messages("workspace_capability_set_applied", 1, &mut child);
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"prompt","content":"review this","attachments":null})
+        )
+        .expect("write first prompt");
+        wait_for_provider_turns(1, &mut child);
+        wait_for_headless_messages("response_end", 1, &mut child);
+        request.activation_generation = 2;
+        request.admission_receipt_id = "admission-2".to_string();
+        request.workspace_instructions = vec!["Use the generation two guidance.".to_string()];
+        request.admitted_catalog[0].revision_digest =
+            "sha256:3333333333333333333333333333333333333333333333333333333333333333".to_string();
+        request.admitted_catalog[0].instructions =
+            vec!["Apply the generation two checklist.".to_string()];
+        request.admitted_catalog[0].body = "Always report the generation two result.".to_string();
+        request.admitted_catalog[0].body_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(request.admitted_catalog[0].body.as_bytes())
+        );
+        crate::headless::workspace_capabilities::recompute_request_digests(&mut request)
+            .expect("generation two request digests");
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"apply_workspace_capability_set","request":request})
+        )
+        .expect("write generation two admission");
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"prompt","content":"continue review","attachments":null})
+        )
+        .expect("write second prompt");
+        wait_for_provider_turns(2, &mut child);
+        wait_for_headless_messages("response_end", 2, &mut child);
+        writeln!(stdin, "{}", json!({"type":"shutdown"})).expect("write shutdown");
+        drop(stdin);
+        let status = child.wait().expect("fixture status");
+        assert!(
+            status.success(),
+            "fixture stderr: {}",
+            std::fs::read_to_string(&stderr_path).unwrap_or_default(),
+        );
+
+        let messages = std::fs::read_to_string(&stdout_path)
+            .expect("headless stdout")
+            .lines()
+            .filter_map(|line| {
+                let json_start = line.find('{')?;
+                serde_json::Deserializer::from_str(&line[json_start..])
+                    .into_iter::<serde_json::Value>()
+                    .next()?
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            messages.iter().any(|message| message["type"] == "ready"
+                && message["session_id"] == "maestro-session-1"),
+            "unexpected headless messages: {messages:?}"
+        );
+        let receipts = messages
+            .iter()
+            .filter(|message| message["type"] == "workspace_capability_set_applied")
+            .collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 2);
+        let calls = std::fs::read_to_string(log)
+            .expect("provider calls")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect::<Vec<_>>();
+        let thread_starts = calls
+            .iter()
+            .filter(|call| call["method"] == "thread/start")
+            .collect::<Vec<_>>();
+        assert_eq!(thread_starts.len(), 2);
+        for (receipt, thread_start) in receipts.iter().zip(thread_starts.iter()) {
+            let provider_prompt = thread_start["params"]["developerInstructions"]
+                .as_str()
+                .expect("provider developer instructions");
+            assert_eq!(
+                receipt["receipt"]["provider_prompt_sha256"],
+                format!(
+                    "sha256:{:x}",
+                    sha2::Sha256::digest(provider_prompt.as_bytes())
+                ),
+                "provider developer instructions: {provider_prompt}"
+            );
+        }
+        assert_eq!(receipts[1]["receipt"]["activation_generation"], 2);
+        let turns = calls
+            .iter()
+            .filter(|call| call["method"] == "turn/start")
+            .collect::<Vec<_>>();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(
+            turns[0]["params"]["threadId"], "provider-thread-1",
+            "provider calls: {calls:?}"
+        );
+        assert_eq!(
+            turns[1]["params"]["threadId"], "provider-thread-2",
+            "provider calls: {calls:?}"
+        );
+        let restored = calls
+            .iter()
+            .find(|call| call["method"] == "thread/inject_items")
+            .expect("generation two history injection");
+        assert_eq!(restored["params"]["threadId"], "provider-thread-2");
+        assert!(
+            restored["params"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "provider rebind must retain the first Maestro turn"
+        );
+        let bindings = std::fs::read_dir(home.join("codex/thread-bindings"))
+            .expect("thread bindings directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .map(|path| {
+                serde_json::from_slice::<crate::codex_session::CodexThreadBinding>(
+                    &std::fs::read(&path).expect("thread binding"),
+                )
+                .expect("valid thread binding")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bindings.len(), 1, "active thread bindings: {bindings:?}");
+        assert_eq!(bindings[0].thread_id, "provider-thread-2");
+        assert_eq!(
+            bindings[0].key.session_id.as_deref(),
+            Some("maestro-session-1"),
+            "replacement binding must remain scoped to the resident Maestro session"
+        );
     }
 
     #[test]
@@ -4974,9 +5904,11 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         {
             let meta = meta.lock().expect("runtime metadata");
             assert!(meta.pending_tool_calls.contains("dropped-call"));
-            assert!(!meta
-                .decided_tool_execution_ids
-                .contains("dropped-execution"));
+            assert!(
+                !meta
+                    .decided_tool_execution_ids
+                    .contains("dropped-execution")
+            );
         }
 
         // The execution binding is preserved for the shutdown cleanup so the

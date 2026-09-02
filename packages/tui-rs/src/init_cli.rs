@@ -2,14 +2,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Days, Utc};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -18,6 +19,8 @@ use uuid::Uuid;
 
 const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.evalops.dev";
 const DEFAULT_IDENTITY_BASE_URL: &str = "https://identity.evalops.dev";
+const TRUSTED_IDENTITY_AUTHORITIES: &[&str] = &["identity.evalops.dev", "api.staging.evalops.dev"];
+pub const TEST_IDENTITY_AUTHORITY_ENV: &str = "MAESTRO_TEST_IDENTITY_AUTHORITY";
 const AGENT_MCP_MANIFEST_PATH: &str = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH: &str = "/mcp";
 const CALLBACK_PORT: u16 = 1460;
@@ -42,7 +45,7 @@ fn open_browser_disabled() -> bool {
         Some("0" | "false" | "off" | "no")
     )
 }
-const REQUIRED_SCOPE: &str = "llm_gateway:invoke";
+const REQUIRED_LOGIN_SCOPES: &str = "llm_gateway:invoke sessions:read sessions:write";
 const DEFAULT_API_KEY_SCOPES: &[&str] = &[
     "agent:register",
     "agent:heartbeat",
@@ -103,6 +106,22 @@ struct OAuthCredentials {
     #[serde(default)]
     metadata: Map<String, Value>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CredentialStorageContext {
+    home: PathBuf,
+    force_file: bool,
+    force_keychain: bool,
+}
+
+#[derive(Debug, Default)]
+struct CredentialCache {
+    context: Option<CredentialStorageContext>,
+    loaded: bool,
+    credentials: Option<OAuthCredentials>,
+}
+
+static EVALOPS_CREDENTIAL_CACHE: OnceLock<Mutex<CredentialCache>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct OAuthClientRegistration {
@@ -259,7 +278,7 @@ pub async fn run_init(args: &[String]) -> Result<i32> {
 }
 
 fn help() -> &'static str {
-    "maestro init\n  maestro init                         Login, create or reuse an API key, and register this agent\n  maestro init --rotate-key           Replace the stored agent MCP API key\n  maestro init --mcp-url <url>        Override the EvalOps agent MCP endpoint\n  maestro init --json                 Emit machine-readable bootstrap output\n\nOptions\n  --agent-type <type>                 Agent type to register, defaults to maestro\n  --surface <surface>                 Surface to register, defaults to cli\n  --integration-profile <profile>     mcp_only, mcp_otlp, managed_runtime, sdk_integrated, or provider_proxy\n  --shim-type <type>                  native_mcp, command_wrapper, hook, provider_proxy, sdk, or mcp_firewall_proxy\n  --trace-mode <mode>                 none, mcp_events, or otlp\n  --memory-mode <mode>                none, read_only, durable, or cerebro\n  --runtime-owner <owner>             external or evalops\n  --capability <cap[,cap...]>         Agent capability to declare; repeatable\n  --workspace, --workspace-id <id>    Workspace to associate with the registration\n  --scope <scope[,scope...]>          Registration scopes to request\n  --key-scope <scope[,scope...]>      API key scopes to request\n  --expires-in-days <days>            API key TTL in days\n  --force-login                       Re-run EvalOps OAuth before bootstrapping\n  --manifest-url <url>                Override the agent MCP manifest URL\n  --ttl-seconds <seconds>             Registration TTL in seconds"
+    "deixic-code init\n  deixic-code init                         Login, create or reuse an API key, and register this agent\n  deixic-code init --rotate-key           Replace the stored agent MCP API key\n  deixic-code init --mcp-url <url>        Override the EvalOps agent MCP endpoint\n  deixic-code init --json                 Emit machine-readable bootstrap output\n\nOptions\n  --agent-type <type>                 Agent type to register, defaults to maestro\n  --surface <surface>                 Surface to register, defaults to cli\n  --integration-profile <profile>     mcp_only, mcp_otlp, managed_runtime, sdk_integrated, or provider_proxy\n  --shim-type <type>                  native_mcp, command_wrapper, hook, provider_proxy, sdk, or mcp_firewall_proxy\n  --trace-mode <mode>                 none, mcp_events, or otlp\n  --memory-mode <mode>                none, read_only, durable, or cerebro\n  --runtime-owner <owner>             external or evalops\n  --capability <cap[,cap...]>         Agent capability to declare; repeatable\n  --workspace, --workspace-id <id>    Workspace to associate with the registration\n  --scope <scope[,scope...]>          Registration scopes to request\n  --key-scope <scope[,scope...]>      API key scopes to request\n  --expires-in-days <days>            API key TTL in days\n  --force-login                       Re-run EvalOps OAuth before bootstrapping\n  --manifest-url <url>                Override the agent MCP manifest URL\n  --ttl-seconds <seconds>             Registration TTL in seconds"
 }
 
 fn parse_args(args: &[String]) -> Result<InitOptions> {
@@ -315,8 +334,8 @@ fn parse_args(args: &[String]) -> Result<InitOptions> {
                 options.ttl_seconds = Some(positive_integer(&read(index)?, flag)?);
             }
             "--workspace" | "--workspace-id" => options.workspace_id = Some(read(index)?),
-            value if value.starts_with('-') => bail!("Unknown maestro init option: {value}"),
-            value => bail!("Unexpected maestro init argument: {value}"),
+            value if value.starts_with('-') => bail!("Unknown deixic-code init option: {value}"),
+            value => bail!("Unexpected deixic-code init argument: {value}"),
         }
         index += 2;
     }
@@ -388,7 +407,7 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
         status(options, "Reusing stored EvalOps agent API key");
     }
 
-    status(options, "Registering Maestro with EvalOps agent MCP");
+    status(options, "Registering Deixic Code with EvalOps agent MCP");
     let mut agent_client = AgentMcpClient::connect(
         &endpoint.endpoint,
         api_key
@@ -435,7 +454,7 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
             "evalops_check_action",
             json!({
                 "action_type": "llm_gateway.invoke",
-                "action_payload": "maestro init first governed inference check",
+                "action_payload": "deixic-code init first governed inference check",
                 "declared_risk_level": "low"
             }),
         )
@@ -445,7 +464,9 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
         Err(error) => {
             status(
                 options,
-                &format!("EvalOps governed inference check unavailable; continuing bootstrap ({error:#})"),
+                &format!(
+                    "EvalOps governed inference check unavailable; continuing bootstrap ({error:#})"
+                ),
             );
             json!({})
         }
@@ -524,10 +545,7 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
         session_expires_at: register.expires_at.clone(),
         shim_type: Some(shim_type.clone()),
         trace_mode: Some(trace_mode.clone()),
-        workspace_id: options
-            .workspace_id
-            .clone()
-            .or_else(|| organization_id.clone()),
+        workspace_id: stored_registration_workspace(options),
     };
     credentials.metadata.insert(
         "agentId".to_owned(),
@@ -609,6 +627,10 @@ fn register_args(options: &InitOptions) -> Value {
     value
 }
 
+fn stored_registration_workspace(options: &InitOptions) -> Option<String> {
+    options.workspace_id.clone()
+}
+
 async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCredentials> {
     let mut credentials = if options.force_login {
         None
@@ -645,7 +667,7 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
     let registration_response = client
         .post(format!("{identity}/register"))
         .json(&json!({
-            "client_name": "Maestro CLI",
+            "client_name": "Deixic Code CLI",
             "redirect_uris": [&callback_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
@@ -653,7 +675,7 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
         }))
         .send()
         .await
-        .context("register Maestro OAuth client")?;
+        .context("register Deixic Code OAuth client")?;
     let registration_status = registration_response.status();
     let registration_body = registration_response.text().await.unwrap_or_default();
     if !registration_status.is_success() {
@@ -675,12 +697,14 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
             .append_pair("response_type", "code")
             .append_pair("client_id", &registration.client_id)
             .append_pair("redirect_uri", &callback_uri)
-            .append_pair("scope", REQUIRED_SCOPE)
+            .append_pair("scope", REQUIRED_LOGIN_SCOPES)
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256");
-        if let Some(org) = login_organization_id() {
-            query.append_pair("organization_id", &org);
+        if let Some((organization_id, workspace_id)) = login_tenant_hint() {
+            query
+                .append_pair("organization_id", &organization_id)
+                .append_pair("workspace_id", &workspace_id);
         }
     }
     status(options, "Waiting for EvalOps identity callback...");
@@ -813,7 +837,7 @@ async fn read_callback(
     write_http(
         stream,
         200,
-        "Authentication successful. You can close this window and return to Maestro.",
+        "Authentication successful. You can close this window and return to Deixic Code.",
     )
     .await?;
     Ok(Some(CallbackResult { code }))
@@ -1179,7 +1203,7 @@ async fn create_api_key(
     })
 }
 
-struct AgentMcpClient {
+pub(crate) struct AgentMcpClient {
     client: Client,
     endpoint: String,
     api_key: String,
@@ -1188,7 +1212,7 @@ struct AgentMcpClient {
 }
 
 impl AgentMcpClient {
-    async fn connect(endpoint: &str, api_key: &str) -> Result<Self> {
+    pub(crate) async fn connect(endpoint: &str, api_key: &str) -> Result<Self> {
         let mut connection = Self {
             client: Client::builder().timeout(Duration::from_secs(30)).build()?,
             endpoint: endpoint.to_owned(),
@@ -1212,7 +1236,7 @@ impl AgentMcpClient {
         Ok(connection)
     }
 
-    async fn call_tool<T: for<'de> Deserialize<'de>>(
+    pub(crate) async fn call_tool<T: for<'de> Deserialize<'de>>(
         &mut self,
         name: &str,
         arguments: Value,
@@ -1301,7 +1325,7 @@ impl AgentMcpClient {
         Ok(response)
     }
 
-    async fn close(&self) {
+    pub(crate) async fn close(&self) {
         if let Some(session) = self.session_id.as_deref() {
             let _ = self
                 .client
@@ -1338,8 +1362,7 @@ async fn parse_mcp_response(response: Response) -> Result<Value> {
 }
 
 fn credentials_file() -> Result<PathBuf> {
-    let home = crate::path_utils::maestro_home_dir().context("resolve Maestro home")?;
-    Ok(home.join("oauth.json"))
+    Ok(credential_storage_context()?.home.join("oauth.json"))
 }
 
 fn force_file_storage() -> bool {
@@ -1364,24 +1387,92 @@ fn force_keychain_storage() -> bool {
     ) && std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok().as_deref() != Some("1")
 }
 
+fn credential_storage_context() -> Result<CredentialStorageContext> {
+    Ok(CredentialStorageContext {
+        home: crate::path_utils::maestro_home_dir().context("resolve Maestro home")?,
+        force_file: force_file_storage(),
+        force_keychain: force_keychain_storage(),
+    })
+}
+
+fn credential_cache() -> &'static Mutex<CredentialCache> {
+    EVALOPS_CREDENTIAL_CACHE.get_or_init(|| Mutex::new(CredentialCache::default()))
+}
+
+fn lock_credential_cache() -> std::sync::MutexGuard<'static, CredentialCache> {
+    credential_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn invalidate_credentials_cache(cache: &mut CredentialCache) {
+    cache.context = None;
+    cache.loaded = false;
+    cache.credentials = None;
+}
+
+/// Clear the process-local EvalOps credential cache.
+///
+/// The cache is deliberately invalidated by credential writes and logout. The
+/// public helper also gives callers that update the backing store outside this
+/// module an explicit way to make the next read authoritative.
+pub fn invalidate_evalops_credentials_cache() {
+    let mut cache = lock_credential_cache();
+    invalidate_credentials_cache(&mut cache);
+}
+
+fn replace_evalops_credentials_cache(credentials: &OAuthCredentials) {
+    invalidate_evalops_credentials_cache();
+    let Ok(context) = credential_storage_context() else {
+        return;
+    };
+    let mut cache = lock_credential_cache();
+    cache.context = Some(context);
+    cache.loaded = true;
+    cache.credentials = Some(credentials.clone());
+}
+
 fn load_credentials() -> Result<Option<OAuthCredentials>> {
-    if !force_file_storage() {
+    let context = credential_storage_context()?;
+    let mut cache = lock_credential_cache();
+    load_credentials_with_cache(&mut cache, context)
+}
+
+fn load_credentials_with_cache(
+    cache: &mut CredentialCache,
+    context: CredentialStorageContext,
+) -> Result<Option<OAuthCredentials>> {
+    if cache.loaded && cache.context.as_ref() == Some(&context) {
+        return Ok(cache.credentials.clone());
+    }
+
+    let credentials = load_credentials_uncached(&context)?;
+    cache.context = Some(context);
+    cache.loaded = true;
+    cache.credentials = credentials.clone();
+    Ok(credentials)
+}
+
+fn load_credentials_uncached(
+    context: &CredentialStorageContext,
+) -> Result<Option<OAuthCredentials>> {
+    if !context.force_file {
         match keyring::Entry::new("maestro-oauth", "evalops") {
             Ok(entry) => match entry.get_password() {
                 Ok(raw) => return Ok(Some(serde_json::from_str(&raw)?)),
                 Err(keyring::Error::NoEntry) => {}
-                Err(error) if force_keychain_storage() => {
+                Err(error) if context.force_keychain => {
                     return Err(error).context("read forced EvalOps keychain storage");
                 }
                 Err(_) => {}
             },
-            Err(error) if force_keychain_storage() => {
+            Err(error) if context.force_keychain => {
                 return Err(error).context("open forced EvalOps keychain storage");
             }
             Err(_) => {}
         }
     }
-    let path = credentials_file()?;
+    let path = context.home.join("oauth.json");
     if !path.exists() {
         return Ok(None);
     }
@@ -1396,8 +1487,9 @@ fn load_credentials() -> Result<Option<OAuthCredentials>> {
 }
 
 fn save_credentials(credentials: &OAuthCredentials) -> Result<()> {
+    let context = credential_storage_context()?;
     let serialized = serde_json::to_string(credentials)?;
-    if !force_file_storage() {
+    if !context.force_file {
         let keychain_result = (|| -> Result<()> {
             migrate_plaintext_credentials_to_keychain("evalops")?;
             let entry = keyring::Entry::new("maestro-oauth", "evalops")
@@ -1410,14 +1502,17 @@ fn save_credentials(credentials: &OAuthCredentials) -> Result<()> {
             Ok(())
         })();
         match keychain_result {
-            Ok(()) => return Ok(()),
-            Err(error) if force_keychain_storage() => {
+            Ok(()) => {
+                replace_evalops_credentials_cache(credentials);
+                return Ok(());
+            }
+            Err(error) if context.force_keychain => {
                 return Err(error).context("forced EvalOps keychain storage failed");
             }
             Err(_) => {}
         }
     }
-    let path = credentials_file()?;
+    let path = context.home.join("oauth.json");
     let mut storage = if path.exists() {
         serde_json::from_str::<Value>(&fs::read_to_string(&path)?)
             .with_context(|| format!("parse {}", path.display()))?
@@ -1428,7 +1523,9 @@ fn save_credentials(credentials: &OAuthCredentials) -> Result<()> {
         .as_object_mut()
         .context("OAuth storage root must be an object")?;
     object.insert("evalops".to_owned(), serde_json::to_value(credentials)?);
-    atomic_private_write(&path, &serde_json::to_vec_pretty(&storage)?)
+    atomic_private_write(&path, &serde_json::to_vec_pretty(&storage)?)?;
+    replace_evalops_credentials_cache(credentials);
+    Ok(())
 }
 
 fn update_provider_registry(provider: &str) -> Result<()> {
@@ -1631,7 +1728,7 @@ fn format_success(result: &InitResult) -> String {
     };
     let authenticated_as = result.authenticated_as.as_deref().unwrap_or("EvalOps");
     [
-        "EvalOps Maestro bootstrap".to_owned(),
+        "Deixic Code bootstrap".to_owned(),
         String::new(),
         format!("✓ Authenticated as {authenticated_as}"),
         format!("✓ {key_mode} managed inference key"),
@@ -1841,13 +1938,31 @@ fn identity_base_from_env() -> String {
     )
 }
 
-fn login_organization_id() -> Option<String> {
-    env_first(&["MAESTRO_EVALOPS_ORG_ID", "EVALOPS_ORGANIZATION_ID"]).or_else(|| {
-        load_credentials()
-            .ok()
-            .flatten()
-            .and_then(|credentials| metadata_string(&credentials.metadata, "organizationId"))
+fn login_tenant_hint() -> Option<(String, String)> {
+    let environment_organization =
+        env_first(&["MAESTRO_EVALOPS_ORG_ID", "EVALOPS_ORGANIZATION_ID"]);
+    let environment_workspace =
+        env_first(&["MAESTRO_EVALOPS_WORKSPACE_ID", "EVALOPS_WORKSPACE_ID"]);
+    if environment_organization.is_some() || environment_workspace.is_some() {
+        return complete_login_tenant_hint(environment_organization, environment_workspace);
+    }
+
+    load_credentials().ok().flatten().and_then(|credentials| {
+        let organization = metadata_string(&credentials.metadata, "organizationId");
+        let workspace = credentials
+            .metadata
+            .get("agentMcp")
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata_string(metadata, "workspaceId"));
+        complete_login_tenant_hint(organization, workspace)
     })
+}
+
+fn complete_login_tenant_hint(
+    organization_id: Option<String>,
+    workspace_id: Option<String>,
+) -> Option<(String, String)> {
+    non_empty(organization_id.as_deref()).zip(non_empty(workspace_id.as_deref()))
 }
 
 fn response_detail(body: &str) -> String {
@@ -2021,10 +2136,89 @@ pub fn load_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
     Ok(Some(snapshot_from_credentials(&credentials)))
 }
 
+/// Resolve the trusted Identity authority used to verify a stored or
+/// explicitly supplied EvalOps access token.
+///
+/// Login and setup may discover an endpoint, but model admission must not let
+/// a caller redirect introspection to an authority it controls. Release builds
+/// therefore accept only first-party HTTPS authorities. Debug integration
+/// binaries can opt into loopback with [`TEST_IDENTITY_AUTHORITY_ENV`]; that
+/// branch is compiled out of release builds.
+pub fn evalops_identity_base_url(
+    snapshot: Option<&EvalOpsCredentialSnapshot>,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<String> {
+    let configured = ["MAESTRO_IDENTITY_URL", "EVALOPS_IDENTITY_URL"]
+        .iter()
+        .find_map(|name| {
+            env.get(*name)
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    let candidate = configured
+        .or_else(|| snapshot.and_then(|value| value.identity_base_url.as_deref()))
+        .unwrap_or(DEFAULT_IDENTITY_BASE_URL);
+    validate_identity_authority(candidate, test_identity_authority_enabled(env))
+}
+
+fn validate_identity_authority(candidate: &str, allow_test_loopback: bool) -> Result<String> {
+    let normalized = normalize_identity(candidate);
+    let url = Url::parse(&normalized).context("invalid EvalOps Identity authority")?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        bail!(
+            "EvalOps Identity authority must be an origin without credentials, path, query, or fragment"
+        );
+    }
+
+    let host = url.host_str().unwrap_or_default();
+    let first_party = url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && TRUSTED_IDENTITY_AUTHORITIES.contains(&host);
+    if first_party {
+        return Ok(normalized);
+    }
+
+    if allow_test_loopback
+        && matches!(url.scheme(), "http" | "https")
+        && url.host().is_some_and(|host| match host {
+            url::Host::Ipv4(address) => address.is_loopback(),
+            url::Host::Ipv6(address) => address.is_loopback(),
+            url::Host::Domain(domain) => domain == "localhost",
+        })
+    {
+        return Ok(normalized);
+    }
+
+    bail!(
+        "untrusted EvalOps Identity authority; model admission requires a first-party HTTPS Identity endpoint"
+    )
+}
+
+fn test_identity_authority_enabled(env: &std::collections::HashMap<String, String>) -> bool {
+    if cfg!(test) {
+        return env
+            .get(TEST_IDENTITY_AUTHORITY_ENV)
+            .is_none_or(|value| !matches!(value.trim(), "0" | "false" | "no"));
+    }
+    #[cfg(debug_assertions)]
+    {
+        env.get(TEST_IDENTITY_AUTHORITY_ENV)
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
+    }
+    #[cfg(not(debug_assertions))]
+    false
+}
+
 /// Persist the selected org `provider_ref` on the stored EvalOps session.
 pub fn store_evalops_provider_ref(provider_ref: Value) -> Result<()> {
     let Some(mut credentials) = load_credentials()? else {
-        bail!("no EvalOps session; run `maestro evalops login`");
+        bail!("no EvalOps session; run `deixic-code evalops login`");
     };
     credentials
         .metadata
@@ -2157,6 +2351,7 @@ async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -
 }
 
 fn delete_credentials() -> Result<()> {
+    invalidate_evalops_credentials_cache();
     if !force_file_storage() {
         match keyring::Entry::new("maestro-oauth", "evalops") {
             Ok(entry) => match entry.delete_credential() {
@@ -2220,6 +2415,126 @@ fn remove_provider_from_registry(provider: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_identity_admission_rejects_caller_selected_authorities() {
+        for authority in [
+            "http://127.0.0.1:8080",
+            "https://identity.attacker.example",
+            "https://identity.evalops.dev.attacker.example",
+            "https://identity.evalops.dev:8443",
+            "https://identity.evalops.dev/tenant-controlled",
+            "https://app.evalops.dev",
+        ] {
+            let error = validate_identity_authority(authority, false)
+                .expect_err("caller-selected authority must fail closed");
+            assert!(
+                error.to_string().contains("Identity authority"),
+                "{authority}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_identity_admission_accepts_only_known_first_party_origins() {
+        assert_eq!(
+            validate_identity_authority("https://identity.evalops.dev/", false)
+                .expect("production Identity"),
+            "https://identity.evalops.dev"
+        );
+        assert_eq!(
+            validate_identity_authority("https://api.staging.evalops.dev", false)
+                .expect("staging Identity"),
+            "https://api.staging.evalops.dev"
+        );
+    }
+
+    #[test]
+    fn identity_authority_ignores_platform_base_urls() {
+        let env = std::collections::HashMap::from([
+            (
+                "EVALOPS_BASE_URL".to_owned(),
+                "https://app.evalops.dev".to_owned(),
+            ),
+            (
+                "MAESTRO_PLATFORM_BASE_URL".to_owned(),
+                "https://app.evalops.dev".to_owned(),
+            ),
+            (
+                "MAESTRO_EVALOPS_BASE_URL".to_owned(),
+                "https://identity.attacker.example".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            evalops_identity_base_url(None, &env).expect("default Identity"),
+            "https://identity.evalops.dev"
+        );
+    }
+
+    #[test]
+    fn explicit_untrusted_identity_url_fails_closed() {
+        let env = std::collections::HashMap::from([(
+            "MAESTRO_IDENTITY_URL".to_owned(),
+            "https://app.evalops.dev".to_owned(),
+        )]);
+        let error = evalops_identity_base_url(None, &env)
+            .expect_err("platform URL is not an Identity authority");
+        assert!(
+            error
+                .to_string()
+                .contains("untrusted EvalOps Identity authority")
+        );
+    }
+
+    #[test]
+    fn stored_untrusted_identity_snapshot_fails_closed() {
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "tok".to_owned(),
+            refresh: "refresh".to_owned(),
+            expires: 1,
+            email: None,
+            organization_id: Some("org".to_owned()),
+            user_id: None,
+            identity_base_url: Some("https://identity.attacker.example".to_owned()),
+            provider_ref: None,
+            agent_mcp: None,
+        };
+        let error = evalops_identity_base_url(Some(&snapshot), &std::collections::HashMap::new())
+            .expect_err("stored attacker Identity URL must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("untrusted EvalOps Identity authority")
+        );
+    }
+
+    #[test]
+    fn login_requests_session_history_authority() {
+        let scopes = REQUIRED_LOGIN_SCOPES.split_whitespace().collect::<Vec<_>>();
+        assert!(scopes.contains(&"llm_gateway:invoke"));
+        assert!(scopes.contains(&"sessions:read"));
+        assert!(scopes.contains(&"sessions:write"));
+    }
+
+    #[test]
+    fn login_tenant_hint_requires_complete_identity_scope() {
+        assert_eq!(complete_login_tenant_hint(None, None), None);
+        assert_eq!(
+            complete_login_tenant_hint(Some("org-1".to_owned()), None),
+            None
+        );
+        assert_eq!(
+            complete_login_tenant_hint(None, Some("workspace-1".to_owned())),
+            None
+        );
+        assert_eq!(
+            complete_login_tenant_hint(
+                Some(" org-1 ".to_owned()),
+                Some(" workspace-1 ".to_owned())
+            ),
+            Some(("org-1".to_owned(), "workspace-1".to_owned()))
+        );
+    }
 
     #[test]
     fn provider_ref_defaults_to_canonical_gateway_tuple() {
@@ -2286,6 +2601,19 @@ mod tests {
         assert_eq!(memory_mode(&options), "durable");
         assert_eq!(runtime_owner(&options), "evalops");
         assert!(capabilities(&options).contains(&"maestro:init".to_owned()));
+    }
+
+    #[test]
+    fn stored_registration_workspace_requires_an_explicit_workspace_option() {
+        assert_eq!(stored_registration_workspace(&InitOptions::default()), None);
+        let options = InitOptions {
+            workspace_id: Some("workspace-1".to_owned()),
+            ..InitOptions::default()
+        };
+        assert_eq!(
+            stored_registration_workspace(&options).as_deref(),
+            Some("workspace-1")
+        );
     }
 
     #[test]
@@ -2405,6 +2733,59 @@ mod tests {
     }
 
     static LOGIN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[test]
+    fn evalops_credential_load_is_cached_until_invalidated() {
+        let home = tempfile::tempdir().expect("maestro home");
+        let context = CredentialStorageContext {
+            home: home.path().to_path_buf(),
+            force_file: true,
+            force_keychain: false,
+        };
+        let mut cache = CredentialCache::default();
+
+        let first = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-one".to_owned(),
+            access: "access-one".to_owned(),
+            expires: 1,
+            metadata: Map::new(),
+        };
+        let second = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-two".to_owned(),
+            access: "access-two".to_owned(),
+            expires: 2,
+            metadata: Map::new(),
+        };
+        let path = home.path().join("oauth.json");
+        atomic_private_write(
+            &path,
+            &serde_json::to_vec_pretty(&json!({"evalops": &first})).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_credentials_with_cache(&mut cache, context.clone())
+            .unwrap()
+            .expect("first credentials should load");
+        assert_eq!(loaded.access, "access-one");
+
+        atomic_private_write(
+            &path,
+            &serde_json::to_vec_pretty(&json!({"evalops": &second})).unwrap(),
+        )
+        .unwrap();
+        let cached = load_credentials_with_cache(&mut cache, context.clone())
+            .unwrap()
+            .expect("cached credentials should remain available");
+        assert_eq!(cached.access, "access-one");
+
+        invalidate_credentials_cache(&mut cache);
+        let refreshed = load_credentials_with_cache(&mut cache, context)
+            .unwrap()
+            .expect("invalidated credentials should reload");
+        assert_eq!(refreshed.access, "access-two");
+    }
 
     struct IdentityStub {
         challenge: Option<String>,
@@ -2545,6 +2926,7 @@ mod tests {
         let previous_port = std::env::var("MAESTRO_OAUTH_CALLBACK_PORT").ok();
         let previous_token = std::env::var("MAESTRO_EVALOPS_ACCESS_TOKEN").ok();
         let previous_org = std::env::var("MAESTRO_EVALOPS_ORG_ID").ok();
+        let previous_workspace = std::env::var("MAESTRO_EVALOPS_WORKSPACE_ID").ok();
         std::env::set_var("MAESTRO_HOME", home.path());
         std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
         std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
@@ -2553,6 +2935,7 @@ mod tests {
         std::env::set_var("MAESTRO_OAUTH_CALLBACK_PORT", callback.to_string());
         std::env::remove_var("MAESTRO_EVALOPS_ACCESS_TOKEN");
         std::env::remove_var("MAESTRO_EVALOPS_ORG_ID");
+        std::env::set_var("MAESTRO_EVALOPS_WORKSPACE_ID", "workspace_from_stub");
 
         let result = perform_evalops_login().await;
         identity_task.abort();
@@ -2569,6 +2952,7 @@ mod tests {
                 restore_env("MAESTRO_OAUTH_CALLBACK_PORT", previous_port);
                 restore_env("MAESTRO_EVALOPS_ACCESS_TOKEN", previous_token);
                 restore_env("MAESTRO_EVALOPS_ORG_ID", previous_org);
+                restore_env("MAESTRO_EVALOPS_WORKSPACE_ID", previous_workspace);
                 panic!("PKCE login should succeed against the identity stub: {error:#}");
             }
         };
@@ -2584,21 +2968,30 @@ mod tests {
         assert_eq!(snapshot.access, "access-from-stub");
         assert_eq!(snapshot.refresh, "refresh-from-stub");
         assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
-        let mode =
-            crate::credential_mode::detect_from(Some(&snapshot), &std::collections::HashMap::new())
-                .expect("mode");
+        let mode = crate::credential_mode::detect_from(
+            Some(&snapshot),
+            &std::collections::HashMap::from([(
+                "MAESTRO_EVALOPS_WORKSPACE_ID".to_owned(),
+                "workspace_from_stub".to_owned(),
+            )]),
+        )
+        .expect("mode");
         assert!(mode.is_platform());
         let crate::credential_mode::DetectedMode::Platform(session) = mode else {
             panic!("expected platform session");
         };
         let env = session
-            .managed_env("anthropic/claude-opus-4-6")
+            .managed_env(
+                "anthropic/claude-opus-4-6",
+                &std::collections::HashMap::new(),
+            )
             .expect("managed env");
         crate::ai::UnifiedClient::from_model_with_env(
             &session.managed_model_route("anthropic/claude-opus-4-6"),
             &env,
         )
         .expect("platform session must construct the llm-gateway client");
+        restore_env("MAESTRO_EVALOPS_WORKSPACE_ID", previous_workspace);
     }
 
     #[tokio::test]

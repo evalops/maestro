@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -221,11 +221,23 @@ pub struct OperatingPlaneRuntimeSignals {
 
 pub fn resolve_operating_plane_service_config() -> Option<PlatformServiceConfig> {
     let base_url = get_env_value(BASE_URL_ENV_VARS)?;
-    let organization_id = resolve_organization_id();
+    let organization_id = get_env_value(ORGANIZATION_ENV_VARS);
+    let token = get_env_value(TOKEN_ENV_VARS);
+    let stored = if organization_id.is_none() || token.is_none() {
+        crate::init_cli::load_evalops_snapshot().ok().flatten()
+    } else {
+        None
+    };
+    let organization_id = organization_id.or_else(|| {
+        stored
+            .as_ref()
+            .and_then(|snapshot| snapshot.organization_id.clone())
+    });
     organization_id.as_ref()?;
-    let token = resolve_configured_token();
+    let token = token.or_else(|| stored.as_ref().map(|snapshot| snapshot.access.clone()));
     token.as_ref()?;
-    let workspace_id = get_env_value(WORKSPACE_ENV_VARS).or_else(|| organization_id.clone());
+    let workspace_id = require_workspace_scope(get_env_value(WORKSPACE_ENV_VARS));
+    workspace_id.as_ref()?;
     Some(PlatformServiceConfig {
         base_url: normalize_base_url(&base_url, BASE_URL_SUFFIXES),
         token,
@@ -427,65 +439,12 @@ fn parse_positive_int(value: Option<&str>, fallback: u64) -> u64 {
         .unwrap_or(fallback)
 }
 
-fn resolve_organization_id() -> Option<String> {
-    get_env_value(ORGANIZATION_ENV_VARS).or_else(oauth_organization_id)
-}
-
-fn resolve_configured_token() -> Option<String> {
-    get_env_value(TOKEN_ENV_VARS).or_else(oauth_access_token)
-}
-
-fn oauth_access_token() -> Option<String> {
-    oauth_credential_field("access")
-}
-
-fn oauth_organization_id() -> Option<String> {
-    read_oauth_provider().and_then(|provider| {
-        provider
-            .get("metadata")
-            .and_then(|meta| meta.get("organizationId"))
-            .and_then(Value::as_str)
-            .and_then(|value| trim_string(Some(value)).map(str::to_owned))
-    })
-}
-
-fn oauth_credential_field(field: &str) -> Option<String> {
-    read_oauth_provider().and_then(|provider| {
-        provider
-            .get(field)
-            .and_then(Value::as_str)
-            .and_then(|value| trim_string(Some(value)).map(str::to_owned))
-    })
-}
-
-fn read_oauth_provider() -> Option<Value> {
-    if std::env::var("MAESTRO_OAUTH_STORAGE_MODE")
-        .ok()
-        .as_deref()
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-        != Some("file")
-        && std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok().as_deref() != Some("1")
-    {
-        if let Ok(entry) = keyring::Entry::new("maestro-oauth", "evalops") {
-            if let Ok(raw) = entry.get_password() {
-                if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-                    return Some(value);
-                }
-            }
-        }
-    }
-    let path = crate::path_utils::maestro_home_dir()?.join("oauth.json");
-    if !path.exists() {
-        return None;
-    }
-    let raw = std::fs::read_to_string(path).ok()?;
-    let storage: Value = serde_json::from_str(&raw).ok()?;
-    storage.get("evalops").cloned()
-}
-
 pub fn trim_string(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn require_workspace_scope(workspace_id: Option<String>) -> Option<String> {
+    workspace_id.filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -566,5 +525,14 @@ mod tests {
             Some("false")
         );
         assert_eq!(pairs.get("limit").map(String::as_str), Some("25"));
+    }
+
+    #[test]
+    fn operating_plane_scope_does_not_derive_workspace_from_organization() {
+        assert_eq!(require_workspace_scope(None), None);
+        assert_eq!(
+            require_workspace_scope(Some("ws_explicit".to_owned())),
+            Some("ws_explicit".to_owned())
+        );
     }
 }

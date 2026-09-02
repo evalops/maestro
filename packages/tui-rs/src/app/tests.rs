@@ -502,7 +502,7 @@ fn test_cleanup_result_message_surfaces_errors_even_when_nothing_was_removed() {
 #[test]
 fn test_slash_cycle_apply_path_no_double_slash() {
     use super::command_handlers::normalize_slash_completion;
-    use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+    use crate::commands::{SlashCommandMatcher, SlashCycleState, build_command_registry};
     use std::sync::Arc;
 
     let registry = Arc::new(build_command_registry());
@@ -1102,7 +1102,7 @@ fn new_test_app() -> App {
         viewport_top,
         viewport_height,
     };
-    let mut app = App::new_with_terminal_with_history(
+    let mut app = App::new_with_terminal_with_history_for_test(
         terminal,
         capabilities,
         crate::history::PromptHistory::default(),
@@ -1373,10 +1373,11 @@ async fn test_queued_prompt_activates_matching_skills() {
             .is_active(),
         "a queued prompt must activate the skills its triggers match"
     );
-    assert!(app
-        .skill_registry
-        .active_system_prompt_additions()
-        .contains("parser conventions"));
+    assert!(
+        app.skill_registry
+            .active_system_prompt_additions()
+            .contains("parser conventions")
+    );
     assert!(
         app.state.messages.iter().any(|message| message
             .content
@@ -1685,9 +1686,10 @@ fn test_queue_reorder_and_send_now_preserve_all_prompts() {
     app.enqueue_pending_prompt(second_id, "second".to_string(), PromptKind::FollowUp, false);
     app.enqueue_pending_prompt(third_id, "third".to_string(), PromptKind::FollowUp, false);
 
-    assert!(app
-        .move_queued_prompt(second_id, QueueMoveDirection::Down)
-        .is_some());
+    assert!(
+        app.move_queued_prompt(second_id, QueueMoveDirection::Down)
+            .is_some()
+    );
     assert_eq!(
         app.queued_prompts
             .iter()
@@ -1695,9 +1697,10 @@ fn test_queue_reorder_and_send_now_preserve_all_prompts() {
             .collect::<Vec<_>>(),
         vec![first_id, third_id, second_id]
     );
-    assert!(app
-        .move_queued_prompt(second_id, QueueMoveDirection::Now)
-        .is_some());
+    assert!(
+        app.move_queued_prompt(second_id, QueueMoveDirection::Now)
+            .is_some()
+    );
     assert_eq!(
         app.queued_prompts
             .iter()
@@ -1866,7 +1869,10 @@ fn test_show_help_uses_maestro_branding() {
     app.show_help();
 
     let last = app.state.messages.last().expect("help message");
-    assert!(last.content.contains("Maestro TUI - Keyboard Shortcuts"));
+    assert!(
+        last.content
+            .contains("Deixic Code TUI - Keyboard Shortcuts")
+    );
     assert!(!last.content.contains("Composer TUI - Keyboard Shortcuts"));
 }
 
@@ -1894,18 +1900,21 @@ fn test_show_help_uses_rebound_shortcut_labels() {
     std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
 
     let last = app.state.messages.last().expect("help message");
-    assert!(last
-        .content
-        .lines()
-        .any(|line| line.contains("Open command palette") && !line.contains("Ctrl+P")));
-    assert!(last
-        .content
-        .lines()
-        .any(|line| line.contains("Open file search") && !line.contains("Ctrl+O")));
-    assert!(last
-        .content
-        .lines()
-        .any(|line| { line.contains("Toggle tool call expansion") && !line.contains("Ctrl+T") }));
+    assert!(
+        last.content
+            .lines()
+            .any(|line| line.contains("Open command palette") && !line.contains("Ctrl+P"))
+    );
+    assert!(
+        last.content
+            .lines()
+            .any(|line| line.contains("Open file search") && !line.contains("Ctrl+O"))
+    );
+    assert!(
+        last.content.lines().any(|line| {
+            line.contains("Toggle tool call expansion") && !line.contains("Ctrl+T")
+        })
+    );
 }
 
 #[test]
@@ -1930,9 +1939,11 @@ fn test_invalid_keybindings_config_surfaces_startup_warning() {
     std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
 
     let first = app.state.messages.first().expect("startup warning");
-    assert!(first
-        .content
-        .contains("Keyboard shortcuts config has 1 issue. Run /hotkeys validate."));
+    assert!(
+        first
+            .content
+            .contains("Keyboard shortcuts config has 1 issue. Run /hotkeys validate.")
+    );
 }
 
 #[tokio::test]
@@ -2028,16 +2039,18 @@ async fn test_handle_config_event_reloads_keybindings() {
 
     app.show_help();
     let last = app.state.messages.last().expect("help message");
-    assert!(last
-        .content
-        .lines()
-        .any(|line| line.contains("Open command palette")
-            && line.contains(expected_command_palette.as_str())));
-    assert!(last
-        .content
-        .lines()
-        .any(|line| line.contains("Open file search")
-            && line.contains(expected_file_search.as_str())));
+    assert!(
+        last.content
+            .lines()
+            .any(|line| line.contains("Open command palette")
+                && line.contains(expected_command_palette.as_str()))
+    );
+    assert!(
+        last.content
+            .lines()
+            .any(|line| line.contains("Open file search")
+                && line.contains(expected_file_search.as_str()))
+    );
 }
 
 #[tokio::test]
@@ -2805,11 +2818,53 @@ fn test_system_prompt_contains_tools() {
 }
 
 #[test]
+fn test_system_prompt_routes_explicit_computer_requests_to_hosted_backend() {
+    let prompt_template = App::build_base_system_prompt("/tmp");
+
+    assert!(prompt_template.contains("work on this in a Computer"));
+    assert!(prompt_template.contains("backend: \"computer\""));
+    assert!(prompt_template.contains("runtime resolves the active workspace"));
+    assert!(prompt_template.contains("silently fall back to the native backend"));
+}
+
+#[test]
 fn test_system_prompt_includes_year_hint() {
     let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, None, None, None, "");
 
     assert!(prompt.contains("websearch/codesearch"));
     assert!(prompt.contains("current year (2026)"));
+}
+
+#[test]
+fn omitted_skill_catalog_budget_failure_remains_in_prompt_audit() {
+    let source = "skills.loader.available_skills#omitted_budget_exceeded?budget_tokens=1&required_tokens=12&protected_count=2";
+    let assembly = App::build_system_prompt_assembly_with_context(SystemPromptAssemblyContext {
+        cwd: "/tmp",
+        current_year: 2026,
+        skills: SkillsPromptSection {
+            content: None,
+            source: source.to_string(),
+            audit_only: true,
+        },
+        harness_section: None,
+        rlm_section: None,
+        mailbox_section: None,
+        managed_rules_section: None,
+        active_prompt: "",
+    });
+
+    let rendered = assembly.render();
+    let report = assembly.audit(Some("test-model"), Vec::new());
+    let skills = report
+        .fragments
+        .iter()
+        .find(|fragment| fragment.name == "loaded_skills")
+        .expect("omitted catalog must remain visible in the audit");
+
+    assert!(!rendered.contains(source));
+    assert_eq!(skills.source, source);
+    assert_eq!(skills.byte_count, 0);
+    assert_eq!(skills.token_count, 0);
 }
 
 #[test]
@@ -2852,7 +2907,7 @@ fn test_system_prompt_includes_rlm_and_mailbox_context() {
 
     assert!(prompt.contains("RLM context variables"));
     assert!(prompt.contains("{{plan}}"));
-    assert!(prompt.contains("Pending Maestro mailbox messages"));
+    assert!(prompt.contains("Pending Deixic Code mailbox messages"));
     assert!(prompt.contains("report ready"));
 }
 
@@ -2882,10 +2937,12 @@ fn side_messages_do_not_count_toward_compaction() {
     let mut state = AppState::new();
     state.add_side_question("side-1".into(), "Question".into());
     state.add_side_answer("side-1-answer".into(), "Answer".into(), false);
-    assert!(state
-        .messages
-        .iter()
-        .all(|message| !message.counts_toward_compaction_index()));
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| !message.counts_toward_compaction_index())
+    );
 }
 
 #[test]
@@ -2901,11 +2958,12 @@ fn open_plan_comments_block_approval() {
         resolved: false,
     });
     app.approve_plan();
-    assert!(app
-        .state
-        .error
-        .as_deref()
-        .is_some_and(|error| error.contains("1 open review comment")));
+    assert!(
+        app.state
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("1 open review comment"))
+    );
 }
 
 #[test]
@@ -3030,27 +3088,30 @@ fn stale_plan_comments_cannot_be_resolved_or_approved() {
     std::fs::write(&plan_path, "first\nchanged\nlast\n").unwrap();
     app.handle_plan_review(PlanReviewAction::Resolve { id: 1 });
     assert!(!app.plan_review_comments[0].resolved);
-    assert!(app
-        .state
-        .error
-        .as_deref()
-        .is_some_and(|error| error.contains("stale")));
+    assert!(
+        app.state
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("stale"))
+    );
 
     app.plan_review_comments[0].resolved = true;
     app.state.error = None;
     app.approve_plan();
-    assert!(app
-        .state
-        .error
-        .as_deref()
-        .is_some_and(|error| error.contains("Plan changed")));
+    assert!(
+        app.state
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Plan changed"))
+    );
 
     app.handle_plan_review(PlanReviewAction::List);
-    assert!(app
-        .state
-        .messages
-        .last()
-        .is_some_and(|message| message.content.contains("[stale]")));
+    assert!(
+        app.state
+            .messages
+            .last()
+            .is_some_and(|message| message.content.contains("[stale]"))
+    );
     crate::plan_mode::set_active_session_id(None);
 }
 
@@ -3066,7 +3127,7 @@ fn open_plan_comments_block_off_cycle_and_approval() {
         excerpt: "line".into(),
         resolved: false,
     });
-    crate::safety::set_plan_mode(true);
+    let _plan_mode = crate::safety::PlanModeOverride::enable();
     app.state.interaction_mode = crate::state::InteractionMode::Plan;
 
     app.apply_plan_mode(false);
@@ -3076,7 +3137,6 @@ fn open_plan_comments_block_off_cycle_and_approval() {
     app.approve_plan();
     assert!(crate::safety::is_plan_mode());
 
-    crate::safety::set_plan_mode(false);
     crate::safety::set_plan_satisfied(true);
 }
 
@@ -3098,11 +3158,12 @@ fn fork_snapshot_keeps_parent_plan_state_and_session_selected() {
 
     assert_eq!(app.plan_review_comments.len(), 1);
     assert_eq!(app.state.session_id, parent_session);
-    assert!(app
-        .state
-        .status
-        .as_deref()
-        .is_some_and(|status| status.contains("created without switching")));
+    assert!(
+        app.state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("created without switching"))
+    );
 }
 
 #[tokio::test]
@@ -3587,9 +3648,11 @@ async fn test_detail_view_from_approval_modal_expands_and_restores() {
     assert_eq!(app.active_modal, ActiveModal::DetailView);
     let detail = app.detail_view.as_ref().expect("detail view open");
     assert_eq!(detail.title(), "Approval: bash");
-    assert!(detail
-        .content()
-        .contains("Needs a very long command reviewed"));
+    assert!(
+        detail
+            .content()
+            .contains("Needs a very long command reviewed")
+    );
     assert!(detail.content().contains(&long_command));
     // The approval is still pending: expanding must not decide anything.
     assert!(app.approval_controller.current().is_some());
@@ -3889,9 +3952,11 @@ async fn test_detail_view_from_batched_approval_shows_selected_inline_context() 
 
     let detail = app.detail_view.as_ref().expect("detail view open");
     assert_eq!(detail.title(), "Approval: deploy");
-    assert!(detail
-        .content()
-        .contains("/long/project/.composer/tools.json"));
+    assert!(
+        detail
+            .content()
+            .contains("/long/project/.composer/tools.json")
+    );
     assert!(detail.content().contains("/attacker/workdir"));
     assert!(detail.content().contains("PATH=/tmp/attacker/evil"));
 }
@@ -4064,11 +4129,12 @@ async fn guardian_auto_approve_executes_without_modal() {
     assert!(relayed_approved);
     assert!(relayed_result.is_none());
     assert_eq!(relayed_source, crate::agent::ExecutionSource::Native);
-    assert!(app
-        .state
-        .messages
-        .iter()
-        .any(|m| m.content.contains("auto-approved by guardian")));
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("auto-approved by guardian"))
+    );
 }
 
 #[tokio::test]
@@ -4095,11 +4161,12 @@ async fn guardian_malformed_output_fails_closed_to_human_modal() {
     settle_guardian(&mut app).await;
 
     assert_fell_back_to_modal(&app, "call-g3");
-    assert!(app
-        .state
-        .messages
-        .iter()
-        .any(|m| m.content.contains("Guardian review of 'bash' failed")));
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Guardian review of 'bash' failed"))
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -4118,11 +4185,12 @@ async fn guardian_timeout_fails_closed_to_human_modal() {
     settle_guardian(&mut app).await;
 
     assert_fell_back_to_modal(&app, "call-g4");
-    assert!(app
-        .state
-        .messages
-        .iter()
-        .any(|m| m.content.contains("Guardian review of 'bash' failed")));
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Guardian review of 'bash' failed"))
+    );
 }
 
 #[tokio::test]
@@ -4135,15 +4203,17 @@ async fn guardian_disabled_leaves_approval_flow_untouched() {
 
     // The human modal shows immediately; no guardian review is in flight.
     assert_fell_back_to_modal(&app, "call-g5");
-    assert!(!app
-        .poll_guardian_verdicts()
-        .await
-        .expect("apply guardian verdicts"));
-    assert!(!app
-        .state
-        .messages
-        .iter()
-        .any(|m| m.content.contains("guardian")));
+    assert!(
+        !app.poll_guardian_verdicts()
+            .await
+            .expect("apply guardian verdicts")
+    );
+    assert!(
+        !app.state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("guardian"))
+    );
 }
 
 #[tokio::test]
@@ -4278,6 +4348,18 @@ async fn guardian_allow_writes_a_durable_audit_record() {
         .session_manager
         .load_session(&session_id)
         .expect("reload the session file the audit record was written to");
+    let context_manifest = session
+        .header
+        .unified_context_manifest
+        .as_ref()
+        .expect("interactive sessions persist their context generation");
+    assert_eq!(
+        context_manifest
+            .get("manifestSha256")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len),
+        Some(71)
+    );
 
     // `SessionEntry::Custom` entries are intentionally excluded from
     // `ParsedSession` (they are extension-owned, opaque payloads), so this

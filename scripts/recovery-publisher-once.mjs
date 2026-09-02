@@ -113,7 +113,7 @@ async function reserveAndDispatchCli() {
 			"-f", `ref=refs/tags/${reservationTag}`, "-f", `sha=${publisherSha}`,
 		]),
 		dispatch: async () => run("gh", [
-            "api", "--method", "POST", "repos/evalops/k8s/dispatches",
+			"api", "--method", "POST", "repos/evalops/k8s/dispatches",
 			"-f", "event_type=maestro_runtime_image_published",
 			"-f", `client_payload[source_sha]=${sourceSha}`,
 			"-f", `client_payload[image_tag]=sha-${sourceSha}`,

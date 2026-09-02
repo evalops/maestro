@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 
 use crossterm::event::KeyCode;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[cfg(test)]
 use tokio::sync::Mutex;
 
-use crate::key_hints::{alt, ctrl, shift, KeyBinding};
+use crate::key_hints::{KeyBinding, alt, ctrl, shift};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RustTuiKeybindingAction {
@@ -457,7 +457,7 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
                     severity: "error",
                     message: "Failed to read keybindings.json.".to_string(),
                 }],
-            }
+            };
         }
     };
 
@@ -475,7 +475,7 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
                     severity: "error",
                     message: err.to_string(),
                 }],
-            }
+            };
         }
     };
 
@@ -578,7 +578,7 @@ fn generate_keybindings_template() -> String {
         "{}\n",
         serde_json::to_string_pretty(&json!({
             "$docs": "https://github.com/evalops/maestro",
-            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Maestro.",
+            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Deixic Code.",
             "version": 1,
             "bindings": bindings,
             "rustBindings": rust_bindings,

@@ -78,10 +78,10 @@ protobuf {
 intellijPlatform {
     pluginConfiguration {
         id = "com.evalops.composer"
-        name = "Maestro"
+        name = "Deixic Code"
         version = project.version.toString()
         description = """
-            <p>Maestro - Deterministic AI coding assistant for JetBrains IDEs.</p>
+            <p>Deixic Code - Deterministic AI coding assistant for JetBrains IDEs.</p>
             <p>Features:</p>
             <ul>
                 <li>AI-powered code assistance with full transparency</li>
@@ -90,7 +90,7 @@ intellijPlatform {
                 <li>Session management and history</li>
                 <li>Tool execution with approval workflows</li>
             </ul>
-            <p>Requires a running Maestro server. Start with: <code>maestro web</code></p>
+            <p>Requires a running Deixic Code server. Start with: <code>deixic-code web</code></p>
         """.trimIndent()
 
         vendor {

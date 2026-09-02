@@ -3,14 +3,14 @@
 //! Provides fuzzy file search with live preview.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
-use crate::files::{highlight_matches, FileMatch, FileSearch, FileSearchResult, WorkspaceFile};
+use crate::files::{FileMatch, FileSearch, FileSearchResult, WorkspaceFile, highlight_matches};
 
 /// File search modal state
 pub struct FileSearchModal {
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn render_blanks_cells_covered_by_modal() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");

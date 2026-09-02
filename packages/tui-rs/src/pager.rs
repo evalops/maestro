@@ -13,7 +13,7 @@ use crate::key_hints::{self, KeyBinding};
 
 /// Navigation bindings for the pager
 pub mod bindings {
-    use super::{key_hints, KeyBinding, KeyCode};
+    use super::{KeyBinding, KeyCode, key_hints};
 
     pub const UP: KeyBinding = key_hints::plain(KeyCode::Up);
     pub const DOWN: KeyBinding = key_hints::plain(KeyCode::Down);

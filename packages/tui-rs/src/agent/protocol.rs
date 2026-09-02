@@ -75,6 +75,51 @@ use crate::tools::{
 };
 use serde::{Deserialize, Serialize};
 
+pub(crate) const MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES: usize = 64 * 1024;
+
+/// Opaque signed capability for one managed inference turn.
+///
+/// The transparent serde representation preserves the live protocol value,
+/// while `Debug` is deliberately redacted so command and queue diagnostics
+/// cannot reveal it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ManagedInferenceAuthorization(String);
+
+impl ManagedInferenceAuthorization {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.0.is_empty() {
+            return Err("managedInferenceAuthorization must not be empty");
+        }
+        if self.0.len() > MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES {
+            return Err("managedInferenceAuthorization exceeds 64 KiB");
+        }
+        if self.0.chars().any(char::is_control) {
+            return Err("managedInferenceAuthorization contains control characters");
+        }
+        Ok(())
+    }
+
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ManagedInferenceAuthorization {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ManagedInferenceAuthorization([REDACTED])")
+    }
+}
+
 // ============================================================================
 // Messages from Rust TUI to Agent
 // ============================================================================
@@ -1089,6 +1134,14 @@ pub enum FromAgent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         processed_queue_ids: Vec<u64>,
     },
+    /// Safe managed-Gateway evidence. The signed capability and all provider
+    /// request/response payloads are intentionally excluded.
+    ManagedGatewayReceipt {
+        request_id: String,
+        record_id: String,
+        lineage_id: String,
+        record_status: String,
+    },
     /// Agent is ready to receive prompts
     ///
     /// Emitted once at startup to indicate the agent is initialized and ready.
@@ -1793,9 +1846,11 @@ mod tests {
                 .and_then(|details| details.get("retryable")),
             Some(&serde_json::Value::Bool(false))
         );
-        assert!(execution
-            .model_content()
-            .contains("Reconcile before retrying"));
+        assert!(
+            execution
+                .model_content()
+                .contains("Reconcile before retrying")
+        );
     }
 
     #[test]
@@ -2041,9 +2096,11 @@ mod tests {
                 })),
             },
         );
-        assert!(execution
-            .model_content()
-            .contains("source=\"get_page\" origin=\"mcp:notion/get_page\""));
+        assert!(
+            execution
+                .model_content()
+                .contains("source=\"get_page\" origin=\"mcp:notion/get_page\"")
+        );
     }
 
     #[test]
@@ -2373,9 +2430,11 @@ mod tests {
                 details: None,
             },
         );
-        assert!(execution
-            .model_content()
-            .starts_with("Error: <untrusted_content source=\"fetch_docs\">"));
+        assert!(
+            execution
+                .model_content()
+                .starts_with("Error: <untrusted_content source=\"fetch_docs\">")
+        );
     }
 
     #[test]

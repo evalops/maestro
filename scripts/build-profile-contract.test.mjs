@@ -73,6 +73,7 @@ test("native materialization honors CARGO_TARGET_DIR", () => {
 			"native-binary",
 		);
 		assert(existsSync(join(directory, "bin", "maestro")));
+		assert(existsSync(join(directory, "bin", "deixic-code")));
 		const launcher = readFileSync(join(directory, "bin", "maestro"), "utf8");
 		assert.match(
 			launcher,
@@ -82,6 +83,11 @@ test("native materialization honors CARGO_TARGET_DIR", () => {
 		assert(launcher.includes(`MAESTRO_PACKAGE_NAME='${packageJson.name}'`));
 		assert.match(launcher, /MAESTRO_PACKAGE_ROOT="\$root"/);
 		assert(launcher.includes(`MAESTRO_VERSION='${packageJson.version}'`));
+		const canonicalLauncher = readFileSync(
+			join(directory, "bin", "deixic-code"),
+			"utf8",
+		);
+		assert.match(canonicalLauncher, /exec "\$bin_dir\/maestro" "\$@"/);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

@@ -74,12 +74,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    A2aAction, ArgumentValue, AttachAction, BackgroundMonitorAction, Command, CommandAction,
-    CommandArgument, CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult,
-    ExportAction, FooterStyle, GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction,
-    MailboxAction, McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction,
-    QueueModeKind, QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction,
-    UsageAction,
+    A2aAction, A2aComputerHandoffSelection, ArgumentValue, AttachAction, BackgroundMonitorAction,
+    Command, CommandAction, CommandArgument, CommandCategory, CommandContext, CommandError,
+    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HarnessAction,
+    HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction, ModalType, OrbAction,
+    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection, RlmAction,
+    SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -671,6 +671,150 @@ fn tokenize_command_args(raw: &str) -> Vec<String> {
     shlex::split(raw).unwrap_or_else(|| raw.split_whitespace().map(str::to_string).collect())
 }
 
+fn parse_orb_action(raw: &str) -> Result<OrbAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let subcommand = tokens
+        .first()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "list".to_string());
+    match subcommand.as_str() {
+        "list" | "ls" => {
+            if tokens.len() > 1 {
+                return Err(CommandError::new("Usage: /computer list"));
+            }
+            Ok(OrbAction::List)
+        }
+        "status" => parse_orb_id(&tokens, OrbAction::Status, "/computer status <task-id>"),
+        "pause" => parse_orb_id(&tokens, OrbAction::Pause, "/computer pause <task-id>"),
+        "resume" => parse_orb_id(&tokens, OrbAction::Resume, "/computer resume <task-id>"),
+        "cancel" => parse_orb_id(&tokens, OrbAction::Cancel, "/computer cancel <task-id>"),
+        "collect" => parse_orb_id(&tokens, OrbAction::Collect, "/computer collect <task-id>"),
+        "followup" | "follow-up" => {
+            if tokens.len() < 3 {
+                return Err(CommandError::new(
+                    "Usage: /computer followup <task-id> <prompt>",
+                ));
+            }
+            Ok(OrbAction::Followup {
+                id: tokens[1].clone(),
+                prompt: tokens[2..].join(" "),
+            })
+        }
+        "handoff" => parse_orb_handoff_action(&tokens[1..]),
+        "help" | "?" => Err(CommandError::new(
+            "Usage: /computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>|handoff create|list|read ...]",
+        )),
+        other => Err(CommandError::new(format!(
+            "Unknown Computer subcommand: {other}"
+        ))),
+    }
+}
+
+fn parse_orb_id<T>(
+    tokens: &[String],
+    constructor: fn(String) -> T,
+    usage: &str,
+) -> Result<T, CommandError> {
+    if tokens.len() != 2 || tokens[1].trim().is_empty() {
+        return Err(CommandError::new(format!("Usage: {usage}")));
+    }
+    Ok(constructor(tokens[1].clone()))
+}
+
+fn parse_orb_handoff_action(tokens: &[String]) -> Result<OrbAction, CommandError> {
+    let Some(operation) = tokens.first().map(|value| value.to_ascii_lowercase()) else {
+        return Err(CommandError::new(
+            "Usage: /computer handoff create|list|read ...",
+        ));
+    };
+    match operation.as_str() {
+        "list" | "ls" => {
+            if tokens.len() != 2 || tokens[1].trim().is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /computer handoff list <target-thread-id>",
+                ));
+            }
+            Ok(OrbAction::HandoffList {
+                target_thread_id: tokens[1].clone(),
+            })
+        }
+        "read" => {
+            if tokens.len() != 3 || tokens[1].trim().is_empty() || tokens[2].trim().is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /computer handoff read <target-thread-id> <package-id>",
+                ));
+            }
+            Ok(OrbAction::HandoffRead {
+                target_thread_id: tokens[1].clone(),
+                package_id: tokens[2].clone(),
+            })
+        }
+        "create" | "capture" => parse_orb_handoff_create(&tokens[1..]),
+        other => Err(CommandError::new(format!(
+            "Unknown handoff subcommand: {other}"
+        ))),
+    }
+}
+
+fn parse_orb_handoff_create(tokens: &[String]) -> Result<OrbAction, CommandError> {
+    let usage = "Usage: /computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]";
+    if tokens.len() < 2 || tokens[0].trim().is_empty() || tokens[1].trim().is_empty() {
+        return Err(CommandError::new(usage));
+    }
+    let source_id = tokens[0].clone();
+    let target_thread_id = tokens[1].clone();
+    let mut files = Vec::new();
+    let mut artifact_ids = Vec::new();
+    let mut include_diff = false;
+    let mut index = 2;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token == "--include-diff" {
+            include_diff = true;
+        } else if token == "--file" || token == "--artifact" {
+            let Some(value) = tokens
+                .get(index + 1)
+                .filter(|value| !value.trim().is_empty())
+            else {
+                return Err(CommandError::new(format!("{token} requires a value")));
+            };
+            if token == "--file" {
+                files.push(value.clone());
+            } else {
+                artifact_ids.push(value.clone());
+            }
+            index += 1;
+        } else if let Some(value) = token.strip_prefix("--file=") {
+            if value.trim().is_empty() {
+                return Err(CommandError::new("--file requires a value"));
+            }
+            files.push(value.to_string());
+        } else if let Some(value) = token.strip_prefix("--artifact=") {
+            if value.trim().is_empty() {
+                return Err(CommandError::new("--artifact requires a value"));
+            }
+            artifact_ids.push(value.to_string());
+        } else {
+            return Err(CommandError::new(format!(
+                "Unknown handoff create argument '{token}'"
+            )));
+        }
+        index += 1;
+    }
+    if files.is_empty() && artifact_ids.is_empty() && !include_diff {
+        return Err(CommandError::new(
+            "handoff create requires --file, --artifact, or --include-diff",
+        ));
+    }
+    Ok(OrbAction::HandoffCreate {
+        source_id,
+        target_thread_id,
+        files,
+        artifact_ids,
+        include_diff,
+    })
+}
+
 fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
     let tokens = tokenize_command_args(raw);
     let server = tokens.get(1).cloned();
@@ -812,6 +956,120 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
             "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
         )),
     }
+}
+
+fn parse_handoff_action(raw: &str) -> Result<A2aAction, CommandError> {
+    const USAGE: &str = "Usage: /handoff <prompt> | /handoff [--peer <name>] [Computer package options] -- <prompt>";
+
+    let tokens = tokenize_command_args(raw);
+    let mut peer = None;
+    let mut source_task_id = None;
+    let mut target_thread_id = None;
+    let mut files = Vec::new();
+    let mut artifact_ids = Vec::new();
+    let mut include_diff = false;
+    let mut prompt_start = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token == "--" {
+            prompt_start = Some(index + 1);
+            break;
+        }
+        if !token.starts_with("--") {
+            prompt_start = Some(index);
+            break;
+        }
+        if token == "--include-diff" {
+            include_diff = true;
+            index += 1;
+            continue;
+        }
+
+        let (flag, inline_value) = token
+            .split_once('=')
+            .map_or((token.as_str(), None), |(flag, value)| (flag, Some(value)));
+        if !matches!(
+            flag,
+            "--peer" | "--source-task" | "--target-thread" | "--file" | "--artifact"
+        ) {
+            return Err(
+                CommandError::new(format!("Unknown /handoff argument '{token}'")).with_hint(USAGE),
+            );
+        }
+        let value = match inline_value {
+            Some(value) if !value.trim().is_empty() => value.to_string(),
+            Some(_) => return Err(CommandError::new(format!("{flag} requires a value"))),
+            None => {
+                let Some(value) = tokens
+                    .get(index + 1)
+                    .filter(|value| !value.trim().is_empty() && !value.starts_with("--"))
+                else {
+                    return Err(CommandError::new(format!("{flag} requires a value")));
+                };
+                index += 1;
+                value.clone()
+            }
+        };
+        match flag {
+            "--peer" => peer = Some(value),
+            "--source-task" => source_task_id = Some(value),
+            "--target-thread" => target_thread_id = Some(value),
+            "--file" => files.push(value),
+            "--artifact" => artifact_ids.push(value),
+            _ => unreachable!("validated handoff flag"),
+        }
+        index += 1;
+    }
+
+    let text = prompt_start
+        .and_then(|start| tokens.get(start..))
+        .unwrap_or(&[])
+        .join(" ");
+    if text.trim().is_empty() {
+        return Err(CommandError::new(USAGE));
+    }
+
+    let has_package_argument = source_task_id.is_some()
+        || target_thread_id.is_some()
+        || !files.is_empty()
+        || !artifact_ids.is_empty()
+        || include_diff;
+    let computer_package = if has_package_argument {
+        let Some(source_task_id) = source_task_id else {
+            return Err(
+                CommandError::new("Computer package handoff requires --source-task")
+                    .with_hint(USAGE),
+            );
+        };
+        let Some(target_thread_id) = target_thread_id else {
+            return Err(
+                CommandError::new("Computer package handoff requires --target-thread")
+                    .with_hint(USAGE),
+            );
+        };
+        if files.is_empty() && artifact_ids.is_empty() && !include_diff {
+            return Err(CommandError::new(
+                "Computer package handoff requires --file, --artifact, or --include-diff",
+            )
+            .with_hint(USAGE));
+        }
+        Some(A2aComputerHandoffSelection {
+            source_task_id,
+            target_thread_id,
+            files,
+            artifact_ids,
+            include_diff,
+        })
+    } else {
+        None
+    };
+
+    Ok(A2aAction::Handoff {
+        peer,
+        text,
+        computer_package,
+    })
 }
 
 fn has_a2a_flag(tokens: &[String], flag: &str) -> bool {
@@ -1377,6 +1635,20 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
+    );
+
+    registry.register(
+        Command::new(
+            "handoff",
+            "Hand work to the default peer and follow its response",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::A2a(
+                    parse_handoff_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .usage("/handoff <prompt> (use --peer <name> to override the default)"),
     );
 
     // Queue command
@@ -2227,6 +2499,22 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/tools [list|mcp|lsp]"),
     );
 
+    // Hosted Computer command. `/orb` remains a compatibility alias.
+    registry.register(Command::new(
+        "computer",
+        "Control durable hosted Computer tasks without exposing MCP internals",
+        CommandCategory::Tools,
+        Box::new(|ctx| {
+            Ok(CommandOutput::Action(CommandAction::Orb(parse_orb_action(
+                &ctx.raw_args,
+            )?)))
+        }),
+    ).alias("orb").group(vec![
+        "list", "status", "followup", "pause", "resume", "cancel", "collect",
+    ]).usage(
+        "/computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>]",
+    ));
+
     // MCP command
     registry.register(Command::new(
         "mcp",
@@ -2249,11 +2537,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     let server = tokens.get(1).cloned();
                     let uri = if server.is_some() {
                         let rest = tokens.iter().skip(2).cloned().collect::<Vec<_>>().join(" ");
-                        if rest.is_empty() {
-                            None
-                        } else {
-                            Some(rest)
-                        }
+                        if rest.is_empty() { None } else { Some(rest) }
                     } else {
                         None
                     };
@@ -2352,7 +2636,7 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Diagnostics,
             Box::new(|_| {
                 Ok(CommandOutput::Message(format!(
-                    "Maestro TUI v{}",
+                    "Deixic Code v{}",
                     env!("CARGO_PKG_VERSION")
                 )))
             }),
@@ -2517,7 +2801,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "memory",
-            "Local / shared memory status",
+            "Account / local / shared memory status",
             CommandCategory::Context,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2525,7 +2809,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     return Ok(CommandOutput::Action(CommandAction::ShowMemory));
                 }
                 Err(CommandError::new(
-                    "Usage: /memory   (write/search/delete live on `maestro memory`)",
+                    "Usage: /memory   (use `deixic-code memory remember|recall|status` for account memory)",
                 ))
             }),
         )

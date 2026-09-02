@@ -1,13 +1,13 @@
 //! Local OpenAI-compatible runtime discovery.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::ai::ProviderRegistry;
 use crate::model_catalog::{
-    available_models, ModelCapabilities, ModelInfo, ModelProtocol, ModelVerification,
-    VerificationState,
+    ModelCapabilities, ModelInfo, ModelProtocol, ModelVerification, VerificationState,
+    available_models,
 };
 
 /// Canonical local provider IDs in stable display/probe order.
@@ -253,11 +253,6 @@ fn discovery_client() -> reqwest::blocking::Client {
         .expect("local discovery HTTP client should build")
 }
 
-#[cfg(test)]
-fn discover_endpoints(endpoints: &[LocalRuntimeEndpoint]) -> Vec<ModelInfo> {
-    discover_endpoints_with_client(&discovery_client(), endpoints)
-}
-
 fn discover_endpoints_with_client(
     client: &reqwest::blocking::Client,
     endpoints: &[LocalRuntimeEndpoint],
@@ -452,7 +447,8 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::time::{Duration, Instant};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::time::Duration;
 
     use super::*;
 
@@ -674,11 +670,13 @@ mod tests {
         let active = retained.get(&active_key).expect("active limits retained");
         assert_eq!(active.capabilities.context_tokens, 8_192);
         assert_eq!(active.verification.state, VerificationState::Unavailable);
-        assert!(active
-            .verification
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("last-known limits")));
+        assert!(
+            active
+                .verification
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("last-known limits"))
+        );
 
         let cleared = replacement_discovered_models(
             &previous,
@@ -726,15 +724,57 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    fn serve_models_after_parallel_probe(
+        provider: &'static str,
+        body: &'static str,
+        arrivals: mpsc::Sender<&'static str>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            arrivals.send(provider).unwrap();
+
+            let (released, wake) = &*release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
+            drop(released);
+
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+        });
+        (format!("http://{address}/v1"), server)
+    }
+
     #[test]
     fn discovery_probes_endpoints_concurrently_and_isolates_malformed_results() {
         let fast = serve_models_after(
             Duration::from_millis(5),
             r#"{"data":[{"id":"fast-model"}]}"#,
         );
-        let slow_a =
-            serve_models_after(Duration::from_millis(250), r#"{"data":[{"id":"slow-a"}]}"#);
-        let slow_b = serve_models_after(Duration::from_millis(250), "not-json");
+        let (arrival_tx, arrival_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (slow_a, slow_a_server) = serve_models_after_parallel_probe(
+            "lmstudio",
+            r#"{"data":[{"id":"slow-a"}]}"#,
+            arrival_tx.clone(),
+            Arc::clone(&release),
+        );
+        let (slow_b, slow_b_server) = serve_models_after_parallel_probe(
+            "ollama",
+            "not-json",
+            arrival_tx,
+            Arc::clone(&release),
+        );
         let endpoints = vec![
             LocalRuntimeEndpoint {
                 provider: "llamacpp",
@@ -753,13 +793,36 @@ mod tests {
             },
         ];
 
-        let started = Instant::now();
-        let models = discover_endpoints(&endpoints);
+        // The production client times out a local probe quickly. Give this
+        // rendezvous fixture enough transport time to distinguish a serial
+        // dispatcher from parallel requests without making a timing claim.
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_millis(150))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let discovery =
+            std::thread::spawn(move || discover_endpoints_with_client(&client, &endpoints));
+        let mut arrivals = Vec::new();
+        for _ in 0..2 {
+            if let Ok(provider) = arrival_rx.recv_timeout(Duration::from_secs(2)) {
+                arrivals.push(provider);
+            }
+        }
+        {
+            let (released, wake) = &*release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+        let models = discovery.join().unwrap();
+        slow_a_server.join().unwrap();
+        slow_b_server.join().unwrap();
 
-        assert!(
-            started.elapsed() < Duration::from_millis(450),
-            "two 250ms probes must overlap: {:?}",
-            started.elapsed()
+        arrivals.sort_unstable();
+        assert_eq!(
+            arrivals,
+            vec!["lmstudio", "ollama"],
+            "both slow probes must connect before either fixture is released"
         );
         assert_eq!(
             models

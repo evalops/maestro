@@ -7,20 +7,19 @@
 //! - Richer multi-step headless verify loops
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::{self, IsTerminal};
 use std::time::{Duration, Instant};
 
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
 use crate::remote_attach::{
-    attach_to_remote_runner_session, should_use_interactive_remote_attach, AttachRole,
-    RemoteAttachInput,
+    AttachRole, RemoteAttachInput, attach_to_remote_runner_session,
+    should_use_interactive_remote_attach,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 const DEFAULT_BASE_URL: &str = "https://runner.evalops.dev";
@@ -77,7 +76,7 @@ const USAGE: &str = "\
 maestro remote <command> [options]
 
 Commands:
-  start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m] [--profile standard] [--wait] [--wait-timeout 5m] [--poll-interval 5s] [--verify]
+  start --workspace <id> [--ttl 90m] [--profile standard] [--wait] [--wait-timeout 5m] [--poll-interval 5s] [--verify]
   list --workspace <id> [--state running] [--limit 20]
   status --workspace <id>
   get <session-id>
@@ -231,31 +230,8 @@ async fn dispatch(cmd: &str, o: &Opts) -> Result<()> {
 
 async fn cmd_start(o: &Opts) -> Result<()> {
     let co = client_opts(o);
-    let ttl = parse_minutes(flag(o, &["ttl"]).as_deref(), 90)?;
-    let idle = parse_minutes_opt(flag(o, &["idle-ttl", "idle"]))?;
-    let body = strip_null(json!({
-        "organizationId": require_config(&co)?.organization_id,
-        "workspaceId": workspace_required(flag(o, &["workspace"]), &co, "start")?,
-        "userId": flag(o, &["user"]),
-        "agentRunId": flag(o, &["agent-run"]),
-        "maestroSessionId": flag(o, &["maestro-session", "session"]),
-        "idempotencyKey": flag(o, &["idempotency-key"]).unwrap_or_else(|| Uuid::new_v4().to_string()),
-        "runnerProfile": flag(o, &["profile"]).unwrap_or_else(|| "standard".into()),
-        "runnerImage": flag(o, &["image"]),
-        "workspaceSource": flag(o, &["workspace-source"]),
-        "repoUrl": flag(o, &["repo", "repo-url"]),
-        "branch": flag(o, &["branch"]).unwrap_or_else(|| "main".into()),
-        "model": flag(o, &["model"]),
-        "ttlMinutes": ensure_pos(ttl, "ttlMinutes", 1440)?,
-        "idleTtlMinutes": ensure_nonneg(idle, "idleTtlMinutes", 1440)?,
-        "metadata": parse_metadata(&repeated(o, &["metadata"]))?,
-    }));
-    // re-resolve after body used org
     let config = require_config(&co)?;
-    let mut body = body;
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("organizationId".into(), json!(config.organization_id));
-    }
+    let body = start_request(o, &config)?;
     let payload = post(&config, CREATE_PATH, body).await?;
     let session = require_session(&payload)?;
     let created = json!({
@@ -331,8 +307,40 @@ async fn cmd_start(o: &Opts) -> Result<()> {
         println!("  replayed:  existing idempotent request");
     }
     println!();
-    println!("Attach: maestro remote attach {}", session.id);
+    println!("Attach: deixic-code remote attach {}", session.id);
     Ok(())
+}
+
+fn start_request(o: &Opts, config: &Config) -> Result<Value> {
+    for name in ["workspace-source", "repo", "repo-url", "branch"] {
+        if has_flag(o, name) {
+            bail!(
+                "--{name} cannot be used: mutable hydration locators require a signed immutable hydration envelope"
+            );
+        }
+    }
+    let ttl = parse_minutes(flag(o, &["ttl"]).as_deref(), 90)?;
+    let idle = parse_minutes_opt(flag(o, &["idle-ttl", "idle"]))?;
+    let workspace_id = trim(flag(o, &["workspace"]).or_else(|| config.workspace_id.clone()))
+        .ok_or_else(|| {
+            anyhow!(
+                "Remote runner start requires a workspace id. Pass --workspace or set MAESTRO_REMOTE_RUNNER_WORKSPACE_ID."
+            )
+        })?;
+    Ok(strip_null(json!({
+        "organizationId": config.organization_id,
+        "workspaceId": workspace_id,
+        "userId": flag(o, &["user"]),
+        "agentRunId": flag(o, &["agent-run"]),
+        "maestroSessionId": flag(o, &["maestro-session", "session"]),
+        "idempotencyKey": flag(o, &["idempotency-key"]).unwrap_or_else(|| Uuid::new_v4().to_string()),
+        "runnerProfile": flag(o, &["profile"]).unwrap_or_else(|| "standard".into()),
+        "runnerImage": flag(o, &["image"]),
+        "model": flag(o, &["model"]),
+        "ttlMinutes": ensure_pos(ttl, "ttlMinutes", 1440)?,
+        "idleTtlMinutes": ensure_nonneg(idle, "idleTtlMinutes", 1440)?,
+        "metadata": parse_metadata(&repeated(o, &["metadata"]))?,
+    })))
 }
 
 async fn cmd_list(o: &Opts) -> Result<()> {
@@ -402,7 +410,7 @@ async fn cmd_get(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote get <session-id>"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote get <session-id>"))?;
     let session = get_session(&id, &client_opts(o)).await?;
     if json_flag(o) {
         print_json(&session)?;
@@ -417,7 +425,7 @@ async fn cmd_events(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote events <session-id>"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote events <session-id>"))?;
     let config = require_config(&client_opts(o))?;
     let body = strip_null(json!({
         "sessionId": id,
@@ -453,13 +461,12 @@ async fn cmd_events(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_stop(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote stop <session-id> [--reason text]"))?;
+    let id =
+        o.positionals.first().cloned().ok_or_else(|| {
+            anyhow!("Usage: deixic-code remote stop <session-id> [--reason text]")
+        })?;
     let config = require_config(&client_opts(o))?;
-    let reason = flag(o, &["reason"]).unwrap_or_else(|| "maestro remote stop".into());
+    let reason = flag(o, &["reason"]).unwrap_or_else(|| "deixic-code remote stop".into());
     let payload = post(
         &config,
         STOP_PATH,
@@ -480,15 +487,15 @@ async fn cmd_extend(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote extend <session-id> --ttl 2h"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote extend <session-id> --ttl 2h"))?;
     let ttl = flag(o, &["ttl", "add-ttl"])
-        .ok_or_else(|| anyhow!("maestro remote extend requires --ttl"))?;
+        .ok_or_else(|| anyhow!("deixic-code remote extend requires --ttl"))?;
     let config = require_config(&client_opts(o))?;
     let body = strip_null(json!({
         "sessionId": id,
         "additionalMinutes": ensure_pos(parse_minutes(Some(&ttl), 0)?, "additionalMinutes", 1440)?,
         "additionalIdleMinutes": ensure_nonneg(parse_minutes_opt(flag(o, &["idle-ttl", "add-idle-ttl"]))?, "additionalIdleMinutes", 1440)?,
-        "reason": flag(o, &["reason"]).unwrap_or_else(|| "maestro remote extend".into()),
+        "reason": flag(o, &["reason"]).unwrap_or_else(|| "deixic-code remote extend".into()),
     }));
     let payload = post(&config, EXTEND_PATH, body).await?;
     let session = require_session(&payload)?;
@@ -505,7 +512,7 @@ async fn cmd_attach(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote attach <session-id>"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote attach <session-id>"))?;
     let roles = role_values(o)?;
     let minted = mint(
         &id,
@@ -554,7 +561,7 @@ async fn cmd_attach_token(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote attach-token <session-id>"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote attach-token <session-id>"))?;
     let minted = mint(
         &id,
         role_values(o)?,
@@ -587,7 +594,7 @@ async fn cmd_revoke_token(o: &Opts) -> Result<()> {
     let tid = o.positionals.get(1).cloned();
     let (sid, tid) = match (sid, tid) {
         (Some(s), Some(t)) => (s, t),
-        _ => bail!("Usage: maestro remote revoke-token <session-id> <token-id>"),
+        _ => bail!("Usage: deixic-code remote revoke-token <session-id> <token-id>"),
     };
     let config = require_config(&client_opts(o))?;
     let payload = post(
@@ -610,7 +617,7 @@ async fn cmd_target(o: &Opts) -> Result<()> {
         .positionals
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("Usage: maestro remote target <session-id>"))?;
+        .ok_or_else(|| anyhow!("Usage: deixic-code remote target <session-id>"))?;
     let config = resolve_config(&client_opts(o))?.ok_or_else(|| {
         anyhow!("Remote runner target requires EvalOps organization and access token.")
     })?;
@@ -888,18 +895,19 @@ fn require_config(o: &ClientOpts) -> Result<Config> {
 }
 
 fn resolve_config(o: &ClientOpts) -> Result<Option<Config>> {
-    let organization_id = trim(
-        o.organization_id
-            .clone()
-            .or_else(|| env_first(ORG_ENV))
-            .or_else(oauth_org),
-    );
-    let token = trim(
-        o.token
-            .clone()
-            .or_else(|| env_first(TOKEN_ENV))
-            .or_else(oauth_token),
-    );
+    let organization_id = trim(o.organization_id.clone().or_else(|| env_first(ORG_ENV)));
+    let token = trim(o.token.clone().or_else(|| env_first(TOKEN_ENV)));
+    let stored = if organization_id.is_none() || token.is_none() {
+        crate::init_cli::load_evalops_snapshot().ok().flatten()
+    } else {
+        None
+    };
+    let organization_id = organization_id.or_else(|| {
+        stored
+            .as_ref()
+            .and_then(|snapshot| snapshot.organization_id.clone())
+    });
+    let token = token.or_else(|| stored.as_ref().map(|snapshot| snapshot.access.clone()));
     let (Some(organization_id), Some(token)) = (organization_id, token) else {
         return Ok(None);
     };
@@ -957,53 +965,6 @@ fn normalize_base(base: &str) -> String {
     } else {
         n
     }
-}
-
-fn oauth_token() -> Option<String> {
-    load_oauth().and_then(|c| {
-        c.get("access")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    })
-}
-
-fn oauth_org() -> Option<String> {
-    load_oauth().and_then(|c| {
-        c.get("metadata")
-            .and_then(|m| m.get("organizationId"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    })
-}
-
-fn load_oauth() -> Option<Value> {
-    let force_file = matches!(
-        std::env::var("MAESTRO_OAUTH_STORAGE_MODE")
-            .ok()
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("file")
-    ) || std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok().as_deref() == Some("1");
-    if !force_file {
-        if let Ok(entry) = keyring::Entry::new("maestro-oauth", "evalops") {
-            if let Ok(raw) = entry.get_password() {
-                if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    let path = crate::path_utils::maestro_home_dir()?.join("oauth.json");
-    if !path.exists() {
-        return None;
-    }
-    let storage: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    storage.get("evalops").cloned()
 }
 
 fn parse_opts(args: &[String]) -> Opts {
@@ -1542,6 +1503,63 @@ fn format_elapsed(ms: u64) -> String {
 mod tests {
     use super::*;
 
+    fn test_config() -> Config {
+        Config {
+            base_url: "https://runner.example.test".into(),
+            token: "test-token".into(),
+            organization_id: "org-1".into(),
+            workspace_id: Some("workspace-1".into()),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+        }
+    }
+
+    #[test]
+    fn start_request_omits_unbound_hydration_locators() {
+        let opts = parse_opts(&[
+            "--workspace".into(),
+            "workspace-1".into(),
+            "--idempotency-key".into(),
+            "start-1".into(),
+        ]);
+
+        let body = start_request(&opts, &test_config()).unwrap();
+        let object = body.as_object().unwrap();
+        for locator in ["workspaceSource", "repoUrl", "branch"] {
+            assert!(
+                !object.contains_key(locator),
+                "unexpected {locator}: {body}"
+            );
+        }
+        assert_eq!(body["organizationId"], "org-1");
+        assert_eq!(body["workspaceId"], "workspace-1");
+        assert_eq!(body["idempotencyKey"], "start-1");
+        assert_eq!(body["runnerProfile"], "standard");
+        assert_eq!(body["ttlMinutes"], 90);
+    }
+
+    #[test]
+    fn start_rejects_explicit_unbound_hydration_locators() {
+        for (name, value) in [
+            ("--workspace-source", "git"),
+            ("--repo", "https://example.test/repo.git"),
+            ("--repo-url", "https://example.test/repo.git"),
+            ("--branch", "main"),
+        ] {
+            let opts = parse_opts(&[
+                "--workspace".into(),
+                "workspace-1".into(),
+                name.into(),
+                value.into(),
+            ]);
+            let error = start_request(&opts, &test_config())
+                .expect_err("unsigned locator must fail before the request")
+                .to_string();
+            assert!(error.contains(name), "{name}: {error}");
+            assert!(error.contains("signed immutable hydration envelope"));
+        }
+    }
+
     #[test]
     fn parses_ttl_minutes() {
         assert_eq!(parse_minutes(Some("90m"), 1).unwrap(), 90);
@@ -1552,14 +1570,18 @@ mod tests {
 
     #[test]
     fn rejects_fractional_ttl() {
-        assert!(parse_minutes(Some("1.5m"), 1)
-            .unwrap_err()
-            .to_string()
-            .contains("whole minutes"));
-        assert!(parse_minutes(Some("soon"), 1)
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid duration"));
+        assert!(
+            parse_minutes(Some("1.5m"), 1)
+                .unwrap_err()
+                .to_string()
+                .contains("whole minutes")
+        );
+        assert!(
+            parse_minutes(Some("soon"), 1)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid duration")
+        );
     }
 
     #[test]

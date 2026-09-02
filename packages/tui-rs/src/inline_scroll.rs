@@ -16,6 +16,7 @@
 use std::fmt;
 use std::io::{self, Write};
 
+use crossterm::Command;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::{
@@ -23,7 +24,6 @@ use crossterm::style::{
     SetForegroundColor,
 };
 use crossterm::terminal::{Clear, ClearType};
-use crossterm::Command;
 use ratatui::prelude::IntoCrossterm;
 use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};

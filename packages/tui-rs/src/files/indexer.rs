@@ -538,9 +538,11 @@ mod tests {
         let files = indexer.get_files(dir.path());
 
         // Should not include node_modules files
-        assert!(!files
-            .iter()
-            .any(|f| f.relative_path.contains("node_modules")));
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.relative_path.contains("node_modules"))
+        );
     }
 
     #[test]

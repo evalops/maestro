@@ -8,13 +8,13 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
-use std::sync::mpsc::{self as std_mpsc, SyncSender};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::mpsc::{self as std_mpsc, SyncSender};
 use std::time::{Duration, Instant};
 
 use rand::Rng as _;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 // Note: interval/timeout available for future health checking
 use tokio_util::sync::CancellationToken;
@@ -22,11 +22,15 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use super::async_transport::RemoteErrorKind;
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
-use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
+use super::messages::{
+    AgentEvent, AgentState, ClientInfo, ConnectionRole, ControllerBindingHello, FromAgentMessage,
+    InitConfig, ToAgentMessage,
+};
 use super::remote_transport::{
     RemoteAgentTransport, RemoteConnectionResumeAuthority, RemoteIncoming, RemoteTransportConfig,
 };
 use super::session::{SessionRecorder, SessionReplay};
+use super::workspace_capabilities::{ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
@@ -34,6 +38,26 @@ const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_mins(3);
 const RESPONSE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 const RESPONSE_ACK_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_RESPONSE_ACKNOWLEDGEMENTS: usize = 4096;
+
+fn workspace_capability_replay_cursor(request: &ApplyWorkspaceCapabilitySet) -> String {
+    format!(
+        "{}:{}",
+        request.activation_generation, request.capability_set_digest
+    )
+}
+
+fn workspace_capability_receipt_matches(
+    request: &ApplyWorkspaceCapabilitySet,
+    receipt: &WorkspaceCapabilitySetApplied,
+) -> bool {
+    receipt.replay_cursor == workspace_capability_replay_cursor(request)
+        && receipt.organization_id == request.organization_id
+        && receipt.workspace_id == request.workspace_id
+        && receipt.runner_session_id == request.runner_session_id
+        && receipt.runtime_generation == request.runtime_generation
+        && receipt.activation_generation == request.activation_generation
+        && receipt.effective_catalog_digest == request.capability_set_digest
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResponseAcknowledgement {
@@ -407,6 +431,10 @@ pub struct AgentSupervisor {
     last_init: Option<InitConfig>,
     /// Private provider conversation checkpoint replayed immediately after init.
     semantic_conversation: Option<Vec<maestro_ai::Message>>,
+    /// Last capability set proven accepted by a child receipt.
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    /// Sent capability sets awaiting a matching child receipt.
+    pending_workspace_capability_sets: HashMap<String, ApplyWorkspaceCapabilitySet>,
     /// Current supervisor-owned agent state
     state: AgentState,
     /// Event sender
@@ -480,6 +508,8 @@ impl AgentSupervisor {
             transport: None,
             last_init: None,
             semantic_conversation: None,
+            last_workspace_capability_set: None,
+            pending_workspace_capability_sets: HashMap::new(),
             state: AgentState::default(),
             event_tx,
             event_rx,
@@ -559,6 +589,8 @@ impl AgentSupervisor {
         self.state = replay.state;
         self.last_init = replay.last_init;
         self.semantic_conversation = replay.semantic_conversation;
+        self.last_workspace_capability_set = replay.last_workspace_capability_set;
+        self.pending_workspace_capability_sets.clear();
         self.seed_remote_session_id_if_missing(self.state.session_id.clone());
     }
 
@@ -708,6 +740,10 @@ impl AgentSupervisor {
         };
 
         transport.send(msg.clone())?;
+        if let ToAgentMessage::ApplyWorkspaceCapabilitySet { request } = &msg {
+            self.pending_workspace_capability_sets
+                .insert(workspace_capability_replay_cursor(request), request.clone());
+        }
         self.last_response = Some(Instant::now());
         if let Some(ref mut recorder) = self.session_recorder {
             let result = recorder.record_sent(&msg);
@@ -756,6 +792,40 @@ impl AgentSupervisor {
         }
 
         Ok(())
+    }
+
+    /// Bind the local child to the immutable resident controller identity.
+    /// The configured extension is replayed on every later child spawn.
+    pub(crate) fn set_local_controller_binding(
+        &mut self,
+        binding: ControllerBindingHello,
+    ) -> Result<(), AsyncTransportError> {
+        if self.config.remote.is_some() {
+            return Err(AsyncTransportError::SendFailed(
+                "hosted controller binding cannot be installed on a remote child transport"
+                    .to_string(),
+            ));
+        }
+        if let Some(existing) = self.config.transport.controller_binding.as_ref() {
+            if existing != &binding {
+                return Err(AsyncTransportError::SendFailed(
+                    "hosted controller binding cannot be replaced".to_string(),
+                ));
+            }
+        } else {
+            self.config.transport.controller_binding = Some(binding.clone());
+        }
+        self.send(ToAgentMessage::Hello {
+            protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+            }),
+            capabilities: Some(super::local_controller_capabilities()),
+            role: Some(ConnectionRole::Controller),
+            opt_out_notifications: None,
+            controller_binding: Some(binding),
+        })
     }
 
     /// Send a protocol message and drain any agent messages that are already available.
@@ -966,6 +1036,7 @@ impl AgentSupervisor {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: None,
+            managed_inference_authorization: None,
         })
     }
 
@@ -992,6 +1063,13 @@ impl AgentSupervisor {
                     .to_string(),
                 messages,
             })?;
+        }
+        Ok(())
+    }
+
+    fn replay_saved_workspace_capability_set(&mut self) -> Result<(), AsyncTransportError> {
+        if let Some(request) = self.last_workspace_capability_set.clone() {
+            self.send(ToAgentMessage::ApplyWorkspaceCapabilitySet { request })?;
         }
         Ok(())
     }
@@ -1040,6 +1118,7 @@ impl AgentSupervisor {
             if let Err(error) = self
                 .replay_saved_init()
                 .and_then(|()| self.replay_saved_semantic_conversation())
+                .and_then(|()| self.replay_saved_workspace_capability_set())
             {
                 if let Some(transport) = self.transport.take() {
                     let _ = transport.shutdown();
@@ -1103,12 +1182,29 @@ impl AgentSupervisor {
                 == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
                 .then(|| messages.clone());
         }
+        if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = &message {
+            self.accept_workspace_capability_receipt(receipt);
+        }
         let event = self.state.handle_message(message.clone());
         if let Some(ref mut recorder) = self.session_recorder {
             let result = recorder.record_received(&message);
             self.report_session_recorder_result(result, "record received message");
         }
         event.map(|event| SupervisorEvent::Agent(Box::new(event)))
+    }
+
+    fn accept_workspace_capability_receipt(&mut self, receipt: &WorkspaceCapabilitySetApplied) {
+        let Some(request) = self
+            .pending_workspace_capability_sets
+            .get(&receipt.replay_cursor)
+        else {
+            return;
+        };
+        if workspace_capability_receipt_matches(request, receipt) {
+            self.last_workspace_capability_set = self
+                .pending_workspace_capability_sets
+                .remove(&receipt.replay_cursor);
+        }
     }
 
     fn clear_transient_progress_state(&mut self) {
@@ -1618,6 +1714,7 @@ impl SupervisorBuilder {
             state: recorder.replay_state().clone(),
             last_init: recorder.last_init().cloned(),
             semantic_conversation: recorder.replay().semantic_conversation,
+            last_workspace_capability_set: recorder.replay().last_workspace_capability_set,
         };
         self.session_replay = Some(replay);
         self.session_recorder = Some(recorder);
@@ -1712,6 +1809,25 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
     match event {
         AgentEvent::RawAgentEvent { event_type, event } => FromAgentMessage::RawAgentEvent {
             event_type: event_type.clone(),
+            event: event.clone(),
+        },
+        AgentEvent::ManagedGatewayReceipt {
+            request_id,
+            record_id,
+            lineage_id,
+            record_status,
+        } => FromAgentMessage::ManagedGatewayReceipt {
+            request_id: request_id.clone(),
+            record_id: record_id.clone(),
+            lineage_id: lineage_id.clone(),
+            record_status: record_status.clone(),
+        },
+        AgentEvent::WorkspaceCapabilitySetApplied { receipt } => {
+            FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: receipt.clone(),
+            }
+        }
+        AgentEvent::DelegationEvent { event } => FromAgentMessage::DelegationEvent {
             event: event.clone(),
         },
         AgentEvent::Ready {

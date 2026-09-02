@@ -3,14 +3,14 @@
 //! Ports `src/cli/commands/operating-plane.ts`. Fetches the Platform operating-plane
 //! ledger and prints a content-free runtime status summary for operators.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::operating_plane_client::{
-    inspect_operating_plane_runs, OperatingPlaneInspection, OperatingPlaneRunQuery,
+    OperatingPlaneInspection, OperatingPlaneRunQuery, inspect_operating_plane_runs,
 };
 use crate::operating_plane_summary::{
-    format_operating_plane_status_report, summarize_operating_plane_inspection,
-    OperatingPlaneStatusReport,
+    OperatingPlaneStatusReport, format_operating_plane_status_report,
+    summarize_operating_plane_inspection,
 };
 
 const VALUE_FLAGS: &[&str] = &[
@@ -312,18 +312,24 @@ mod tests {
 
     #[test]
     fn rejects_unknown_options_and_invalid_limit() {
-        assert!(parse_operating_plane_args(&s(&["status", "--nope"]))
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown operating-plane option"));
-        assert!(parse_operating_plane_args(&s(&["status", "--limit", "-1"]))
-            .unwrap_err()
-            .to_string()
-            .contains("non-negative integer"));
-        assert!(parse_operating_plane_args(&s(&["status", "--thread-id"]))
-            .unwrap_err()
-            .to_string()
-            .contains("requires a value"));
+        assert!(
+            parse_operating_plane_args(&s(&["status", "--nope"]))
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown operating-plane option")
+        );
+        assert!(
+            parse_operating_plane_args(&s(&["status", "--limit", "-1"]))
+                .unwrap_err()
+                .to_string()
+                .contains("non-negative integer")
+        );
+        assert!(
+            parse_operating_plane_args(&s(&["status", "--thread-id"]))
+                .unwrap_err()
+                .to_string()
+                .contains("requires a value")
+        );
     }
 
     fn sample_inspection() -> OperatingPlaneInspection {
@@ -426,9 +432,11 @@ mod tests {
                     request.contains("thread_id=C123%3A1740000000.000100")
                         || request.contains("thread_id=C123:1740000000.000100")
                 );
-                assert!(request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer plane-token"));
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer plane-token")
+                );
                 assert!(
                     request.contains("X-Organization-ID: org_plane")
                         || request.contains("x-organization-id: org_plane")

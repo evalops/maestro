@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use fd_lock::RwLock as FileLock;
@@ -311,7 +311,9 @@ impl UpdateChannel {
             "beta" => Ok(Self::Beta),
             "alpha" => Ok(Self::Alpha),
             other => {
-                bail!("Unknown Maestro update channel: {other}; expected stable, beta, or alpha")
+                bail!(
+                    "Unknown Deixic Code update channel: {other}; expected stable, beta, or alpha"
+                )
             }
         }
     }
@@ -369,7 +371,7 @@ fn parse_args(args: &[String]) -> Result<UpdateArgs> {
                 }
                 parsed.action = UpdateAction::Rollback { version };
             }
-            other => bail!("Unknown maestro update subcommand: {other}"),
+            other => bail!("Unknown deixic-code update subcommand: {other}"),
         }
         if !matches!(parsed.action, UpdateAction::Rollback { .. }) {
             index = 1;
@@ -388,7 +390,7 @@ fn parse_args(args: &[String]) -> Result<UpdateArgs> {
                 parsed.channel = UpdateChannel::parse(value)?;
                 channel_explicit = true;
             }
-            other => bail!("Unknown maestro update option: {other}"),
+            other => bail!("Unknown deixic-code update option: {other}"),
         }
         index += 1;
     }
@@ -831,7 +833,7 @@ async fn check_for_update_urls_with_timeout(
         return failed_check(
             current,
             "",
-            "Current Maestro version is not valid semver",
+            "Current Deixic Code version is not valid semver",
             channel,
             None,
         );
@@ -1258,7 +1260,7 @@ fn install_release(
     if let Some(release_url) = release_url {
         command.env("MAESTRO_RELEASE_BASE_URL", release_url);
     }
-    run_with_timeout(&mut command, "signed Maestro installer")
+    run_with_timeout(&mut command, "signed Deixic Code installer")
 }
 
 fn install(
@@ -1678,17 +1680,22 @@ fn verify_retained_release(release: &VerifiedRelease) -> Result<()> {
         .arg("--version")
         .env("MAESTRO_SKIP_STARTUP_UPDATE", "1")
         .output()
-        .with_context(|| format!("Failed to verify retained Maestro {}", release.version_text))?;
+        .with_context(|| {
+            format!(
+                "Failed to verify retained Deixic Code {}",
+                release.version_text
+            )
+        })?;
     if !output.status.success() {
         bail!(
-            "Retained Maestro {} failed its version check",
+            "Retained Deixic Code {} failed its version check",
             release.version_text
         );
     }
     let reported = String::from_utf8_lossy(&output.stdout);
     if !reported_version_matches(&reported, &release.version_text) {
         bail!(
-            "Retained Maestro reported the wrong version: expected {}, got {}",
+            "Retained Deixic Code reported the wrong version: expected {}, got {}",
             release.version_text,
             reported.trim()
         );
@@ -1775,7 +1782,7 @@ fn select_rollback_release(
     requested: Option<&str>,
 ) -> Result<VerifiedRelease> {
     let current_version = Version::parse(current.trim())
-        .with_context(|| format!("Current Maestro version is not valid semver: {current}"))?;
+        .with_context(|| format!("Current Deixic Code version is not valid semver: {current}"))?;
     let releases = list_verified_releases(data_dir)?;
     if let Some(requested) = requested {
         let requested_version = Version::parse(requested.trim())
@@ -1832,7 +1839,7 @@ struct AtomicWriteOutcome {
 fn atomic_write_executable(path: &Path, contents: &[u8]) -> Result<AtomicWriteOutcome> {
     let parent = path
         .parent()
-        .context("stable Maestro launcher has no parent directory")?;
+        .context("stable Deixic Code launcher has no parent directory")?;
     fs::create_dir_all(parent)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".maestro-update-")
@@ -1849,7 +1856,7 @@ fn atomic_write_executable(path: &Path, contents: &[u8]) -> Result<AtomicWriteOu
     let temporary_path = temporary.into_temp_path();
     fs::rename(&temporary_path, path).with_context(|| {
         format!(
-            "Failed to atomically repoint the Maestro launcher {}",
+            "Failed to atomically repoint the Deixic Code launcher {}",
             path.display()
         )
     })?;
@@ -1927,12 +1934,12 @@ fn acquire_update_lock(context: &InstallContext) -> Result<Option<StartupUpdateL
     };
     let lock = try_acquire_startup_update_lock(&state_path).with_context(|| {
         format!(
-            "Failed to lock Maestro update state {}",
+            "Failed to lock Deixic Code update state {}",
             state_path.display()
         )
     })?;
     if lock.is_none() {
-        bail!("Another Maestro update is already in progress");
+        bail!("Another Deixic Code update is already in progress");
     }
     Ok(lock)
 }
@@ -2090,7 +2097,9 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     }
     let latest = check.latest_version.as_deref()?;
     if startup_update_mode() == "check" {
-        eprintln!("Maestro {latest} is available (current {current}); run `maestro update`.");
+        eprintln!(
+            "Deixic Code {latest} is available (current {current}); run `deixic-code update`."
+        );
         return None;
     }
 
@@ -2135,7 +2144,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         let _ = restore_startup_state(&state_path, persisted_state.as_ref());
         return None;
     }
-    eprintln!("Updating Maestro from {current} to {latest}...");
+    eprintln!("Updating Deixic Code from {current} to {latest}...");
     if let Err(error) = install(&context, latest, check.release_url.as_deref(), channel) {
         let mut failed = attempted;
         failed.last_error = Some(format!("{error:#}"));
@@ -2147,7 +2156,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
             Some(format!("{error:#}")),
             None,
         );
-        eprintln!("Maestro auto-update failed; continuing with {current}: {error:#}");
+        eprintln!("Deixic Code auto-update failed; continuing with {current}: {error:#}");
         return None;
     }
     let verification = match &context {
@@ -2167,7 +2176,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         ..attempted
     };
     let _ = write_startup_state(&state_path, &completed);
-    eprintln!("Updated Maestro to {latest}; restarting.");
+    eprintln!("Updated Deixic Code to {latest}; restarting.");
     drop(update_lock);
 
     let mut restart = Command::new(launcher(&context));
@@ -2178,7 +2187,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     match restart.status() {
         Ok(status) => Some(status.code().unwrap_or(1)),
         Err(error) => {
-            eprintln!("Maestro was updated, but automatic restart failed: {error}");
+            eprintln!("Deixic Code was updated, but automatic restart failed: {error}");
             None
         }
     }
@@ -2321,7 +2330,7 @@ async fn run_status(json: bool, channel: UpdateChannel) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else {
-        println!("Maestro update status: {}", status.state);
+        println!("Deixic Code update status: {}", status.state);
         println!("  channel: {}", status.channel.as_str());
         println!(
             "  active/current: {} / {}",
@@ -2404,7 +2413,7 @@ fn run_history(json: bool) -> Result<i32> {
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if history.attempts.is_empty() {
-        println!("No Maestro update attempts recorded.");
+        println!("No Deixic Code update attempts recorded.");
     } else {
         for attempt in history.attempts.iter().rev() {
             println!(
@@ -2424,7 +2433,7 @@ fn run_history(json: bool) -> Result<i32> {
 
 async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
     let context = install_context().context(
-        "maestro update rollback requires a native release installation; package-manager rollback is not supported",
+        "deixic-code update rollback requires a native release installation; package-manager rollback is not supported",
     )?;
     let InstallContext::Release {
         install_dir,
@@ -2541,12 +2550,16 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
     } else {
-        println!("Rolled Maestro back to {}.", outcome.active_version);
+        println!("Rolled Deixic Code back to {}.", outcome.active_version);
         if let Some(error) = history_error {
-            eprintln!("Maestro rollback succeeded, but update history persistence failed: {error}");
+            eprintln!(
+                "Deixic Code rollback succeeded, but update history persistence failed: {error}"
+            );
         }
         if let Some(warning) = outcome.launcher_warning {
-            eprintln!("Maestro rollback completed with a launcher durability warning: {warning}");
+            eprintln!(
+                "Deixic Code rollback completed with a launcher durability warning: {warning}"
+            );
         }
     }
     Ok(0)
@@ -2554,7 +2567,7 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
 
 fn print_help() {
     println!(
-        "Usage: maestro update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help"
+        "Usage: deixic-code update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help"
     );
 }
 
@@ -2580,7 +2593,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
 
     let current = current_version();
     let context = install_context().context(
-        "maestro update is available for signed release and global npm/Bun installations",
+        "deixic-code update is available for signed release and global npm/Bun installations",
     )?;
     let _update_lock = acquire_update_lock(&context)?;
     let check = check_for_update(&current, &context, parsed.channel).await;
@@ -2589,15 +2602,15 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&check)?);
         } else if check.status == "available" {
             println!(
-                "Maestro {} is available (current {}).",
+                "Deixic Code {} is available (current {}).",
                 check.latest_version.as_deref().unwrap_or("update"),
                 current
             );
         } else if check.status == "current" {
-            println!("Maestro is up to date ({current}).");
+            println!("Deixic Code is up to date ({current}).");
         } else {
             eprintln!(
-                "Maestro update check failed: {}",
+                "Deixic Code update check failed: {}",
                 check.error.as_deref().unwrap_or("unknown error")
             );
         }
@@ -2631,7 +2644,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
             outcome.attempt_id = Some(attempt.attempt_id);
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         } else {
-            eprintln!("Maestro update failed: {}", error_text);
+            eprintln!("Deixic Code update failed: {}", error_text);
         }
         return Ok(1);
     }
@@ -2639,7 +2652,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         if parsed.json {
             println!("{}", serde_json::to_string_pretty(&check)?);
         } else {
-            println!("Maestro is up to date ({current}).");
+            println!("Deixic Code is up to date ({current}).");
         }
         return Ok(0);
     }
@@ -2691,10 +2704,10 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
-                println!("Updated Maestro to {latest}.");
+                println!("Updated Deixic Code to {latest}.");
                 if let Some(error) = history_error {
                     eprintln!(
-                        "Maestro updated successfully, but update history persistence failed: {error}"
+                        "Deixic Code updated successfully, but update history persistence failed: {error}"
                     );
                 }
             }
@@ -2716,7 +2729,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
                 outcome.attempt_id = Some(attempt.attempt_id);
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
-                eprintln!("Maestro update failed: {error:#}");
+                eprintln!("Deixic Code update failed: {error:#}");
             }
             Ok(1)
         }
@@ -2857,14 +2870,20 @@ mod tests {
     #[test]
     fn rejects_unknown_update_options() {
         let error = parse_args(&["--wat".to_owned()]).expect_err("unknown option");
-        assert!(error.to_string().contains("Unknown maestro update option"));
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown deixic-code update option")
+        );
         assert!(parse_args(&["--channel".to_owned(), "nightly".to_owned()]).is_err());
-        assert!(parse_args(&[
-            "history".to_owned(),
-            "--channel".to_owned(),
-            "alpha".to_owned()
-        ])
-        .is_err());
+        assert!(
+            parse_args(&[
+                "history".to_owned(),
+                "--channel".to_owned(),
+                "alpha".to_owned()
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3163,9 +3182,11 @@ mod tests {
         older.release_url = github_release_url("v1.2.2");
         let error = verify_github_release_manifest_binding(&older, &selected)
             .expect_err("an older signed manifest must not satisfy a newer selection");
-        assert!(error
-            .to_string()
-            .contains("does not match selected GitHub release"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match selected GitHub release")
+        );
     }
 
     #[test]
@@ -3290,13 +3311,29 @@ mod tests {
         let first = try_acquire_startup_update_lock(&state_path)
             .expect("acquire first lock")
             .expect("first lock available");
-        assert!(try_acquire_startup_update_lock(&state_path)
-            .expect("try second lock")
-            .is_none());
+        assert!(
+            try_acquire_startup_update_lock(&state_path)
+                .expect("try second lock")
+                .is_none()
+        );
         drop(first);
-        assert!(try_acquire_startup_update_lock(&state_path)
-            .expect("reacquire lock")
-            .is_some());
+        // A concurrent test can fork while the first lock's file descriptor
+        // is open. The child inherits that descriptor until it execs, so
+        // reacquisition may briefly report `None` even after `first` drops.
+        // The lock must still become available promptly once that inherited
+        // descriptor closes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let _reacquired = loop {
+            match try_acquire_startup_update_lock(&state_path).expect("reacquire lock") {
+                Some(lock) => break lock,
+                None if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                None => {
+                    panic!("startup update lock stayed held after the inherited descriptor closed")
+                }
+            }
+        };
     }
 
     #[test]
@@ -3439,15 +3476,17 @@ mod tests {
         fs::write(archive_source.join("index.html"), b"fixture web")
             .expect("write archived web index");
         fs::write(archive_source.join("app.js"), b"fixture js").expect("write archived web script");
-        assert!(Command::new("tar")
-            .args(["-czf"])
-            .arg(&web_archive)
-            .args(["-C"])
-            .arg(&archive_source)
-            .arg(".")
-            .status()
-            .expect("create web archive")
-            .success());
+        assert!(
+            Command::new("tar")
+                .args(["-czf"])
+                .arg(&web_archive)
+                .args(["-C"])
+                .arg(&archive_source)
+                .arg(".")
+                .status()
+                .expect("create web archive")
+                .success()
+        );
         let web_archive_bytes = fs::read(&web_archive).expect("read web archive");
         let metadata = VersionMetadata {
             version: "0.9.0".to_owned(),
@@ -3498,9 +3537,11 @@ mod tests {
         )
         .expect("write foreign metadata");
         assert!(load_verified_release_metadata(&release_dir, &receipt).is_none());
-        assert!(list_verified_releases(&data_dir)
-            .expect("reject foreign metadata")
-            .is_empty());
+        assert!(
+            list_verified_releases(&data_dir)
+                .expect("reject foreign metadata")
+                .is_empty()
+        );
         fs::write(&metadata_path, &metadata_bytes).expect("restore metadata");
 
         let releases = list_verified_releases(&data_dir).expect("list verified releases");
@@ -3529,9 +3570,11 @@ mod tests {
         );
 
         fs::write(&web_archive, b"corrupted archive").expect("corrupt web archive");
-        assert!(list_verified_releases(&data_dir)
-            .expect("list corrupted web archive")
-            .is_empty());
+        assert!(
+            list_verified_releases(&data_dir)
+                .expect("list corrupted web archive")
+                .is_empty()
+        );
         fs::write(&web_archive, &web_archive_bytes).expect("restore web archive");
 
         let launcher = temporary.path().join("bin/maestro");
@@ -3575,9 +3618,11 @@ mod tests {
             serde_json::to_vec(&receipt).expect("serialize invalid receipt"),
         )
         .expect("write invalid receipt");
-        assert!(list_verified_releases(&data_dir)
-            .expect("list invalid receipt")
-            .is_empty());
+        assert!(
+            list_verified_releases(&data_dir)
+                .expect("list invalid receipt")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3618,8 +3663,8 @@ mod tests {
     #[tokio::test]
     async fn stable_update_uses_latest_manifest_before_rate_limited_api() {
         use std::sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         };
         use std::time::Instant;
 
@@ -3750,10 +3795,12 @@ mod tests {
             .expect("channel failure should remain visible");
         assert_eq!(verification.status, "invalid");
         assert_eq!(verification.manifest_url, url);
-        assert!(verification
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("403"));
+        assert!(
+            verification
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("403")
+        );
     }
 }

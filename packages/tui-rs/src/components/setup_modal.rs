@@ -1,11 +1,12 @@
-//! `/setup` modal: EvalOps login or a local provider API key.
+//! `/setup` modal: mandatory EvalOps Identity followed by managed inference or
+//! a local provider API key.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 /// One local provider offered by the setup modal.
@@ -33,6 +34,7 @@ pub struct SetupModal {
     provider_index: usize,
     secret: String,
     status: Option<String>,
+    continue_to_byok_after_identity: bool,
 }
 
 impl Default for SetupModal {
@@ -51,6 +53,7 @@ impl SetupModal {
             provider_index: 0,
             secret: String::new(),
             status: None,
+            continue_to_byok_after_identity: false,
         }
     }
 
@@ -61,12 +64,14 @@ impl SetupModal {
         self.provider_index = 0;
         self.secret.clear();
         self.status = None;
+        self.continue_to_byok_after_identity = false;
     }
 
     pub fn hide(&mut self) {
         self.visible = false;
         self.secret.clear();
         self.status = None;
+        self.continue_to_byok_after_identity = false;
     }
 
     #[must_use]
@@ -135,6 +140,17 @@ impl SetupModal {
         self.status = Some("Waiting for the browser callback…".to_owned());
     }
 
+    /// Continue a BYOK setup only after the required Identity login succeeds.
+    pub fn continue_to_byok_after_identity(&mut self) -> bool {
+        if !self.continue_to_byok_after_identity {
+            return false;
+        }
+        self.continue_to_byok_after_identity = false;
+        self.page = SetupPage::Provider;
+        self.status = Some("EvalOps Identity verified. Choose a provider.".to_owned());
+        true
+    }
+
     pub fn set_status(&mut self, status: impl Into<String>) {
         self.status = Some(status.into());
     }
@@ -183,10 +199,13 @@ impl SetupModal {
     /// Advance one page. Returns `Some(SetupAdvance)` when the caller must act.
     pub fn confirm(&mut self) -> Option<SetupAdvance> {
         match self.page {
-            SetupPage::Mode if self.mode_index == 0 => Some(SetupAdvance::StartEvalops),
+            SetupPage::Mode if self.mode_index == 0 => {
+                self.continue_to_byok_after_identity = false;
+                Some(SetupAdvance::StartEvalops)
+            }
             SetupPage::Mode => {
-                self.page = SetupPage::Provider;
-                None
+                self.continue_to_byok_after_identity = true;
+                Some(SetupAdvance::StartEvalops)
             }
             SetupPage::Provider => {
                 self.page = SetupPage::Key;
@@ -268,21 +287,23 @@ impl SetupModal {
 
     fn mode_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from(Span::raw("How do you want to run Maestro?")),
+            Line::from(Span::raw(
+                "EvalOps Identity is required to use Deixic Code.",
+            )),
             Line::from(""),
         ];
         lines.extend(self.choice(
             0,
             self.mode_index,
-            "EvalOps",
-            "Sign in. Inference uses the managed gateway.",
+            "Managed inference",
+            "Sign in with EvalOps Identity and use the managed gateway.",
         ));
         lines.push(Line::from(""));
         lines.extend(self.choice(
             1,
             self.mode_index,
             "Use your own key",
-            "OpenRouter, Anthropic, OpenAI, and others.",
+            "Sign in with Identity first, then add OpenRouter, Anthropic, OpenAI, or another key.",
         ));
         lines
     }
@@ -349,7 +370,9 @@ impl SetupModal {
 
     fn waiting_lines(&self) -> Vec<Line<'static>> {
         vec![
-            Line::from(Span::raw("A browser window opens for EvalOps login.")),
+            Line::from(Span::raw(
+                "A browser window opens for the required EvalOps Identity login.",
+            )),
             Line::from(Span::styled(
                 "This session stays here until the callback finishes.",
                 Style::default().fg(Color::DarkGray),
@@ -424,11 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn setup_modal_mode_then_provider_then_key() {
+    fn setup_modal_byok_starts_evalops_identity_before_provider_setup() {
         let mut modal = SetupModal::new();
         modal.show();
         modal.move_down();
-        assert_eq!(modal.confirm(), None);
+        assert_eq!(modal.confirm(), Some(SetupAdvance::StartEvalops));
+        assert!(modal.continue_to_byok_after_identity());
         assert_eq!(modal.page(), SetupPage::Provider);
         assert_eq!(modal.selected_provider().id, "openrouter");
         assert_eq!(modal.confirm(), None);
@@ -465,8 +489,9 @@ mod tests {
         let mut modal = SetupModal::new();
         modal.show();
         modal.move_down();
-        modal.confirm();
-        modal.confirm();
+        assert_eq!(modal.confirm(), Some(SetupAdvance::StartEvalops));
+        assert!(modal.continue_to_byok_after_identity());
+        assert_eq!(modal.confirm(), None);
         modal.insert_str(" sk-or-one\nsk-or-two ");
         assert_eq!(modal.secret(), "sk-or-onesk-or-two");
         modal.backspace();

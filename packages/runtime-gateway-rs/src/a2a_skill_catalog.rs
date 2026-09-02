@@ -1,5 +1,5 @@
 use crate::a2a::{SUBAGENT_TASK_CAPSULE_MAX_RETRY_LIMIT, SUBAGENT_TASK_CAPSULE_VERSION};
-use crate::codex_subagent_dispatch::{CodexSubagentDispatchLane, CODEX_SUBAGENT_DISPATCH_LANES};
+use crate::codex_subagent_dispatch::{CODEX_SUBAGENT_DISPATCH_LANES, CodexSubagentDispatchLane};
 use serde_json::Value;
 
 pub(crate) const A2A_SUBAGENT_KIND: &str = "maestro-subagent";
@@ -98,8 +98,8 @@ pub(crate) fn a2a_subagent_lane_is_executable(lane_id: &str) -> bool {
     A2A_EXECUTABLE_SUBAGENT_LANES.contains(&lane_id)
 }
 
-pub(crate) fn a2a_executable_subagent_dispatch_lanes(
-) -> impl Iterator<Item = &'static CodexSubagentDispatchLane> {
+pub(crate) fn a2a_executable_subagent_dispatch_lanes()
+-> impl Iterator<Item = &'static CodexSubagentDispatchLane> {
     CODEX_SUBAGENT_DISPATCH_LANES
         .iter()
         .filter(|lane| a2a_subagent_lane_is_executable(lane.lane_id))
@@ -219,8 +219,10 @@ mod tests {
     #[test]
     fn a2a_subagent_skills_do_not_claim_browser_qa_without_an_executor() {
         let skills = a2a_subagent_skills("urn:test:operating-plane");
-        assert!(!skills
-            .iter()
-            .any(|skill| skill["id"] == "maestro.subagent.browser-qa"));
+        assert!(
+            !skills
+                .iter()
+                .any(|skill| skill["id"] == "maestro.subagent.browser-qa")
+        );
     }
 }

@@ -1099,7 +1099,9 @@ fn main() {
         assert_eq!(response.usage.output_tokens, 7);
         assert_eq!(
             response.content[0].text.as_deref(),
-            Some("<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>")
+            Some(
+                "<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>"
+            )
         );
     }
 
@@ -1111,8 +1113,7 @@ fn main() {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_http_request(&mut stream);
             request_tx.send(request).unwrap();
-            let body =
-                "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}";
+            let body = "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}";
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
                 body.len(),

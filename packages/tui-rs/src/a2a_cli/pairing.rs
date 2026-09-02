@@ -1,7 +1,7 @@
 //! A2A peer pairing code encode/decode (TS-compatible `maestro-pair-v1`).
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -105,7 +105,7 @@ pub fn create_pairing_payload_from_agent_card(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         })
-        .unwrap_or_else(|| "Maestro A2A Peer".into());
+        .unwrap_or_else(|| "Deixic Code A2A Peer".into());
 
     let now = chrono::Utc::now();
     let expires_at = now + chrono::Duration::milliseconds(ttl_ms.max(1) as i64);

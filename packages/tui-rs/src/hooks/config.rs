@@ -31,6 +31,7 @@
 //! [[hooks]]
 //! event = "PreToolUse"
 //! wasm = "~/.composer/plugins/safety.wasm"
+//! # required = false  # explicit advisory behavior
 //! ```
 
 use super::types::HookEventType;
@@ -40,8 +41,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Hook configuration file structure
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookConfig {
+    /// Schema version of this config file.
+    ///
+    /// Must be a positive integer. A config whose `version` is missing,
+    /// non-integer, or below 1 is refused. Maestro defaults it to
+    /// [`CURRENT_HOOK_CONFIG_VERSION`] so files written before the field
+    /// existed keep loading, but an explicit `version = 0` is an error.
+    #[serde(default = "default_config_version")]
+    pub version: u32,
+
     /// Global settings
     #[serde(default)]
     pub settings: HookSettings,
@@ -49,6 +59,23 @@ pub struct HookConfig {
     /// Hook definitions
     #[serde(default)]
     pub hooks: Vec<HookDefinition>,
+}
+
+/// The hook config schema version this build writes and understands.
+pub const CURRENT_HOOK_CONFIG_VERSION: u32 = 1;
+
+fn default_config_version() -> u32 {
+    CURRENT_HOOK_CONFIG_VERSION
+}
+
+impl Default for HookConfig {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_HOOK_CONFIG_VERSION,
+            settings: HookSettings::default(),
+            hooks: Vec::new(),
+        }
+    }
 }
 
 /// Global hook settings
@@ -132,6 +159,16 @@ pub struct HookDefinition {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
+    /// Whether failures in this hook must block the protected operation.
+    ///
+    /// A `PreToolUse` WASM hook is fail-closed by default because it can be a
+    /// tool policy boundary. Set `required = false` explicitly for an
+    /// advisory hook whose unavailability or failure should only be logged.
+    /// Other hook events remain advisory unless their execution path has an
+    /// explicit enforcement contract.
+    #[serde(default)]
+    pub required: Option<bool>,
+
     /// Hook description
     #[serde(default)]
     pub description: Option<String>,
@@ -145,6 +182,8 @@ pub struct HookDefinition {
 /// Raw JSON hooks configuration
 #[derive(Debug, Clone, Default, Deserialize)]
 struct RawHooksConfig {
+    #[serde(default = "default_config_version")]
+    version: u32,
     #[serde(default)]
     extends: Option<RawExtends>,
     #[serde(default)]
@@ -179,6 +218,8 @@ struct RawHookDef {
     prompt: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default)]
+    required: Option<bool>,
 }
 
 /// Loaded and validated hook configuration
@@ -328,7 +369,7 @@ fn load_hook_config_with_trust_and_plugins(
             Ok(config) => config,
             Err(error) => {
                 eprintln!(
-                    "[hooks] Skipping invalid plugin hook config {}: {error}",
+                    "[hooks] Skipping invalid plugin hook config {}: {error:#}",
                     plugin_path.display()
                 );
                 continue;
@@ -384,12 +425,40 @@ fn load_config_file(path: &Path) -> Result<HookConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read hook config: {}", path.display()))?;
 
-    toml::from_str(&content)
-        .with_context(|| format!("Failed to parse hook config: {}", path.display()))
+    let config: HookConfig = toml::from_str(&content)
+        .with_context(|| format!("Failed to parse hook config: {}", path.display()))?;
+    validate_hook_config(&config, path)?;
+    Ok(config)
+}
+
+/// Reject a config whose version or tool matchers are unusable.
+///
+/// Both checks run at load so the failure names the file. A matcher that does
+/// not compile used to be stored verbatim and compared literally, so the hook
+/// silently never fired.
+fn validate_hook_config(config: &HookConfig, path: &Path) -> Result<()> {
+    anyhow::ensure!(
+        config.version >= 1,
+        "Hook config {} has version {}; version must be a positive integer",
+        path.display(),
+        config.version
+    );
+    for hook in &config.hooks {
+        crate::hooks::matcher::ToolMatcher::compile(&hook.tools).with_context(|| {
+            format!(
+                "Hook config {} has an invalid {:?} tool matcher",
+                path.display(),
+                hook.event
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Merge two configs (later config takes precedence)
 fn merge_config(base: &mut HookConfig, other: HookConfig) {
+    base.version = base.version.max(other.version);
+
     // Merge settings (other overrides)
     if other.settings.enabled != default_enabled() {
         base.settings.enabled = other.settings.enabled;
@@ -414,11 +483,17 @@ fn load_json_config_file(path: &Path) -> Result<HookConfig> {
     let raw: RawHooksConfig = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse hook config: {}", path.display()))?;
     let base_dir = path.parent().unwrap_or(Path::new("."));
-    parse_raw_hooks_config(raw, base_dir)
+    let config = parse_raw_hooks_config(raw, base_dir)
+        .with_context(|| format!("Invalid hook config: {}", path.display()))?;
+    validate_hook_config(&config, path)?;
+    Ok(config)
 }
 
 fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookConfig> {
-    let mut config = HookConfig::default();
+    let mut config = HookConfig {
+        version: raw.version,
+        ..HookConfig::default()
+    };
 
     if let Some(extends) = raw.extends {
         let paths = match extends {
@@ -446,13 +521,14 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
 
     if let Some(hooks) = raw.hooks {
         for (event_name, matchers) in hooks {
+            // Reject an unknown hook name instead of dropping the entry. A
+            // dropped entry looks like a configured hook that never runs.
             let Some(event) = parse_event_type(&event_name) else {
-                eprintln!("[hooks] Unknown event type: {event_name}");
-                continue;
+                anyhow::bail!("Unknown hook event type: {event_name}");
             };
 
             for matcher in matchers {
-                let tools = parse_matcher_tools(matcher.matcher.as_deref());
+                let tools = parse_matcher_tools(matcher.matcher.as_deref())?;
                 for hook in matcher.hooks {
                     if hook.hook_type.as_deref() == Some("agent") {
                         continue;
@@ -476,6 +552,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                             wasm: None,
                             timeout_ms: hook.timeout,
                             enabled: true,
+                            required: hook.required,
                             description: None,
                             working_dir: None,
                         });
@@ -499,6 +576,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                             wasm: None,
                             timeout_ms: hook.timeout,
                             enabled: true,
+                            required: hook.required,
                             description: None,
                             working_dir: None,
                         });
@@ -521,6 +599,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         wasm: None,
                         timeout_ms: hook.timeout,
                         enabled: true,
+                        required: hook.required,
                         description: None,
                         working_dir: None,
                     });
@@ -532,16 +611,27 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
     Ok(config)
 }
 
-fn parse_matcher_tools(matcher: Option<&str>) -> Vec<String> {
-    match matcher {
-        None => Vec::new(),
-        Some("*") => Vec::new(),
-        Some(value) => value
-            .split('|')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
+/// Turn a `matcher` string into a hook's `tools` list.
+///
+/// The matcher is one regular expression, not a `|`-separated list of literal
+/// names: splitting it turned `Write.*` into the literal name `Write.*`, which
+/// then matched no tool and reported nothing. Alternation still works because
+/// `|` is regex alternation.
+///
+/// # Errors
+///
+/// Returns an error when the matcher is not a valid regular expression, so the
+/// failure surfaces at config load instead of as a hook that never fires.
+fn parse_matcher_tools(matcher: Option<&str>) -> Result<Vec<String>> {
+    let pattern = match matcher {
+        None | Some("*") => return Ok(Vec::new()),
+        Some(value) => value.trim(),
+    };
+    if pattern.is_empty() {
+        return Ok(Vec::new());
     }
+    crate::hooks::matcher::compile_tool_pattern(pattern)?;
+    Ok(vec![pattern.to_string()])
 }
 
 fn parse_event_type(name: &str) -> Option<HookEventType> {
@@ -599,12 +689,23 @@ fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource>
 
     if let Some(ref wasm) = def.wasm {
         let path = resolve_path(wasm, cwd);
-        if path.exists() {
-            return Some(HookSource::Wasm(path));
-        }
+        // Preserve missing WASM paths so the integration layer can surface a
+        // required policy as unavailable and fail closed. Dropping the source
+        // here made a configured policy indistinguishable from no hook.
+        return Some(HookSource::Wasm(path));
     }
 
     None
+}
+
+impl HookDefinition {
+    /// Whether this hook must prevent a tool call when its WASM backend is
+    /// unavailable or fails to produce a valid result.
+    #[must_use]
+    pub fn fail_closed(&self) -> bool {
+        self.required
+            .unwrap_or(matches!(self.event, HookEventType::PreToolUse))
+    }
 }
 
 /// Resolve a path, expanding ~ to home directory
@@ -621,11 +722,7 @@ fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
     }
 
     let p = PathBuf::from(path);
-    if p.is_absolute() {
-        p
-    } else {
-        cwd.join(p)
-    }
+    if p.is_absolute() { p } else { cwd.join(p) }
 }
 
 #[cfg(test)]
@@ -781,6 +878,50 @@ description = "Test hook"
     }
 
     #[test]
+    fn pre_tool_wasm_policy_defaults_fail_closed_but_can_be_advisory() {
+        let defaulted: HookConfig = toml::from_str(
+            r#"
+[[hooks]]
+event = "PreToolUse"
+wasm = "policy.wasm"
+"#,
+        )
+        .unwrap();
+        assert!(defaulted.hooks[0].required.is_none());
+        assert!(defaulted.hooks[0].fail_closed());
+
+        let advisory: HookConfig = toml::from_str(
+            r#"
+[[hooks]]
+event = "PreToolUse"
+wasm = "telemetry.wasm"
+required = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(advisory.hooks[0].required, Some(false));
+        assert!(!advisory.hooks[0].fail_closed());
+    }
+
+    #[test]
+    fn missing_wasm_path_remains_configured_for_policy_enforcement() {
+        let cwd = tempfile::tempdir().unwrap();
+        let config: HookConfig = toml::from_str(
+            r#"
+[[hooks]]
+event = "PreToolUse"
+wasm = "missing-policy.wasm"
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            determine_hook_source(&config.hooks[0], cwd.path()),
+            Some(HookSource::Wasm(path)) if path == cwd.path().join("missing-policy.wasm")
+        ));
+    }
+
+    #[test]
     fn test_lua_hook_config() {
         let toml = r#"
 [[hooks]]
@@ -872,5 +1013,137 @@ command = "echo trusted"
         assert!(!has_project_hook_config(temp.path()));
         write_project_hooks_toml(temp.path(), "[settings]\nenabled = true\n");
         assert!(has_project_hook_config(temp.path()));
+    }
+
+    fn write_json_config(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("hooks.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn regex_matcher_is_kept_whole_and_selects_prefixed_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = write_json_config(
+            temp.path(),
+            r#"{"version":1,"hooks":{"PreToolUse":[{"matcher":"Write.*","hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+
+        let loaded = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&config),
+        )
+        .unwrap();
+        assert_eq!(loaded.hooks.len(), 1);
+        assert_eq!(
+            loaded.hooks[0].definition.tools,
+            vec!["Write.*".to_string()]
+        );
+
+        let matcher =
+            crate::hooks::matcher::ToolMatcher::compile(&loaded.hooks[0].definition.tools).unwrap();
+        assert!(matcher.matches("Write"));
+        assert!(matcher.matches("WriteFile"));
+        assert!(!matcher.matches("Read"));
+    }
+
+    #[test]
+    fn alternation_matcher_is_not_split_into_literals() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = write_json_config(
+            temp.path(),
+            r#"{"version":1,"hooks":{"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+
+        let loaded = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&config),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.hooks[0].definition.tools,
+            vec!["Write|Edit".to_string()]
+        );
+        let matcher =
+            crate::hooks::matcher::ToolMatcher::compile(&loaded.hooks[0].definition.tools).unwrap();
+        assert!(matcher.matches("Write"));
+        assert!(matcher.matches("Edit"));
+        assert!(!matcher.matches("Bash"));
+    }
+
+    #[test]
+    fn malformed_matcher_fails_the_load_with_the_pattern() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = write_json_config(
+            temp.path(),
+            r#"{"version":1,"hooks":{"PreToolUse":[{"matcher":"Write(","hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+
+        let error =
+            load_json_config_file(&config).expect_err("an uncompilable matcher must fail the load");
+        let message = format!("{error:#}");
+        assert!(message.contains("Write("), "{message}");
+        assert!(message.contains("not a valid regex"), "{message}");
+    }
+
+    #[test]
+    fn unknown_event_name_fails_the_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = write_json_config(
+            temp.path(),
+            r#"{"version":1,"hooks":{"BeforeLunch":[{"hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+
+        let error =
+            load_json_config_file(&config).expect_err("an unknown hook event must fail the load");
+        assert!(format!("{error:#}").contains("BeforeLunch"), "{error:#}");
+    }
+
+    #[test]
+    fn config_version_defaults_to_one_and_zero_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = write_json_config(
+            temp.path(),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+        let loaded = load_json_config_file(&config).unwrap();
+        assert_eq!(loaded.version, CURRENT_HOOK_CONFIG_VERSION);
+        assert_eq!(loaded.hooks.len(), 1);
+
+        let zero = write_json_config(
+            temp.path(),
+            r#"{"version":0,"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"./check.sh"}]}]}}"#,
+        );
+        let error = load_json_config_file(&zero).expect_err("version 0 must be rejected");
+        assert!(
+            format!("{error:#}").contains("positive integer"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn toml_config_version_is_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hooks.toml");
+        std::fs::write(
+            &path,
+            "version = 0\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"echo hi\"\n",
+        )
+        .unwrap();
+        let error = load_config_file(&path).expect_err("version 0 must be rejected");
+        assert!(
+            format!("{error:#}").contains("positive integer"),
+            "{error:#}"
+        );
+
+        std::fs::write(
+            &path,
+            "[[hooks]]\nevent = \"PreToolUse\"\ntools = [\"Write(\"]\ncommand = \"echo hi\"\n",
+        )
+        .unwrap();
+        let error = load_config_file(&path).expect_err("an uncompilable matcher must be rejected");
+        assert!(format!("{error:#}").contains("Write("), "{error:#}");
     }
 }

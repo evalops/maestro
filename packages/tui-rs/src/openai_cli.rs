@@ -5,9 +5,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use anyhow::{Context, Result, bail};
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,7 @@ pub async fn run_openai(args: &[String]) -> Result<i32> {
         Some("status") => status().await,
         _ => {
             eprintln!(
-                "Unknown openai subcommand. Try \"maestro openai login\", \"logout\", or \"status\"."
+                "Unknown openai subcommand. Try \"deixic-code openai login\", \"logout\", or \"status\"."
             );
             Ok(1)
         }
@@ -85,7 +85,7 @@ async fn login() -> Result<i32> {
         }
     };
     let request = login_request()?;
-    println!("Maestro OpenAI Login");
+    println!("Deixic Code OpenAI Login");
     println!("Please open the following URL in your browser to authenticate:");
     println!("{}", request.url);
 
@@ -186,7 +186,7 @@ fn logout() -> Result<i32> {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error).with_context(|| format!("Failed to remove {}", path.display()))
+            return Err(error).with_context(|| format!("Failed to remove {}", path.display()));
         }
     }
     println!("Removed stored OpenAI credentials.");
@@ -196,7 +196,7 @@ fn logout() -> Result<i32> {
 async fn status() -> Result<i32> {
     let Some(stored) = load_credential() else {
         println!("No stored OpenAI credentials.");
-        println!("Run \"maestro openai login\" to authenticate with OpenAI.");
+        println!("Run \"deixic-code openai login\" to authenticate with OpenAI.");
         return Ok(0);
     };
     let remaining_ms = (stored.expires_at - now_ms()).max(0);

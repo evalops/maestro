@@ -944,7 +944,7 @@ mod tests {
         let branch = BranchPoint::new("msg-1", 0);
         // Should be after year 2020 (in ms)
         let year_2020_ms = 1_577_836_800_000_u64; // Jan 1, 2020
-                                                  // Should be before year 2100
+        // Should be before year 2100
         let year_2100_ms = 4_102_444_800_000_u64;
         assert!(
             branch.created_at > year_2020_ms,

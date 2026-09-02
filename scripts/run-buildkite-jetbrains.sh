@@ -37,5 +37,5 @@ cd packages/jetbrains-plugin
 # stuck IntelliJ download still dies cleanly.
 timeout --signal=TERM --kill-after=30s 10m \
   ./gradlew check buildPlugin --no-daemon \
-  -Dorg.gradle.workers.max=2 \
+  -Dorg.gradle.workers.max=1 \
   -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError"

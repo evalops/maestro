@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -117,7 +117,7 @@ pub(super) async fn revoke_provisioned_credential() -> Result<()> {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         bail!(
-            "Platform tools API key revocation failed (HTTP {}): {}. Run `maestro evalops login` and retry so the remote key is not orphaned.",
+            "Platform tools API key revocation failed (HTTP {}): {}. Run `deixic-code evalops login` and retry so the remote key is not orphaned.",
             status.as_u16(),
             response_detail(&body)
         );
@@ -145,7 +145,7 @@ fn explicit_service_token_present() -> bool {
 
 async fn provision_credential() -> Result<ProvisionedCredential> {
     let snapshot = load_evalops_snapshot()?
-        .context("run `maestro evalops login` before provisioning Platform tools")?;
+        .context("run `deixic-code evalops login` before provisioning Platform tools")?;
     let identity = configured_identity(snapshot.identity_base_url.as_deref())?;
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
@@ -158,7 +158,7 @@ async fn provision_credential() -> Result<ProvisionedCredential> {
     let registration_response = client
         .post(format!("{identity}/register"))
         .json(&json!({
-            "client_name": "Maestro Platform Tools",
+            "client_name": "Deixic Code Platform Tools",
             "redirect_uris": [&callback_uri],
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
@@ -437,7 +437,7 @@ async fn read_callback(
     write_http(
         stream,
         200,
-        "Platform tools authorized. You can close this window and return to Maestro.",
+        "Platform tools authorized. You can close this window and return to Deixic Code.",
     )
     .await?;
     Ok(Some(CallbackResult { code }))

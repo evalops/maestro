@@ -98,9 +98,12 @@ jobs:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
           NPM_TAG: \${{ needs.prepare.outputs.npm_tag }}
           PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
+          ALIAS_PACKAGE_NAME: "@evalops/maestro"
           PACKED_INTEGRITY: \${{ steps.pack.outputs.integrity }}
+          ALIAS_PACKED_INTEGRITY: \${{ steps.pack.outputs.alias_integrity }}
           RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
           TARBALL: \${{ steps.pack.outputs.tarball }}
+          ALIAS_TARBALL: \${{ steps.pack.outputs.alias_tarball }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -109,36 +112,43 @@ jobs:
         run: |
           set -euo pipefail
           publish_with_oidc() {
-            npx --yes npm@11.10.0 publish "\$TARBALL" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
+            local tarball="$1"
+            npx --yes npm@11.10.0 publish "\$tarball" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
           publish_with_token() {
+            local tarball="$1"
             if [[ -z "\${NODE_AUTH_TOKEN:-}" ]]; then
               return 1
             fi
             NPM_CONFIG_USERCONFIG="\$RUNNER_TEMP/npmrc" \\
               NODE_AUTH_TOKEN="\$NODE_AUTH_TOKEN" \\
-              npx --yes npm@11.10.0 publish "\$TARBALL" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
+              npx --yes npm@11.10.0 publish "\$tarball" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
           verify_published_tarball() {
+            local package_name="$1"
+            local packed_integrity="$2"
             registry_integrity="\$(
-              command npm view "\${PACKAGE_NAME}@\${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
+              command npm view "\${package_name}@\${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
             )" || return 1
             if [[ -z "\$registry_integrity" ]]; then
               return 1
             fi
-            if [[ "\$registry_integrity" != "\$PACKED_INTEGRITY" ]]; then
+            if [[ "\$registry_integrity" != "\$packed_integrity" ]]; then
               return 2
             fi
           }
           publish_or_verify() {
             local publisher="$1"
+            local package_name="$2"
+            local tarball="$3"
+            local packed_integrity="$4"
             local publish_status=0
             local registry_status=0
-            "\$1" || publish_status=\$?
+            "\$publisher" "\$tarball" || publish_status=\$?
             if [[ "\$publish_status" -eq 0 ]]; then
               return 0
             fi
-            verify_published_tarball || registry_status=\$?
+            verify_published_tarball "\$package_name" "\$packed_integrity" || registry_status=\$?
             if [[ "\$registry_status" -eq 0 ]]; then
               return 0
             fi
@@ -147,18 +157,25 @@ jobs:
             fi
             return "\$publish_status"
           }
-          registry_status=0
-          verify_published_tarball || registry_status=\$?
-          if [[ "\$registry_status" -eq 0 ]]; then
-            exit 0
-          fi
-          if [[ "\$registry_status" -eq 2 ]]; then
-            exit 2
-          fi
-          if publish_or_verify publish_with_oidc; then
-            exit 0
-          fi
-          publish_or_verify publish_with_token
+          publish_package() {
+            local package_name="$1"
+            local tarball="$2"
+            local packed_integrity="$3"
+            local registry_status=0
+            verify_published_tarball "\$package_name" "\$packed_integrity" || registry_status=\$?
+            if [[ "\$registry_status" -eq 0 ]]; then
+              return 0
+            fi
+            if [[ "\$registry_status" -eq 2 ]]; then
+              return 2
+            fi
+            if publish_or_verify publish_with_oidc "\$package_name" "\$tarball" "\$packed_integrity"; then
+              return 0
+            fi
+            publish_or_verify publish_with_token "\$package_name" "\$tarball" "\$packed_integrity"
+          }
+          publish_package "\$PACKAGE_NAME" "\$TARBALL" "\$PACKED_INTEGRITY"
+          publish_package "\$ALIAS_PACKAGE_NAME" "\$ALIAS_TARBALL" "\$ALIAS_PACKED_INTEGRITY"
       - name: Smoke packed package without JS runtime
         env:
           NPM_CONFIG_FETCH_RETRIES: "1"
@@ -272,7 +289,7 @@ test("accepts mapping-form environment and the complete release contract", () =>
 
 test("rejects dormant npm publish helpers", () => {
 	const dormant = completeWorkflow.replace(
-		"          publish_or_verify publish_with_token\n",
+		'publish_or_verify publish_with_token "$package_name" "$tarball" "$packed_integrity"',
 		"          true\n",
 	);
 	assert.ok(
@@ -514,8 +531,8 @@ test("rejects disabled or shell-dormant npm publication", () => {
 	);
 
 	const dormantBranch = completeWorkflow.replace(
-		"          publish_or_verify publish_with_token\n",
-		"          if false; then\n            publish_or_verify publish_with_token\n          fi\n",
+		'publish_or_verify publish_with_token "$package_name" "$tarball" "$packed_integrity"',
+		'if false; then\n            publish_or_verify publish_with_token "$package_name" "$tarball" "$packed_integrity"\n          fi',
 	);
 	assert.ok(
 		validateReleaseWorkflow(dormantBranch).some((failure) =>
@@ -601,8 +618,8 @@ test("rejects alternate publish failure swallowing", () => {
 
 test("rejects unauthorized early success or a shell function that shadows npm", () => {
 	const earlyExit = completeWorkflow.replace(
-		"          publish_or_verify publish_with_token\n",
-		"          exit 0\n          publish_or_verify publish_with_token\n",
+		'publish_package "$PACKAGE_NAME" "$TARBALL" "$PACKED_INTEGRITY"',
+		'exit 0\n          publish_package "$PACKAGE_NAME" "$TARBALL" "$PACKED_INTEGRITY"',
 	);
 	assert.ok(
 		validateReleaseWorkflow(earlyExit).some((failure) =>
@@ -621,8 +638,8 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 	);
 
 	const swallowedTokenFailure = completeWorkflow.replace(
-		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"\n',
-		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
+		'npx --yes npm@11.10.0 publish "$tarball" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"',
+		'npx --yes npm@11.10.0 publish "$tarball" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"\n            return 0',
 	);
 	assert.ok(
 		validateReleaseWorkflow(swallowedTokenFailure).some((failure) =>
@@ -633,18 +650,18 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 
 test("requires exact registry reconciliation after errors and on reruns", () => {
 	const noPreflight = completeWorkflow.replace(
-		"          registry_status=0\n          verify_published_tarball || registry_status=$?\n",
-		"          registry_status=0\n          false || registry_status=$?\n",
+		'verify_published_tarball "$package_name" "$packed_integrity" || registry_status=$?',
+		"false || registry_status=$?",
 	);
 	assert.ok(
 		validateReleaseWorkflow(noPreflight).some((failure) =>
-			failure.includes("must not be bypassed"),
+			failure.includes("reconcile the exact registry tarball"),
 		),
 	);
 
 	const noErrorRecovery = completeWorkflow.replace(
-		'            fi\n            verify_published_tarball || registry_status=$?\n            if [[ "$registry_status" -eq 0 ]]; then\n',
-		'            fi\n            false || registry_status=$?\n            if [[ "$registry_status" -eq 0 ]]; then\n',
+		'verify_published_tarball "$package_name" "$packed_integrity" || registry_status=$?',
+		"false || registry_status=$?",
 	);
 	assert.ok(
 		validateReleaseWorkflow(noErrorRecovery).some((failure) =>

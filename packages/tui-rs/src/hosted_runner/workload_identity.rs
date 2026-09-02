@@ -1,13 +1,13 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use futures::StreamExt as _;
 use rand::Rng as _;
 use rcgen::{CertificateParams, KeyPair};
 use rustls::{
-    client::danger::HandshakeSignatureValid,
-    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, UnixTime},
-    server::danger::{ClientCertVerified, ClientCertVerifier},
     DigitallySignedStruct, DistinguishedName, Error as TlsError, SignatureScheme,
+    client::danger::HandshakeSignatureValid,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, UnixTime, pem::PemObject},
+    server::danger::{ClientCertVerified, ClientCertVerifier},
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt, fs, path::Path, sync::Arc, time::Duration as StdDuration};
@@ -1189,7 +1189,7 @@ fn validate_client_leaf_certificate(
 
 #[cfg(test)]
 mod tests {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use chrono::{Duration, Utc};
     use rcgen::{
         BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
@@ -1203,11 +1203,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        build_client_identity, build_exchange_request, build_runner_client_verifier,
-        build_server_identity, jittered_initial_exchange_delay_for_sample, projected_pod_uid,
-        require_exchange_created, validate_identity_contract, IdentityBinding,
-        IdentityExchangeResponse, ReloadableServerIdentity, WorkloadIdentityError,
-        WorkloadIdentityExchanger, INITIAL_EXCHANGE_JITTER_FACTOR, RUNNER_HOST_CLIENT_URI,
+        INITIAL_EXCHANGE_JITTER_FACTOR, IdentityBinding, IdentityExchangeResponse,
+        RUNNER_HOST_CLIENT_URI, ReloadableServerIdentity, WorkloadIdentityError,
+        WorkloadIdentityExchanger, build_client_identity, build_exchange_request,
+        build_runner_client_verifier, build_server_identity,
+        jittered_initial_exchange_delay_for_sample, projected_pod_uid, require_exchange_created,
+        validate_identity_contract,
     };
     use crate::hosted_runner::config::HostedRunnerWorkloadIdentityConfig;
 
@@ -1380,23 +1381,27 @@ mod tests {
             "attempts/2/workers/41234567-89ab-cdef-0123-456789abcdef"
         );
 
-        assert!(validate_identity_contract(
-            wrong_session,
-            &binding(),
-            pod_uid,
-            now,
-            now + Duration::minutes(5)
-        )
-        .is_err());
+        assert!(
+            validate_identity_contract(
+                wrong_session,
+                &binding(),
+                pod_uid,
+                now,
+                now + Duration::minutes(5)
+            )
+            .is_err()
+        );
         let exact = wrong_session.replace("other-session", "session%2Fwith%20spaces");
-        assert!(validate_identity_contract(
-            &exact,
-            &binding(),
-            pod_uid,
-            now,
-            now + Duration::seconds(301)
-        )
-        .is_err());
+        assert!(
+            validate_identity_contract(
+                &exact,
+                &binding(),
+                pod_uid,
+                now,
+                now + Duration::seconds(301)
+            )
+            .is_err()
+        );
     }
 
     fn signed_exchange_response(
@@ -1650,15 +1655,21 @@ mod tests {
             "spiffe://identity.evalops.dev/service/other",
         );
 
-        assert!(verifier
-            .verify_client_cert(&exact, &[], UnixTime::now())
-            .is_ok());
-        assert!(verifier
-            .verify_client_cert(&wrong_ca, &[], UnixTime::now())
-            .is_err());
-        assert!(verifier
-            .verify_client_cert(&wrong_uri, &[], UnixTime::now())
-            .is_err());
+        assert!(
+            verifier
+                .verify_client_cert(&exact, &[], UnixTime::now())
+                .is_ok()
+        );
+        assert!(
+            verifier
+                .verify_client_cert(&wrong_ca, &[], UnixTime::now())
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify_client_cert(&wrong_uri, &[], UnixTime::now())
+                .is_err()
+        );
     }
 
     struct IdentityHarness {

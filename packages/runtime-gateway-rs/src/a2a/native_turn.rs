@@ -1,22 +1,24 @@
 use chrono::{DateTime, Utc};
+use maestro_tui::SandboxPolicy;
 use maestro_tui::agent::{
     CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, TokenUsage,
     ToolResult,
 };
 use maestro_tui::state::ApprovalMode;
 use maestro_tui::tools::ToolExecutor;
-use maestro_tui::SandboxPolicy;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use super::ValidatedSubagentTaskCapsule;
 use crate::{
-    env_u64, finish_tool_metadata, record_tool_call_metadata, trimmed_env, truthy_env,
-    A2ACancelReceiver, AppState, A2A_DEFAULT_TURN_TIMEOUT_MS,
+    A2A_DEFAULT_TURN_TIMEOUT_MS, A2ACancelReceiver, AppState, env_bool, env_u64,
+    finish_tool_metadata, record_tool_call_metadata, trimmed_env,
 };
 
 fn a2a_explicit_terminal(event: &FromAgent) -> Option<Result<(), String>> {
@@ -50,15 +52,16 @@ impl A2ASubagentExecutionPolicy {
         if !self.allowed_tools.contains(tool) {
             return Err(format!("tool {tool:?} is outside the task capsule"));
         }
+        if !args.is_object() {
+            return Err("tool arguments must be an object".to_string());
+        }
         match tool {
             "read" => self.guard_path_argument(args, &["path", "file_path"], &self.read_roots),
             "glob" => {
-                self.guard_path_argument(args, &["path"], &self.read_roots)?;
+                self.guard_optional_read_path(args)?;
                 self.guard_glob_pattern(args)
             }
-            "grep" | "list" | "find" | "diff" => {
-                self.guard_path_argument(args, &["path"], &self.read_roots)
-            }
+            "grep" | "list" | "find" | "diff" => self.guard_optional_read_path(args),
             "search" => self.guard_search_paths(args),
             "write" | "edit" => {
                 self.guard_path_argument(args, &["path", "file_path"], &self.write_roots)
@@ -80,13 +83,21 @@ impl A2ASubagentExecutionPolicy {
         self.guard_path(raw, roots)
     }
 
+    fn guard_optional_read_path(&self, args: &Value) -> Result<(), String> {
+        match args.get("path") {
+            Some(Value::String(path)) => self.guard_path(path, &self.read_roots),
+            Some(_) => Err("tool path must be a string".to_string()),
+            None => self.guard_path(&self.cwd.to_string_lossy(), &self.read_roots),
+        }
+    }
+
     fn guard_search_paths(&self, args: &Value) -> Result<(), String> {
         if args.get("cwd").is_some() {
             return Err("search cwd is server-owned for task capsules".to_string());
         }
-        let paths = args
-            .get("paths")
-            .ok_or_else(|| "search paths are required by the task capsule".to_string())?;
+        let Some(paths) = args.get("paths") else {
+            return self.guard_path(&self.cwd.to_string_lossy(), &self.read_roots);
+        };
         match paths {
             Value::String(path) => self.guard_path(path, &self.read_roots),
             Value::Array(paths) if !paths.is_empty() => {
@@ -243,36 +254,43 @@ impl A2ASubagentExecutionPolicy {
                     Value::String(self.resolve_guarded_path(raw, roots)?.display().to_string());
             }
             "glob" | "grep" | "list" | "find" | "diff" => {
-                let raw = guarded["path"]
-                    .as_str()
-                    .ok_or_else(|| "tool path must be a string".to_string())?;
+                let raw = guarded
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| self.cwd.display().to_string());
                 guarded["path"] = Value::String(
-                    self.resolve_guarded_path(raw, &self.read_roots)?
+                    self.resolve_guarded_path(&raw, &self.read_roots)?
                         .display()
                         .to_string(),
                 );
             }
-            "search" => match guarded.get_mut("paths") {
-                Some(Value::String(path)) => {
-                    *path = self
-                        .resolve_guarded_path(path, &self.read_roots)?
-                        .display()
-                        .to_string();
+            "search" => {
+                if guarded.get("paths").is_none() {
+                    guarded["paths"] = Value::String(self.cwd.display().to_string());
                 }
-                Some(Value::Array(paths)) => {
-                    for path in paths {
-                        let raw = path
-                            .as_str()
-                            .ok_or_else(|| "search paths must be strings".to_string())?;
-                        *path = Value::String(
-                            self.resolve_guarded_path(raw, &self.read_roots)?
-                                .display()
-                                .to_string(),
-                        );
+                match guarded.get_mut("paths") {
+                    Some(Value::String(path)) => {
+                        *path = self
+                            .resolve_guarded_path(path, &self.read_roots)?
+                            .display()
+                            .to_string();
                     }
+                    Some(Value::Array(paths)) => {
+                        for path in paths {
+                            let raw = path
+                                .as_str()
+                                .ok_or_else(|| "search paths must be strings".to_string())?;
+                            *path = Value::String(
+                                self.resolve_guarded_path(raw, &self.read_roots)?
+                                    .display()
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    _ => return Err("search paths are required".to_string()),
                 }
-                _ => return Err("search paths are required".to_string()),
-            },
+            }
             _ => return Err(format!("tool {tool:?} has no capsule execution guard")),
         }
         if tool == "search" {
@@ -604,9 +622,48 @@ pub(crate) enum A2ATurnResult {
     Canceled,
 }
 
+type A2ASessionTurnLocks = Mutex<HashMap<String, Weak<Mutex<()>>>>;
+
+fn a2a_session_turn_locks() -> &'static A2ASessionTurnLocks {
+    static LOCKS: OnceLock<A2ASessionTurnLocks> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn a2a_session_turn_mutex(session_id: &str) -> Arc<Mutex<()>> {
+    let mut locks = a2a_session_turn_locks().lock().await;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(session_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(session_id.to_owned(), Arc::downgrade(&lock));
+    lock
+}
+
+async fn acquire_a2a_session_turn(
+    session_id: &str,
+    cancel_rx: &mut A2ACancelReceiver,
+) -> Option<OwnedMutexGuard<()>> {
+    let lock = a2a_session_turn_mutex(session_id).await;
+    loop {
+        if *cancel_rx.borrow() {
+            return None;
+        }
+        tokio::select! {
+            guard = lock.clone().lock_owned() => return Some(guard),
+            changed = cancel_rx.changed() => {
+                if changed.is_err() || *cancel_rx.borrow() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) async fn run_a2a_native_turn(
     state: &AppState,
     prompt: String,
+    session_id: &str,
     mut cancel_rx: A2ACancelReceiver,
     capsule: Option<&ValidatedSubagentTaskCapsule>,
     execution_policy: Option<&A2ASubagentExecutionPolicy>,
@@ -614,6 +671,9 @@ pub(crate) async fn run_a2a_native_turn(
     if *cancel_rx.borrow() {
         return Ok(A2ATurnResult::Canceled);
     }
+    let Some(_session_turn) = acquire_a2a_session_turn(session_id, &mut cancel_rx).await else {
+        return Ok(A2ATurnResult::Canceled);
+    };
 
     #[cfg(test)]
     if let Some(response) = trimmed_env("MAESTRO_A2A_FAKE_RESPONSE") {
@@ -635,11 +695,11 @@ pub(crate) async fn run_a2a_native_turn(
         (Some(_), None) => {
             return Err(
                 "governed task capsule is missing its pre-claim execution policy".to_string(),
-            )
+            );
         }
         (None, None) => None,
         (None, Some(_)) => {
-            return Err("subagent execution policy is missing its validated capsule".to_string())
+            return Err("subagent execution policy is missing its validated capsule".to_string());
         }
     };
 
@@ -668,7 +728,7 @@ pub(crate) async fn run_a2a_native_turn(
     };
     let base_system_prompt =
         trimmed_env("MAESTRO_A2A_SYSTEM_PROMPT").unwrap_or_else(|| {
-            "You are the local Maestro Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
+            "You are the local Deixic Code Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
         });
     let system_prompt = execution_policy
         .as_ref()
@@ -682,7 +742,7 @@ pub(crate) async fn run_a2a_native_turn(
             |policy| policy.cwd.to_string_lossy().to_string(),
         ),
         system_prompt: Some(system_prompt),
-        thinking_enabled: truthy_env("MAESTRO_A2A_THINKING"),
+        thinking_enabled: env_bool("MAESTRO_A2A_THINKING").unwrap_or(false),
         thinking_budget: env::var("MAESTRO_A2A_THINKING_BUDGET")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -710,6 +770,9 @@ pub(crate) async fn run_a2a_native_turn(
         NativeAgent::new(config)
     }
     .map_err(|error| error.to_string())?;
+    agent
+        .set_session_context(Some(session_id.to_owned()), "a2a", false)
+        .map_err(|error| error.to_string())?;
     let prompt = execution_policy.as_ref().map_or(prompt.clone(), |policy| {
         format!("{}\n\nDelegated request:\n{prompt}", policy.guidance)
     });
@@ -878,12 +941,59 @@ mod terminal_tests {
     use super::*;
 
     #[test]
+    fn capsule_read_tools_normalize_omitted_paths_to_the_authorized_cwd() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let scope = workspace.path().join("scope");
+        std::fs::create_dir(&scope).expect("scope");
+        let workspace_root = dunce::canonicalize(workspace.path()).expect("workspace root");
+        let scope = dunce::canonicalize(scope).expect("scope root");
+        let allowed_tools = ["diff", "find", "glob", "grep", "list", "search"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let policy = A2ASubagentExecutionPolicy {
+            model: "test".to_string(),
+            turn_timeout: Duration::from_secs(1),
+            guidance: String::new(),
+            allowed_tools,
+            deadline_at: Utc::now() + chrono::Duration::seconds(1),
+            workspace_root,
+            cwd: scope.clone(),
+            read_roots: vec![scope.clone()],
+            write_roots: Vec::new(),
+            acceptance_checks: Vec::new(),
+            sandbox_policy: SandboxPolicy::ReadOnly,
+        };
+
+        for (tool, args) in [
+            ("diff", serde_json::json!({})),
+            ("list", serde_json::json!({})),
+            ("grep", serde_json::json!({"pattern": "TODO"})),
+            ("find", serde_json::json!({"pattern": "*.rs"})),
+            ("glob", serde_json::json!({"pattern": "*.rs"})),
+        ] {
+            let guarded = policy
+                .guarded_tool_args(tool, &args)
+                .unwrap_or_else(|error| panic!("{tool} omitted path should be valid: {error}"));
+            assert_eq!(guarded["path"], scope.display().to_string(), "{tool}");
+        }
+
+        let search = policy
+            .guarded_tool_args("search", &serde_json::json!({"pattern": "TODO"}))
+            .expect("search omitted paths should be valid");
+        assert_eq!(search["paths"], scope.display().to_string());
+        assert_eq!(search["cwd"], scope.display().to_string());
+    }
+
+    #[test]
     fn response_end_is_not_an_a2a_turn_terminal() {
-        assert!(a2a_explicit_terminal(&FromAgent::ResponseEnd {
-            response_id: "done".to_string(),
-            usage: None,
-        })
-        .is_none());
+        assert!(
+            a2a_explicit_terminal(&FromAgent::ResponseEnd {
+                response_id: "done".to_string(),
+                usage: None,
+            })
+            .is_none()
+        );
         assert!(matches!(
             a2a_explicit_terminal(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
@@ -897,5 +1007,32 @@ mod terminal_tests {
             }),
             Some(Err(message)) if message.contains("unexpected eof")
         ));
+    }
+
+    #[tokio::test]
+    async fn one_session_serializes_turns_without_blocking_other_sessions() {
+        let first = a2a_session_turn_mutex("session-serial").await;
+        let same = a2a_session_turn_mutex("session-serial").await;
+        let other = a2a_session_turn_mutex("session-parallel").await;
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        let guard = first.lock_owned().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), same.clone().lock_owned())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), other.lock_owned())
+                .await
+                .is_ok()
+        );
+        drop(guard);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), same.lock_owned())
+                .await
+                .is_ok()
+        );
     }
 }

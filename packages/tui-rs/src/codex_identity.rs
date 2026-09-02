@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
@@ -160,13 +160,14 @@ pub fn resolve_codex_identity_from(
     let canonical_workspace = dunce::canonicalize(workspace)
         .with_context(|| format!("workspace {} is unavailable", workspace.display()))?;
 
-    let select_profile =
-        |profile_name: &str, profile: &CodexIdentityProfile| -> Result<CodexIdentitySelection> {
-            if !profile.codex_home.is_absolute() {
-                bail!("Codex auth profile {profile_name:?} codex_home must be an absolute path");
-            }
+    let select_profile = |profile_name: &str,
+                          profile: &CodexIdentityProfile|
+     -> Result<CodexIdentitySelection> {
+        if !profile.codex_home.is_absolute() {
+            bail!("Codex auth profile {profile_name:?} codex_home must be an absolute path");
+        }
 
-            let workspace_boundary = profile
+        let workspace_boundary = profile
             .workspace
             .as_ref()
             .map(|boundary| {
@@ -189,12 +190,12 @@ pub fn resolve_codex_identity_from(
             })
             .transpose()?;
 
-            Ok(CodexIdentitySelection {
-                profile_name: profile_name.to_owned(),
-                codex_home: profile.codex_home.clone(),
-                workspace_boundary,
-            })
-        };
+        Ok(CodexIdentitySelection {
+            profile_name: profile_name.to_owned(),
+            codex_home: profile.codex_home.clone(),
+            workspace_boundary,
+        })
+    };
 
     if let Some(requested_profile) = requested_profile {
         let profile = profiles.profiles.get(requested_profile).with_context(|| {
@@ -562,9 +563,11 @@ mod tests {
         let error =
             resolve_codex_identity_from(&profile_file, None, &child, &root.path().join("default"))
                 .expect_err("ambiguous owner must fail closed");
-        assert!(error
-            .to_string()
-            .contains("multiple Codex auth profiles own workspace"));
+        assert!(
+            error
+                .to_string()
+                .contains("multiple Codex auth profiles own workspace")
+        );
     }
 
     #[test]
@@ -597,9 +600,11 @@ mod tests {
 
         let error = resolve_codex_identity_from(&profile_file, None, &child, &default_codex_home)
             .expect_err("stale workspace profile must fail closed");
-        assert!(error
-            .to_string()
-            .contains("Codex auth profile \"stale\" workspace is unavailable"));
+        assert!(
+            error
+                .to_string()
+                .contains("Codex auth profile \"stale\" workspace is unavailable")
+        );
         assert!(!error.to_string().contains("stale-workspace"));
     }
 

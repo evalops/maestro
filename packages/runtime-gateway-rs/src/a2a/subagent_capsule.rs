@@ -57,7 +57,9 @@ pub(crate) enum CapsuleValidationError {
 impl fmt::Display for CapsuleValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Malformed { message } => write!(formatter, "invalid subagent task capsule: {message}"),
+            Self::Malformed { message } => {
+                write!(formatter, "invalid subagent task capsule: {message}")
+            }
             Self::UnsupportedVersion { found } => write!(
                 formatter,
                 "unsupported subagent task capsule version {found:?}; expected {SUBAGENT_TASK_CAPSULE_VERSION}"
@@ -73,7 +75,10 @@ impl fmt::Display for CapsuleValidationError {
                 write!(formatter, "subagent task class {task_class:?} is denied")
             }
             Self::TaskClassNotAllowed { task_class } => {
-                write!(formatter, "subagent task class {task_class:?} is not allowed")
+                write!(
+                    formatter,
+                    "subagent task class {task_class:?} is not allowed"
+                )
             }
             Self::MissingCapability { capability } => write!(
                 formatter,
@@ -102,7 +107,10 @@ impl fmt::Display for CapsuleValidationError {
                 write!(formatter, "subagent deadline {deadline:?} has expired")
             }
             Self::InvalidModelRoute { model_route } => {
-                write!(formatter, "subagent model route {model_route:?} is not allowlisted")
+                write!(
+                    formatter,
+                    "subagent model route {model_route:?} is not allowlisted"
+                )
             }
             Self::RetryLimitExceeded { retry_limit } => write!(
                 formatter,

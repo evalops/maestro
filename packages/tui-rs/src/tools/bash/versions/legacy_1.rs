@@ -186,8 +186,10 @@ mod tests {
         assert!(!requires_approval(
             "git remote set-url origin https://evil.example/repo.git"
         ));
-        assert!(BashVersion::Current
-            .requires_approval("git remote set-url origin https://evil.example/repo.git"));
+        assert!(
+            BashVersion::Current
+                .requires_approval("git remote set-url origin https://evil.example/repo.git")
+        );
 
         // cargo check runs build scripts; only legacy treated it as read-only.
         assert!(!requires_approval("cargo check"));

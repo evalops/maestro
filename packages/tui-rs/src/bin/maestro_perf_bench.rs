@@ -20,11 +20,11 @@ use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig};
 use maestro_tui::ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
 use maestro_tui::components::{ChatView, ModelSelector};
-use maestro_tui::execpolicy::{parse_command, parse_policy, Decision};
+use maestro_tui::execpolicy::{Decision, parse_command, parse_policy};
 use maestro_tui::model_catalog::{
     ModelCapabilities, ModelInfo, ModelProtocol, ModelVerification, VerificationState,
 };
@@ -311,7 +311,7 @@ async fn run_scripted_session(
         approval_mode: ApprovalMode::Yolo,
         ..NativeAgentConfig::default()
     };
-    let (agent, mut events) = NativeAgent::new_with_client(config, client).expect("agent");
+    let (agent, mut events) = NativeAgent::new_with_test_client(config, client).expect("agent");
 
     for prompt in prompts {
         agent.prompt(prompt, vec![]).await.expect("prompt");

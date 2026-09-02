@@ -23,13 +23,13 @@ fn accepts_coalesced_response_completion_once_at_shared_cursor() {
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 #[test]
 fn response_retries_have_stable_idempotency_keys() {
@@ -74,11 +74,14 @@ fn response_retries_have_stable_idempotency_keys() {
         key,
         super::response_idempotency_key(&different_request).expect("different request key")
     );
-    assert!(super::response_idempotency_key(&ToAgentMessage::Prompt {
-        content: "same payload must remain repeatable".into(),
-        attachments: None,
-    })
-    .is_none());
+    assert!(
+        super::response_idempotency_key(&ToAgentMessage::Prompt {
+            content: "same payload must remain repeatable".into(),
+            attachments: None,
+            managed_inference_authorization: None,
+        })
+        .is_none()
+    );
 }
 
 async fn read_http_request(
@@ -2382,21 +2385,31 @@ async fn remote_transport_connects_sends_and_receives_events() {
             name == "x-maestro-headless-subscriber-id" && value == "sub_remote"
         })
     });
-    assert!(connection_headers
-        .iter()
-        .any(|(name, value)| { name == "authorization" && value == "Bearer secret" }));
-    assert!(connection_headers
-        .iter()
-        .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
-    assert!(connection_headers
-        .iter()
-        .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
-    assert!(connection_headers
-        .iter()
-        .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" }));
-    assert!(subscribe_headers
-        .iter()
-        .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
+    assert!(
+        connection_headers
+            .iter()
+            .any(|(name, value)| { name == "authorization" && value == "Bearer secret" })
+    );
+    assert!(
+        connection_headers
+            .iter()
+            .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" })
+    );
+    assert!(
+        connection_headers
+            .iter()
+            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" })
+    );
+    assert!(
+        connection_headers
+            .iter()
+            .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" })
+    );
+    assert!(
+        subscribe_headers
+            .iter()
+            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" })
+    );
     let message_headers = message_headers.expect("message request headers");
     assert!(message_headers.iter().any(|(name, value)| {
         name == "x-maestro-headless-connection-capability" && value == "cap_remote"
@@ -2467,6 +2480,7 @@ async fn remote_viewer_transport_rejects_controller_messages() {
         .send(ToAgentMessage::Prompt {
             content: "viewer should stay read-only".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .expect_err("viewer prompt should be rejected");
     assert!(matches!(

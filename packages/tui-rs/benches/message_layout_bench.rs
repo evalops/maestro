@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::components::ChatView;
 use maestro_tui::state::{AppState, Message, MessageKind, MessageRole};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};

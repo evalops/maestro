@@ -30,7 +30,11 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::protocol::ManagedInferenceAuthorization;
+use super::steer_signal::SteerSignal;
 
 /// Maximum number of pending messages allowed in the queue.
 pub const MAX_PENDING_MESSAGES: usize = 10;
@@ -79,6 +83,8 @@ pub struct PendingMessage {
     /// Correlation identity for the governed runtime turn that queued this prompt.
     /// Kept on the message so later turns cannot overwrite it before dispatch.
     pub managed_request_lineage: Option<String>,
+    /// Opaque capability bound to this exact managed runtime turn.
+    pub managed_inference_authorization: Option<ManagedInferenceAuthorization>,
 }
 
 /// Destination for an explicit queue reorder.
@@ -120,6 +126,7 @@ impl PendingMessage {
             queued_at: current_timestamp_ms(),
             priority: 0,
             managed_request_lineage: None,
+            managed_inference_authorization: None,
         }
     }
 
@@ -153,6 +160,7 @@ impl PendingMessage {
             queued_at: current_timestamp_ms(),
             priority: 100,
             managed_request_lineage: None,
+            managed_inference_authorization: None,
         }
     }
 
@@ -160,6 +168,16 @@ impl PendingMessage {
     #[must_use]
     pub fn with_managed_request_lineage(mut self, lineage_id: Option<String>) -> Self {
         self.managed_request_lineage = lineage_id;
+        self
+    }
+
+    /// Attach the opaque managed authorization to this exact queued prompt.
+    #[must_use]
+    pub fn with_managed_inference_authorization(
+        mut self,
+        authorization: Option<ManagedInferenceAuthorization>,
+    ) -> Self {
+        self.managed_inference_authorization = authorization;
         self
     }
 
@@ -185,6 +203,12 @@ pub struct MessageQueue {
     dropped_count: u64,
     /// Next id to assign to a queued message
     next_id: u64,
+    /// Published copy of "a steering message is queued".
+    ///
+    /// Tools that block (`wait_subagent`) hold the same handle so they can
+    /// stop waiting the moment the user steers, instead of holding the turn
+    /// until their own timeout expires.
+    steer_signal: Arc<SteerSignal>,
 }
 
 impl MessageQueue {
@@ -197,6 +221,7 @@ impl MessageQueue {
             total_queued: 0,
             dropped_count: 0,
             next_id: 1,
+            steer_signal: Arc::new(SteerSignal::new()),
         }
     }
 
@@ -211,7 +236,28 @@ impl MessageQueue {
             total_queued: 0,
             dropped_count: 0,
             next_id: 1,
+            steer_signal: Arc::new(SteerSignal::new()),
         }
+    }
+
+    /// Handle to this queue's "a steering message is queued" signal.
+    #[must_use]
+    pub fn steer_signal(&self) -> Arc<SteerSignal> {
+        Arc::clone(&self.steer_signal)
+    }
+
+    /// Republish whether a steering message is queued.
+    ///
+    /// Called after every change to queue membership. Deriving the flag from
+    /// the queue rather than counting admissions keeps it exact: a steer that
+    /// is popped, removed, or drained stops being pending on the same call
+    /// that removes it.
+    fn sync_steer_signal(&self) {
+        let pending = self
+            .queue
+            .iter()
+            .any(|message| message.kind == PromptKind::Steer);
+        self.steer_signal.set_pending(pending);
     }
 
     /// Reserve a new queue id.
@@ -278,9 +324,12 @@ impl MessageQueue {
         if self.max_size > 0 && self.queue.len() > self.max_size {
             self.dropped_count += 1;
             // Drop oldest (back of queue for normal, front for priority)
-            return self.queue.pop_back();
+            let dropped = self.queue.pop_back();
+            self.sync_steer_signal();
+            return dropped;
         }
 
+        self.sync_steer_signal();
         None
     }
 
@@ -307,9 +356,12 @@ impl MessageQueue {
 
         if self.max_size > 0 && self.queue.len() > self.max_size {
             self.dropped_count += 1;
-            return self.queue.pop_back();
+            let dropped = self.queue.pop_back();
+            self.sync_steer_signal();
+            return dropped;
         }
 
+        self.sync_steer_signal();
         None
     }
 
@@ -339,7 +391,9 @@ impl MessageQueue {
 
     /// Pop the next message from the queue
     pub fn pop(&mut self) -> Option<PendingMessage> {
-        self.queue.pop_front()
+        let message = self.queue.pop_front();
+        self.sync_steer_signal();
+        message
     }
 
     /// Peek at the next message without removing it
@@ -363,7 +417,9 @@ impl MessageQueue {
     /// Remove a message by id from the queue
     pub fn remove_by_id(&mut self, id: u64) -> Option<PendingMessage> {
         let index = self.queue.iter().position(|msg| msg.id == id)?;
-        self.queue.remove(index)
+        let removed = self.queue.remove(index);
+        self.sync_steer_signal();
+        removed
     }
 
     /// Move a message before another message, or to the front when `before_id`
@@ -390,7 +446,9 @@ impl MessageQueue {
     ///
     /// Returns the messages that were cleared.
     pub fn clear(&mut self) -> Vec<PendingMessage> {
-        self.queue.drain(..).collect()
+        let cleared = self.queue.drain(..).collect();
+        self.sync_steer_signal();
+        cleared
     }
 
     /// Get queue statistics
@@ -451,10 +509,11 @@ impl MessageQueue {
                 drained.push(next);
             }
         }
+        self.sync_steer_signal();
         drained
     }
 
-    /// Drain leading messages of one kind that belong to the same managed turn.
+    /// Drain leading messages of one kind that share the same managed context.
     ///
     /// Ungoverned messages all carry `None` and retain the existing batching
     /// behavior. Governed messages from distinct turns remain separate requests.
@@ -474,19 +533,28 @@ impl MessageQueue {
         let Some(expected_lineage) = expected_lineage else {
             return Vec::new();
         };
+        let expected_authorization = self
+            .queue
+            .front()
+            .map(|message| message.managed_inference_authorization.clone())
+            .expect("matching queue front remains available");
 
         let mut drained = Vec::new();
         while drained.len() < max_count {
             let Some(front) = self.queue.front() else {
                 break;
             };
-            if front.kind != kind || front.managed_request_lineage != expected_lineage {
+            if front.kind != kind
+                || front.managed_request_lineage != expected_lineage
+                || front.managed_inference_authorization != expected_authorization
+            {
                 break;
             }
             if let Some(next) = self.queue.pop_front() {
                 drained.push(next);
             }
         }
+        self.sync_steer_signal();
         drained
     }
 
@@ -504,6 +572,7 @@ impl MessageQueue {
             }
         });
 
+        self.sync_steer_signal();
         stale
     }
 }
@@ -783,6 +852,45 @@ mod tests {
         assert_eq!(
             second[0].managed_request_lineage.as_deref(),
             Some("maestro-turn-v1:second")
+        );
+    }
+
+    #[test]
+    fn managed_authorization_prevents_cross_capability_queue_batching() {
+        let mut queue = MessageQueue::new();
+        for (content, authorization) in [
+            ("first", "signed-capability-one"),
+            ("second", "signed-capability-two"),
+        ] {
+            queue.push_message(
+                PendingMessage::urgent_with_kind_and_id_and_attachments(
+                    content,
+                    PromptKind::Steer,
+                    0,
+                    Vec::new(),
+                )
+                .with_managed_request_lineage(Some("maestro-turn-v1:same".to_string()))
+                .with_managed_inference_authorization(Some(
+                    crate::agent::ManagedInferenceAuthorization::new(authorization),
+                )),
+            );
+        }
+
+        let first = queue.drain_leading_kind_and_lineage(PromptKind::Steer, usize::MAX);
+        assert_eq!(first.len(), 1);
+        assert!(
+            first[0]
+                .managed_inference_authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.as_str() == "signed-capability-one")
+        );
+        let second = queue.drain_leading_kind_and_lineage(PromptKind::Steer, usize::MAX);
+        assert_eq!(second.len(), 1);
+        assert!(
+            second[0]
+                .managed_inference_authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.as_str() == "signed-capability-two")
         );
     }
 

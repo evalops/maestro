@@ -4,11 +4,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::{
-    CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousAck, RendezvousCommandError,
-    RendezvousCommandOutcome, RendezvousExecution, RendezvousIdentity, RendezvousLatencyMilestones,
-    RendezvousLifecycle, RendezvousLifecycleError, RendezvousMode, RendezvousNonce,
-    RendezvousRequest, RendezvousRequestDisposition, RevocationReason, RunnerToHostFrame,
-    MAX_IN_FLIGHT_REQUESTS, RENDEZVOUS_PROTOCOL_VERSION,
+    CommandAuthority, HostToRunnerFrame, MAX_IN_FLIGHT_REQUESTS, RENDEZVOUS_PROTOCOL_VERSION,
+    RendezvousAccepted, RendezvousAck, RendezvousCommandError, RendezvousCommandOutcome,
+    RendezvousExecution, RendezvousIdentity, RendezvousLatencyMilestones, RendezvousLifecycle,
+    RendezvousLifecycleError, RendezvousMode, RendezvousNonce, RendezvousRequest,
+    RendezvousRequestDisposition, RevocationReason, RunnerToHostFrame,
 };
 
 fn nonce() -> RendezvousNonce {
@@ -96,9 +96,11 @@ fn exact_replay_is_classified_before_command_execution() {
         lifecycle.request_disposition(1, "command-1").unwrap(),
         RendezvousRequestDisposition::Replay
     );
-    assert!(lifecycle
-        .request_disposition(1, "different-command")
-        .is_err());
+    assert!(
+        lifecycle
+            .request_disposition(1, "different-command")
+            .is_err()
+    );
 }
 
 #[test]

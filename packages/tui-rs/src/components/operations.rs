@@ -3,27 +3,27 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::mpsc::{sync_channel, Receiver, TryRecvError},
+    sync::mpsc::{Receiver, TryRecvError, sync_channel},
     time::SystemTime,
 };
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 use serde_json::{Map, Value};
 
 use crate::agent::{
-    credential_store::redact_credentials_in_json, ExecutionPhase, ExecutionReceipt,
-    ExecutionSource, ExecutionStatus, ToolReceiptDetails,
+    ExecutionPhase, ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails,
+    credential_store::redact_credentials_in_json,
 };
 use crate::session::{AppMessage, ContentBlock, ParsedSession, SessionManager, SessionReader};
-use crate::tools::background_tasks::MonitorEvent;
 use crate::tools::CoordinationSnapshot;
 use crate::tools::ToolDetails;
+use crate::tools::background_tasks::MonitorEvent;
 
 const RECENT_SESSION_LIMIT: usize = 20;
 const ROW_LIMIT: usize = 200;
@@ -146,7 +146,7 @@ pub fn project_session(session: &ParsedSession) -> Vec<OperationRow> {
                 content, timestamp, ..
             } => {
                 for block in content {
-                    let ContentBlock::ToolCall { id, name, args } = block else {
+                    let ContentBlock::ToolCall { id, name, args, .. } = block else {
                         continue;
                     };
                     let row = OperationRow {
@@ -1085,7 +1085,7 @@ fn current_timestamp_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::session::{MessageContent, SessionHeader, SessionStats};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use tempfile::tempdir;
 
     fn session(id: &str, messages: Vec<AppMessage>) -> ParsedSession {
@@ -1121,6 +1121,7 @@ mod tests {
                     id: "shared-call".to_string(),
                     name: "read".to_string(),
                     args: serde_json::json!({"path": "README.md"}),
+                    contract: None,
                 }],
                 api: None,
                 provider: None,
@@ -1220,6 +1221,7 @@ mod tests {
                         "command": "curl -H 'Authorization: Bearer embedded-secret-token' example.test",
                         "long": "x".repeat(300)
                     }),
+                    contract: None,
                 }],
                 api: None,
                 provider: None,
@@ -1327,10 +1329,11 @@ mod tests {
         .unwrap();
 
         assert!(modal.poll_load());
-        assert!(modal
-            .rows
-            .iter()
-            .any(|row| row.call_id == event.monitor_id && row.timestamp_ms == event.timestamp_ms));
+        assert!(
+            modal.rows.iter().any(
+                |row| row.call_id == event.monitor_id && row.timestamp_ms == event.timestamp_ms
+            )
+        );
     }
 
     #[test]
@@ -1541,14 +1544,18 @@ mod tests {
         wait_for_load(&mut modal);
 
         assert_eq!(modal.parse_failures.len(), 2);
-        assert!(modal
-            .parse_failures
-            .iter()
-            .any(|failure| failure.contains("broken-a")));
-        assert!(modal
-            .parse_failures
-            .iter()
-            .any(|failure| failure.contains("broken-b")));
+        assert!(
+            modal
+                .parse_failures
+                .iter()
+                .any(|failure| failure.contains("broken-a"))
+        );
+        assert!(
+            modal
+                .parse_failures
+                .iter()
+                .any(|failure| failure.contains("broken-b"))
+        );
         let rendered = render_modal(&mut modal, 80);
         assert!(rendered.contains("load failures"));
     }

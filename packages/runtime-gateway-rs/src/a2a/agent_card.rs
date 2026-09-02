@@ -3,8 +3,8 @@ use serde_json::Value;
 use crate::a2a_skill_catalog::a2a_subagent_skills;
 use crate::http::RequestHead;
 use crate::{
-    trimmed_env, Config, A2A_DEFAULT_LIST_PAGE_SIZE, A2A_MAX_LIST_PAGE_SIZE, A2A_PROTOCOL_VERSION,
-    EVALOPS_A2A_EXTENSION_URI,
+    A2A_DEFAULT_LIST_PAGE_SIZE, A2A_MAX_LIST_PAGE_SIZE, A2A_PROTOCOL_VERSION, Config,
+    EVALOPS_A2A_EXTENSION_URI, trimmed_env,
 };
 
 pub(crate) fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
@@ -12,9 +12,9 @@ pub(crate) fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
     let mut card = serde_json::json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": trimmed_env("MAESTRO_A2A_AGENT_NAME")
-            .unwrap_or_else(|| "Maestro Desktop Agent".to_string()),
+            .unwrap_or_else(|| "Deixic Code Desktop Agent".to_string()),
         "description": trimmed_env("MAESTRO_A2A_AGENT_DESCRIPTION")
-            .unwrap_or_else(|| "Local Maestro Rust/TS TUI agent endpoint for A2A task delegation.".to_string()),
+            .unwrap_or_else(|| "Local Deixic Code native TUI agent endpoint for A2A task delegation.".to_string()),
         "url": base_url,
         "preferredTransport": "HTTP+JSON",
         "supportedInterfaces": [{
@@ -104,7 +104,7 @@ pub(crate) fn a2a_extended_agent_card(head: &RequestHead, config: &Config) -> Va
 fn a2a_operating_plane_extension(extended: bool) -> Value {
     serde_json::json!({
         "uri": EVALOPS_A2A_EXTENSION_URI,
-        "description": "Carries EvalOps/Maestro workspace, session, trace, retention, and approval correlation metadata without changing core A2A task semantics.",
+        "description": "Carries Deixic Code workspace, session, trace, retention, and approval correlation metadata without changing core A2A task semantics. Wire fields retain Maestro compatibility identifiers.",
         "required": false,
         "params": {
             "version": "1",
@@ -136,12 +136,12 @@ fn a2a_agent_card_security(config: &Config) -> Option<(Value, Value)> {
                 "type": "apiKey",
                 "in": "header",
                 "name": "x-maestro-api-key",
-                "description": "Maestro runtime-gateway API key."
+                "description": "Deixic Code runtime-gateway API key."
             },
             "bearer": {
                 "type": "http",
                 "scheme": "bearer",
-                "description": "Bearer token accepted by Maestro shared-secret auth."
+                "description": "Bearer token accepted by Deixic Code shared-secret auth."
             }
         }),
         serde_json::json!([
@@ -154,8 +154,8 @@ fn a2a_agent_card_security(config: &Config) -> Option<(Value, Value)> {
 pub(crate) fn a2a_agent_skills() -> Value {
     let mut skill = serde_json::json!({
         "id": "maestro-tui-turn",
-        "name": "Maestro TUI turn",
-        "description": "Run a prompt through the local Maestro native TUI agent runner.",
+        "name": "Deixic Code TUI turn",
+        "description": "Run a prompt through the local Deixic Code native TUI agent runner.",
         "tags": ["maestro", "tui", "codex", "a2a", "fleet"],
         "examples": [
             "Review the current workspace and summarize the next highest leverage action."

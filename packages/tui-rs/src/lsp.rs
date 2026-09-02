@@ -176,7 +176,7 @@ fn native_server_for_path(path: &Path) -> Result<NativeServerSpec, String> {
             return Err(format!(
                 "no native language server configured for {}",
                 path.display()
-            ))
+            ));
         }
     };
     Ok(NativeServerSpec {

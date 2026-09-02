@@ -1,0 +1,1763 @@
+{
+	"schema": "evalops.maestro.hosted-orb-delegation.acceptance.v1",
+	"version": 1,
+	"hosted_only": true,
+	"transport": "mcp-streamable-http",
+	"amp_like_central_mcp": {
+		"configuration_sources": [
+			"personal",
+			"workspace"
+		],
+		"surfaces": [
+			"orb",
+			"tui",
+			"runner",
+			"puck"
+		],
+		"project_hosted_configuration": "authoritative",
+		"local_invocation_mcp_config": "ignored",
+		"transport": "mcp-streamable-http",
+		"auth_modes": [
+			"oauth",
+			"bearer"
+		],
+		"credential_flow": "opaque-hosted",
+		"server": "fixture-remote-mcp",
+		"includeTools": [
+			"fixture_lookup"
+		],
+		"disallowed_tools": [
+			"fixture_admin",
+			"fixture_secret"
+		],
+		"evidence": [
+			"approval",
+			"lifecycle",
+			"tool_call",
+			"tool_result"
+		]
+	},
+	"atomic_launch": {
+		"primitive": "computer_launch",
+		"compatibility_alias": "orb_launch_hosted_task",
+		"required_launch_arguments": [
+			"project",
+			"repository_url",
+			"prompt",
+			"idempotency_key"
+		],
+		"optional_launch_arguments": [
+			"agent",
+			"model",
+			"runtime_profile",
+			"max_run_cost_credits"
+		],
+		"default_profile_sources": [
+			"server"
+		],
+		"forbidden_client_arguments": [
+			"provider",
+			"machine",
+			"provisioner"
+		],
+		"client_flow": "single_command",
+		"forbidden_client_sequence": [
+			"create_thread",
+			"start_task",
+			"wait_task",
+			"send_message"
+		],
+		"required_handle": [
+			"thread_id",
+			"receipt_id"
+		],
+		"catalog": {
+			"discovery_required": true,
+			"allowed_profiles": [
+				"sandboxwich/standard/sandboxed_container/unprivileged",
+				"sandboxwich/restricted/sandboxed_container/unprivileged"
+			]
+		},
+		"receipt_before_completion": true,
+		"rejection_must_be_side_effect_free": true,
+		"required_evidence": [
+			"profile",
+			"placement",
+			"receipt",
+			"lifecycle",
+			"cancellation"
+		]
+	},
+	"tools": {
+		"orb_list_hosted_runtime_profiles": {
+			"scope": "tasks:read",
+			"method": "GET",
+			"path": "/hosted/runtime-profiles",
+			"idempotent": true
+		},
+		"computer_launch": {
+			"scope": "executor:write",
+			"additional_scopes": [
+				"tasks:write",
+				"threads:write"
+			],
+			"method": "POST",
+			"path": "/hosted/launches",
+			"idempotent": true,
+			"idempotency_argument": "idempotency_key"
+		},
+		"orb_launch_hosted_task": {
+			"scope": "executor:write",
+			"additional_scopes": [
+				"tasks:write",
+				"threads:write"
+			],
+			"method": "POST",
+			"path": "/hosted/launches",
+			"idempotent": true,
+			"idempotency_argument": "idempotency_key"
+		},
+		"orb_create_thread": {
+			"scope": "threads:write",
+			"method": "POST",
+			"path": "/threads",
+			"idempotent": false
+		},
+		"orb_start_task": {
+			"scope": "executor:write",
+			"method": "POST",
+			"path": "/threads/{id}/launches",
+			"idempotent": true,
+			"idempotency_argument": "idempotency_key"
+		},
+		"orb_wait_task": {
+			"scope": "threads:read",
+			"method": "GET",
+			"path": "/launch-replays/{id}",
+			"idempotent": true
+		},
+		"orb_send_message": {
+			"scope": "threads:write",
+			"method": "POST",
+			"path": "/threads/{id}/messages",
+			"idempotent": false
+		},
+		"orb_get_thread": {
+			"scope": "threads:read",
+			"method": "GET",
+			"path": "/threads/{id}/report",
+			"idempotent": true
+		},
+		"orb_list_pending_approvals": {
+			"scope": "threads:read",
+			"method": "GET",
+			"path": "/threads",
+			"additional_paths": [
+				"/threads/{id}/report"
+			],
+			"idempotent": true
+		},
+		"orb_decide_approval": {
+			"scope": "approvals:write",
+			"method": "POST",
+			"path": "/threads/{id}/approvals",
+			"idempotent": false
+		},
+		"orb_task_status": {
+			"scope": "tasks:read",
+			"method": "GET",
+			"path": "/tasks/{id}",
+			"idempotent": true
+		},
+		"orb_direct_task": {
+			"scope": "tasks:write",
+			"method": "POST",
+			"path": "/tasks/{id}/directives",
+			"idempotent": true,
+			"idempotency_argument": "idempotency_key"
+		},
+		"orb_cancel_task": {
+			"scope": "tasks:write",
+			"method": "POST",
+			"path": "/tasks/{id}/commands",
+			"idempotent": true,
+			"idempotency_argument": "idempotency_key"
+		}
+	},
+	"cases": [
+		{
+			"id": "hosted_authentication",
+			"required_scopes": [
+				"threads:read",
+				"threads:write"
+			],
+			"operations": [
+				{
+					"name": "unauthenticated_initialize",
+					"operation": "initialize",
+					"outcome": "rejected"
+				},
+				{
+					"name": "authenticated_initialize",
+					"operation": "initialize",
+					"outcome": "accepted"
+				},
+				{
+					"name": "scoped_tool_catalog",
+					"operation": "list_tools",
+					"outcome": "accepted"
+				}
+			],
+			"assertions": [
+				"Every MCP request requires tenant authentication.",
+				"The authenticated catalog contains only tools allowed by the tenant scopes.",
+				"Authentication material is absent from recorded evidence."
+			]
+		},
+		{
+			"id": "start_wait_message",
+			"required_scopes": [
+				"threads:write",
+				"executor:write",
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "create_thread",
+					"tool": "orb_create_thread",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "start_task",
+					"tool": "orb_start_task",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "wait_for_ready",
+					"tool": "orb_wait_task",
+					"operation": "call_tool",
+					"outcome": "ready"
+				},
+				{
+					"name": "send_message",
+					"tool": "orb_send_message",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				}
+			],
+			"assertions": [
+				"A fresh thread uses a durable launch receipt before sending a message.",
+				"The message is sent only after the receipt reaches ready."
+			]
+		},
+		{
+			"id": "disconnect_reconnect",
+			"required_scopes": [
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "initial_thread_read",
+					"tool": "orb_get_thread",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "reconnect_initialize",
+					"operation": "initialize",
+					"outcome": "accepted"
+				},
+				{
+					"name": "reconnected_thread_read",
+					"tool": "orb_get_thread",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "reconnected_wait",
+					"tool": "orb_wait_task",
+					"operation": "call_tool",
+					"outcome": "ready"
+				}
+			],
+			"assertions": [
+				"A new MCP session can resume by durable thread and receipt identifiers.",
+				"Reconnect does not create a second thread or launch."
+			]
+		},
+		{
+			"id": "steering",
+			"required_scopes": [
+				"tasks:write",
+				"tasks:read"
+			],
+			"operations": [
+				{
+					"name": "submit_directive",
+					"tool": "orb_direct_task",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "observe_directive",
+					"tool": "orb_task_status",
+					"operation": "call_tool",
+					"outcome": "active"
+				}
+			],
+			"assertions": [
+				"Steering uses the task directive endpoint and a caller idempotency key.",
+				"The task status remains tenant-scoped after steering."
+			]
+		},
+		{
+			"id": "approval",
+			"required_scopes": [
+				"threads:read",
+				"threads:write",
+				"approvals:write"
+			],
+			"operations": [
+				{
+					"name": "start_approval_task",
+					"tool": "orb_start_task",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "send_approval_message",
+					"tool": "orb_send_message",
+					"operation": "call_tool",
+					"outcome": "held"
+				},
+				{
+					"name": "list_pending",
+					"tool": "orb_list_pending_approvals",
+					"operation": "call_tool",
+					"outcome": "pending"
+				},
+				{
+					"name": "approve_call",
+					"tool": "orb_decide_approval",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				}
+			],
+			"assertions": [
+				"A held approval is visible before a decision is submitted.",
+				"The decision names the pending thread and tool call."
+			]
+		},
+		{
+			"id": "cancellation",
+			"required_scopes": [
+				"tasks:write",
+				"tasks:read"
+			],
+			"operations": [
+				{
+					"name": "cancel_task",
+					"tool": "orb_cancel_task",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "observe_cancelled",
+					"tool": "orb_task_status",
+					"operation": "call_tool",
+					"outcome": "cancelled"
+				}
+			],
+			"assertions": [
+				"Cancellation is a durable task command.",
+				"The terminal task outcome is cancelled rather than an infrastructure error."
+			]
+		},
+		{
+			"id": "idempotent_retry",
+			"required_scopes": [
+				"executor:write",
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "initial_start",
+					"tool": "orb_start_task",
+					"operation": "call_tool",
+					"outcome": "accepted"
+				},
+				{
+					"name": "same_key_retry",
+					"tool": "orb_start_task",
+					"operation": "call_tool",
+					"outcome": "same_receipt"
+				},
+				{
+					"name": "changed_request_conflict",
+					"tool": "orb_start_task",
+					"operation": "call_tool",
+					"outcome": "conflict"
+				}
+			],
+			"assertions": [
+				"An identical start retry returns the original receipt.",
+				"Reusing a key with a different request fails closed and does not launch twice."
+			]
+		},
+		{
+			"id": "terminal_result",
+			"required_scopes": [
+				"threads:read",
+				"tasks:read"
+			],
+			"operations": [
+				{
+					"name": "collect_thread_report",
+					"tool": "orb_get_thread",
+					"operation": "call_tool",
+					"outcome": "completed"
+				},
+				{
+					"name": "collect_task_status",
+					"tool": "orb_task_status",
+					"operation": "call_tool",
+					"outcome": "succeeded"
+				}
+			],
+			"assertions": [
+				"Terminal collection includes both the thread report and task status.",
+				"The result has an explicit terminal outcome and no credential material."
+			]
+		},
+		{
+			"id": "tenant_isolation",
+			"required_scopes": [
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "same_tenant_read",
+					"tool": "orb_get_thread",
+					"operation": "call_tool",
+					"outcome": "accepted",
+					"tenant": "tenant-a"
+				},
+				{
+					"name": "cross_tenant_thread_read",
+					"tool": "orb_get_thread",
+					"operation": "call_tool",
+					"outcome": "rejected",
+					"tenant": "tenant-b"
+				},
+				{
+					"name": "cross_tenant_receipt_read",
+					"tool": "orb_wait_task",
+					"operation": "call_tool",
+					"outcome": "rejected",
+					"tenant": "tenant-b"
+				}
+			],
+			"assertions": [
+				"A tenant cannot read another tenant's thread or launch receipt.",
+				"Cross-tenant errors do not disclose the other tenant's transcript or identifiers."
+			]
+		},
+		{
+			"id": "central_mcp_allowlist_auth",
+			"required_scopes": [
+				"executor:write",
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "project_hosted_config_wins",
+					"operation": "central_configure",
+					"outcome": "accepted"
+				},
+				{
+					"name": "opaque_hosted_auth",
+					"operation": "central_authenticate",
+					"outcome": "accepted"
+				},
+				{
+					"name": "include_tools_discovery",
+					"operation": "central_tools_list",
+					"outcome": "filtered"
+				}
+			],
+			"assertions": [
+				"Personal or workspace configuration reaches the hosted Computer through project-hosted authority.",
+				"A local per-invocation mcp_config is ignored inside the hosted Computer.",
+				"Streamable HTTP authentication uses an opaque hosted credential reference.",
+				"includeTools exposes fixture_lookup and hides fixture_admin and fixture_secret."
+			]
+		},
+		{
+			"id": "central_mcp_tool_call_evidence",
+			"required_scopes": [
+				"executor:write",
+				"threads:read",
+				"approvals:write"
+			],
+			"operations": [
+				{
+					"name": "allowlisted_tool_call",
+					"operation": "central_tool_call",
+					"remote_tool": "fixture_lookup",
+					"outcome": "accepted"
+				},
+				{
+					"name": "approval_evidence",
+					"operation": "approval_evidence",
+					"evidence": "approval",
+					"outcome": "recorded"
+				},
+				{
+					"name": "lifecycle_evidence",
+					"operation": "lifecycle_evidence",
+					"evidence": "lifecycle",
+					"outcome": "recorded"
+				},
+				{
+					"name": "tool_result_evidence",
+					"operation": "tool_result_evidence",
+					"evidence": "tool_result",
+					"outcome": "recorded"
+				}
+			],
+			"assertions": [
+				"The agent calls only the centrally allowlisted remote tool.",
+				"Approval, lifecycle, tool-call, and tool-result evidence are recorded without credentials."
+			]
+		},
+		{
+			"id": "central_mcp_restart_reconnect",
+			"required_scopes": [
+				"executor:write",
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "restart_remote_session",
+					"operation": "central_restart",
+					"outcome": "accepted"
+				},
+				{
+					"name": "reconnect_remote_session",
+					"operation": "central_reconnect",
+					"outcome": "accepted"
+				},
+				{
+					"name": "reconnected_tools_discovery",
+					"operation": "central_tools_list",
+					"outcome": "filtered"
+				},
+				{
+					"name": "reconnected_tool_call",
+					"operation": "central_tool_call",
+					"remote_tool": "fixture_lookup",
+					"outcome": "accepted"
+				}
+			],
+			"assertions": [
+				"A hosted restart and reconnect preserve the central configuration and tool allowlist.",
+				"The allowlisted remote tool remains callable after reconnect without a new credential disclosure."
+			]
+		},
+		{
+			"id": "central_mcp_revoked_credential",
+			"required_scopes": [
+				"executor:write",
+				"threads:read"
+			],
+			"operations": [
+				{
+					"name": "revoked_opaque_auth",
+					"operation": "central_authenticate",
+					"outcome": "rejected"
+				},
+				{
+					"name": "revoked_lifecycle_evidence",
+					"operation": "lifecycle_evidence",
+					"evidence": "lifecycle",
+					"outcome": "recorded"
+				}
+			],
+			"assertions": [
+				"A revoked hosted credential fails authentication without falling back to a raw local secret.",
+				"The rejected authentication and terminal lifecycle are recorded without provisioning a new credential."
+			]
+		},
+		{
+			"id": "hosted_profile_discovery",
+			"required_scopes": [
+				"tasks:read"
+			],
+			"operations": [
+				{
+					"name": "discover_profiles",
+					"operation": "profile_catalog",
+					"outcome": "accepted"
+				},
+				{
+					"name": "select_allowed_profile",
+					"operation": "profile_selection",
+					"profile": "sandboxwich/standard/sandboxed_container/unprivileged",
+					"outcome": "accepted"
+				}
+			],
+			"assertions": [
+				"A managed hosted control plane exposes an explicit runtime-profile catalog before launch.",
+				"The selected profile is one of the catalog's allowed profiles."
+			]
+		},
+		{
+			"id": "atomic_launch_receipt",
+			"required_scopes": [
+				"executor:write",
+				"tasks:write",
+				"threads:write"
+			],
+			"operations": [
+				{
+					"name": "admit_atomic_launch",
+					"operation": "atomic_launch",
+					"profile": "sandboxwich/standard/sandboxed_container/unprivileged",
+					"profile_mode": "default",
+					"outcome": "accepted"
+				},
+				{
+					"name": "same_atomic_key_retry",
+					"operation": "atomic_launch",
+					"profile": "sandboxwich/standard/sandboxed_container/unprivileged",
+					"profile_mode": "default",
+					"outcome": "same_receipt"
+				},
+				{
+					"name": "observe_durable_receipt",
+					"operation": "receipt_observation",
+					"outcome": "durable"
+				},
+				{
+					"name": "record_profile_placement",
+					"operation": "placement_evidence",
+					"evidence": "placement",
+					"outcome": "recorded"
+				}
+			],
+			"assertions": [
+				"One control-plane command admits the task, provisions or wakes the managed instance, and starts the agent.",
+				"A durable idempotent receipt is observable before task completion.",
+				"The receipt proves the selected profile and managed placement."
+			]
+		},
+		{
+			"id": "atomic_launch_allowed_override",
+			"required_scopes": [
+				"executor:write",
+				"tasks:write",
+				"threads:write"
+			],
+			"operations": [
+				{
+					"name": "admit_allowed_override",
+					"operation": "atomic_launch",
+					"profile": "sandboxwich/restricted/sandboxed_container/unprivileged",
+					"profile_mode": "override",
+					"outcome": "accepted"
+				},
+				{
+					"name": "override_handle_observed",
+					"operation": "receipt_observation",
+					"outcome": "durable"
+				}
+			],
+			"assertions": [
+				"An optional allowed profile override succeeds through the same single hosted launch command.",
+				"The override response exposes a durable thread/launch handle and managed placement."
+			]
+		},
+		{
+			"id": "atomic_launch_reconnect_cancel",
+			"required_scopes": [
+				"executor:write",
+				"tasks:read",
+				"tasks:write"
+			],
+			"operations": [
+				{
+					"name": "reconnect_atomic_launch",
+					"operation": "atomic_reconnect",
+					"outcome": "accepted"
+				},
+				{
+					"name": "observe_atomic_status",
+					"operation": "atomic_status",
+					"outcome": "accepted"
+				},
+				{
+					"name": "steer_atomic_launch",
+					"operation": "atomic_steer",
+					"outcome": "accepted"
+				},
+				{
+					"name": "cancel_atomic_launch",
+					"operation": "atomic_cancel",
+					"outcome": "accepted"
+				},
+				{
+					"name": "observe_atomic_cancelled",
+					"operation": "atomic_status",
+					"outcome": "cancelled"
+				}
+			],
+			"assertions": [
+				"Reconnect resumes the atomic launch by its durable receipt.",
+				"Status and cancellation remain tenant-scoped and refer to the same receipt."
+			]
+		},
+		{
+			"id": "atomic_launch_rejected_profile",
+			"required_scopes": [
+				"executor:write",
+				"tasks:write",
+				"threads:write"
+			],
+			"operations": [
+				{
+					"name": "reject_unavailable_profile",
+					"operation": "atomic_launch",
+					"profile": "sandboxwich/unavailable/sandboxed_container/unprivileged",
+					"profile_mode": "override",
+					"outcome": "rejected"
+				},
+				{
+					"name": "no_provisioning_side_effect",
+					"operation": "provisioning_side_effect",
+					"outcome": "none"
+				}
+			],
+			"assertions": [
+				"An unavailable or unauthorized profile fails before provisioning side effects.",
+				"The rejection is reported as a source/control-plane outcome, not a capacity incident."
+			]
+		}
+	],
+	"recorded_exchanges": [
+		{
+			"case_id": "hosted_authentication",
+			"name": "unauthenticated_initialize",
+			"operation": "initialize",
+			"tenant": "tenant-a",
+			"request": {
+				"authenticated": false
+			},
+			"response": {
+				"accepted": false,
+				"status": 401
+			}
+		},
+		{
+			"case_id": "hosted_authentication",
+			"name": "authenticated_initialize",
+			"operation": "initialize",
+			"tenant": "tenant-a",
+			"request": {
+				"authenticated": true
+			},
+			"response": {
+				"accepted": true,
+				"session": "session-a"
+			}
+		},
+		{
+			"case_id": "hosted_authentication",
+			"name": "scoped_tool_catalog",
+			"operation": "list_tools",
+			"tenant": "tenant-a",
+			"request": {
+				"scopes": [
+					"threads:read",
+					"threads:write"
+				]
+			},
+			"response": {
+				"accepted": true,
+				"tools": [
+					"orb_get_thread",
+					"orb_create_thread",
+					"orb_send_message"
+				]
+			}
+		},
+		{
+			"case_id": "start_wait_message",
+			"name": "create_thread",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_create_thread",
+				"arguments": {
+					"project": "fixture-project",
+					"title": "delegation-1"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"tenant": "tenant-a"
+			}
+		},
+		{
+			"case_id": "start_wait_message",
+			"name": "start_task",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_start_task",
+				"arguments": {
+					"thread_id": "thread-a",
+					"idempotency_key": "start-case-1",
+					"provisioner": "sandboxwich"
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-a",
+				"state": "starting"
+			}
+		},
+		{
+			"case_id": "start_wait_message",
+			"name": "wait_for_ready",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_wait_task",
+				"arguments": {
+					"receipt_id": "receipt-a"
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-a",
+				"state": "ready",
+				"thread_id": "thread-a"
+			}
+		},
+		{
+			"case_id": "start_wait_message",
+			"name": "send_message",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_send_message",
+				"arguments": {
+					"thread_id": "thread-a",
+					"content": "fixture prompt"
+				}
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-a"
+			}
+		},
+		{
+			"case_id": "disconnect_reconnect",
+			"name": "initial_thread_read",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_get_thread",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"lifecycle_phase": "ready"
+			}
+		},
+		{
+			"case_id": "disconnect_reconnect",
+			"name": "reconnect_initialize",
+			"operation": "initialize",
+			"tenant": "tenant-a",
+			"request": {
+				"authenticated": true
+			},
+			"response": {
+				"accepted": true,
+				"session": "session-b"
+			}
+		},
+		{
+			"case_id": "disconnect_reconnect",
+			"name": "reconnected_thread_read",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_get_thread",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"lifecycle_phase": "ready"
+			}
+		},
+		{
+			"case_id": "disconnect_reconnect",
+			"name": "reconnected_wait",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_wait_task",
+				"arguments": {
+					"receipt_id": "receipt-a"
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-a",
+				"state": "ready",
+				"thread_id": "thread-a"
+			}
+		},
+		{
+			"case_id": "steering",
+			"name": "submit_directive",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_direct_task",
+				"arguments": {
+					"thread_id": "thread-a",
+					"directive": "fixture steering",
+					"idempotency_key": "steer-case-1"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"state": "active"
+			}
+		},
+		{
+			"case_id": "steering",
+			"name": "observe_directive",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_task_status",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"state": "active"
+			}
+		},
+		{
+			"case_id": "approval",
+			"name": "start_approval_task",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_start_task",
+				"arguments": {
+					"thread_id": "thread-approval",
+					"idempotency_key": "approval-case-1",
+					"provisioner": "sandboxwich",
+					"require_approval": true
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-approval",
+				"state": "ready"
+			}
+		},
+		{
+			"case_id": "approval",
+			"name": "send_approval_message",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_send_message",
+				"arguments": {
+					"thread_id": "thread-approval",
+					"content": "fixture approval"
+				}
+			},
+			"response": {
+				"accepted": true,
+				"state": "held"
+			}
+		},
+		{
+			"case_id": "approval",
+			"name": "list_pending",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_list_pending_approvals",
+				"arguments": {}
+			},
+			"response": {
+				"pending": [
+					{
+						"thread_id": "thread-approval",
+						"tool_call_id": "approval-call-1"
+					}
+				]
+			}
+		},
+		{
+			"case_id": "approval",
+			"name": "approve_call",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_decide_approval",
+				"arguments": {
+					"thread_id": "thread-approval",
+					"tool_call_id": "approval-call-1",
+					"approved": true
+				}
+			},
+			"response": {
+				"accepted": true
+			}
+		},
+		{
+			"case_id": "cancellation",
+			"name": "cancel_task",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_cancel_task",
+				"arguments": {
+					"thread_id": "thread-cancel",
+					"idempotency_key": "cancel-case-1"
+				}
+			},
+			"response": {
+				"thread_id": "thread-cancel",
+				"state": "cancelled"
+			}
+		},
+		{
+			"case_id": "cancellation",
+			"name": "observe_cancelled",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_task_status",
+				"arguments": {
+					"thread_id": "thread-cancel"
+				}
+			},
+			"response": {
+				"thread_id": "thread-cancel",
+				"state": "cancelled",
+				"outcome": {
+					"status": "cancelled"
+				}
+			}
+		},
+		{
+			"case_id": "idempotent_retry",
+			"name": "initial_start",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_start_task",
+				"arguments": {
+					"thread_id": "thread-retry",
+					"idempotency_key": "retry-case-1",
+					"provisioner": "sandboxwich"
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-retry",
+				"state": "starting"
+			}
+		},
+		{
+			"case_id": "idempotent_retry",
+			"name": "same_key_retry",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_start_task",
+				"arguments": {
+					"thread_id": "thread-retry",
+					"idempotency_key": "retry-case-1",
+					"provisioner": "sandboxwich"
+				}
+			},
+			"response": {
+				"receipt_id": "receipt-retry",
+				"state": "replaying"
+			}
+		},
+		{
+			"case_id": "idempotent_retry",
+			"name": "changed_request_conflict",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_start_task",
+				"arguments": {
+					"thread_id": "thread-retry",
+					"idempotency_key": "retry-case-1",
+					"provisioner": "nimbus"
+				}
+			},
+			"response": {
+				"accepted": false,
+				"status": 409,
+				"error": "idempotency conflict"
+			}
+		},
+		{
+			"case_id": "terminal_result",
+			"name": "collect_thread_report",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_get_thread",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"lifecycle_phase": "ready",
+				"last_message": "fixture result",
+				"terminal": true
+			}
+		},
+		{
+			"case_id": "terminal_result",
+			"name": "collect_task_status",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_task_status",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"state": "completed",
+				"outcome": {
+					"status": "succeeded",
+					"result": "fixture result"
+				}
+			}
+		},
+		{
+			"case_id": "tenant_isolation",
+			"name": "same_tenant_read",
+			"operation": "call_tool",
+			"tenant": "tenant-a",
+			"request": {
+				"tool": "orb_get_thread",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"thread_id": "thread-a",
+				"lifecycle_phase": "ready"
+			}
+		},
+		{
+			"case_id": "tenant_isolation",
+			"name": "cross_tenant_thread_read",
+			"operation": "call_tool",
+			"tenant": "tenant-b",
+			"request": {
+				"tool": "orb_get_thread",
+				"arguments": {
+					"thread_id": "thread-a"
+				}
+			},
+			"response": {
+				"accepted": false,
+				"status": 404,
+				"error": "not found"
+			}
+		},
+		{
+			"case_id": "tenant_isolation",
+			"name": "cross_tenant_receipt_read",
+			"operation": "call_tool",
+			"tenant": "tenant-b",
+			"request": {
+				"tool": "orb_wait_task",
+				"arguments": {
+					"receipt_id": "receipt-a"
+				}
+			},
+			"response": {
+				"accepted": false,
+				"status": 404,
+				"error": "not found"
+			}
+		},
+		{
+			"case_id": "central_mcp_allowlist_auth",
+			"name": "project_hosted_config_wins",
+			"operation": "central_configure",
+			"tenant": "tenant-a",
+			"request": {
+				"personal_or_workspace": true,
+				"project_hosted_configuration": "fixture-remote-mcp",
+				"local_invocation_mcp_config": "ignored"
+			},
+			"response": {
+				"accepted": true,
+				"configuration_source": "project_hosted",
+				"applied_to": "hosted_orb"
+			}
+		},
+		{
+			"case_id": "central_mcp_allowlist_auth",
+			"name": "opaque_hosted_auth",
+			"operation": "central_authenticate",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp",
+				"auth_mode": "opaque-hosted",
+				"transport": "mcp-streamable-http"
+			},
+			"response": {
+				"accepted": true,
+				"credential_exposed": false,
+				"auth_mode": "opaque-hosted"
+			}
+		},
+		{
+			"case_id": "central_mcp_allowlist_auth",
+			"name": "include_tools_discovery",
+			"operation": "central_tools_list",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp",
+				"includeTools": [
+					"fixture_lookup"
+				]
+			},
+			"response": {
+				"state": "filtered",
+				"tools": [
+					"fixture_lookup"
+				],
+				"hidden": [
+					"fixture_admin",
+					"fixture_secret"
+				]
+			}
+		},
+		{
+			"case_id": "central_mcp_tool_call_evidence",
+			"name": "allowlisted_tool_call",
+			"operation": "central_tool_call",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp",
+				"server_tool": "fixture_lookup",
+				"arguments": {
+					"key": "fixture-key"
+				}
+			},
+			"response": {
+				"accepted": true,
+				"server_tool": "fixture_lookup",
+				"result": "fixture-value"
+			}
+		},
+		{
+			"case_id": "central_mcp_tool_call_evidence",
+			"name": "approval_evidence",
+			"operation": "approval_evidence",
+			"tenant": "tenant-a",
+			"request": {
+				"server_tool": "fixture_lookup"
+			},
+			"response": {
+				"recorded": true,
+				"evidence_type": "approval",
+				"decision": "approved"
+			}
+		},
+		{
+			"case_id": "central_mcp_tool_call_evidence",
+			"name": "lifecycle_evidence",
+			"operation": "lifecycle_evidence",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp"
+			},
+			"response": {
+				"recorded": true,
+				"evidence_type": "lifecycle",
+				"states": [
+					"requested",
+					"approved",
+					"completed"
+				]
+			}
+		},
+		{
+			"case_id": "central_mcp_tool_call_evidence",
+			"name": "tool_result_evidence",
+			"operation": "tool_result_evidence",
+			"tenant": "tenant-a",
+			"request": {
+				"server_tool": "fixture_lookup"
+			},
+			"response": {
+				"recorded": true,
+				"evidence_type": "tool_result",
+				"result": "fixture-value"
+			}
+		},
+		{
+			"case_id": "central_mcp_restart_reconnect",
+			"name": "restart_remote_session",
+			"operation": "central_restart",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp"
+			},
+			"response": {
+				"accepted": true,
+				"lifecycle": "restarted"
+			}
+		},
+		{
+			"case_id": "central_mcp_restart_reconnect",
+			"name": "reconnect_remote_session",
+			"operation": "central_reconnect",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp"
+			},
+			"response": {
+				"accepted": true,
+				"lifecycle": "reconnected"
+			}
+		},
+		{
+			"case_id": "central_mcp_restart_reconnect",
+			"name": "reconnected_tools_discovery",
+			"operation": "central_tools_list",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp",
+				"includeTools": [
+					"fixture_lookup"
+				]
+			},
+			"response": {
+				"state": "filtered",
+				"tools": [
+					"fixture_lookup"
+				],
+				"hidden": [
+					"fixture_admin",
+					"fixture_secret"
+				]
+			}
+		},
+		{
+			"case_id": "central_mcp_restart_reconnect",
+			"name": "reconnected_tool_call",
+			"operation": "central_tool_call",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-remote-mcp",
+				"server_tool": "fixture_lookup",
+				"arguments": {
+					"key": "fixture-key-reconnect"
+				}
+			},
+			"response": {
+				"accepted": true,
+				"server_tool": "fixture_lookup",
+				"result": "fixture-value-reconnected"
+			}
+		},
+		{
+			"case_id": "central_mcp_revoked_credential",
+			"name": "revoked_opaque_auth",
+			"operation": "central_authenticate",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-revoked-mcp",
+				"auth_mode": "opaque-hosted",
+				"transport": "mcp-streamable-http"
+			},
+			"response": {
+				"accepted": false,
+				"status": 401,
+				"credential_exposed": false,
+				"error": "revoked hosted credential"
+			}
+		},
+		{
+			"case_id": "central_mcp_revoked_credential",
+			"name": "revoked_lifecycle_evidence",
+			"operation": "lifecycle_evidence",
+			"tenant": "tenant-a",
+			"request": {
+				"server": "fixture-revoked-mcp"
+			},
+			"response": {
+				"recorded": true,
+				"evidence_type": "lifecycle",
+				"states": [
+					"requested",
+					"rejected"
+				]
+			}
+		},
+		{
+			"case_id": "hosted_profile_discovery",
+			"name": "discover_profiles",
+			"operation": "profile_catalog",
+			"tenant": "tenant-a",
+			"request": {
+				"catalog": "managed-hosted"
+			},
+			"response": {
+				"profiles": [
+					{
+						"id": "sandboxwich/standard/sandboxed_container/unprivileged",
+						"provider": "sandboxwich",
+						"resource_profile": "standard",
+						"execution_class": "sandboxed_container",
+						"runtime_profile": "unprivileged",
+						"availability": "configured",
+						"capacity": null,
+						"cost": null,
+						"is_default": true
+					},
+					{
+						"id": "sandboxwich/restricted/sandboxed_container/unprivileged",
+						"provider": "sandboxwich",
+						"resource_profile": "restricted",
+						"execution_class": "sandboxed_container",
+						"runtime_profile": "unprivileged",
+						"availability": "configured",
+						"capacity": null,
+						"cost": null,
+						"is_default": false
+					}
+				],
+				"default_profile_id": "sandboxwich/standard/sandboxed_container/unprivileged"
+			}
+		},
+		{
+			"case_id": "hosted_profile_discovery",
+			"name": "select_allowed_profile",
+			"operation": "profile_selection",
+			"tenant": "tenant-a",
+			"request": {
+				"runtime_profile": "sandboxwich/standard/sandboxed_container/unprivileged"
+			},
+			"response": {
+				"accepted": true,
+				"profile_id": "sandboxwich/standard/sandboxed_container/unprivileged",
+				"placement": "managed-fixture-standard"
+			}
+		},
+		{
+			"case_id": "atomic_launch_receipt",
+			"name": "admit_atomic_launch",
+			"operation": "atomic_launch",
+			"tenant": "tenant-a",
+			"request": {
+				"project": "fixture-project",
+				"repository_url": "https://github.com/evalops/maestro.git",
+				"prompt": "fixture atomic prompt",
+				"idempotency_key": "atomic-case-1"
+			},
+			"response": {
+				"task_id": "thread-atomic",
+				"thread_id": "thread-atomic",
+				"launch": {
+					"id": "receipt-atomic",
+					"state": "staged"
+				},
+				"replayed": false,
+				"placement": {
+					"orb_id": "orb-atomic",
+					"provider": "sandboxwich",
+					"profile_id": "sandboxwich/standard/sandboxed_container/unprivileged",
+					"resource_profile": "standard",
+					"execution_class": "sandboxed_container",
+					"runtime_profile": "unprivileged"
+				},
+				"prompt": {
+					"status": "queued"
+				},
+				"policy": {
+					"intent": "investigate",
+					"profile": "read_only",
+					"permission_policy": "deny",
+					"approval_policy": {
+						"rules": []
+					}
+				}
+			}
+		},
+		{
+			"case_id": "atomic_launch_receipt",
+			"name": "same_atomic_key_retry",
+			"operation": "atomic_launch",
+			"tenant": "tenant-a",
+			"request": {
+				"project": "fixture-project",
+				"repository_url": "https://github.com/evalops/maestro.git",
+				"prompt": "fixture atomic prompt",
+				"idempotency_key": "atomic-case-1"
+			},
+			"response": {
+				"task_id": "thread-atomic",
+				"thread_id": "thread-atomic",
+				"launch": {
+					"id": "receipt-atomic",
+					"state": "staged"
+				},
+				"replayed": true,
+				"placement": {
+					"orb_id": "orb-atomic",
+					"provider": "sandboxwich",
+					"profile_id": "sandboxwich/standard/sandboxed_container/unprivileged",
+					"resource_profile": "standard",
+					"execution_class": "sandboxed_container",
+					"runtime_profile": "unprivileged"
+				},
+				"prompt": {
+					"status": "queued"
+				},
+				"policy": {
+					"intent": "investigate",
+					"profile": "read_only",
+					"permission_policy": "deny",
+					"approval_policy": {
+						"rules": []
+					}
+				}
+			}
+		},
+		{
+			"case_id": "atomic_launch_receipt",
+			"name": "observe_durable_receipt",
+			"operation": "receipt_observation",
+			"tenant": "tenant-a",
+			"request": {
+				"receipt_id": "receipt-atomic"
+			},
+			"response": {
+				"receipt_id": "receipt-atomic",
+				"receipt_durable": true,
+				"state": "starting",
+				"terminal": false
+			}
+		},
+		{
+			"case_id": "atomic_launch_receipt",
+			"name": "record_profile_placement",
+			"operation": "placement_evidence",
+			"tenant": "tenant-a",
+			"request": {
+				"receipt_id": "receipt-atomic"
+			},
+			"response": {
+				"recorded": true,
+				"evidence_type": "placement",
+				"profile_id": "sandboxwich/standard/sandboxed_container/unprivileged",
+				"placement": "managed-fixture-standard"
+			}
+		},
+		{
+			"case_id": "atomic_launch_allowed_override",
+			"name": "admit_allowed_override",
+			"operation": "atomic_launch",
+			"tenant": "tenant-a",
+			"request": {
+				"project": "fixture-project",
+				"repository_url": "https://github.com/evalops/maestro.git",
+				"prompt": "fixture override prompt",
+				"runtime_profile": "sandboxwich/restricted/sandboxed_container/unprivileged",
+				"idempotency_key": "atomic-override-1"
+			},
+			"response": {
+				"task_id": "thread-atomic-override",
+				"thread_id": "thread-atomic-override",
+				"launch": {
+					"id": "receipt-atomic-override",
+					"state": "staged"
+				},
+				"replayed": false,
+				"placement": {
+					"orb_id": "orb-atomic-override",
+					"provider": "sandboxwich",
+					"profile_id": "sandboxwich/restricted/sandboxed_container/unprivileged",
+					"resource_profile": "restricted",
+					"execution_class": "sandboxed_container",
+					"runtime_profile": "unprivileged"
+				},
+				"prompt": {
+					"status": "queued"
+				},
+				"policy": {
+					"intent": "investigate",
+					"profile": "read_only",
+					"permission_policy": "deny",
+					"approval_policy": {
+						"rules": []
+					}
+				}
+			}
+		},
+		{
+			"case_id": "atomic_launch_allowed_override",
+			"name": "override_handle_observed",
+			"operation": "receipt_observation",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic-override",
+				"receipt_id": "receipt-atomic-override"
+			},
+			"response": {
+				"thread_id": "thread-atomic-override",
+				"receipt_id": "receipt-atomic-override",
+				"receipt_durable": true,
+				"state": "starting",
+				"terminal": false
+			}
+		},
+		{
+			"case_id": "atomic_launch_reconnect_cancel",
+			"name": "reconnect_atomic_launch",
+			"operation": "atomic_reconnect",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic"
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic",
+				"state": "starting"
+			}
+		},
+		{
+			"case_id": "atomic_launch_reconnect_cancel",
+			"name": "observe_atomic_status",
+			"operation": "atomic_status",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic"
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic",
+				"state": "running"
+			}
+		},
+		{
+			"case_id": "atomic_launch_reconnect_cancel",
+			"name": "steer_atomic_launch",
+			"operation": "atomic_steer",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic",
+				"directive": "fixture atomic steer",
+				"idempotency_key": "atomic-steer-1"
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic",
+				"state": "running"
+			}
+		},
+		{
+			"case_id": "atomic_launch_reconnect_cancel",
+			"name": "cancel_atomic_launch",
+			"operation": "atomic_cancel",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic",
+				"idempotency_key": "atomic-cancel-1"
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic",
+				"state": "cancelling"
+			}
+		},
+		{
+			"case_id": "atomic_launch_reconnect_cancel",
+			"name": "observe_atomic_cancelled",
+			"operation": "atomic_status",
+			"tenant": "tenant-a",
+			"request": {
+				"thread_id": "thread-atomic"
+			},
+			"response": {
+				"accepted": true,
+				"thread_id": "thread-atomic",
+				"receipt_id": "receipt-atomic",
+				"state": "cancelled",
+				"outcome": {
+					"status": "cancelled"
+				}
+			}
+		},
+		{
+			"case_id": "atomic_launch_rejected_profile",
+			"name": "reject_unavailable_profile",
+			"operation": "atomic_launch",
+			"tenant": "tenant-a",
+			"request": {
+				"project": "fixture-project",
+				"repository_url": "https://github.com/evalops/maestro.git",
+				"prompt": "fixture rejected prompt",
+				"runtime_profile": "sandboxwich/unavailable/sandboxed_container/unprivileged",
+				"idempotency_key": "atomic-rejected-1"
+			},
+			"response": {
+				"accepted": false,
+				"status": 422,
+				"error": "runtime_profile unavailable",
+				"provisioned": false,
+				"side_effects": 0
+			}
+		},
+		{
+			"case_id": "atomic_launch_rejected_profile",
+			"name": "no_provisioning_side_effect",
+			"operation": "provisioning_side_effect",
+			"tenant": "tenant-a",
+			"request": {
+				"runtime_profile": "sandboxwich/unavailable/sandboxed_container/unprivileged"
+			},
+			"response": {
+				"provisioned": false,
+				"side_effects": 0,
+				"recorded": true
+			}
+		}
+	]
+}

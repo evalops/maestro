@@ -3,7 +3,7 @@ name = "maestro-ai"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "AI provider client layer for Maestro (Anthropic, Bedrock, OpenAI, Google, Vertex)"
+description = "AI provider client layer for Deixic Code (Anthropic, Bedrock, OpenAI, Google, Vertex)"
 
 [lib]
 name = "maestro_ai"
@@ -11,13 +11,14 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-aws-sdk-bedrockruntime.workspace = true
-aws-smithy-types.workspace = true
-aws-types.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+aws-sdk-bedrockruntime = { workspace = true, optional = true }
+aws-smithy-types = { workspace = true, optional = true }
+aws-types = { workspace = true, optional = true }
 base64.workspace = true
 futures.workspace = true
+maestro-runtime.workspace = true
 reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -37,6 +38,14 @@ wait-timeout.workspace = true
 tempfile = { workspace = true, optional = true }
 
 [features]
+default = ["bedrock"]
+bedrock = [
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-sdk-bedrockruntime",
+    "dep:aws-smithy-types",
+    "dep:aws-types",
+]
 # Exposes `op_secret::test_support` to downstream crates' own test builds
 # (e.g. maestro-tui's `doctor.rs` auth-health tests), which can no longer
 # reach a `#[cfg(test)]`-only item across a crate boundary.
@@ -44,3 +53,4 @@ test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

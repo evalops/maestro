@@ -111,7 +111,9 @@ pub enum SkillLoadError {
     },
 
     /// Unexpected fields in frontmatter
-    #[error("Unexpected fields in '{path}': {fields}. Only name, description, license, compatibility, allowed-tools, metadata are allowed.")]
+    #[error(
+        "Unexpected fields in '{path}': {fields}. Only name, description, license, compatibility, allowed-tools, metadata are allowed."
+    )]
     UnexpectedFields { path: PathBuf, fields: String },
 }
 
@@ -991,39 +993,14 @@ impl SkillLoader {
 /// </skill>
 /// </available_skills>
 /// ```
+///
+/// This renders the catalog with no size limit. The system-prompt path uses
+/// [`crate::skills::catalog_budget::apply_skill_catalog_budget`] instead, which
+/// bounds the catalog at a share of the model's context window; both render
+/// through the same helper so the block's shape cannot drift.
 #[must_use]
 pub fn skills_to_prompt(skills: &[LoadedSkill]) -> String {
-    if skills.is_empty() {
-        return "<available_skills>\n</available_skills>".to_string();
-    }
-
-    let mut output = String::from("<available_skills>\n");
-
-    for skill in skills {
-        let def = &skill.definition;
-        // Escape XML special characters
-        let name = html_escape(&def.name);
-        let description = html_escape(&def.description);
-        let location = html_escape(&skill.source_path.display().to_string());
-
-        output.push_str("<skill>\n");
-        output.push_str(&format!("  <name>{name}</name>\n"));
-        output.push_str(&format!("  <description>{description}</description>\n"));
-        output.push_str(&format!("  <location>{location}</location>\n"));
-        output.push_str("</skill>\n");
-    }
-
-    output.push_str("</available_skills>");
-    output
-}
-
-/// Escape HTML/XML special characters
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    crate::skills::catalog_budget::render_full_catalog(skills)
 }
 
 impl Default for SkillLoader {
@@ -1112,10 +1089,12 @@ mod tests {
         .unwrap();
 
         let loader = SkillLoader::new_with_trust(workspace.path(), true);
-        assert!(loader
-            .search_paths()
-            .iter()
-            .any(|p| p.starts_with(workspace.path())));
+        assert!(
+            loader
+                .search_paths()
+                .iter()
+                .any(|p| p.starts_with(workspace.path()))
+        );
 
         let results = loader.load_all();
         assert!(
@@ -1191,11 +1170,13 @@ This is the system prompt for the test skill.
         assert_eq!(skill.description, "A test skill for testing purposes");
         assert_eq!(skill.provided_tools, vec!["read", "write"]);
         assert!(skill.system_prompt_additions.is_some());
-        assert!(skill
-            .system_prompt_additions
-            .as_ref()
-            .unwrap()
-            .contains("Test Instructions"));
+        assert!(
+            skill
+                .system_prompt_additions
+                .as_ref()
+                .unwrap()
+                .contains("Test Instructions")
+        );
     }
 
     #[test]
@@ -2033,6 +2014,7 @@ description: Description for {}
 
     #[test]
     fn test_html_escape() {
+        use crate::skills::catalog_budget::html_escape;
         assert_eq!(html_escape("hello"), "hello");
         assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#39;");
         assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");

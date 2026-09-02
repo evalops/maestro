@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
 use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
@@ -30,23 +31,44 @@ fn sessions_dir(cwd: &str) -> PathBuf {
 }
 
 /// Process-local override for the active session id used to locate `plan.md`.
+#[cfg(not(test))]
 static ACTIVE_SESSION_ID: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+#[cfg(test)]
+thread_local! {
+    static TEST_ACTIVE_SESSION_ID: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Remember which session owns the current plan file.
 pub fn set_active_session_id(session_id: Option<String>) {
-    if let Ok(mut guard) = ACTIVE_SESSION_ID.lock() {
-        *guard = session_id;
+    #[cfg(test)]
+    {
+        TEST_ACTIVE_SESSION_ID.with(|slot| *slot.borrow_mut() = session_id);
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(mut guard) = ACTIVE_SESSION_ID.lock() {
+            *guard = session_id;
+        }
     }
 }
 
 /// Return the active session id used for plan path resolution, if any.
 #[must_use]
 pub fn active_session_id() -> Option<String> {
-    ACTIVE_SESSION_ID
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
+    #[cfg(test)]
+    {
+        TEST_ACTIVE_SESSION_ID.with(|slot| slot.borrow().clone())
+    }
+    #[cfg(not(test))]
+    {
+        ACTIVE_SESSION_ID
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
 }
 
 /// Directory that holds plan files for a workspace cwd.
@@ -284,14 +306,19 @@ mod tests {
 
     #[test]
     fn gate_mutation_allows_plan_path_in_plan_mode() {
-        set_plan_mode(true);
+        let _plan_mode = crate::safety::PlanModeOverride::enable();
         let dir = TempDir::new().unwrap();
         let cwd = dir.path().to_str().unwrap();
-        let plan = ensure_plan_file(cwd).unwrap();
-        assert!(gate_mutation("write", Some(&plan), cwd).is_ok());
+        let plan = workspace_plan_path(cwd);
+        fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        fs::write(&plan, empty_plan_template()).unwrap();
+        assert!(
+            gate_mutation("write", Some(&plan), cwd).is_ok(),
+            "{:?}",
+            gate_mutation("write", Some(&plan), cwd)
+        );
         assert!(gate_mutation("write", Some(&dir.path().join("x.rs")), cwd).is_err());
         assert!(gate_mutation("bash", None, cwd).is_err());
-        set_plan_mode(false);
     }
 
     #[test]

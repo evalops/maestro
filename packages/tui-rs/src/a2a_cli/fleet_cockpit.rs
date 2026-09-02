@@ -9,8 +9,8 @@ use super::client::{
     discover_agent_card, is_action_required_state, is_completed_state, is_failed_state,
     is_final_state, is_terminal_state,
 };
-use super::ledger::{get_task_ledger_path, list_task_entries, load_task_ledger, TaskLedgerEntry};
-use super::registry::{list_peers, resolve_peer, PeerRegistryEntry, ResolvePeerOptions};
+use super::ledger::{TaskLedgerEntry, get_task_ledger_path, list_task_entries, load_task_ledger};
+use super::registry::{PeerRegistryEntry, ResolvePeerOptions, list_peers, resolve_peer};
 
 const DEFAULT_A2A_FLEET_PROBE_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_COCKPIT_LIMIT: usize = 8;
@@ -464,7 +464,7 @@ fn summarize_next_actions(
                 id: format!("delegate:{}", peer.name),
                 label: format!("Delegate fresh work to {}", peer.name),
                 command: format!(
-                    "maestro a2a delegate {} <objective> --wait --work-graph",
+                    "deixic-code a2a delegate {} <objective> --wait --work-graph",
                     shell_quote(&peer.name)
                 ),
                 severity: "info".into(),
@@ -486,7 +486,7 @@ fn next_action_for_task(task: &CockpitTaskSummary) -> Option<CockpitNextAction> 
             id: format!("reply:{}:{}", task.peer, task.task_id),
             label: format!("Reply to {} task {}", task.peer, task.task_id),
             command: format!(
-                "maestro a2a reply {} {} <response> --wait --work-graph",
+                "deixic-code a2a reply {} {} <response> --wait --work-graph",
                 shell_quote(&task.peer),
                 shell_quote(&task.task_id)
             ),
@@ -500,7 +500,7 @@ fn next_action_for_task(task: &CockpitTaskSummary) -> Option<CockpitNextAction> 
             label: format!("Wait for {} task {}", task.peer, task.task_id),
             command: task.next_command.clone().unwrap_or_else(|| {
                 format!(
-                    "maestro a2a wait {} {} --work-graph",
+                    "deixic-code a2a wait {} {} --work-graph",
                     shell_quote(&task.peer),
                     shell_quote(&task.task_id)
                 )
@@ -514,7 +514,7 @@ fn next_action_for_task(task: &CockpitTaskSummary) -> Option<CockpitNextAction> 
             id: format!("refresh:{}:{}", task.peer, task.task_id),
             label: format!("Refresh failed {} task {}", task.peer, task.task_id),
             command: format!(
-                "maestro a2a tasks {} --refresh --work-graph",
+                "deixic-code a2a tasks {} --refresh --work-graph",
                 shell_quote(&task.peer)
             ),
             severity: "warning".into(),
@@ -529,12 +529,12 @@ fn next_action_for_task(task: &CockpitTaskSummary) -> Option<CockpitNextAction> 
 fn task_command(entry: &TaskLedgerEntry, status: &str) -> Option<String> {
     match status {
         "waiting" => Some(format!(
-            "maestro a2a reply {} {} <response> --wait --work-graph",
+            "deixic-code a2a reply {} {} <response> --wait --work-graph",
             shell_quote(&entry.peer),
             shell_quote(&entry.task_id)
         )),
         "running" => Some(format!(
-            "maestro a2a wait {} {} --work-graph",
+            "deixic-code a2a wait {} {} --work-graph",
             shell_quote(&entry.peer),
             shell_quote(&entry.task_id)
         )),
@@ -649,6 +649,7 @@ mod tests {
             created_at: "2026-07-21T00:00:00.000Z".into(),
             updated_at: "2026-07-21T00:00:01.000Z".into(),
             completed_at: None,
+            extensions: Default::default(),
         }];
         let cockpit = summarize_a2a_cockpit(&fleet, &tasks, None, Some(5));
         assert_eq!(cockpit.counts.action_required_tasks, 1);

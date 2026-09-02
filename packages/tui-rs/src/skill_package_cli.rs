@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -423,7 +423,7 @@ fn contract(source_spec: &str, describe: bool) -> Result<serde_json::Value> {
         _ => formatted.clone(),
     };
     let install_command = format!(
-        "maestro skill install {}",
+        "deixic-code skill install {}",
         quote_install_source(&install_source)
     );
     let source_kind = match source {
@@ -477,7 +477,7 @@ fn print_contract(contract: &serde_json::Value) {
         "  {}",
         contract["install"]["source"]
             .as_str()
-            .unwrap_or("maestro skill install")
+            .unwrap_or("deixic-code skill install")
     );
     if let Some(issues) = contract["issues"]
         .as_array()
@@ -621,7 +621,9 @@ fn workspace_trusted(cwd: &Path) -> bool {
 
 fn ensure_workspace_trusted(cwd: &Path, scope: &str) -> Result<()> {
     if scope != "user" && !workspace_trusted(cwd) {
-        bail!("maestro skill install --scope {scope} requires a trusted workspace because {scope} package config is ignored until trust is granted. Use --scope user or trust this workspace in global config.");
+        bail!(
+            "deixic-code skill install --scope {scope} requires a trusted workspace because {scope} package config is ignored until trust is granted. Use --scope user or trust this workspace in global config."
+        );
     }
     Ok(())
 }
@@ -834,7 +836,7 @@ fn store_package(source_spec: &str, scope: &str) -> Result<(PathBuf, String)> {
 }
 
 pub fn publish_check(source: Option<&str>, json: bool, describe: bool) -> Result<i32> {
-    let source = source.context("maestro skill publish-check requires a package source")?;
+    let source = source.context("deixic-code skill publish-check requires a package source")?;
     let contract = contract(source, describe)?;
     let failed = contract["issues"]
         .as_array()
@@ -848,7 +850,7 @@ pub fn publish_check(source: Option<&str>, json: bool, describe: bool) -> Result
 }
 
 pub fn install(source: Option<&str>, json: bool, scope: &str) -> Result<i32> {
-    let source = source.context("maestro skill install requires a package source")?;
+    let source = source.context("deixic-code skill install requires a package source")?;
     ensure_workspace_trusted(&env::current_dir()?, scope)?;
     let contract = contract(source, false)?;
     if contract["issues"]
@@ -886,7 +888,7 @@ pub fn install(source: Option<&str>, json: bool, scope: &str) -> Result<i32> {
         );
         println!("scope: {scope}");
         println!("config: {}", path.display());
-        println!("Run `maestro skill list` to see loaded skills.");
+        println!("Run `deixic-code skill list` to see loaded skills.");
     }
     Ok(0)
 }
@@ -973,36 +975,42 @@ mod tests {
         let source = temp.path().join("source");
         let clone = temp.path().join("clone");
         fs::create_dir(&source).expect("source directory");
-        assert!(Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&source)
-            .status()
-            .expect("git init")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&source)
+                .status()
+                .expect("git init")
+                .success()
+        );
         fs::write(source.join("package.json"), "{}\n").expect("package file");
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(&source)
-            .args(["add", "package.json"])
-            .status()
-            .expect("git add")
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(&source)
-            .args([
-                "-c",
-                "user.name=Maestro Test",
-                "-c",
-                "user.email=maestro@example.invalid",
-                "commit",
-                "--quiet",
-                "-m",
-                "fixture",
-            ])
-            .status()
-            .expect("git commit")
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(["add", "package.json"])
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args([
+                    "-c",
+                    "user.name=Maestro Test",
+                    "-c",
+                    "user.email=maestro@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "fixture",
+                ])
+                .status()
+                .expect("git commit")
+                .success()
+        );
         let revision = Command::new("git")
             .arg("-C")
             .arg(&source)

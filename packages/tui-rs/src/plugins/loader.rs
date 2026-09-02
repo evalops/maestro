@@ -4,6 +4,11 @@ use super::manifest::PluginManifest;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+/// Maestro's native manifest location.
+pub const NATIVE_PLUGIN_MANIFEST_PATH: &str = "plugin.json";
+/// Portable manifest location used by OpenHands and Claude Code plugins.
+pub const PORTABLE_PLUGIN_MANIFEST_PATH: &str = ".plugin/plugin.json";
+
 /// Resolved component paths for a single plugin package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginComponents {
@@ -15,11 +20,56 @@ pub struct PluginComponents {
     pub connections_path: Option<PathBuf>,
 }
 
-/// Load an optional `plugin.json` from a plugin root.
+/// Largest plugin file read at load time.
+///
+/// Symlinked plugin files are refused and each file is capped at 10 MiB.
+/// Without a cap a plugin
+/// directory can hand the loader an arbitrarily large `plugin.json` and the
+/// whole file is read into memory before parsing fails.
+pub const MAX_PLUGIN_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Read a plugin file, refusing symlinks and files over
+/// [`MAX_PLUGIN_FILE_BYTES`].
+///
+/// Returns `None` when the path is missing, is a symbolic link, is not a
+/// regular file, is too large, or is not UTF-8.
+pub fn read_plugin_file(path: &Path) -> Option<String> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    if metadata.len() > MAX_PLUGIN_FILE_BYTES {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+/// Load an optional plugin manifest from a plugin root.
+///
+/// Maestro's root `plugin.json` takes precedence. When it is absent, the
+/// portable `.plugin/plugin.json` layout used by OpenHands and Claude Code is
+/// accepted. If the higher-priority path exists but is invalid, loading fails
+/// closed instead of silently falling through to a second identity.
 pub fn load_manifest(plugin_root: &Path) -> Option<PluginManifest> {
-    let path = plugin_root.join("plugin.json");
-    let text = fs::read_to_string(path).ok()?;
-    PluginManifest::from_json(&text).ok()
+    load_manifest_with_path(plugin_root).map(|(manifest, _)| manifest)
+}
+
+/// Load a plugin manifest together with the path that supplied its identity.
+pub fn load_manifest_with_path(plugin_root: &Path) -> Option<(PluginManifest, PathBuf)> {
+    for relative in [NATIVE_PLUGIN_MANIFEST_PATH, PORTABLE_PLUGIN_MANIFEST_PATH] {
+        let candidate = plugin_root.join(relative);
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                let candidate = contained_component(plugin_root, relative)?;
+                let text = read_plugin_file(&candidate)?;
+                let manifest = PluginManifest::from_json(&text).ok()?;
+                return Some((manifest, candidate));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// Resolve skill/command/hook/MCP paths for a plugin root.
@@ -199,6 +249,45 @@ mod tests {
     }
 
     #[test]
+    fn load_manifest_reads_portable_plugin_json() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join(PORTABLE_PLUGIN_MANIFEST_PATH),
+            r#"{"name":"portable-demo","version":"2.0.0"}"#,
+        );
+        let (manifest, path) = load_manifest_with_path(tmp.path()).unwrap();
+        assert_eq!(manifest.name.as_deref(), Some("portable-demo"));
+        assert_eq!(path, tmp.path().join(PORTABLE_PLUGIN_MANIFEST_PATH));
+    }
+
+    #[test]
+    fn native_manifest_precedes_portable_manifest() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join(NATIVE_PLUGIN_MANIFEST_PATH),
+            r#"{"name":"native"}"#,
+        );
+        write_file(
+            &tmp.path().join(PORTABLE_PLUGIN_MANIFEST_PATH),
+            r#"{"name":"portable"}"#,
+        );
+        let (manifest, path) = load_manifest_with_path(tmp.path()).unwrap();
+        assert_eq!(manifest.name.as_deref(), Some("native"));
+        assert_eq!(path, tmp.path().join(NATIVE_PLUGIN_MANIFEST_PATH));
+    }
+
+    #[test]
+    fn invalid_native_manifest_does_not_fall_through_to_portable_identity() {
+        let tmp = TempDir::new().unwrap();
+        write_file(&tmp.path().join(NATIVE_PLUGIN_MANIFEST_PATH), "{not-json");
+        write_file(
+            &tmp.path().join(PORTABLE_PLUGIN_MANIFEST_PATH),
+            r#"{"name":"portable"}"#,
+        );
+        assert!(load_manifest_with_path(tmp.path()).is_none());
+    }
+
+    #[test]
     fn missing_explicit_path_is_none() {
         let tmp = TempDir::new().unwrap();
         let manifest = PluginManifest {
@@ -219,8 +308,10 @@ mod tests {
             mcp: Some("../outside.json".into()),
             ..Default::default()
         };
-        assert!(resolve_components(&plugin, Some(&manifest))
-            .mcp_path
-            .is_none());
+        assert!(
+            resolve_components(&plugin, Some(&manifest))
+                .mcp_path
+                .is_none()
+        );
     }
 }

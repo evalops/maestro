@@ -8401,7 +8401,7 @@ const kR = [
   },
   {
     name: "package",
-    description: "Manage and inspect configured Maestro packages",
+    description: "Manage and inspect configured Deixic Code packages",
     usage: "/package [list|search [query]|inspect <source>|validate <source>|add <source>|remove <source>|prune-cache|refresh [<source>|--all]]",
     tags: ["tools", "config"]
   },
@@ -10290,7 +10290,7 @@ function Vx(e) {
 						<div class="session-gallery" aria-live="polite">
 							<div class="session-gallery-header">
 								<h3>Resume a Session</h3>
-								<span>Select a recent Maestro run to continue.</span>
+								<span>Select a recent Deixic Code run to continue.</span>
 							</div>
 							<div class="session-grid">
 								${t.map(
@@ -10704,7 +10704,7 @@ function tn(e) {
   return e.length === 0 ? "0" : `${e.length} (${e.map((t) => t.split("/").pop() ?? t).join(", ")})`;
 }
 function eV(e) {
-  const t = e.inspection, l = ["Maestro Package Inspection:"];
+  const t = e.inspection, l = ["Deixic Code Package Inspection:"];
   if (l.push(`  Source: ${t.sourceSpec}`), l.push(`  Resolved: ${t.resolvedSource}`), l.push(`  Type: ${t.sourceType}`), l.push(`  Path: ${t.resolvedPath}`), !t.discovered)
     return l.push("  Result: No valid package.json found"), l.join(`
 `);
@@ -10734,8 +10734,8 @@ function eV(e) {
 }
 function tV(e) {
   if (e.packages.length === 0)
-    return "No configured Maestro packages found in ~/.maestro/config.toml, .maestro/config.toml, or .maestro/config.local.toml.";
-  const t = ["Configured Maestro Packages:"];
+    return "No configured Deixic Code packages found in ~/.maestro/config.toml, .maestro/config.toml, or .maestro/config.local.toml.";
+  const t = ["Configured Deixic Code Packages:"];
   for (const [l, a] of e.packages.entries()) {
     t.push(`${l + 1}. [${a.scope}] ${a.sourceSpec}`), t.push(`   Config: ${a.configPath}`);
     const i = $x(a.filters);
@@ -10828,10 +10828,10 @@ function cV(e) {
 }
 function dV(e) {
   const t = [
-    e.query ? `Package search results for "${e.query}":` : "Featured Maestro packages:"
+    e.query ? `Package search results for "${e.query}":` : "Featured Deixic Code packages:"
   ];
   if (e.entries.length === 0)
-    return t.push("  No matching Maestro packages found."), t.join(`
+    return t.push("  No matching Deixic Code packages found."), t.join(`
 `);
   for (const l of e.entries)
     t.push(`- ${l.name}${l.version ? `@${l.version}` : ""}`), l.description && t.push(`  ${l.description}`), t.push(`  install: ${l.installSource}`), l.keywords.length > 0 && t.push(`  keywords: ${l.keywords.join(", ")}`);
@@ -15205,7 +15205,7 @@ let _t = class extends Ee {
 
 				<div class="content-column">
 					<div class="header">
-						<span class="role-name">${this.role === "user" ? "You" : "Maestro"}</span>
+						<span class="role-name">${this.role === "user" ? "You" : "Deixic Code"}</span>
 						<span class="timestamp">
 							${this.formatTimestamp(this.timestamp)}
 							${l ? b`
@@ -18611,7 +18611,7 @@ let Gt = class extends Ee {
 								<input
 									class="field-input"
 									type="text"
-									.placeholder=${"Search maestro packages"}
+									.placeholder=${"Search Deixic Code packages"}
 									.value=${this.packageSearchQuery}
 									aria-label=${"Package search"}
 									@input=${(l) => {
@@ -30425,7 +30425,7 @@ let D = class extends Ee {
 				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
 					${this.sidebarOpen ? zt("chevron-left") : zt("chevron-right")}
 				</button>
-				<h1>Maestro</h1>
+				<h1>Deixic Code</h1>
 			</div>
 			<div class="status-bar">
 						<div class="status-item active">

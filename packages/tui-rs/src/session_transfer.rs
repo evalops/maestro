@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -16,8 +16,8 @@ use crate::session::SessionManager;
 mod secure;
 
 pub use secure::{
-    export_secure_portable_session, import_secure_portable_session, SecureSessionExportOptions,
-    SecureSessionImportOptions, SECURE_PORTABLE_FORMAT,
+    SECURE_PORTABLE_FORMAT, SecureSessionExportOptions, SecureSessionImportOptions,
+    export_secure_portable_session, import_secure_portable_session,
 };
 
 const PORTABLE_FORMAT: &str = "maestro-session-export.v1";

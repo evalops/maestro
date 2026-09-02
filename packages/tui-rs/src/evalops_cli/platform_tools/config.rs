@@ -2,9 +2,9 @@ use std::io;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use super::{mcp_server_timeout_ms, SERVER_DISPLAY_NAME, SERVER_NAME};
+use super::{SERVER_DISPLAY_NAME, SERVER_NAME, mcp_server_timeout_ms};
 
 const CONFIG_FORWARDED_ENV_VARS: &[&str] = &[
     "TOOL_EXECUTION_SERVICE_URL",
@@ -143,7 +143,7 @@ fn remove_server_from_root(root: &mut Value) -> Result<()> {
 
 pub(super) fn configured_message(path: &Path) -> String {
     format!(
-        "Configured {SERVER_DISPLAY_NAME} in {}. Restart Maestro to load `mcp__{SERVER_NAME}__computer_shell`.",
+        "Configured {SERVER_DISPLAY_NAME} in {}. Restart Deixic Code to load `mcp__{SERVER_NAME}__computer_shell`.",
         path.display()
     )
 }
@@ -198,11 +198,13 @@ mod tests {
         remove_configured_server(&path).unwrap();
         let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert!(value["mcpServers"].get(SERVER_NAME).is_none());
-        assert!(value["servers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|server| server["name"] != SERVER_NAME));
+        assert!(
+            value["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|server| server["name"] != SERVER_NAME)
+        );
     }
 
     #[test]

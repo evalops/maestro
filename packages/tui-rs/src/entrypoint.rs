@@ -1,6 +1,6 @@
-//! # Maestro TUI - Native Terminal Interface
+//! # Deixic Code TUI - Native Terminal Interface
 //!
-//! This is the main entry point for the Maestro native TUI application.
+//! This is the main entry point for the Deixic Code native TUI application.
 //! It's a pure Rust implementation with native AI provider integrations.
 //!
 //! ## Rust Concept: Doc Comments
@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```bash
-//! maestro [options] [prompt]
+//! deixic-code [options] [prompt]
 //! ```
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 // It's shorthand for `Result<T, anyhow::Error>` and is great for applications
 // (as opposed to libraries) because it simplifies error handling.
 
-use clap::{error::ErrorKind, Parser};
+use clap::{Parser, error::ErrorKind};
 // `clap` is the standard CLI argument parsing library in Rust.
 // The `Parser` trait enables derive macros to auto-generate argument parsing.
 
@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 37] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 40] = [
     "acp",
     "sessions",
     "search",
@@ -79,7 +79,10 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 37] = [
     "memory",
     "mcp",
     "init",
+    "login",
     "openai",
+    "computer",
+    "orb",
     "config",
     "mission",
     "evalops",
@@ -403,15 +406,15 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 // CLI ARGUMENTS DEFINITION
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Command-line arguments for the Maestro TUI.
+/// Command-line arguments for the Deixic Code TUI.
 #[derive(Parser, Debug)]
-#[command(name = "maestro")]
-#[command(about = "Native terminal interface for Maestro")]
+#[command(name = "deixic-code")]
+#[command(about = "Native terminal interface for Deixic Code")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(long_about = "Native terminal UI for Maestro (coding agent).\n\n\
-Interactive: maestro --provider openai -m gpt-4.1-mini\n\
-Print mode:  maestro -p --provider openai -m gpt-4.1-mini \"question\"\n\
-Trust cwd:   maestro trust\n\
+#[command(long_about = "Native terminal UI for Deixic Code.\n\n\
+Interactive: deixic-code --provider openai -m gpt-4.1-mini\n\
+Print mode:  deixic-code -p --provider openai -m gpt-4.1-mini \"question\"\n\
+Trust cwd:   deixic-code trust\n\
 Sandbox:     use /sandbox in-session or MAESTRO_SANDBOX_MODE")]
 struct Args {
     /// Provider to use (for example, openai). When omitted, inferred from the model.
@@ -664,10 +667,10 @@ fn provider_api_key_env(provider: &str) -> &'static str {
 pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
     // maestro-tui remains a Cargo target for compatibility, but it is not a
     // public product name. Normalize argv[0] before Clap renders help or
-    // diagnostics so both binaries expose the same maestro surface.
+    // diagnostics so both binaries expose the same Deixic Code surface.
     let mut raw_args = raw_args;
     if let Some(program) = raw_args.first_mut() {
-        *program = std::ffi::OsString::from("maestro");
+        *program = std::ffi::OsString::from("deixic-code");
     }
 
     // Set up panic hook for process cleanup on unexpected termination.
@@ -688,7 +691,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         .and_then(|arg| arg.to_str())
         .is_some_and(|arg| arg == "hosted-runner")
     {
-        let mut hosted_args = vec![std::ffi::OsString::from("maestro hosted-runner")];
+        let mut hosted_args = vec![std::ffi::OsString::from("deixic-code hosted-runner")];
         hosted_args.extend(raw_args.into_iter().skip(2));
         run_hosted_runner_cli_from_env(hosted_args).await?;
         return Ok(());
@@ -954,7 +957,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             }
             if options.prompt.is_empty() {
                 eprintln!(
-                    "Usage: maestro {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
+                    "Usage: deixic-code {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
                 );
                 return Ok(2);
             }
@@ -1131,14 +1134,14 @@ fn run_trust_cli(args: &[std::ffi::OsString]) -> Result<i32> {
             Ok(0)
         }
         "help" | "-h" | "--help" => {
-            println!("Usage: maestro trust [status|grant|revoke]");
+            println!("Usage: deixic-code trust [status|grant|revoke]");
             println!("Grant or revoke project skills/plugins/hooks for the current workspace.");
             println!("Writes only ~/.composer/config.toml (repositories cannot self-trust).");
             Ok(0)
         }
         other => {
             eprintln!("Unknown trust action: {other}");
-            eprintln!("Usage: maestro trust [status|grant|revoke]");
+            eprintln!("Usage: deixic-code trust [status|grant|revoke]");
             Ok(2)
         }
     }
@@ -1275,7 +1278,7 @@ fn parse_fork_args(args: &[std::ffi::OsString]) -> std::result::Result<ForkReque
 async fn run_fork(args: &[std::ffi::OsString]) -> Result<i32> {
     let session_id = match parse_fork_args(args) {
         Ok(ForkRequest::Help) => {
-            println!("Usage: maestro fork [session-id]");
+            println!("Usage: deixic-code fork [session-id]");
             println!();
             println!("Copy a session (default: most recent for this directory) under a new");
             println!("session id and continue it in the TUI. The fork starts with the full");
@@ -1381,12 +1384,12 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn args_use_maestro_branding() {
+    fn args_use_deixic_code_branding() {
         let command = Args::command();
-        assert_eq!(command.get_name(), "maestro");
+        assert_eq!(command.get_name(), "deixic-code");
         assert_eq!(
             command.get_about().map(|about| about.to_string()),
-            Some("Native terminal interface for Maestro".to_string())
+            Some("Native terminal interface for Deixic Code".to_string())
         );
     }
 
@@ -1650,6 +1653,18 @@ mod tests {
         assert_eq!(
             native_utility_tokens(&args),
             Some(vec!["connections".into(), "list".into(), "--json".into()])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_dispatch_orb_console() {
+        let args = ["computer", "status", "task-1"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec!["computer".into(), "status".into(), "task-1".into()])
         );
     }
 

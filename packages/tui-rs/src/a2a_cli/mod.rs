@@ -19,46 +19,52 @@ mod fleet_cockpit;
 mod ledger;
 mod maestro_peer;
 mod pairing;
+pub(crate) mod peer_message;
 mod registry;
 mod telemetry;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Map, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
 
 use agent_registry::{
-    agent_registry_not_configured_message, control_a2a_delegation_task_with_platform,
-    delegate_agent_with_platform, get_a2a_delegation_graph_with_platform,
-    heartbeat_agent_with_platform, is_agent_already_exists_error,
-    list_a2a_peer_candidates_with_evidence, normalize_a2a_control_mode,
-    register_agent_with_platform, update_agent_with_platform, ControlA2ADelegationTaskInput,
-    DelegateAgentInput, GetA2ADelegationGraphInput, HeartbeatAgentInput, ListA2APeersInput,
+    AGENT_STATUS_IDLE, ControlA2ADelegationTaskInput, DelegateAgentInput,
+    GetA2ADelegationGraphInput, HeartbeatAgentInput, ListA2APeersInput,
     PlatformAgentDiscoveryEvidence, PlatformAgentRegistryA2APeerCandidate, RegisterAgentInput,
-    UpdateAgentInput, AGENT_STATUS_IDLE,
+    UpdateAgentInput, agent_registry_not_configured_message,
+    control_a2a_delegation_task_with_platform, delegate_agent_with_platform,
+    get_a2a_delegation_graph_with_platform, heartbeat_agent_with_platform,
+    is_agent_already_exists_error, list_a2a_peer_candidates_with_evidence,
+    normalize_a2a_control_mode, register_agent_with_platform, update_agent_with_platform,
 };
-use capability_market::{select_a2a_capability_peer, A2ACapabilityMarketRequest};
+use capability_market::{A2ACapabilityMarketRequest, select_a2a_capability_peer};
 pub use client::{
-    discover_agent_card, extract_task_text, get_task, is_action_required_state, is_completed_state,
-    is_failed_state, is_final_state, is_terminal_state, send_message, wait_for_task,
-    A2AServiceConfig, A2ATask, SendMessageInput,
+    A2AServiceConfig, A2ATask, SendMessageInput, discover_agent_card, extract_task_text, get_task,
+    is_action_required_state, is_completed_state, is_failed_state, is_final_state,
+    is_terminal_state, send_message, wait_for_task,
 };
-use fleet_cockpit::{build_a2a_cockpit, inspect_a2a_fleet, CockpitOptions, FleetOptions};
+use fleet_cockpit::{CockpitOptions, FleetOptions, build_a2a_cockpit, inspect_a2a_fleet};
 pub use ledger::{
-    get_task_ledger_path, list_task_entries, load_task_ledger, record_task_start,
-    update_task_in_ledger, RecordTaskStartInput, TaskLedgerEntry, TaskLedgerFile, TranscriptEntry,
+    OrbDelegationEntry, OrbDelegationObservation, OrbDelegationObserver, OrbDelegationStartInput,
+    OrbDelegationStartOutcome, OrbDelegationState, OrbObservedState, OrbRecoveryReport,
+    RecordTaskStartInput, TaskLedgerEntry, TaskLedgerFile, TranscriptEntry, get_task_ledger_path,
+    list_task_entries, load_task_ledger, reconcile_orb_delegation, record_orb_delegation_start,
+    record_task_start, recover_orb_delegations, recover_orb_delegations_from_path,
+    update_task_in_ledger, upsert_orb_delegation,
 };
 use maestro_peer::{
-    build_maestro_a2a_peer_projection, default_maestro_a2a_capabilities,
-    BuildMaestroA2APeerProjectionInput,
+    BuildMaestroA2APeerProjectionInput, build_maestro_a2a_peer_projection,
+    default_maestro_a2a_capabilities,
 };
 use pairing::{
     base_url_from_agent_card_url, create_pairing_payload, create_pairing_payload_from_agent_card,
     decode_pairing_code, encode_pairing_code, resolve_agent_card_url,
 };
+use peer_message::{PeerMessageInput, peer_context_id, start_peer_message, wait_for_peer_message};
 use registry::{
-    list_peers, load_peer_registry, normalize_peer_name, resolve_peer, save_peer_registry,
-    upsert_peer_from_pairing_payload, PeerRegistryEntry, ResolvePeerOptions, UpsertPeerOptions,
+    PeerRegistryEntry, ResolvePeerOptions, UpsertPeerOptions, list_peers, load_peer_registry,
+    normalize_peer_name, resolve_peer, save_peer_registry, upsert_peer_from_pairing_payload,
 };
 use telemetry::{inspect_a2a_telemetry, load_a2a_telemetry_events};
 
@@ -109,7 +115,7 @@ pub async fn run_a2a(args: &[String]) -> Result<i32> {
 fn a2a_help() -> &'static str {
     "Usage:
   maestro a2a offer --url <base-url> [--name <display-name>] [--peer-id <id>]
-  maestro a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]
+  maestro a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV] [--session-id <id>]
   maestro a2a peers [--registry <path>]
   maestro a2a discover [--capability <capability>] [--skill <skill-id>] [--import] [--json]
   maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
@@ -204,7 +210,7 @@ async fn run_offer(args: &[String]) -> Result<i32> {
         )?
     } else {
         create_pairing_payload(
-            display_name.as_deref().unwrap_or("Maestro A2A Peer"),
+            display_name.as_deref().unwrap_or("Deixic Code A2A Peer"),
             &agent_card_url,
             &transport_url,
             peer_id.as_deref(),
@@ -224,7 +230,7 @@ async fn run_accept(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     let code = flags
         .first_positional()
-        .context("Usage: maestro a2a accept <code>")?;
+        .context("Usage: deixic-code a2a accept <code>")?;
     let payload = decode_pairing_code(code, false)?;
     let result = upsert_peer_from_pairing_payload(
         &payload,
@@ -233,6 +239,7 @@ async fn run_accept(args: &[String]) -> Result<i32> {
             make_default: flags.boolean("--default"),
             token_env: flags.string("--token-env"),
             token_file: flags.string("--token-file"),
+            session_id: flags.string("--session-id"),
             workspace_id: flags.string("--workspace-id"),
             organization_id: flags.string("--organization-id"),
             registry_path: flags.string("--registry"),
@@ -258,7 +265,7 @@ fn run_peers(args: &[String]) -> Result<i32> {
     let mut entries: Vec<_> = registry.peers.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     if entries.is_empty() {
-        println!("  No peers registered. Run maestro a2a accept <code>.");
+        println!("  No peers registered. Run deixic-code a2a accept <code>.");
         return Ok(0);
     }
     for (name, peer) in entries {
@@ -390,12 +397,12 @@ async fn run_register(args: &[String]) -> Result<i32> {
     let name = flags
         .string("--name")
         .or_else(|| env_first(&["MAESTRO_A2A_AGENT_NAME", "MAESTRO_AGENT_NAME"]))
-        .unwrap_or_else(|| "Maestro A2A Peer".into());
+        .unwrap_or_else(|| "Deixic Code A2A Peer".into());
     let description = flags
         .string("--description")
         .or_else(|| env_first(&["MAESTRO_A2A_AGENT_DESCRIPTION", "MAESTRO_AGENT_DESCRIPTION"]))
         .unwrap_or_else(|| {
-            "Maestro peer exposing governed Codex subagent lanes through A2A.".into()
+            "Deixic Code peer exposing governed Codex subagent lanes through A2A.".into()
         });
     let workspace_id = flags.string("--workspace-id");
     let default_capabilities = default_maestro_a2a_capabilities();
@@ -424,7 +431,7 @@ async fn run_register(args: &[String]) -> Result<i32> {
     };
     let a2a = public_endpoint_url.as_ref().map(|url| {
         let mut attributes = BTreeMap::new();
-        attributes.insert("publishedBy".into(), "maestro a2a register".into());
+        attributes.insert("publishedBy".into(), "deixic-code a2a register".into());
         build_maestro_a2a_peer_projection(BuildMaestroA2APeerProjectionInput {
             public_endpoint_url: url.clone(),
             internal_endpoint_url: flags.string("--internal-url").or_else(|| {
@@ -447,12 +454,12 @@ async fn run_register(args: &[String]) -> Result<i32> {
     let mut agent = None;
     if heartbeat_only {
         if agent_id.is_none() {
-            bail!("Usage: maestro a2a register --heartbeat-only --agent-id <id>");
+            bail!("Usage: deixic-code a2a register --heartbeat-only --agent-id <id>");
         }
         operation = "heartbeat";
     } else if update_only {
         let agent_id = agent_id.clone().context(
-            "Usage: maestro a2a register --update-only --agent-id <id> --url <base-url>",
+            "Usage: deixic-code a2a register --update-only --agent-id <id> --url <base-url>",
         )?;
         let updated = update_agent_with_platform(
             UpdateAgentInput {
@@ -611,7 +618,7 @@ async fn run_fleet(args: &[String]) -> Result<i32> {
     }
     println!("A2A fleet ({})", fleet.registry_path);
     if fleet.peers.is_empty() {
-        println!("  No peers registered. Run maestro a2a accept <code>.");
+        println!("  No peers registered. Run deixic-code a2a accept <code>.");
         return Ok(0);
     }
     for peer in &fleet.peers {
@@ -676,7 +683,7 @@ async fn run_cockpit(args: &[String]) -> Result<i32> {
     );
     println!("\nPeers");
     if cockpit.peers.is_empty() {
-        println!("  No peers registered. Run maestro a2a accept <code>.");
+        println!("  No peers registered. Run deixic-code a2a accept <code>.");
     } else {
         for peer in &cockpit.peers {
             let status = if peer.status == "online" {
@@ -762,75 +769,43 @@ async fn run_send(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     let peer_name = flags
         .first_positional()
-        .context("Usage: maestro a2a send <peer> <text>")?;
+        .context("Usage: deixic-code a2a send <peer> <text>")?;
     let text = flags.remaining_positionals_from(1).join(" ");
     let text = text.trim();
     if text.is_empty() {
-        bail!("Usage: maestro a2a send <peer> <text>");
+        bail!("Usage: deixic-code a2a send <peer> <text>");
     }
-    let peer = resolve_peer(
-        Some(peer_name),
-        ResolvePeerOptions {
-            registry_path: flags.string("--registry"),
-            timeout_ms: flags.number("--timeout-ms"),
-            token: None,
-            max_attempts: None,
-        },
-    )?;
     let wait = flags.boolean("--wait");
-    let message_id = format!("maestro-a2a-message-{}", uuid::Uuid::new_v4());
-    let context_id = format!("maestro-a2a-context-{}", uuid::Uuid::new_v4());
-    let mut metadata = serde_json::Map::new();
-    metadata.insert("requestKind".into(), json!("maestro-peer-message"));
-    metadata.insert("relayPeer".into(), json!(peer.name));
-
-    let sent = send_message(
-        &peer.config,
-        SendMessageInput {
-            text: text.to_string(),
-            message_id: message_id.clone(),
-            context_id: Some(context_id.clone()),
-            task_id: None,
-            metadata: Some(serde_json::Value::Object(metadata.clone())),
-            return_immediately: true,
-        },
-    )
+    let pending = start_peer_message(PeerMessageInput {
+        peer: Some(peer_name.to_string()),
+        text: text.to_string(),
+        request_kind: "maestro-peer-message".into(),
+        ledger_kind: "message".into(),
+        metadata: Map::new(),
+        registry_path: flags.string("--registry"),
+        tasks_path: flags.string("--tasks"),
+        timeout_ms: flags.number("--timeout-ms"),
+    })
     .await?;
-
-    if let Err(error) = record_task_start(RecordTaskStartInput {
-        path: flags.string("--tasks").as_deref(),
-        peer: &peer.name,
-        peer_display_name: peer.entry.display_name.as_deref(),
-        task: &sent.task,
-        text,
-        message_id: Some(&message_id),
-        context_id: Some(&context_id),
-        kind: "message",
-        metadata: Some(serde_json::Value::Object(metadata)),
-    }) {
-        eprintln!("A2A task ledger warning: could not record sent task locally: {error:#}");
+    if let Some(warning) = &pending.ledger_warning {
+        eprintln!("A2A task ledger warning: {warning}");
     }
 
     let task = if wait {
-        let task = wait_for_task(
-            &peer.config,
-            &sent.task.id,
+        let completed = wait_for_peer_message(
+            &pending,
             flags.number("--max-wait-ms").unwrap_or(DEFAULT_WAIT_MS),
             flags
                 .number("--interval-ms")
                 .unwrap_or(DEFAULT_WAIT_INTERVAL_MS),
         )
         .await?;
-        if let Err(error) =
-            update_task_in_ledger(flags.string("--tasks").as_deref(), &peer.name, &task)
-        {
-            eprintln!(
-                "A2A task ledger warning: could not sync sent task result locally: {error:#}"
-            );
+        if let Some(warning) = completed.ledger_warning {
+            eprintln!("A2A task ledger warning: {warning}");
         }
-        task
+        completed.task
     } else {
-        sent.task
+        pending.task
     };
 
     print_task(&task);
@@ -849,7 +824,7 @@ async fn run_delegate(args: &[String]) -> Result<i32> {
         Some(
             flags
                 .first_positional()
-                .context("Usage: maestro a2a delegate <peer> <text>")?
+                .context("Usage: deixic-code a2a delegate <peer> <text>")?
                 .to_string(),
         )
     };
@@ -861,9 +836,9 @@ async fn run_delegate(args: &[String]) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         if discover {
-            bail!("Usage: maestro a2a delegate --discover --skill <skill-id> <text>");
+            bail!("Usage: deixic-code a2a delegate --discover --skill <skill-id> <text>");
         }
-        bail!("Usage: maestro a2a delegate <peer> <text>");
+        bail!("Usage: deixic-code a2a delegate <peer> <text>");
     }
     let (peer, discovery_selection) = if discover {
         resolve_discovered_delegate_peer(&flags).await?
@@ -889,7 +864,7 @@ async fn run_delegate(args: &[String]) -> Result<i32> {
             .map(|p| p.display().to_string())
     });
     let message_id = format!("maestro-a2a-message-{}", uuid::Uuid::new_v4());
-    let context_id = format!("maestro-a2a-context-{}", uuid::Uuid::new_v4());
+    let context_id = peer_context_id(&peer.config);
     let skill_id = flags.string("--skill");
     let skill = select_peer_skill(peer.entry.skills.as_ref(), skill_id.as_deref());
     let mut metadata = Map::new();
@@ -1003,7 +978,7 @@ async fn run_platform_delegate(flags: &FlagSet) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!(
-            "Usage: maestro a2a delegate --platform --from-agent-id <agent-id> \
+            "Usage: deixic-code a2a delegate --platform --from-agent-id <agent-id> \
              [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text>"
         );
     }
@@ -1056,7 +1031,7 @@ async fn run_platform_delegate(flags: &FlagSet) -> Result<i32> {
             .unwrap_or("a2a peer");
         let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
         format!(
-            "maestro a2a delegate {target}: {}",
+            "deixic-code a2a delegate {target}: {}",
             compact.chars().take(120).collect::<String>()
         )
     });
@@ -1115,7 +1090,7 @@ async fn run_control(args: &[String]) -> Result<i32> {
     let delegation_id = flags
         .string("--delegation-id")
         .or_else(|| flags.first_positional().map(str::to_string))
-        .context("Usage: maestro a2a control <delegation-id> --mode <mode> [message]")?;
+        .context("Usage: deixic-code a2a control <delegation-id> --mode <mode> [message]")?;
     let mode_raw = flags
         .string("--mode")
         .or_else(|| {
@@ -1202,7 +1177,9 @@ async fn run_graph(args: &[String]) -> Result<i32> {
         .string("--root-delegation-id")
         .or_else(|| flags.string("--root"));
     if delegation_id.is_none() && root_delegation_id.is_none() {
-        bail!("Usage: maestro a2a graph <delegation-id> [--root <root-delegation-id>] [--json]");
+        bail!(
+            "Usage: deixic-code a2a graph <delegation-id> [--root <root-delegation-id>] [--json]"
+        );
     }
     let result = get_a2a_delegation_graph_with_platform(
         GetA2ADelegationGraphInput {
@@ -1297,11 +1274,11 @@ async fn run_graph(args: &[String]) -> Result<i32> {
 async fn run_coordinate(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     if flags.positionals.len() > 1 {
-        bail!("Usage: maestro a2a coordinate [peer] [--reply <text>] [--wait]");
+        bail!("Usage: deixic-code a2a coordinate [peer] [--reply <text>] [--wait]");
     }
     let peer_name = flags.first_positional().map(str::to_string);
     if flags.flags.contains_key("--reply") && flags.string("--reply").is_none() {
-        bail!("Usage: maestro a2a coordinate [peer] --reply <text> [--wait]");
+        bail!("Usage: deixic-code a2a coordinate [peer] --reply <text> [--wait]");
     }
     if let Some(reply_text) = flags.string("--reply") {
         return run_coordinate_reply(&flags, peer_name.as_deref(), &reply_text).await;
@@ -1443,11 +1420,11 @@ fn run_telemetry(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     let events_path = flags
         .string("--events")
-        .context("Usage: maestro a2a telemetry --events <path> --swarm-id <id>")?;
+        .context("Usage: deixic-code a2a telemetry --events <path> --swarm-id <id>")?;
     let swarm_id = flags
         .string("--swarm-id")
         .or_else(|| flags.first_positional().map(str::to_string))
-        .context("Usage: maestro a2a telemetry --events <path> --swarm-id <id>")?;
+        .context("Usage: deixic-code a2a telemetry --events <path> --swarm-id <id>")?;
     let events = load_a2a_telemetry_events(&events_path)?;
     let inspection = inspect_a2a_telemetry(&swarm_id, &events);
     if flags.boolean("--json") {
@@ -1529,14 +1506,14 @@ async fn run_reply(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     let peer_name = flags
         .first_positional()
-        .context("Usage: maestro a2a reply <peer> <task-id> <text>")?;
+        .context("Usage: deixic-code a2a reply <peer> <task-id> <text>")?;
     let task_id = flags
         .positional(1)
-        .context("Usage: maestro a2a reply <peer> <task-id> <text>")?;
+        .context("Usage: deixic-code a2a reply <peer> <task-id> <text>")?;
     let text = flags.remaining_positionals_from(2).join(" ");
     let text = text.trim();
     if text.is_empty() {
-        bail!("Usage: maestro a2a reply <peer> <task-id> <text>");
+        bail!("Usage: deixic-code a2a reply <peer> <task-id> <text>");
     }
     let peer = resolve_peer(
         Some(peer_name),
@@ -1656,10 +1633,10 @@ async fn run_wait(args: &[String]) -> Result<i32> {
     let flags = FlagSet::parse(args);
     let peer_name = flags
         .first_positional()
-        .context("Usage: maestro a2a wait <peer> <task-id>")?;
+        .context("Usage: deixic-code a2a wait <peer> <task-id>")?;
     let task_id = flags
         .positional(1)
-        .context("Usage: maestro a2a wait <peer> <task-id>")?;
+        .context("Usage: deixic-code a2a wait <peer> <task-id>")?;
     let peer = resolve_peer(
         Some(peer_name),
         ResolvePeerOptions {
@@ -1754,7 +1731,7 @@ fn select_coordinate_reply_task<'a>(
     let tasks = actionable_task_entries(tasks, peer);
     if tasks.len() > 1 {
         bail!(
-            "Multiple actionable A2A tasks found; use `maestro a2a reply <peer> <task-id> <text>`."
+            "Multiple actionable A2A tasks found; use `deixic-code a2a reply <peer> <task-id> <text>`."
         );
     }
     tasks
@@ -2039,7 +2016,7 @@ async fn resolve_discovered_delegate_peer(
 ) -> Result<(registry::ResolvedPeer, Option<Value>)> {
     let skill_id = flags
         .string("--skill")
-        .context("Usage: maestro a2a delegate --discover --skill <skill-id> <text>")?;
+        .context("Usage: deixic-code a2a delegate --discover --skill <skill-id> <text>")?;
     let discovery = list_a2a_peer_candidates_with_evidence(
         ListA2APeersInput {
             workspace_id: flags.string("--workspace-id"),
@@ -2310,5 +2287,26 @@ mod tests {
         assert_eq!(flags.remaining_positionals_from(1).join(" "), "hello world");
         assert!(flags.boolean("--wait"));
         assert_eq!(flags.string("--tasks").as_deref(), Some("/tmp/tasks.json"));
+    }
+
+    #[test]
+    fn configured_peer_session_is_the_outgoing_context() {
+        let mut config = A2AServiceConfig {
+            base_url: "https://peer.example.com".into(),
+            token: None,
+            organization_id: None,
+            workspace_id: None,
+            agent_id: None,
+            session_id: Some(" chief-session ".into()),
+            actor_id: None,
+            timeout_ms: 1_000,
+            max_attempts: 1,
+        };
+
+        assert_eq!(peer_context_id(&config), "chief-session");
+        assert_eq!(peer_context_id(&config), "chief-session");
+
+        config.session_id = None;
+        assert_ne!(peer_context_id(&config), peer_context_id(&config));
     }
 }

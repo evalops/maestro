@@ -10,7 +10,8 @@
 //! This implementation supports:
 //!
 //! - **Stdio transport**: Spawn a subprocess and communicate via stdin/stdout
-//! - **HTTP transport**: Connect to HTTP-based MCP servers
+//! - **HTTP transport**: Connect to Streamable HTTP MCP endpoints, with legacy
+//!   `/message` compatibility
 //! - **SSE transport**: Server-Sent Events for streaming responses
 //!
 //! # Configuration
@@ -59,20 +60,24 @@
 //! let result = client.call_tool("my-server", "tool_name", args).await?;
 //! ```
 
+mod auth;
 mod client;
 mod config;
 mod http;
 mod prompt_formatting;
 pub mod protocol;
 
-pub use client::{McpClient, McpConnection, McpError, McpRuntimeEvent};
+pub(crate) use client::McpApiCapabilities;
+pub use client::{ManagedMcpPolicy, McpClient, McpConnection, McpError, McpRuntimeEvent};
 pub(crate) use config::effective_user_config_path;
 pub use config::{
-    expand_env_vars_for_scope, load_mcp_config, server_requires_workspace_approval, McpConfig,
-    McpConfigScope, McpServerConfig, McpTransport,
+    McpConfig, McpConfigScope, McpServerConfig, McpTransport, append_managed_mcp_connections,
+    expand_env_vars_for_scope, load_mcp_config, load_mcp_config_with_managed_connections,
+    server_requires_workspace_approval,
 };
 pub use prompt_formatting::append_mcp_prompt_summary;
 pub use protocol::{
-    McpContent, McpPrompt, McpPromptArgument, McpPromptContent, McpPromptMessage, McpRequest,
-    McpResponse, McpTool, McpToolAnnotations, McpToolResult, PromptGetResult, PromptsListResult,
+    MAX_MCP_TOOL_RESULT_BYTES, McpContent, McpPrompt, McpPromptArgument, McpPromptContent,
+    McpPromptMessage, McpRequest, McpResponse, McpTool, McpToolAnnotations, McpToolFingerprint,
+    McpToolResult, PromptGetResult, PromptsListResult,
 };

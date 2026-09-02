@@ -1013,10 +1013,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("notice-a", 1), ("notice-b", 1), ("notice-after", 2)]
         );
-        assert!(!session
-            .lifecycle_notifications
-            .iter()
-            .any(|entry| matches!(entry.id.as_str(), "notice-removed" | "notice-at-cut")));
+        assert!(
+            !session
+                .lifecycle_notifications
+                .iter()
+                .any(|entry| matches!(entry.id.as_str(), "notice-removed" | "notice-at-cut"))
+        );
     }
 
     #[test]
@@ -1092,14 +1094,18 @@ mod tests {
             "hash-1"
         );
         assert_eq!(session.messages.len(), 4);
-        assert!(!session
-            .messages
-            .iter()
-            .any(|message| message.text_content().contains("Hidden hook context")));
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|message| message.text_content().contains("Hidden hook context"))
+        );
         assert_eq!(session.messages[2].text_content(), "Visible hook context");
-        assert!(session.messages[3]
-            .text_content()
-            .contains("Branch context"));
+        assert!(
+            session.messages[3]
+                .text_content()
+                .contains("Branch context")
+        );
         assert_eq!(session.compactions[0].first_kept_entry_index, Some(2));
     }
 
@@ -1115,10 +1121,12 @@ mod tests {
         let session = SessionReader::read_file(file.path()).unwrap();
 
         assert_eq!(session.messages.len(), 2);
-        assert!(!session
-            .messages
-            .iter()
-            .any(|message| message.text_content().contains("Hidden hook context")));
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|message| message.text_content().contains("Hidden hook context"))
+        );
         assert_eq!(session.compactions[0].first_kept_entry_index, Some(1));
     }
 

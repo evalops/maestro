@@ -1,9 +1,9 @@
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use super::{
-    SafeResult, MAX_COMMAND_BYTES, MAX_OPERATION_ID_BYTES, MCP_PROTOCOL_VERSION, RESULT_SCHEMA,
+    MAX_COMMAND_BYTES, MAX_OPERATION_ID_BYTES, MCP_PROTOCOL_VERSION, RESULT_SCHEMA, SafeResult,
     TOOL_NAME,
 };
 
@@ -21,7 +21,7 @@ pub(super) fn initialize_result() -> Value {
 pub(super) fn tool_definition() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Execute a shell command only through EvalOps Platform ToolExecution. Platform owns policy, approval, sandbox execution, idempotency, and the durable result; Maestro never runs the command locally. Reuse the same operationId when retrying an ambiguous call.",
+        "description": "Execute a shell command only through EvalOps Platform ToolExecution. Platform owns policy, approval, sandbox execution, idempotency, and the durable result; Deixic Code never runs the command locally. Reuse the same operationId when retrying an ambiguous call.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -100,11 +100,13 @@ mod tests {
     fn tool_schema_requires_a_stable_operation_id() {
         let tool = tool_definition();
         assert_eq!(tool["name"], TOOL_NAME);
-        assert!(tool["inputSchema"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "operationId"));
+        assert!(
+            tool["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "operationId")
+        );
         assert_eq!(tool["annotations"]["destructiveHint"], true);
         assert_eq!(tool["annotations"]["idempotentHint"], false);
     }

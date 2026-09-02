@@ -556,6 +556,7 @@ impl SharedRunner {
                 runtime_model_binding: replayed_model.or(restored_model),
                 runtime_provider_binding: replayed_provider.or(restored_provider),
                 runtime_receipt: None,
+                controller_binding: None,
                 controller_connection_id: None,
                 controller_stream_cancellation: CancellationToken::new(),
                 connections: HashMap::new(),

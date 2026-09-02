@@ -5,11 +5,11 @@
 
 Contents: [What is MCP?](#what-is-mcp) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Usage](#usage) · [Troubleshooting](#troubleshooting)
 
-This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Maestro.
+This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Deixic Code.
 
 ## What is MCP?
 
-MCP (Model Context Protocol) is an open protocol that allows AI assistants to interact with external tools and data sources. Maestro supports MCP servers, enabling you to extend its capabilities with custom tools.
+MCP (Model Context Protocol) is an open protocol that allows AI assistants to interact with external tools and data sources. Deixic Code supports MCP servers, enabling you to extend its capabilities with custom tools.
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ MCP (Model Context Protocol) is an open protocol that allows AI assistants to in
 npm install -g @modelcontextprotocol/server-github
 ```
 
-### 2. Configure Maestro to use it
+### 2. Configure Deixic Code to use it
 
 Create `~/.maestro/mcp.json`:
 
@@ -62,7 +62,7 @@ Model Context Protocol
 
 ### Configuration Formats
 
-Maestro supports two configuration formats:
+Deixic Code supports two configuration formats:
 
 #### Format 1: Claude Desktop Style (Recommended)
 
@@ -114,7 +114,7 @@ Maestro supports two configuration formats:
 
 ### Transport Types
 
-Maestro auto-detects the transport type:
+Deixic Code auto-detects the transport type:
 
 - **stdio**: Default when `command` is provided
 - **sse**: When URL contains `/sse` or `sse` subdomain
@@ -131,8 +131,8 @@ adding a project config file. Configure one of:
 - `MAESTRO_PLATFORM_MCP_MANIFEST_URL`
 
 The URL may be the public app base URL, the `/mcp` endpoint, or the EvalOps
-agent MCP manifest at `/.well-known/evalops/agent-mcp.json`; Maestro normalizes
-those forms to the HTTP MCP endpoint. Maestro forwards the bearer token from `MAESTRO_PLATFORM_MCP_TOKEN`,
+agent MCP manifest at `/.well-known/evalops/agent-mcp.json`; Deixic Code normalizes
+those forms to the HTTP MCP endpoint. Deixic Code forwards the bearer token from `MAESTRO_PLATFORM_MCP_TOKEN`,
 `MAESTRO_AGENT_MCP_TOKEN`, `MAESTRO_EVALOPS_ACCESS_TOKEN`, or `EVALOPS_TOKEN`.
 It also forwards `X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`,
 `X-EvalOps-Agent-Id`, `X-EvalOps-Agent-Run-Id`, trace/request IDs, and
@@ -152,9 +152,9 @@ and evidence.
 
 ### Fathom CUA MCP
 
-Maestro can attach the local Fathom computer-use MCP shim as a plugin-managed
+Deixic Code can attach the local Fathom computer-use MCP shim as a plugin-managed
 stdio server. This keeps desktop-control tools available through the same
-Maestro MCP manager and agent tool bridge used for other MCP servers.
+Deixic Code MCP manager and agent tool bridge used for other MCP servers.
 
 Enable it for a local run:
 
@@ -169,20 +169,20 @@ Optional runtime settings:
 | Variable | Purpose |
 | --- | --- |
 | `MAESTRO_FATHOM_CUA_MCP_NAME` | MCP server name; defaults to `fathom-cua`. |
-| `MAESTRO_FATHOM_CUA_CLIENT_COMMAND` | Installed `fathom-client` command. If omitted and a repo is configured or found, Maestro uses `go run ./cmd/fathom-client`. |
+| `MAESTRO_FATHOM_CUA_CLIENT_COMMAND` | Installed `fathom-client` command. If omitted and a repo is configured or found, Deixic Code uses `go run ./cmd/fathom-client`. |
 | `MAESTRO_FATHOM_CUA_CLIENT_ARGS_JSON` | Extra JSON string array of `fathom-client` arguments. |
 | `MAESTRO_FATHOM_CUA_TOOL_PROFILE` | Agent-facing Fathom tool profile. Defaults to `canonical`; set to `full` or `debug` only for parity/debugging. |
 | `MAESTRO_FATHOM_CUA_IPC_ROOT` | Helper IPC root for live desktop actions. |
 | `MAESTRO_FATHOM_CUA_SESSION_ID` / `MAESTRO_FATHOM_CUA_TURN_ID` | Receipt lineage IDs propagated into Fathom. |
 | `MAESTRO_FATHOM_CUA_DISABLE_IPC` | Set to `1` for negotiation/tool-list checks without Helper IPC. |
 
-Maestro launches Fathom with the `canonical` profile by default so desktop
+Deixic Code launches Fathom with the `canonical` profile by default so desktop
 computer-use stays focused. The canonical profile keeps observation,
 activation, native click/context-menu, focused text entry, visible-text
 selection, structured controls, keyboard, and tool-search primitives. Broad
 diagnostic primitives such as raw drag, paste, move-mouse, low-level scroll, and
 window mutation stay behind the explicit `full`/`debug` profiles. File
-operations are not exposed through Fathom: Maestro keeps them in the normal
+operations are not exposed through Fathom: Deixic Code keeps them in the normal
 file lane (`read`, `list`, `find`, `search`, `diff`, `apply_patch`, `edit`,
 `write`, and `notebook_edit`) so filesystem mutations remain specific and
 auditable.
@@ -195,7 +195,7 @@ MAESTRO_RUN_LIVE_FATHOM_CUA_MCP=1 npm run smoke:fathom-cua-mcp
 ```
 
 The smoke opens focused Fathom AppKit dogfood targets, connects `fathom-cua`
-through Maestro's MCP manager in the canonical profile, proves `list_apps`,
+through Deixic Code's MCP manager in the canonical profile, proves `list_apps`,
 `tool_search`, and `activate_app`, then calls `get_app_state` and a distinct
 action on separate app bundles: `set_value`, `type_text`, `press_key`,
 `select_text`, `click`, `press_element`, `open_context_menu`,
@@ -269,7 +269,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "greet":
       return {
         content: [
-          { type: "text", text: `Hello, ${args.name}! Welcome to Maestro.` },
+          { type: "text", text: `Hello, ${args.name}! Welcome to Deixic Code.` },
         ],
       };
 
@@ -324,7 +324,7 @@ npx tsc my-tools-server.ts --module nodenext --moduleResolution nodenext
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node my-tools-server.js
 ```
 
-### Register with Maestro
+### Register with Deixic Code
 
 ```json
 {
@@ -339,7 +339,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node my-tools-server.js
 
 ## Tool Annotations
 
-MCP tools can include behavior hints that Maestro respects:
+MCP tools can include behavior hints that Deixic Code respects:
 
 ```typescript
 {
@@ -451,7 +451,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 ```typescript
 import { watch } from "fs";
 
-// Notify Maestro when files change
+// Notify Deixic Code when files change
 watch("./src", { recursive: true }, (event, filename) => {
   server.notification({
     method: "notifications/resources/list_changed",
@@ -473,7 +473,7 @@ watch("./src", { recursive: true }, (event, filename) => {
    cat ~/.maestro/mcp.json | jq .
    ```
 
-3. **Check Maestro logs**:
+3. **Check Deixic Code logs**:
    ```bash
    MAESTRO_LOG_LEVEL=debug maestro
    ```
@@ -528,7 +528,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 ```
 
-### Maestro MCP Commands
+### Deixic Code MCP Commands
 
 | Command | Description |
 |---------|-------------|

@@ -4,8 +4,18 @@ import { createHash, createPrivateKey, sign } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveReleaseChannel } from "./resolve-release-channel.mjs";
 
 export const RELEASE_CHANNEL_SCHEMA = "evalops.maestro.release-channel.v1";
+
+function normalizeReleaseChannelVersion(version, channel) {
+	const normalized = version.trim().replace(/^v/, "");
+	const resolved = resolveReleaseChannel(normalized, channel.trim());
+	if (resolved !== channel.trim()) {
+		throw new Error(`release version does not match ${channel} channel`);
+	}
+	return normalized;
+}
 
 function parseArgs(argv) {
 	const values = {};
@@ -19,12 +29,7 @@ function parseArgs(argv) {
 	for (const field of ["version", "channel", "key_id", "release_url", "source_sha", "out"]) {
 		if (!values[field]?.trim()) throw new Error(`missing required --${field.replaceAll("_", "-")}`);
 	}
-	if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(values.version.trim())) {
-		throw new Error("release version must be semver-like");
-	}
-	if (!["stable", "beta", "alpha"].includes(values.channel.trim())) {
-		throw new Error("release channel must be stable, alpha, or beta");
-	}
+	normalizeReleaseChannelVersion(values.version, values.channel);
 	if (!/^https:\/\//.test(values.release_url.trim())) {
 		throw new Error("release URL must use HTTPS");
 	}
@@ -72,7 +77,7 @@ export function buildReleaseChannelManifest({
 	privateKeyPem,
 }) {
 	if (!privateKeyPem?.trim()) throw new Error("channel signing key is not configured");
-	const normalizedVersion = version.replace(/^v/, "");
+	const normalizedVersion = normalizeReleaseChannelVersion(version, channel);
 	const unsigned = {
 		schemaVersion: RELEASE_CHANNEL_SCHEMA,
 		channel,

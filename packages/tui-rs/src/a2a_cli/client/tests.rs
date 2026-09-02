@@ -6,6 +6,9 @@
 
 use super::*;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn sample_task_json() -> Value {
     json!({
@@ -29,6 +32,168 @@ fn sample_task_json() -> Value {
         ],
         "metadata": {"workGraph": {"nodes": []}},
     })
+}
+
+fn working_task() -> String {
+    json!({"id":"task-1","status":{"state":"TASK_STATE_WORKING"}}).to_string()
+}
+
+fn completed_task() -> String {
+    json!({"id":"task-1","status":{"state":"TASK_STATE_COMPLETED"}}).to_string()
+}
+
+fn test_config(base_url: String) -> A2AServiceConfig {
+    A2AServiceConfig {
+        base_url,
+        token: Some("test-token".into()),
+        organization_id: Some("org-1".into()),
+        workspace_id: Some("workspace-1".into()),
+        agent_id: Some("agent-1".into()),
+        session_id: Some("session-1".into()),
+        actor_id: Some("actor-1".into()),
+        timeout_ms: 1_000,
+        max_attempts: 1,
+    }
+}
+
+async fn scripted_server(responses: Vec<Vec<Vec<u8>>>) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for response in responses {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 1024];
+                let size = socket.read(&mut chunk).await.expect("read request");
+                assert!(size > 0, "request ended before its headers completed");
+                request.extend_from_slice(&chunk[..size]);
+                assert!(
+                    request.len() <= 64 * 1024,
+                    "test request headers are too large"
+                );
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            captured
+                .lock()
+                .expect("request lock")
+                .push(String::from_utf8_lossy(&request).to_string());
+            for chunk in response {
+                socket
+                    .write_all(&chunk)
+                    .await
+                    .expect("write response chunk");
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+fn json_response(body: String) -> Vec<Vec<u8>> {
+    vec![format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()]
+}
+
+#[tokio::test]
+async fn wait_for_task_consumes_split_multiline_sse_with_headers() {
+    let event = concat!(
+        ": heartbeat\r\n",
+        "id: event-1\r\n",
+        "data: {\"statusUpdate\":{\"taskId\":\"task-1\",\r\n",
+        "data: \"status\":{\"state\":\"TASK_STATE_COMPLETED\"}}}\r\n\r\n"
+    );
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        event.len()
+    );
+    let split = event.len() / 2;
+    let (base_url, requests) = scripted_server(vec![
+        json_response(working_task()),
+        vec![
+            header.into_bytes(),
+            event.as_bytes()[..split].to_vec(),
+            event.as_bytes()[split..].to_vec(),
+        ],
+    ])
+    .await;
+
+    let task = wait_for_task(&test_config(base_url), "task-1", 10_000, 10)
+        .await
+        .expect("terminal stream update");
+    assert!(is_completed_state(&task.status.state));
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    let subscribe = requests
+        .last()
+        .expect("subscription request")
+        .to_ascii_lowercase();
+    assert!(subscribe.contains("get /tasks/task-1:subscribe"));
+    assert!(subscribe.contains("authorization: bearer test-token"));
+    assert!(subscribe.contains("x-organization-id: org-1"));
+    assert!(subscribe.contains("x-evalops-workspace-id: workspace-1"));
+}
+
+#[tokio::test]
+async fn wait_for_task_polls_only_when_subscription_is_unsupported() {
+    let unsupported = vec![
+        b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_vec(),
+    ];
+    let (base_url, requests) = scripted_server(vec![
+        json_response(working_task()),
+        unsupported,
+        json_response(completed_task()),
+    ])
+    .await;
+    let task = wait_for_task(&test_config(base_url), "task-1", 10_000, 1)
+        .await
+        .expect("polling fallback");
+    assert!(is_completed_state(&task.status.state));
+    assert_eq!(requests.lock().expect("requests").len(), 3);
+}
+
+#[tokio::test]
+async fn wait_for_task_reconciles_clean_disconnect_and_reconnects() {
+    let empty_stream = vec![b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()];
+    let completed_event =
+        "data: {\"task\":{\"id\":\"task-1\",\"status\":{\"state\":\"TASK_STATE_COMPLETED\"}}}\n\n";
+    let complete_stream = vec![format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{completed_event}",
+        completed_event.len()
+    ).into_bytes()];
+    let (base_url, requests) = scripted_server(vec![
+        json_response(working_task()),
+        empty_stream,
+        json_response(working_task()),
+        complete_stream,
+    ])
+    .await;
+    let task = wait_for_task(&test_config(base_url), "task-1", 10_000, 1)
+        .await
+        .expect("reconnected subscription");
+    assert!(is_completed_state(&task.status.state));
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests.iter().filter(|r| r.contains(":subscribe")).count(),
+        2
+    );
+}
+
+#[test]
+fn sse_parser_rejects_oversized_events() {
+    let mut parser = SseParser::default();
+    let event = vec![b'x'; A2A_SSE_EVENT_LIMIT_BYTES + 1];
+    let error = parser.push(&event).expect_err("oversized event must fail");
+    assert!(error.to_string().contains("exceeded"));
 }
 
 #[test]

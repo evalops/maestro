@@ -6,7 +6,8 @@
 use crate::agent::{FromAgent, TokenUsage};
 use crate::telemetry::{
     ApprovalMode, CanonicalTurnEvent, ErrorDetails, FeatureFlags, ModelInfo, SandboxMode,
-    TailSamplingConfig, TokenUsage as TelemetryTokenUsage, TurnCollector, TurnStatus,
+    TailSamplingConfig, TelemetryIdentityScope, TokenUsage as TelemetryTokenUsage, TurnCollector,
+    TurnStatus,
 };
 
 /// Configuration for turn tracking.
@@ -33,6 +34,10 @@ pub struct TurnTrackerContext {
     pub context_source_count: u32,
     /// Feature flags
     pub features: FeatureFlags,
+    /// Identity tenant scope verified before the model turn. This stays on the
+    /// canonical event only so the private first-party outbox can reject a
+    /// retry under a different signed-in tenant.
+    pub identity_scope: Option<TelemetryIdentityScope>,
 }
 
 /// Tracks agent turns and emits canonical wide events.
@@ -41,6 +46,7 @@ pub struct TurnTracker {
     context: TurnTrackerContext,
     turn_number: u32,
     current_turn: Option<TurnCollector>,
+    current_identity_scope: Option<TelemetryIdentityScope>,
     current_response_id: Option<String>,
     accumulated_usage: Option<TokenUsage>,
 }
@@ -54,6 +60,7 @@ impl TurnTracker {
             context: TurnTrackerContext::default(),
             turn_number: 0,
             current_turn: None,
+            current_identity_scope: None,
             current_response_id: None,
             accumulated_usage: None,
         }
@@ -72,6 +79,12 @@ impl TurnTracker {
         self.context.model = Some(model);
     }
 
+    /// Update the verified Identity scope used by turns that start after this
+    /// point. A running turn retains the scope captured at `ResponseStart`.
+    pub fn set_identity_scope(&mut self, identity_scope: Option<TelemetryIdentityScope>) {
+        self.context.identity_scope = identity_scope;
+    }
+
     /// Get the current turn number.
     #[must_use]
     pub fn turn_number(&self) -> u32 {
@@ -81,6 +94,14 @@ impl TurnTracker {
     /// Handle an agent event. Returns the canonical event if a turn completed.
     pub fn handle_event(&mut self, event: &FromAgent) -> Option<CanonicalTurnEvent> {
         match event {
+            FromAgent::Ready { model, provider } | FromAgent::ModelChanged { model, provider } => {
+                self.set_model(ModelInfo {
+                    id: model.clone(),
+                    provider: provider.clone(),
+                    thinking_level: crate::telemetry::ThinkingLevel::Off,
+                });
+                None
+            }
             FromAgent::ResponseStart { response_id } => {
                 if self.current_turn.is_none() {
                     self.start_turn(response_id.clone());
@@ -201,6 +222,7 @@ impl TurnTracker {
         self.turn_number += 1;
         self.accumulated_usage = None;
         self.current_response_id = Some(response_id);
+        self.current_identity_scope = self.context.identity_scope.clone();
 
         let mut turn = TurnCollector::new(
             &self.config.session_id,
@@ -229,6 +251,7 @@ impl TurnTracker {
         error_details: Option<ErrorDetails>,
     ) -> Option<CanonicalTurnEvent> {
         let turn = self.current_turn.take()?;
+        let identity_scope = self.current_identity_scope.take();
         self.current_response_id = None;
 
         // Convert token usage
@@ -250,7 +273,9 @@ impl TurnTracker {
             .and_then(|u| u.cost)
             .unwrap_or(0.0);
 
-        Some(turn.complete(status, tokens, cost_usd, error_details, None))
+        let mut event = turn.complete(status, tokens, cost_usd, error_details, None);
+        event.identity_scope = identity_scope;
+        Some(event)
     }
 }
 
@@ -320,17 +345,21 @@ mod tests {
             session_id: "provider-error-session".to_string(),
             sampling_config: TailSamplingConfig::default(),
         });
-        assert!(tracker
-            .handle_event(&FromAgent::ResponseStart {
-                response_id: "resp-1".to_string(),
-            })
-            .is_none());
-        assert!(tracker
-            .handle_event(&FromAgent::ResponseEnd {
-                response_id: "resp-1".to_string(),
-                usage: None,
-            })
-            .is_none());
+        assert!(
+            tracker
+                .handle_event(&FromAgent::ResponseStart {
+                    response_id: "resp-1".to_string(),
+                })
+                .is_none()
+        );
+        assert!(
+            tracker
+                .handle_event(&FromAgent::ResponseEnd {
+                    response_id: "resp-1".to_string(),
+                    usage: None,
+                })
+                .is_none()
+        );
 
         let event = tracker
             .handle_event(&FromAgent::ProviderError {
@@ -358,25 +387,29 @@ mod tests {
             [("resp-1", 10, 4, 0.01), ("resp-2", 20, 6, 0.02)]
         {
             if response_id == "resp-2" {
-                assert!(tracker
-                    .handle_event(&FromAgent::ResponseStart {
-                        response_id: response_id.to_string(),
-                    })
-                    .is_none());
+                assert!(
+                    tracker
+                        .handle_event(&FromAgent::ResponseStart {
+                            response_id: response_id.to_string(),
+                        })
+                        .is_none()
+                );
                 assert_eq!(tracker.turn_number(), 1);
             }
-            assert!(tracker
-                .handle_event(&FromAgent::ResponseEnd {
-                    response_id: response_id.to_string(),
-                    usage: Some(TokenUsage {
-                        input_tokens,
-                        output_tokens,
-                        cache_read_tokens: 0,
-                        cache_write_tokens: 0,
-                        cost: Some(cost),
-                    }),
-                })
-                .is_none());
+            assert!(
+                tracker
+                    .handle_event(&FromAgent::ResponseEnd {
+                        response_id: response_id.to_string(),
+                        usage: Some(TokenUsage {
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
+                            cost: Some(cost),
+                        }),
+                    })
+                    .is_none()
+            );
         }
 
         let event = tracker
@@ -387,5 +420,39 @@ mod tests {
         assert_eq!(event.tokens.input, 30);
         assert_eq!(event.tokens.output, 10);
         assert!((event.cost_usd - 0.03).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn turn_keeps_the_identity_scope_verified_at_response_start() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "identity-scope-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        let origin_scope = TelemetryIdentityScope::new("org-a", Some("workspace-a"))
+            .expect("complete origin scope");
+        let switched_scope = TelemetryIdentityScope::new("org-b", Some("workspace-b"))
+            .expect("complete switched scope");
+
+        tracker.set_identity_scope(Some(origin_scope.clone()));
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "origin-response".to_string(),
+        });
+        tracker.set_identity_scope(Some(switched_scope.clone()));
+        let origin_event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "origin-complete".to_string(),
+            })
+            .expect("origin turn completion");
+        assert_eq!(origin_event.identity_scope, Some(origin_scope));
+
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "switched-response".to_string(),
+        });
+        let switched_event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "switched-complete".to_string(),
+            })
+            .expect("switched turn completion");
+        assert_eq!(switched_event.identity_scope, Some(switched_scope));
     }
 }

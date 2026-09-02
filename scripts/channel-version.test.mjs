@@ -26,4 +26,8 @@ test("rejects unstable bases, unknown channels, and invalid ordinals", () => {
 		() => channelRelease({ stableVersion: "0.11.7", channel: "alpha", ordinal: 0 }),
 		/positive integer/,
 	);
+	assert.throws(
+		() => channelRelease({ stableVersion: "01.11.7", channel: "beta", ordinal: 1 }),
+		/plain semver/,
+	);
 });

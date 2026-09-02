@@ -3,7 +3,7 @@ name = "maestro"
 version = "0.10.70"
 edition = "2021"
 license = "MIT"
-description = "Canonical native Rust CLI for Maestro"
+description = "Canonical native Rust CLI for Deixic Code"
 
 [[bin]]
 name = "maestro"

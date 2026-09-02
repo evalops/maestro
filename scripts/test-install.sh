@@ -14,6 +14,18 @@ fail() {
   exit 1
 }
 
+wait_for_server_log_entry() {
+  local start_line="$1"
+  local expected="$2"
+  for _ in {1..20}; do
+    if tail -n +$((start_line + 1)) "$fixture/server.log" | grep -Fq "$expected"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -356,6 +368,11 @@ run_install() {
 run_install > "$fixture/first-install.log" 2>&1 ||
   fail "first install failed: $(cat "$fixture/first-install.log")"
 [[ -x "$install_dir/maestro" ]] || fail "launcher was not installed"
+[[ -x "$install_dir/deixic-code" ]] || fail "canonical launcher was not installed"
+[[ "$("$install_dir/deixic-code" --version)" == "maestro 0.0.1" ]] ||
+  fail "canonical launcher did not execute the compatibility binary"
+grep -q 'Installed Deixic Code 0.0.1' "$fixture/first-install.log" ||
+  fail "installer did not report the canonical product name"
 
 no_python_path="$fixture/no-python-bin"
 mkdir "$no_python_path"
@@ -451,6 +468,8 @@ grep -q '^export MAESTRO_VERSION=' "$install_dir/maestro" ||
   fail "launcher did not retain its installed version"
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
   fail "launcher did not execute the first release"
+[[ "$("$install_dir/deixic-code" --version)" == "maestro 0.0.1" ]] ||
+  fail "canonical launcher did not execute the first release"
 release_binary="$(find "$data_dir/releases" -type f -path '*/bin/maestro' -print -quit)"
 [[ -n "$release_binary" ]] || fail "versioned release binary was not staged"
 release_root="$(dirname "$(dirname "$release_binary")")"
@@ -717,10 +736,10 @@ bash "$ROOT/scripts/install.sh" > "$fixture/stable-latest-fallback-install.log" 
 grep -q 'Warning: stable GitHub latest manifest returned HTTP 503; trying the Releases API.' \
   "$fixture/stable-latest-fallback-install.log" ||
   fail "stable latest-download recovery did not report the API fallback"
-if ! tail -n +$((stable_latest_fallback_log_start + 1)) "$fixture/server.log" | grep -Fq 'GET /github/latest/unavailable'; then
+if ! wait_for_server_log_entry "$stable_latest_fallback_log_start" 'GET /github/latest/unavailable'; then
   fail "stable latest-download recovery did not request the unavailable endpoint"
 fi
-if ! tail -n +$((stable_latest_fallback_log_start + 1)) "$fixture/server.log" | grep -Fq 'GET /github/fallback/releases?'; then
+if ! wait_for_server_log_entry "$stable_latest_fallback_log_start" 'GET /github/fallback/releases?'; then
   fail "stable latest-download recovery did not request the Releases API"
 fi
 
@@ -756,4 +775,5 @@ fi
 grep -q 'No published beta release' "$fixture/empty-channel.log" ||
   fail "installer did not explain a missing preview release"
 
-printf 'installer fixture passed: checksum failure preserved %s\n' "$install_dir/maestro"
+printf 'installer fixture passed: checksum failure preserved %s and %s\n' \
+  "$install_dir/deixic-code" "$install_dir/maestro"

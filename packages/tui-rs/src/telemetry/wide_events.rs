@@ -159,21 +159,78 @@ pub struct FeatureFlags {
 }
 
 /// Error details for failed turns.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// Deliberately not `Serialize`: `message` is raw provider or tool text and
+/// can carry paths, prompts, and secrets. Only `category` reaches an
+/// exporter, through [`ExternalTurnEvent::error_category`].
+#[derive(Debug, Clone, Default)]
 pub struct ErrorDetails {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// Authorized Identity tenant scope retained with a native turn solely for
+/// first-party telemetry delivery.
+///
+/// This is deliberately absent from [`ExternalTurnEvent`]. The private
+/// outbox uses it to ensure a delayed record is sent only while the same
+/// organization/workspace scope is active; Platform continues to derive the
+/// authoritative tenant from the bearer rather than accepting these values on
+/// the wire.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelemetryIdentityScope {
+    organization_id: String,
+    workspace_id: String,
+}
+
+impl std::fmt::Debug for TelemetryIdentityScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TelemetryIdentityScope")
+            .field("bound", &true)
+            .finish()
+    }
+}
+
+impl TelemetryIdentityScope {
+    /// Build a scope from the Identity session already verified at the native
+    /// model-admission boundary. Platform's telemetry ingress requires both
+    /// organization and workspace, so incomplete sessions keep local telemetry
+    /// only and never produce a deliverable remote record.
+    pub(crate) fn new(organization_id: &str, workspace_id: Option<&str>) -> Option<Self> {
+        let organization_id = organization_id.trim();
+        if organization_id.is_empty() {
+            return None;
+        }
+        let workspace_id = workspace_id?.trim();
+        if workspace_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            organization_id: organization_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+        })
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        !self.organization_id.trim().is_empty() && !self.workspace_id.trim().is_empty()
+    }
 }
 
 /// Canonical Turn Event - One wide event per agent turn.
 ///
 /// Contains all context needed to debug and analyze any turn without
 /// correlating multiple log lines. Designed for high-cardinality querying.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// This type is deliberately **not** `Serialize`. It holds the session id,
+/// tool names and arguments, MCP server names, and raw error text. Making it
+/// serializable is what would let a future exporter put all of that on the
+/// wire with one `serde_json::to_string`. The only serializable turn event is
+/// [`ExternalTurnEvent`], produced by
+/// [`CanonicalTurnEvent::external_projection`]. Use `Debug` for local
+/// inspection.
+#[derive(Debug, Clone)]
 pub struct CanonicalTurnEvent {
-    #[serde(rename = "type")]
     pub event_type: String,
     pub timestamp: String,
 
@@ -181,8 +238,13 @@ pub struct CanonicalTurnEvent {
     pub session_id: String,
     pub turn_id: String,
     pub turn_number: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+
+    /// Private delivery binding set by [`crate::telemetry::TurnTracker`] when
+    /// the turn begins. It is intentionally not part of the serializable
+    /// external projection.
+    #[doc(hidden)]
+    pub identity_scope: Option<TelemetryIdentityScope>,
 
     // ─── Model Context ──────────────────────────────────────────────────────
     pub model: ModelInfo,
@@ -191,7 +253,6 @@ pub struct CanonicalTurnEvent {
     pub total_duration_ms: u64,
     pub llm_duration_ms: u64,
     pub tool_duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_wait_ms: Option<u64>,
 
     // ─── Tool Executions ────────────────────────────────────────────────────
@@ -208,7 +269,6 @@ pub struct CanonicalTurnEvent {
     pub sandbox_mode: SandboxMode,
     pub approval_mode: ApprovalMode,
     pub mcp_server_count: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Vec<String>>,
     pub context_source_count: u32,
     pub message_count: u32,
@@ -220,11 +280,8 @@ pub struct CanonicalTurnEvent {
 
     // ─── Outcome ────────────────────────────────────────────────────────────
     pub status: TurnStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub abort_reason: Option<AbortReason>,
 
     // ─── Sampling Metadata ──────────────────────────────────────────────────
@@ -238,6 +295,7 @@ pub struct CanonicalTurnEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalTurnEvent {
     pub schema_version: u16,
+    #[serde(rename = "type")]
     pub event_type: String,
     pub timestamp: String,
     pub turn_number: u32,
@@ -587,6 +645,7 @@ impl TurnCollector {
             turn_id: self.turn_id,
             turn_number: self.turn_number,
             trace_id: self.trace_id,
+            identity_scope: None,
 
             // Model
             model: self.model,
@@ -760,13 +819,46 @@ mod tests {
     }
 
     #[test]
-    fn test_serialization() {
+    fn the_serializable_turn_event_is_the_projection_and_it_omits_the_session_id() {
         let collector = TurnCollector::new("session-1", 1, TailSamplingConfig::default());
         let event = collector.complete(TurnStatus::Success, TokenUsage::default(), 0.0, None, None);
 
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"type\":\"canonical-turn\""));
-        assert!(json.contains("\"session_id\":\"session-1\""));
+        // `serde_json::to_string(&event)` does not compile: `CanonicalTurnEvent`
+        // is not `Serialize`. The projection is the only encodable turn event.
+        let json = serde_json::to_string(&event.external_projection()).unwrap();
+        assert!(json.contains("\"type\":\"canonical-turn\""), "{json}");
+        assert!(!json.contains("session-1"), "{json}");
+        assert!(!json.contains("session_id"), "{json}");
+    }
+
+    #[test]
+    fn a_canary_in_error_message_never_reaches_the_exported_bytes() {
+        const CANARY: &str = "MAESTRO-TELEMETRY-CANARY-8f21c0";
+
+        let collector = TurnCollector::new("canary-session", 7, TailSamplingConfig::default());
+        let event = collector.complete(
+            TurnStatus::Error,
+            TokenUsage::default(),
+            0.0,
+            Some(ErrorDetails {
+                category: Some("provider_stream".to_string()),
+                message: Some(format!("upstream said {CANARY}")),
+            }),
+            None,
+        );
+        let raw_message = format!("upstream said {CANARY}");
+        assert_eq!(event.error_message.as_deref(), Some(raw_message.as_str()));
+
+        let exported = serde_json::to_vec(&event.external_projection()).unwrap();
+        let exported = String::from_utf8(exported).unwrap();
+        assert!(
+            !exported.contains(CANARY),
+            "error_message reached the external boundary: {exported}"
+        );
+        assert!(
+            exported.contains("provider_stream"),
+            "error_category is the replacement dimension and must survive: {exported}"
+        );
     }
 
     #[test]

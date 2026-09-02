@@ -26,6 +26,7 @@ fn upsert_options(path: &str, token_env: Option<&str>, make_default: bool) -> Up
         make_default,
         token_env: token_env.map(str::to_string),
         token_file: None,
+        session_id: None,
         workspace_id: None,
         organization_id: None,
         registry_path: Some(path.to_string()),
@@ -88,6 +89,27 @@ fn save_then_load_round_trips_a_peer() {
     let entry = registry.peers.get("peer").expect("entry present");
     assert_eq!(entry.url, "https://peer.example.com/a2a");
     assert_eq!(entry.display_name.as_deref(), Some("Peer One"));
+}
+
+#[test]
+fn upsert_configures_remote_session_id_for_named_peer() {
+    let dir = tempdir().expect("tempdir");
+    let path = registry_path(&dir);
+    let payload = sample_payload("https://peer.example.com/a2a");
+    let mut options = upsert_options(&path, None, false);
+    options.name = Some("chief".into());
+    options.session_id = Some(" remote-session-1 ".into());
+
+    upsert_peer_from_pairing_payload(&payload, options).expect("upsert");
+
+    let (_, registry) = load_peer_registry(Some(path.as_str())).expect("load");
+    assert_eq!(
+        registry
+            .peers
+            .get("chief")
+            .and_then(|entry| entry.session_id.as_deref()),
+        Some("remote-session-1")
+    );
 }
 
 #[test]

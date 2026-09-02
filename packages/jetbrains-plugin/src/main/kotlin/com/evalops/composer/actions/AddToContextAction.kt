@@ -24,7 +24,7 @@ class AddToContextAction : AnAction(), DumbAware {
             .getNotificationGroup("Maestro Notifications")
             .createNotification(
                 "Added to Context",
-                "File '${file.name}' added to Maestro context.",
+                "File '${file.name}' added to Deixic Code context.",
                 com.intellij.notification.NotificationType.INFORMATION
             )
             .notify(project)

@@ -2,27 +2,23 @@
 """
 Start one or more servers, wait for them to be ready, run a command, then clean up.
 
-Commands are split with shlex (no shell) so shell operators like && or | are
-not supported.  Use --cwd to set each server's working directory instead.
-
 Usage:
     # Single server
     python scripts/with_server.py --server "npm run dev" --port 5173 -- python automation.py
     python scripts/with_server.py --server "npm start" --port 3000 -- python test.py
 
-    # Multiple servers with different working directories
+    # Multiple servers
     python scripts/with_server.py \
-      --server "python server.py" --port 3000 --cwd backend \
-      --server "npm run dev" --port 5173 --cwd frontend \
+      --server "cd backend && python server.py" --port 3000 \
+      --server "cd frontend && npm run dev" --port 5173 \
       -- python test.py
 """
 
-import argparse
-import shlex
-import socket
 import subprocess
-import sys
+import socket
 import time
+import sys
+import argparse
 
 def is_server_ready(port, timeout=30):
     """Wait for server to be ready by polling the port."""
@@ -40,7 +36,6 @@ def main():
     parser = argparse.ArgumentParser(description='Run command with one or more servers')
     parser.add_argument('--server', action='append', dest='servers', required=True, help='Server command (can be repeated)')
     parser.add_argument('--port', action='append', dest='ports', type=int, required=True, help='Port for each server (must match --server count)')
-    parser.add_argument('--cwd', action='append', dest='cwds', help='Working directory for each server (optional, can be repeated)')
     parser.add_argument('--timeout', type=int, default=30, help='Timeout in seconds per server (default: 30)')
     parser.add_argument('command', nargs=argparse.REMAINDER, help='Command to run after server(s) ready')
 
@@ -59,15 +54,9 @@ def main():
         print("Error: Number of --server and --port arguments must match")
         sys.exit(1)
 
-    cwds = args.cwds or []
-    if cwds and len(cwds) != len(args.servers):
-        print("Error: When using --cwd, provide one per --server (or omit entirely)")
-        sys.exit(1)
-
     servers = []
-    for i, (cmd, port) in enumerate(zip(args.servers, args.ports)):
-        cwd = cwds[i] if cwds else None
-        servers.append({'cmd': cmd, 'port': port, 'cwd': cwd})
+    for cmd, port in zip(args.servers, args.ports):
+        servers.append({'cmd': cmd, 'port': port})
 
     server_processes = []
 
@@ -76,12 +65,12 @@ def main():
         for i, server in enumerate(servers):
             print(f"Starting server {i+1}/{len(servers)}: {server['cmd']}")
 
-            # Split command string into argv to avoid shell injection
+            # Use shell=True to support commands with cd and &&
             process = subprocess.Popen(
-                shlex.split(server['cmd']),
-                cwd=server['cwd'],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                server['cmd'],
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
             )
             server_processes.append(process)
 

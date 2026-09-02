@@ -1,4 +1,4 @@
-use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
+use maestro_runtime_gateway::{RuntimeGatewayConfig, serve_listener};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

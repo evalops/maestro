@@ -537,10 +537,11 @@ mod tests {
     #[test]
     fn renders_heading() {
         let text = render_markdown("# Heading 1");
-        assert!(text
-            .lines
-            .iter()
-            .any(|l| { l.spans.iter().any(|s| s.content.contains("Heading")) }));
+        assert!(
+            text.lines
+                .iter()
+                .any(|l| { l.spans.iter().any(|s| s.content.contains("Heading")) })
+        );
     }
 
     #[test]
@@ -654,9 +655,11 @@ mod tests {
         assert!(crate::hyperlink::contains_hyperlink(
             &rendered_lines.join("\n")
         ));
-        assert!(visible_lines
-            .iter()
-            .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert!(
+            visible_lines
+                .iter()
+                .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts"))
+        );
         assert_eq!(
             visible_lines,
             vec!["See ".to_string(), "main.ts.".to_string()]
@@ -686,9 +689,11 @@ mod tests {
         assert!(crate::hyperlink::contains_hyperlink(
             &rendered_lines.join("\n")
         ));
-        assert!(!visible_lines
-            .iter()
-            .any(|line| line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert!(
+            !visible_lines
+                .iter()
+                .any(|line| line.contains("file:///Users/alice/work/maestro/src/main.ts"))
+        );
         assert_eq!(
             visible_lines,
             vec!["See src".to_string(), "main.ts.".to_string()]
@@ -716,9 +721,11 @@ mod tests {
         assert!(crate::hyperlink::contains_hyperlink(
             &rendered_lines.join("\n")
         ));
-        assert!(visible_lines
-            .iter()
-            .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert!(
+            visible_lines
+                .iter()
+                .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts"))
+        );
         assert_eq!(visible_lines, vec!["See src".to_string()]);
     }
 

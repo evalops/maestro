@@ -1,15 +1,15 @@
 use std::path::{Component, Path, PathBuf};
 
+use crate::Config;
 use crate::auth::{
-    header_auth_matches, runtime_session_api_key_cookie_value, runtime_session_cookie_value,
-    trusted_proxy_auth_subject, RUNTIME_SESSION_COOKIE_NAME,
+    RUNTIME_SESSION_COOKIE_NAME, header_auth_matches, runtime_session_api_key_cookie_value,
+    runtime_session_cookie_value_with_identity, trusted_proxy_auth_context,
 };
 use crate::http::{
-    json_response, response_with_cache, response_with_cache_and_length,
+    RequestHead, json_response, response_with_cache, response_with_cache_and_length,
     response_with_extra_headers_and_length, response_with_no_store,
-    response_with_no_store_and_length, RequestHead,
+    response_with_no_store_and_length,
 };
-use crate::Config;
 
 pub(crate) const RUNTIME_CONFIG_SCRIPT_PATH: &str = "/__maestro/runtime-config.js";
 pub(crate) const RUNTIME_CONFIG_SCRIPT_TAG: &str =
@@ -112,8 +112,15 @@ pub(crate) fn spa_entry_session_cookie_value(
     if header_auth_matches(config, bearer, header_key) {
         return runtime_session_api_key_cookie_value(config);
     }
-    if let Some(subject) = trusted_proxy_auth_subject(head) {
-        return runtime_session_cookie_value(config, &subject);
+    if let Some(auth) = trusted_proxy_auth_context(head) {
+        let subject = auth.subject.as_deref()?;
+        return runtime_session_cookie_value_with_identity(
+            config,
+            subject,
+            auth.organization_id.as_deref(),
+            auth.workspace_id.as_deref(),
+            &auth.scopes,
+        );
     }
     None
 }

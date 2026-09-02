@@ -202,7 +202,7 @@ impl ShutdownMonitor {
     /// Register signal streams synchronously before terminal initialization.
     #[cfg(unix)]
     pub(super) fn register() -> std::io::Result<Self> {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut terminate = signal(SignalKind::terminate())?;
         let mut interrupt = signal(SignalKind::interrupt())?;
@@ -361,10 +361,10 @@ mod windows_close {
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     use tokio::sync::{mpsc, oneshot};
     use windows_sys::Win32::System::Console::{
-        SetConsoleCtrlHandler, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, SetConsoleCtrlHandler,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, SetEvent, WaitForSingleObject, INFINITE,
+        CreateEventW, INFINITE, SetEvent, WaitForSingleObject,
     };
 
     const NO_EVENT: u32 = u32::MAX;
@@ -421,27 +421,30 @@ mod windows_close {
         let signal_event_address = signal_event as usize;
         std::thread::Builder::new()
             .name("maestro-console-close".to_string())
-            .spawn(move || loop {
-                let signal_event = signal_event_address as windows_sys::Win32::Foundation::HANDLE;
-                // SAFETY: the process-lifetime event remains valid until the
-                // process exits.
-                unsafe {
-                    WaitForSingleObject(signal_event, INFINITE);
-                }
-                let signal = match RECEIVED_EVENT.swap(NO_EVENT, Ordering::AcqRel) {
-                    CTRL_CLOSE_EVENT => ShutdownSignal::CtrlClose,
-                    CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => ShutdownSignal::CtrlShutdown,
-                    _ => continue,
-                };
-                let (acknowledged, _acknowledgement) = oneshot::channel();
-                if sender
-                    .send(ShutdownEvent {
-                        signal,
-                        acknowledged,
-                    })
-                    .is_err()
-                {
-                    force_exit(signal);
+            .spawn(move || {
+                loop {
+                    let signal_event =
+                        signal_event_address as windows_sys::Win32::Foundation::HANDLE;
+                    // SAFETY: the process-lifetime event remains valid until the
+                    // process exits.
+                    unsafe {
+                        WaitForSingleObject(signal_event, INFINITE);
+                    }
+                    let signal = match RECEIVED_EVENT.swap(NO_EVENT, Ordering::AcqRel) {
+                        CTRL_CLOSE_EVENT => ShutdownSignal::CtrlClose,
+                        CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => ShutdownSignal::CtrlShutdown,
+                        _ => continue,
+                    };
+                    let (acknowledged, _acknowledgement) = oneshot::channel();
+                    if sender
+                        .send(ShutdownEvent {
+                            signal,
+                            acknowledged,
+                        })
+                        .is_err()
+                    {
+                        force_exit(signal);
+                    }
                 }
             })
             .map_err(|error| {
@@ -764,8 +767,7 @@ mod tests {
             unreachable!("repeat signal should force process exit");
         }
 
-        let test_name =
-            "entrypoint::shutdown_signal::tests::shutdown_monitor_forces_exit_on_repeat_before_acknowledgement";
+        let test_name = "entrypoint::shutdown_signal::tests::shutdown_monitor_forces_exit_on_repeat_before_acknowledgement";
         let mut child = std::process::Command::new(
             std::env::current_exe().expect("resolve current test executable"),
         )

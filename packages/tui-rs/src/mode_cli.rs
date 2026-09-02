@@ -1,11 +1,11 @@
 //! Native `maestro modes` command.
 
-use anyhow::{bail, Result};
-use serde_json::{json, Map, Value};
+use anyhow::{Result, bail};
+use serde_json::{Map, Value, json};
 
 use crate::swarm::{
-    model_for_tier, resolve_subagent_dispatch, AgentMode, DispatchSource, ModelProvider, ModelTier,
-    ReasoningEffort, SubagentType,
+    AgentMode, DispatchSource, ModelProvider, ModelTier, ReasoningEffort, SubagentType,
+    model_for_tier, resolve_subagent_dispatch,
 };
 
 #[derive(Clone, Copy)]
@@ -364,7 +364,9 @@ fn parse_provider(value: &str) -> Result<ModelProvider> {
         "openai" => Ok(ModelProvider::OpenAi),
         "openai-codex" => Ok(ModelProvider::OpenAiCodex),
         "google" => Ok(ModelProvider::Google),
-        _ => bail!("Unknown provider \"{value}\". Supported providers: anthropic, openai, openai-codex, google"),
+        _ => bail!(
+            "Unknown provider \"{value}\". Supported providers: anthropic, openai, openai-codex, google"
+        ),
     }
 }
 

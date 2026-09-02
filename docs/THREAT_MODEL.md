@@ -1,4 +1,4 @@
-# Maestro Threat Model
+# Deixic Code Threat Model
 
 > **Status:** Current Rust runtime. This document is checked against the
 > implementation in `packages/tui-rs/`, `packages/runtime-gateway-rs/`, and
@@ -6,14 +6,14 @@
 > does not claim that prompt injection, secret exposure, or arbitrary code
 > execution is solved.
 
-Audience: security reviewers and operators deploying Maestro in sensitive
+Audience: security reviewers and operators deploying Deixic Code in sensitive
 environments.
 
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.md)
 
 ## Scope and trust boundaries
 
-Maestro runs a local Rust agent and tool executor. The web/runtime-gateway
+Deixic Code runs a local Rust agent and tool executor. The web/runtime-gateway
 process exposes a separate HTTP boundary. Model providers, MCP servers,
 websites, files, and tool results are untrusted inputs unless the operator has
 chosen to trust them.
@@ -171,7 +171,7 @@ consume host or provider resources.
   tests.
 - Safe mode can require a plan before mutation and run validators after writes.
 
-**Residual risk:** Medium to high. Maestro does not claim a host-wide CPU,
+**Residual risk:** Medium to high. Deixic Code does not claim a host-wide CPU,
 memory, or disk quota for every child process. Use OS/container quotas and
 provider limits for multi-tenant or hostile workloads.
 
@@ -201,7 +201,9 @@ The HTTP runtime gateway is authenticated by
 `packages/runtime-gateway-rs/src/auth.rs`:
 
 - API keys are accepted as `Authorization: Bearer` or
-  `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted).
+  `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted), but
+  production session and chat routes require tenant-bearing identity rather
+  than a static process key alone.
 - Identity JWTs are accepted through `MAESTRO_JWT_SECRET` (HS256) or
   `MAESTRO_JWT_JWKS_URL` / `MAESTRO_JWT_JWKS` (RS-family). Claims populate
   `subject`, `organization_id`, `workspace_id`, and `scopes` on `AuthContext`.
@@ -223,7 +225,7 @@ The managed policy boundary is separate from identity and authorization:
   block policy-gated actions.
 - The publish endpoint accepts only an externally signed envelope. Private
   signing keys remain in the organization's KMS/HSM and are not handled by
-  Maestro.
+  Deixic Code.
 - Successful publication replaces the configured bundle atomically and
   advances a persistent version/hash watermark, preventing a stale valid
   bundle from being replayed.
@@ -245,9 +247,10 @@ owner-restricted paths and retain KMS/HSM, proxy, and centralized log records.
 For a local or shared deployment:
 
 - Bind the runtime gateway to loopback unless remote access is required.
-- For a remote bind, configure `MAESTRO_WEB_API_KEY`, a supported JWT/shared
-  secret, or trusted-proxy authentication; use `MAESTRO_PROFILE=prod` and
-  configure CSRF for browser clients.
+- For a remote bind, configure a supported tenant-bearing JWT or trusted-proxy
+  authenticator for session and chat routes. A static `MAESTRO_WEB_API_KEY` may
+  additionally protect non-tenant process routes; use `MAESTRO_PROFILE=prod`
+  and configure CSRF for browser clients.
 - Keep approval mode at prompt or fail for untrusted work. Do not combine
   automatic approval with `danger-full-access`.
 - Select `read-only` or `workspace-write` sandboxing where the host supports
@@ -262,7 +265,7 @@ For a local or shared deployment:
 
 If a session may have executed an unsafe action:
 
-1. Stop the Maestro process and the affected child processes.
+1. Stop the Deixic Code process and the affected child processes.
 2. Revoke or rotate provider, API, proxy, and MCP credentials.
 3. Preserve the session, command, policy, and runtime-gateway logs available to
    the deployment without copying secrets into an issue.

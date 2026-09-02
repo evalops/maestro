@@ -8,46 +8,59 @@
 #![forbid(unsafe_code)]
 
 mod boundary;
+pub mod delegation;
 mod launch_spec;
 pub mod passport;
 pub mod protocol;
 mod receipts;
+pub mod telemetry;
 
 pub use boundary::{
     HostedRuntimeAuthMode, HostedRuntimeBoundary, HostedRuntimeBoundaryInput, RuntimeBoundaryError,
 };
+pub use delegation::{
+    DELEGATION_OWNER_PROJECTION_METADATA_KEY, DELEGATION_PROJECTION_SCHEMA_VERSION,
+    DelegationControlAction, DelegationControlProjection, DelegationControlState, DelegationEvent,
+    DelegationEventKind, DelegationLifecycleState,
+};
 pub use launch_spec::{
-    HostedLaunchIdentity, HostedLaunchModelContract, HostedLaunchRendezvous,
-    HostedLaunchRendezvousMode, HostedLaunchRestoreIntent, HostedLaunchRuntime,
-    HostedLaunchSecretFileRefs, HostedLaunchSpec, HostedLaunchSpecError, HostedLaunchSpecInput,
-    HostedLaunchWorkloadIdentity, HostedLaunchWorkspace, HOSTED_LAUNCH_SPEC_VERSION,
+    HOSTED_LAUNCH_SPEC_VERSION, HostedLaunchIdentity, HostedLaunchModelContract,
+    HostedLaunchRendezvous, HostedLaunchRendezvousMode, HostedLaunchRestoreIntent,
+    HostedLaunchRuntime, HostedLaunchSecretFileRefs, HostedLaunchSpec, HostedLaunchSpecError,
+    HostedLaunchSpecInput, HostedLaunchWorkloadIdentity, HostedLaunchWorkspace,
 };
 pub use passport::{
-    runtime_conformance_contract, runtime_passport_contract, RuntimeArtifactIdentity,
-    RuntimeArtifactIdentityInput, RuntimeArtifactKind, RuntimeConformanceIdentity,
-    RuntimeConformanceIdentityInput, RuntimePassport, RuntimePassportError, RuntimePassportInput,
-    RuntimeToolchainIdentity, RuntimeToolchainIdentityInput, RUNTIME_CONFORMANCE_PROFILE,
-    RUNTIME_CONFORMANCE_VERSION, RUNTIME_PASSPORT_PREDICATE_TYPE, RUNTIME_PASSPORT_VERSION,
+    RUNTIME_CONFORMANCE_PROFILE, RUNTIME_CONFORMANCE_VERSION, RUNTIME_PASSPORT_PREDICATE_TYPE,
+    RUNTIME_PASSPORT_VERSION, RuntimeArtifactIdentity, RuntimeArtifactIdentityInput,
+    RuntimeArtifactKind, RuntimeConformanceIdentity, RuntimeConformanceIdentityInput,
+    RuntimePassport, RuntimePassportError, RuntimePassportInput, RuntimeToolchainIdentity,
+    RuntimeToolchainIdentityInput, runtime_conformance_contract, runtime_passport_contract,
 };
 pub use protocol::{
-    decode_tagged_message, headless_protocol_capability_digest, headless_protocol_contract,
-    headless_protocol_version_is_supported, negotiate_headless_protocol, ConnectionRoleCapability,
-    FromRuntimeMessageType, HeadlessCapabilityProjection, HeadlessProtocolContract,
-    HeadlessTerminalProjection, NegotiatedHeadlessProtocol, NotificationCapability,
+    ConnectionRoleCapability, FromRuntimeMessageType, HEADLESS_FROM_RUNTIME_MESSAGE_NAMES,
+    HEADLESS_PROTOCOL_SCHEMA_VERSION, HEADLESS_PROTOCOL_VERSION,
+    HEADLESS_RUNTIME_ONLY_FROM_RUNTIME_MESSAGE_NAMES,
+    HEADLESS_RUNTIME_ONLY_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TERMINAL_REDUCER_VERSION,
+    HEADLESS_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TURN_TERMINAL_RESPONSE_IDS,
+    HeadlessCapabilityProjection, HeadlessProtocolContract, HeadlessTerminalProjection,
+    NegotiatedHeadlessProtocol, NotificationCapability, SUPPORTED_HEADLESS_PROTOCOL_VERSIONS,
     SchemaOnlyServerRequestCapability, ServerRequestCapability, TaggedMessageDecode,
     TaggedMessageDecodeError, TerminalErrorKind, TerminalEvent, TerminalReducer, TerminalStatus,
     TerminalTransition, ToRuntimeMessageType, UnknownWireMessage,
-    UnsupportedHeadlessProtocolVersion, UtilityOperationCapability,
-    HEADLESS_FROM_RUNTIME_MESSAGE_NAMES, HEADLESS_PROTOCOL_SCHEMA_VERSION,
-    HEADLESS_PROTOCOL_VERSION, HEADLESS_RUNTIME_ONLY_FROM_RUNTIME_MESSAGE_NAMES,
-    HEADLESS_RUNTIME_ONLY_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TERMINAL_REDUCER_VERSION,
-    HEADLESS_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TURN_TERMINAL_RESPONSE_IDS,
-    SUPPORTED_HEADLESS_PROTOCOL_VERSIONS,
+    UnsupportedHeadlessProtocolVersion, UtilityOperationCapability, decode_tagged_message,
+    headless_protocol_capability_digest, headless_protocol_contract,
+    headless_protocol_version_is_supported, negotiate_headless_protocol,
 };
 pub use receipts::{
-    runtime_receipt_validation_contract, RuntimeLifecycleState, RuntimeReceipt,
-    RuntimeReceiptError, RuntimeReceiptInput, RuntimeReceiptKind, RuntimeTerminalClassification,
-    MAX_RUNTIME_RECEIPT_STRING_BYTES, RUNTIME_RECEIPT_VERSION,
+    MAX_RUNTIME_RECEIPT_STRING_BYTES, RUNTIME_RECEIPT_VERSION, RuntimeLifecycleState,
+    RuntimeReceipt, RuntimeReceiptError, RuntimeReceiptInput, RuntimeReceiptKind,
+    RuntimeTerminalClassification, runtime_receipt_validation_contract,
+};
+pub use telemetry::{
+    Telemetry, TelemetryConfig, TelemetryGuard, TraceHeaders, approval_span, client_span,
+    consumer_span, current_trace_headers, inject_evalops_context, inject_span_context, model_span,
+    record_http_response, record_model_usage, record_outcome, route_class, server_span,
+    terminal_span, tool_span, tool_span_for_call, trace_headers_for_span, turn_span,
 };
 
 /// Stable product identifier for the native Maestro runtime boundary.
@@ -82,7 +95,7 @@ pub const fn product_identity() -> RuntimeProductIdentity {
 #[cfg(test)]
 mod tests {
     use super::{
-        product_identity, HOSTED_RUNTIME_TOPOLOGY, RUNTIME_BOUNDARY_VERSION, RUNTIME_PRODUCT_ID,
+        HOSTED_RUNTIME_TOPOLOGY, RUNTIME_BOUNDARY_VERSION, RUNTIME_PRODUCT_ID, product_identity,
     };
 
     #[test]

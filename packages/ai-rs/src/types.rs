@@ -132,9 +132,22 @@ pub enum ProviderStreamErrorKind {
     ProviderDeclaredFailure,
 }
 
+/// Safe identifiers returned by the managed Gateway for one inference
+/// request. This deliberately excludes the signed authorization and all
+/// provider request or response payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedGatewayReceipt {
+    pub request_id: String,
+    pub record_id: String,
+    pub lineage_id: String,
+    pub record_status: String,
+}
+
 /// Streaming event from the AI
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
+    /// Managed Gateway evidence available before any provider content.
+    ManagedGatewayReceipt(ManagedGatewayReceipt),
     /// Message started
     MessageStart { id: String, model: String },
     /// Content block started

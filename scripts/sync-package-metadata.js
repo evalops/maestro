@@ -10,11 +10,11 @@ const npmInstall = getGlobalInstallCommand("npm");
 const publishedPackageSummary =
 	name === canonicalPackageName
 		? `- The release workflow currently publishes \`${name}\`.`
-		: `- The release workflow currently publishes \`${name}\`; the cutover target is \`${canonicalPackageName}\`.`;
+		: `- The release source projects \`${canonicalPackageName}\` as canonical and retains \`${name}\` as the compatibility alias.`;
 const internalPublishedPackageSummary =
 	name === canonicalPackageName
 		? `- The public npm package currently resolves to \`${name}\`.`
-		: `- The public npm package currently resolves to \`${name}\`; the cutover target is \`${canonicalPackageName}\`.`;
+		: `- The canonical public npm package is \`${canonicalPackageName}\`; \`${name}\` remains the compatibility package.`;
 
 /**
  * @param {string} content
@@ -41,7 +41,7 @@ const targets = [
 			);
 			next = replaceRequired(
 				next,
-				/^(?:composer|maestro) web$/m,
+				/^(?:composer|maestro|deixic-code) web$/m,
 				`${cliCommand} web`,
 				"JetBrains README web command",
 			);
@@ -59,7 +59,7 @@ const targets = [
 			);
 			next = replaceRequired(
 				next,
-				/<code>(?:composer|maestro) web<\/code>/,
+				/<code>(?:composer|maestro|deixic-code) web<\/code>/,
 				`<code>${cliCommand} web</code>`,
 				"JetBrains plugin XML web command",
 			);
@@ -80,10 +80,13 @@ const targets = [
 	{
 		path: "docs/release-ops.md",
 		transform(content) {
-			if (content.includes("The internal repo does not publish npm packages.")) {
+			if (
+				content.includes("The internal repo does not publish npm packages.") ||
+				content.includes("The private tree does not publish npm packages.")
+			) {
 				return replaceRequired(
 					content,
-					/- The public repo owns npm publishing and trusted publishing setup\.\n(?:- The public npm package currently resolves to `[^`]+`(?:; the cutover target is `[^`]+`)?\.\n)?/,
+					/- The public repo owns npm publishing and trusted publishing setup\.\n(?:- (?:The public|The canonical)[^\n]+npm package[^\n]*\n)?/,
 					`- The public repo owns npm publishing and trusted publishing setup.\n${internalPublishedPackageSummary}\n`,
 					"Internal release ops package summary",
 				);

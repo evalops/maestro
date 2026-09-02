@@ -1,11 +1,11 @@
 use super::super::wire_format_generated::{
-    canonical_content_block_type, canonical_stop_reason, content_block_field_aliases,
-    field_aliases, is_compaction_context_entry_type, is_compaction_context_excluded_message_role,
     COMPACTION_CONTEXT_ENTRY_TYPES, COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES,
     CONTENT_BLOCK_FIELD_ALIASES, CONTENT_BLOCK_TYPE_ALIASES, FIELD_ALIASES, STOP_REASON_ALIASES,
+    canonical_content_block_type, canonical_stop_reason, content_block_field_aliases,
+    field_aliases, is_compaction_context_entry_type, is_compaction_context_excluded_message_role,
 };
 use super::*;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 #[test]
 fn side_questions_and_plan_review_are_typed_entries() {
@@ -251,7 +251,7 @@ fn parse_typescript_assistant_blocks() {
         _ => panic!("Expected thinking block"),
     }
     match &content[1] {
-        ContentBlock::ToolCall { id, name, args } => {
+        ContentBlock::ToolCall { id, name, args, .. } => {
             assert_eq!(id, "call_1");
             assert_eq!(name, "read");
             assert_eq!(args["path"], "README.md");
@@ -354,8 +354,7 @@ fn tool_result_receipt_survives_session_wire_round_trip() {
     let round_tripped: SessionEntry =
         serde_json::from_value(serialized.clone()).expect("deserialize receipt entry");
     assert_eq!(
-        serde_json::to_value(round_tripped).expect("reserialize receipt entry")["message"]
-            ["receipt"],
+        serde_json::to_value(round_tripped).expect("reserialize receipt entry")["message"]["receipt"],
         *receipt
     );
 }
@@ -374,11 +373,7 @@ struct ReplayToolRequest {
 
 fn replay_text_content(message: &AppMessage) -> Option<String> {
     let text = message.text_content();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn replay_compact_item(
@@ -448,7 +443,7 @@ fn replay_push_message_items(
             items.push((timestamp.to_string(), Value::Object(item)));
 
             for block in content {
-                let ContentBlock::ToolCall { id, name, args } = block else {
+                let ContentBlock::ToolCall { id, name, args, .. } = block else {
                     continue;
                 };
                 tool_requests.insert(id.clone(), ReplayToolRequest { args: args.clone() });
@@ -608,11 +603,7 @@ fn replay_normalized_timeline(entries: &[SessionEntry]) -> Value {
                             })
                             .collect::<Vec<_>>()
                             .join(" ");
-                        if text.is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        }
+                        if text.is_empty() { None } else { Some(text) }
                     }
                 };
                 if let Some(summary) = content {
@@ -1139,7 +1130,9 @@ fn unknown_fields_are_tolerated_for_forward_compatibility() {
     let serialized = serde_json::to_value(SessionEntry::Message(message)).unwrap();
     assert!(serialized.get("futureEntryField").is_none());
     assert!(serialized["message"].get("futureMessageField").is_none());
-    assert!(serialized["message"]["content"][0]
-        .get("futureBlockField")
-        .is_none());
+    assert!(
+        serialized["message"]["content"][0]
+            .get("futureBlockField")
+            .is_none()
+    );
 }

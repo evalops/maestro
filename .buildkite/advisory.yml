@@ -6,8 +6,8 @@
 # pipeline.yml. Repeat those blocks here.
 
 agents:
-  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
-  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
   CI: "true"
@@ -22,6 +22,22 @@ env:
   npm_config_fetch_timeout: "30000"
 
 steps:
+  - label: ":orb: Hosted Orb delegation acceptance (required when gated)"
+    key: "hosted-orb-delegation-live"
+    priority: 10
+    timeout_in_minutes: 30
+    agents:
+      queue: "${MAESTRO_CI_PROTOCOL_QUEUE:-linux-medium}"
+      image: "${MAESTRO_CI_PROTOCOL_IMAGE:-evalops-platform-ci-v6}"
+    command: |
+      set -euo pipefail
+      timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+      if [[ "${MAESTRO_HOSTED_ORB_LIVE_SMOKE:-}" != "1" ]]; then
+        echo "Optional hosted Orb acceptance was not requested; skipping."
+        exit 0
+      fi
+      npm run smoke:hosted-orb-delegation
+
   - label: ":bar_chart: Coverage (advisory)"
     key: "coverage"
     priority: 10

@@ -30,6 +30,7 @@ const WIRED = {
   StopFailure: ["execute_stop_failure"],
   PreMessage: ["execute_pre_message"],
   PostMessage: ["execute_post_message"],
+  OnError: ["execute_on_error"],
   EvalGate: ["execute_eval_gate"],
   SubagentStart: ["execute_subagent_start"],
   SubagentStop: ["execute_subagent_stop"],

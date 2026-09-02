@@ -5,18 +5,18 @@ use maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    resolve_workspace_path, HostedError, HostedResult, HostedRunnerConfig, HostedRunnerErrorCode,
     HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION, HOSTED_RUNNER_RETENTION_POLICY_VERSION,
     HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION, HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
-    HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+    HOSTED_RUNNER_WORK_CONTINUITY_VERSION, HostedError, HostedResult, HostedRunnerConfig,
+    HostedRunnerErrorCode, resolve_workspace_path,
 };
 use crate::headless::messages::{
-    active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
-    codex_subagent_operation, codex_subagent_status_is_terminal, ApprovalMode, ClientCapabilities,
+    ApprovalMode, CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA, ClientCapabilities,
     ClientInfo, CodeMode, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState,
     FromAgentMessage, GovernedToolGrant, HeadlessErrorType, InitConfig, ServerCapabilities,
-    ThinkingLevel, UtilityCommandShellMode, UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX,
-    CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+    ThinkingLevel, UtilityCommandShellMode, UtilityCommandTerminalMode,
+    active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
+    codex_subagent_operation, codex_subagent_status_is_terminal,
 };
 use crate::headless::{AgentState, SessionReplay};
 
@@ -319,6 +319,7 @@ impl SnapshotManifest {
             // hosted-runner CLI; older facade manifests deliberately do not
             // erase that checkpoint during restore.
             semantic_conversation: None,
+            last_workspace_capability_set: None,
         }
     }
 }

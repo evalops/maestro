@@ -5,8 +5,8 @@
 //! daemon can run it before any model call.
 
 use crate::types::{
-    Capabilities, Complexity, DecisionAction, EventType, Limits, NormalizedEvent, TaskType,
-    NEVER_AUTO_ACTIONS, PROTECTED_FILE_PATTERNS, REQUIRE_APPROVAL_ACTIONS,
+    Capabilities, Complexity, DecisionAction, EventType, Limits, NEVER_AUTO_ACTIONS,
+    NormalizedEvent, PROTECTED_FILE_PATTERNS, REQUIRE_APPROVAL_ACTIONS, TaskType,
 };
 use glob::Pattern;
 use regex::Regex;
@@ -621,10 +621,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Medium, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
     }
 
     #[test]
@@ -677,10 +679,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Medium, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Ask));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "complexity_limit"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "complexity_limit")
+        );
     }
 
     #[test]
@@ -693,10 +697,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Trivial, &config(), &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "prompt_injection"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "prompt_injection")
+        );
     }
 
     #[test]
@@ -712,13 +718,17 @@ mod tests {
         config.capabilities.update_dependencies = false;
         let blocked = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
         assert_eq!(blocked.action_override(), Some(DecisionAction::Skip));
-        assert!(blocked
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
-        assert!(blocked
-            .summary()
-            .contains("dependency update work is disabled"));
+        assert!(
+            blocked
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
+        assert!(
+            blocked
+                .summary()
+                .contains("dependency update work is disabled")
+        );
     }
 
     #[test]
@@ -732,10 +742,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
     }
 
     #[test]
@@ -888,10 +900,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Medium, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
     }
 
     #[test]
@@ -907,10 +921,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Medium, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
         assert!(result.summary().contains("security patch work is disabled"));
     }
 
@@ -927,10 +943,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Medium, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Skip));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "capability_disabled"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "capability_disabled")
+        );
     }
 
     #[test]
@@ -985,10 +1003,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Ask));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "file_limit"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "file_limit")
+        );
     }
 
     #[test]
@@ -1003,10 +1023,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Ask));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "file_limit"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "file_limit")
+        );
     }
 
     #[test]
@@ -1021,10 +1043,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Ask));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "file_limit"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "file_limit")
+        );
     }
 
     #[test]
@@ -1039,10 +1063,12 @@ mod tests {
         let result = PolicyGate::evaluate(&event, Complexity::Simple, &config, &[]);
 
         assert_eq!(result.action_override(), Some(DecisionAction::Ask));
-        assert!(result
-            .findings
-            .iter()
-            .any(|finding| finding.code == "file_limit"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == "file_limit")
+        );
     }
 
     #[test]

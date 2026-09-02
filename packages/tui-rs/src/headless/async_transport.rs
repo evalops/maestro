@@ -10,14 +10,14 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, Instant, timeout};
 use tokio_util::sync::CancellationToken;
 
 use super::local_controller_capabilities;
 use super::messages::{
-    AgentEvent, AgentState, ClientInfo, ConnectionRole, FromAgentMessage, InitConfig,
-    ToAgentMessage,
+    AgentEvent, AgentState, ClientInfo, ConnectionRole, ControllerBindingHello, FromAgentMessage,
+    InitConfig, ToAgentMessage,
 };
 
 #[cfg(target_os = "linux")]
@@ -64,6 +64,8 @@ pub struct AsyncTransportConfig {
     pub read_timeout: Option<Duration>,
     /// Buffer size for stdout reader (default: 1MB)
     pub buffer_size: usize,
+    /// Immutable resident controller binding forwarded to a local child hello.
+    pub controller_binding: Option<ControllerBindingHello>,
 }
 
 impl Default for AsyncTransportConfig {
@@ -75,6 +77,7 @@ impl Default for AsyncTransportConfig {
             env: Vec::new(),
             read_timeout: None,
             buffer_size: 1024 * 1024, // 1MB
+            controller_binding: None,
         }
     }
 }
@@ -293,6 +296,7 @@ impl AsyncAgentTransport {
             capabilities: Some(local_controller_capabilities()),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: None,
+            controller_binding: config.controller_binding.clone(),
         })?;
         Ok(transport)
     }
@@ -469,6 +473,7 @@ impl AsyncAgentTransport {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: None,
+            managed_inference_authorization: None,
         })
     }
 
@@ -504,6 +509,7 @@ impl AsyncAgentTransport {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: Some(attachments),
+            managed_inference_authorization: None,
         })
     }
 

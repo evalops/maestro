@@ -1,6 +1,7 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,12 +11,15 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, watch};
 
 use crate::a2a_skill_catalog::A2A_SUBAGENT_REQUEST_METADATA_PATH;
-use crate::auth::{a2a_task_id_from_cancel_path, a2a_task_id_from_subscribe_path, AuthContext};
-use crate::http::{json_response, read_request_body, response, RequestHead};
-use crate::{
-    auth_context, env_u64, json_string_from_object, now_millis, now_rfc3339, send_sse, sse_headers,
-    validate_csrf, AppState, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+use crate::auth::{
+    AuthContext, a2a_task_id_from_cancel_path, a2a_task_id_from_subscribe_path, nonempty_str,
 };
+use crate::http::{RequestHead, json_response, read_request_body, response};
+use crate::{
+    AppState, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA, authorized_context, env_u64,
+    json_string_from_object, now_millis, now_rfc3339, send_sse, sse_headers, validate_csrf,
+};
+use maestro_runtime::DelegationEvent;
 
 use super::ledger::persist_a2a_tasks;
 use super::push_notifications::{
@@ -26,10 +30,10 @@ use super::push_notifications::{
     handle_a2a_push_notification_config_get, handle_a2a_push_notification_config_list,
 };
 use super::{
-    a2a_agent_card, a2a_extended_agent_card, build_a2a_subagent_execution_policy_for_state,
-    decode_subagent_capsule_for_completion, run_a2a_native_turn, validate_subagent_capsule,
     A2ASubagentExecutionPolicy, A2ATurnResult, CapsuleValidationError,
-    ValidatedSubagentTaskCapsule,
+    ValidatedSubagentTaskCapsule, a2a_agent_card, a2a_extended_agent_card,
+    build_a2a_subagent_execution_policy_for_state, decode_subagent_capsule_for_completion,
+    run_a2a_native_turn, validate_subagent_capsule,
 };
 
 pub(crate) const A2A_PROTOCOL_VERSION: &str = "1.0";
@@ -44,7 +48,7 @@ pub(crate) const A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY: &str = "pushNotifica
 pub(crate) const EVALOPS_A2A_EXTENSION_URI: &str =
     "https://evalops.com/a2a/extensions/operating-plane/v1";
 pub(crate) const A2A_RUNTIME_GATEWAY_LEDGER_PEER: &str = "maestro-runtime-gateway";
-pub(crate) const A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME: &str = "Maestro Runtime Gateway";
+pub(crate) const A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME: &str = "Deixic Code Runtime Gateway";
 pub(crate) const A2A_LEGACY_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
 static A2A_ID_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -195,7 +199,7 @@ fn validate_a2a_requested_extensions(
         return Err(a2a_error_response(
             400,
             "EXTENSION_NOT_SUPPORTED",
-            &format!("A2A extension is not supported by this Maestro agent: {extension}"),
+            &format!("A2A extension is not supported by this Deixic Code agent: {extension}"),
         ));
     }
     Ok(requested)
@@ -263,8 +267,9 @@ pub(crate) async fn handle_a2a_endpoint(
         return json_response(200, &a2a_agent_card(&head, &state.config));
     }
 
-    let Some(auth) = auth_context(&head, &state.config) else {
-        return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
+    let auth = match authorized_context(&head, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return response,
     };
 
     if head.method == "GET" && head.path == "/extendedAgentCard" {
@@ -341,12 +346,9 @@ pub(crate) async fn handle_a2a_streaming_endpoint(
     if let Err(response) = validate_csrf(&head, &state.config) {
         return write_response_and_close(&mut stream, response).await;
     }
-    let Some(auth) = auth_context(&head, &state.config) else {
-        return write_response_and_close(
-            &mut stream,
-            json_response(401, &serde_json::json!({ "error": "Unauthorized" })),
-        )
-        .await;
+    let auth = match authorized_context(&head, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return write_response_and_close(&mut stream, response).await,
     };
 
     if head.method == "POST" && head.path == "/message:stream" {
@@ -545,7 +547,11 @@ async fn handle_a2a_task_subscribe(
         .write_all(sse_headers().as_bytes())
         .await
         .map_err(|error| error.to_string())?;
-    send_a2a_stream_response(stream, &serde_json::json!({ "task": current.clone() })).await?;
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "task": a2a_public_task(&current) }),
+    )
+    .await?;
     send_a2a_stream_response(
         stream,
         &serde_json::json!({ "statusUpdate": a2a_status_update_event(&current) }),
@@ -809,29 +815,44 @@ fn a2a_stream_id_segment(value: &str) -> String {
 
 pub(super) fn a2a_status_update_event(task: &Value) -> Value {
     let task = a2a_public_task(task);
-    serde_json::json!({
+    let mut event = serde_json::json!({
         "taskId": task.get("id").cloned().unwrap_or(Value::Null),
         "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
         "status": task.get("status").cloned().unwrap_or(Value::Null),
         "metadata": task.get("metadata").cloned().unwrap_or_else(|| serde_json::json!({}))
-    })
+    });
+    if let Some(delegation) = task.get("delegation") {
+        event["delegation"] = delegation.clone();
+    }
+    event
 }
 
 pub(super) fn a2a_artifact_update_event(task: &Value, artifact: &Value) -> Value {
     let task = a2a_public_task(task);
-    serde_json::json!({
+    let mut event = serde_json::json!({
         "taskId": task.get("id").cloned().unwrap_or(Value::Null),
         "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
         "artifact": artifact,
         "append": false,
         "lastChunk": true,
         "metadata": task.get("metadata").cloned().unwrap_or_else(|| serde_json::json!({}))
-    })
+    });
+    if let Some(delegation) = task.get("delegation") {
+        event["delegation"] = delegation.clone();
+    }
+    event
 }
 
 fn a2a_public_task(task: &Value) -> Value {
     let mut task = task.clone();
     a2a_redact_push_notification_metadata(&mut task);
+    if let Some(delegation) =
+        DelegationEvent::from_a2a_task(&task).and_then(|event| serde_json::to_value(event).ok())
+    {
+        if let Some(task_object) = task.as_object_mut() {
+            task_object.insert("delegation".to_string(), delegation);
+        }
+    }
     task
 }
 
@@ -1024,9 +1045,40 @@ pub(crate) fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool
     if auth.unrestricted {
         return true;
     }
-    auth.subject
-        .as_deref()
-        .is_some_and(|subject| a2a_task_owner_subject(task) == Some(subject))
+    let Some(subject) = auth.subject.as_deref() else {
+        return false;
+    };
+    if a2a_task_owner_subject(task) != Some(subject) {
+        return false;
+    }
+    let (organization_id, workspace_id) = a2a_task_tenant(task);
+    match (organization_id.as_deref(), workspace_id.as_deref()) {
+        (Some(task_org), Some(task_workspace)) => {
+            auth.organization_id.as_deref() == Some(task_org)
+                && auth.workspace_id.as_deref() == Some(task_workspace)
+        }
+        // Pre-tenant tasks are deliberately isolated from tenant-bound
+        // principals until they are re-created with durable tenant metadata.
+        (None, None) => auth.organization_id.is_none() && auth.workspace_id.is_none(),
+        _ => false,
+    }
+}
+
+fn a2a_task_tenant(task: &Value) -> (Option<String>, Option<String>) {
+    let Some(metadata) = task.get("metadata").and_then(Value::as_object) else {
+        return (None, None);
+    };
+    let organization_id = ["organizationId", "organization_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .and_then(nonempty_str)
+        .map(str::to_owned);
+    let workspace_id = ["workspaceId", "workspace_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+        .and_then(nonempty_str)
+        .map(str::to_owned);
+    (organization_id, workspace_id)
 }
 
 pub(crate) async fn publish_a2a_task_update(state: &AppState, task: &Value) {
@@ -1492,7 +1544,7 @@ pub(crate) async fn claim_a2a_send_task(
         }
     }
     history.push(a2a_user_message_value(&request.message, &context_id));
-    let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
+    let working_message = a2a_agent_message(&context_id, "Deixic Code is working on the A2A task.");
     let task = a2a_task_value(
         &task_id,
         &context_id,
@@ -1685,7 +1737,7 @@ pub(crate) async fn handle_a2a_message_send(
         return json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }));
     }
     if return_immediately {
-        let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
+        let accepted_message = a2a_agent_message(&context_id, "Deixic Code accepted the A2A task.");
         let mut accepted_history = history.clone();
         accepted_history.push(accepted_message.clone());
         let task = a2a_task_value(
@@ -1791,9 +1843,11 @@ async fn complete_a2a_task_with_capsule(
         capsule,
         execution_policy,
     } = request;
+    let native_session_id = a2a_native_session_id(&context_id, &metadata);
     let turn = match run_a2a_native_turn(
         state,
         prompt,
+        &native_session_id,
         cancel_rx,
         capsule.as_ref(),
         execution_policy.as_ref(),
@@ -1852,7 +1906,7 @@ async fn complete_a2a_task_with_capsule(
     };
 
     let assistant_text = if turn.assistant_text.trim().is_empty() {
-        "Maestro completed the A2A task without a text response.".to_string()
+        "Deixic Code completed the A2A task without a text response.".to_string()
     } else {
         turn.assistant_text
     };
@@ -2044,6 +2098,25 @@ fn attach_server_owned_subagent_completion(
             }
         }
     }
+}
+
+fn a2a_native_session_id(context_id: &str, metadata: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"maestro-a2a-native-session-v1\0");
+    for label in ["ownerSubject", "organizationId", "workspaceId"] {
+        hasher.update(label.as_bytes());
+        hasher.update([0]);
+        if let Some(value) = metadata.get(label).and_then(Value::as_str) {
+            hasher.update(value.as_bytes());
+        }
+        hasher.update([0]);
+    }
+    hasher.update(b"contextId\0");
+    hasher.update(context_id.as_bytes());
+    format!(
+        "a2a-session-v1-{}",
+        URL_SAFE_NO_PAD.encode(hasher.finalize())
+    )
 }
 
 fn maybe_attach_a2a_subagent_work_graph(metadata: &mut Value, task_id: &str, context_id: &str) {
@@ -2277,6 +2350,18 @@ pub(crate) fn a2a_task_metadata(
             ),
         );
     }
+    if let Some(organization_id) = auth.organization_id.as_deref() {
+        metadata.insert(
+            "organizationId".to_string(),
+            Value::String(organization_id.to_string()),
+        );
+    }
+    if let Some(workspace_id) = auth.workspace_id.as_deref() {
+        metadata.insert(
+            "workspaceId".to_string(),
+            Value::String(workspace_id.to_string()),
+        );
+    }
     Value::Object(metadata)
 }
 
@@ -2319,4 +2404,36 @@ pub(crate) fn a2a_error_response(status: u16, code: &str, message: &str) -> Vec<
         status,
         &serde_json::json!({ "error": { "code": code, "message": message } }),
     )
+}
+
+#[cfg(test)]
+mod native_session_tests {
+    use super::*;
+
+    #[test]
+    fn native_session_identity_is_stable_and_tenant_scoped() {
+        let first = serde_json::json!({
+            "ownerSubject": "peer",
+            "organizationId": "org-1",
+            "workspaceId": "workspace-1"
+        });
+        let second_tenant = serde_json::json!({
+            "ownerSubject": "peer",
+            "organizationId": "org-2",
+            "workspaceId": "workspace-1"
+        });
+
+        assert_eq!(
+            a2a_native_session_id("chief", &first),
+            a2a_native_session_id("chief", &first)
+        );
+        assert_ne!(
+            a2a_native_session_id("chief", &first),
+            a2a_native_session_id("chief", &second_tenant)
+        );
+        assert_ne!(
+            a2a_native_session_id("chief", &first),
+            a2a_native_session_id("reviewer", &first)
+        );
+    }
 }

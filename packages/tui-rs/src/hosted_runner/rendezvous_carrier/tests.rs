@@ -10,15 +10,15 @@ use uuid::Uuid;
 
 use crate::headless::{AsyncFrameReader, AsyncFrameWriter};
 use crate::hosted_runner::rendezvous_protocol::{
-    CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousIdentity,
-    RendezvousLifecycle, RendezvousMode, RendezvousNonce, RendezvousRequest, RunnerToHostFrame,
-    MAX_IN_FLIGHT_REQUESTS,
+    CommandAuthority, HostToRunnerFrame, MAX_IN_FLIGHT_REQUESTS, RendezvousAccepted,
+    RendezvousIdentity, RendezvousLifecycle, RendezvousMode, RendezvousNonce, RendezvousRequest,
+    RunnerToHostFrame,
 };
 
 use super::{
-    bounded_rendezvous_queue, RendezvousCarrier, RendezvousCarrierConfig, RendezvousMetricSink,
-    RendezvousQueueError, ACTIVATION_CAS_DURATION_METRIC, CONNECT_DURATION_METRIC,
-    QUEUE_COUNTER_METRIC, RECONNECT_COUNTER_METRIC,
+    ACTIVATION_CAS_DURATION_METRIC, CONNECT_DURATION_METRIC, QUEUE_COUNTER_METRIC,
+    RECONNECT_COUNTER_METRIC, RendezvousCarrier, RendezvousCarrierConfig, RendezvousMetricSink,
+    RendezvousQueueError, bounded_rendezvous_queue,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

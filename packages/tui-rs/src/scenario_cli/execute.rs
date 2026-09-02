@@ -19,19 +19,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use maestro_ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
 
-use super::{load_workspace_manifest, ScriptedScenario};
+use super::{ScriptedScenario, load_workspace_manifest};
 use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig};
 use crate::session::{
-    generate_session_filename, sanitize_path_for_dirname, sessions_dir, AppMessage,
-    ContentBlock as SessionContentBlock, CustomEntry, MessageContent, MessageEntry, SessionEntry,
-    SessionHeader, SessionWriter, ToolInfo,
+    AppMessage, ContentBlock as SessionContentBlock, CustomEntry, MessageContent, MessageEntry,
+    SessionEntry, SessionHeader, SessionWriter, ToolInfo, generate_session_filename,
+    sanitize_path_for_dirname, sessions_dir,
 };
 use crate::state::ApprovalMode;
 
@@ -335,6 +335,9 @@ pub async fn execute_scripted_scenario_with_options(
     std::fs::create_dir_all(&session_dir)
         .with_context(|| format!("create session dir {}", session_dir.display()))?;
     let session_path = session_dir.join(generate_session_filename(&session_id));
+    let unified_context_manifest =
+        crate::context_cli::load_unified_context_manifest_json(&workspace)
+            .context("capture scenario context manifest")?;
     let header = SessionHeader {
         version: Some(2),
         id: session_id.clone(),
@@ -347,7 +350,7 @@ pub async fn execute_scripted_scenario_with_options(
         system_prompt: None,
         prompt_metadata: None,
         prompt_context_manifest: None,
-        unified_context_manifest: None,
+        unified_context_manifest: Some(Box::new(unified_context_manifest)),
         tools: allowed_tools
             .iter()
             .map(|name| ToolInfo {
@@ -501,6 +504,7 @@ pub async fn execute_scripted_scenario_with_options(
                             id: call_id.clone(),
                             name: tool.clone(),
                             args: args.clone(),
+                            contract: None,
                         });
                     }
                     write_session_entry(

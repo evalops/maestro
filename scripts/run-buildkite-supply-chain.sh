@@ -40,21 +40,75 @@ test -s "$base_deny"
 policy_changed=false
 if ! git diff --quiet "$base_sha" HEAD -- deny.toml; then
   policy_changed=true
-  command -v gh >/dev/null 2>&1 || {
-    echo "deny.toml changes require GitHub CLI to verify supply-chain-policy-approved" >&2
-    exit 1
-  }
   repo_slug="$(printf '%s' "${BUILDKITE_REPO:-}" | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
   [[ "$repo_slug" == */* ]] || {
     echo "could not derive GitHub repository from BUILDKITE_REPO" >&2
     exit 1
   }
-  timeout --signal=TERM --kill-after=10s 60s gh api \
-    "repos/$repo_slug/pulls/$pull_request" > "$pr_json"
-  timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
-    -H "Accept: application/vnd.github+json" \
-    "repos/$repo_slug/issues/$pull_request/timeline?per_page=100" \
-    > "$timeline_json"
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    command -v gh >/dev/null 2>&1 || {
+      echo "GH_TOKEN is set, but GitHub CLI is unavailable" >&2
+      exit 1
+    }
+    timeout --signal=TERM --kill-after=10s 60s gh api \
+      "repos/$repo_slug/pulls/$pull_request" > "$pr_json"
+    timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
+      -H "Accept: application/vnd.github+json" \
+      "repos/$repo_slug/issues/$pull_request/timeline?per_page=100" \
+      > "$timeline_json"
+  else
+    command -v curl >/dev/null 2>&1 || {
+      echo "deny.toml changes require curl when GH_TOKEN is unavailable" >&2
+      exit 1
+    }
+    github_api="https://api.github.com/repos/$repo_slug"
+    curl_args=(
+      --fail
+      --silent
+      --show-error
+      --location
+      -H "Accept: application/vnd.github+json"
+      -H "X-GitHub-Api-Version: 2022-11-28"
+      -H "User-Agent: evalops-maestro-buildkite"
+    )
+    timeout --signal=TERM --kill-after=10s 60s curl "${curl_args[@]}" \
+      "$github_api/pulls/$pull_request" > "$pr_json"
+
+    timeline_pages="$supply_chain_tmp/timeline-pages"
+    mkdir -p "$timeline_pages"
+    timeline_page=1
+    while (( timeline_page <= 100 )); do
+      printf -v timeline_page_file '%s/timeline-page-%06d.json' \
+        "$timeline_pages" "$timeline_page"
+      timeout --signal=TERM --kill-after=10s 60s curl "${curl_args[@]}" \
+        "$github_api/issues/$pull_request/timeline?per_page=100&page=$timeline_page" \
+        > "$timeline_page_file"
+      timeline_page_size="$(node --input-type=module \
+        -e 'const value = JSON.parse(await import("node:fs").then(({readFileSync}) => readFileSync(process.argv[1], "utf8"))); if (!Array.isArray(value)) process.exit(2); process.stdout.write(String(value.length));' \
+        "$timeline_page_file")"
+      if (( timeline_page_size < 100 )); then
+        break
+      fi
+      ((timeline_page += 1))
+    done
+    if (( timeline_page > 100 )); then
+      echo "GitHub timeline pagination exceeded 100 pages" >&2
+      exit 1
+    fi
+    SUPPLY_CHAIN_TIMELINE_JSON="$timeline_json" node --input-type=module - \
+      "$timeline_pages"/*.json <<'NODE'
+      import { readFileSync, writeFileSync } from "node:fs";
+
+      const events = process.argv.slice(2).flatMap((path) => {
+        const page = JSON.parse(readFileSync(path, "utf8"));
+        if (!Array.isArray(page)) {
+          throw new Error(`GitHub timeline page is not an array: ${path}`);
+        }
+        return page;
+      });
+      writeFileSync(process.env.SUPPLY_CHAIN_TIMELINE_JSON, JSON.stringify([events]));
+NODE
+  fi
   export SUPPLY_CHAIN_PR_JSON="$pr_json"
   export SUPPLY_CHAIN_TIMELINE_JSON="$timeline_json"
   node --input-type=module <<'NODE'

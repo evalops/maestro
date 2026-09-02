@@ -9,11 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::credential_mode::{PlatformSession, CREDENTIAL_NAME_ENV, ENVIRONMENT_ENV};
+use crate::credential_mode::{CREDENTIAL_NAME_ENV, ENVIRONMENT_ENV, PlatformSession};
 use crate::init_cli::EvalOpsCredentialSnapshot;
 use crate::path_utils;
 
@@ -558,9 +558,11 @@ mod tests {
         let value = value.expect("keys request");
         server.join().expect("server");
         assert_eq!(value["credential_data"], json!({ "redacted": true }));
-        assert!(serde_json::to_string(&value)
-            .unwrap()
-            .find("sk-live")
-            .is_none());
+        assert!(
+            serde_json::to_string(&value)
+                .unwrap()
+                .find("sk-live")
+                .is_none()
+        );
     }
 }

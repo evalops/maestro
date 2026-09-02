@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::headless::{
-    AgentState, FromAgentMessage, ServerRequestResolutionStatus, ServerRequestResolvedBy,
-    ServerRequestType, ToAgentMessage, HEADLESS_PROTOCOL_VERSION,
+    AgentState, FromAgentMessage, HEADLESS_PROTOCOL_VERSION, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, ToAgentMessage,
 };
 use crate::hosted_runner::{
-    start_hosted_runner_with_message_executor, HostedRunnerConfig, HostedRunnerError,
-    HostedRunnerHeadlessMessageContext, HostedRunnerHeadlessMessageExecutor,
-    HostedRunnerHeadlessMessageResult,
+    HostedRunnerConfig, HostedRunnerError, HostedRunnerHeadlessMessageContext,
+    HostedRunnerHeadlessMessageExecutor, HostedRunnerHeadlessMessageResult,
+    start_hosted_runner_with_message_executor,
 };
 use serde::Deserialize;
 use serde_json::json;

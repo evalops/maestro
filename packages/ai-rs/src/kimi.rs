@@ -10,10 +10,10 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
-use super::client::{provider_model_name, AiClient, AiProvider};
+use super::client::{AiClient, AiProvider, provider_model_name};
 use super::types::{
     ContentBlock, ImageSource, Message, MessageContent, ProviderStreamErrorKind, RequestConfig,
     Role, StopReason, StreamEvent, Tool,

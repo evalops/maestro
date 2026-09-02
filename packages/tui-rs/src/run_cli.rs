@@ -28,15 +28,15 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 
 use crate::agent::ToolReceiptDetails;
 use crate::session::{
     AppMessage, ContentBlock, ParsedSession, SessionHeader, SessionManager, ThinkingLevel,
 };
+use crate::tools::ToolExecutor;
 use crate::tools::details::ToolDetails;
 use crate::tools::versions::is_supported_version;
-use crate::tools::ToolExecutor;
 
 const RUN_RECONSTRUCTION_SCHEMA: &str = "evalops.maestro.run-reconstruction.v1";
 const AGENT_TRAJECTORY_SCHEMA: &str = "evalops.maestro.agent-trajectory.v1";
@@ -46,6 +46,8 @@ const AGENT_TRAJECTORY_INSPECTION_SCHEMA: &str = "evalops.maestro.agent-trajecto
 const AGENT_RUNTIME_LEDGER_SCHEMA: &str = "evalops.maestro.agent-runtime-ledger.v1";
 const AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA: &str = "evalops.maestro.agent-runtime-replay-summary.v1";
 const AGENT_RUNTIME_PROMOTION_PLAN_SCHEMA: &str = "evalops.maestro.agent-runtime-promotion-plan.v1";
+const DETERMINISTIC_EVIDENCE_ENVELOPE_SCHEMA: &str =
+    "evalops.maestro.deterministic-evidence-envelope.v1";
 
 const RUN_SUBCOMMANDS: &[&str] = &["inspect", "ledger", "replay", "promote"];
 
@@ -137,6 +139,10 @@ struct ContextManifestSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_sha256_verified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cwd: Option<String>,
     entries: usize,
     project_docs: usize,
@@ -192,6 +198,54 @@ struct DurabilitySummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct EvidenceEnvelope {
+    schema_version: &'static str,
+    generated_at: String,
+    source_ref: String,
+    derived_from: Vec<String>,
+    agent_id: Option<String>,
+    objective_id: Option<String>,
+    action_ids: Vec<String>,
+    policy_decision_ids: Vec<String>,
+    inspector: EvidenceInspector,
+    digests: EvidenceDigests,
+    terminal: EvidenceTerminal,
+    redaction_state: &'static str,
+    missing_signals: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvidenceInspector {
+    product: &'static str,
+    package_version: &'static str,
+    reconstruction_schema_version: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvidenceDigests {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_manifest_sha256: Option<String>,
+    trajectory_sha256: String,
+    inspection_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvidenceTerminal {
+    state: &'static str,
+    outcome: &'static str,
+    final_response_present: bool,
+    failed_items: usize,
+    pending_items: usize,
+    failure_requiredness: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RunReconstructionReport {
     schema_version: &'static str,
     session: SessionReport,
@@ -205,6 +259,7 @@ struct RunReconstructionReport {
     trajectory_score: JsonValue,
     trajectory_inspection: JsonValue,
     agent_runtime_ledger: JsonValue,
+    evidence_envelope: EvidenceEnvelope,
     durability: DurabilitySummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     residual: Option<JsonValue>,
@@ -329,6 +384,14 @@ fn build_report_from_session(
     );
     let agent_runtime_ledger =
         build_agent_runtime_ledger(session, &timeline, &trajectory, generated_at);
+    let evidence_envelope = build_evidence_envelope(
+        session,
+        &timeline,
+        &context_manifest,
+        &trajectory,
+        &trajectory_inspection,
+        generated_at,
+    );
 
     let session_report = session_report(session);
     let durability = build_durability(
@@ -351,6 +414,7 @@ fn build_report_from_session(
         trajectory_score,
         trajectory_inspection,
         agent_runtime_ledger,
+        evidence_envelope,
         durability,
         residual: None,
     }
@@ -938,6 +1002,8 @@ fn context_manifest_summary(
         return ContextManifestSummary {
             protocol_version: None,
             version: None,
+            manifest_sha256: None,
+            manifest_sha256_verified: None,
             cwd: None,
             entries: prompt_context.entries,
             project_docs: prompt_context.project_docs,
@@ -1013,6 +1079,18 @@ fn context_manifest_summary(
         .map(|a| a.len())
         .unwrap_or(0);
 
+    let mut digest_input = (**manifest).clone();
+    let declared_manifest_sha256 = digest_input
+        .get("manifestSha256")
+        .or_else(|| digest_input.get("manifest_sha256"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    if let Some(object) = digest_input.as_object_mut() {
+        object.remove("manifestSha256");
+        object.remove("manifest_sha256");
+    }
+    let computed_manifest_sha256 = crate::evidence::canonical_json_sha256(&digest_input);
+
     ContextManifestSummary {
         protocol_version: manifest
             .get("protocolVersion")
@@ -1020,6 +1098,9 @@ fn context_manifest_summary(
             .and_then(JsonValue::as_str)
             .map(str::to_string),
         version: manifest.get("version").and_then(JsonValue::as_u64),
+        manifest_sha256: Some(computed_manifest_sha256.clone()),
+        manifest_sha256_verified: declared_manifest_sha256
+            .map(|declared| declared == computed_manifest_sha256),
         cwd: manifest
             .get("cwd")
             .and_then(JsonValue::as_str)
@@ -1044,6 +1125,167 @@ fn context_manifest_summary(
             .and_then(|docs| docs.get("maxBytes").or_else(|| docs.get("max_bytes")))
             .and_then(JsonValue::as_u64),
     }
+}
+
+fn build_evidence_envelope(
+    session: &ParsedSession,
+    timeline: &ComposerRunTimeline,
+    context_manifest: &ContextManifestSummary,
+    trajectory: &JsonValue,
+    trajectory_inspection: &JsonValue,
+    generated_at: &str,
+) -> EvidenceEnvelope {
+    let source_ref = format!("maestro://session/{}", session.header.id);
+    let agent_id = prompt_metadata_string(
+        &session.header,
+        &["agentId", "agent_id", "agentRuntimeId", "agent_runtime_id"],
+    );
+    let objective_id = prompt_metadata_string(
+        &session.header,
+        &["objectiveId", "objective_id", "taskId", "task_id"],
+    );
+    let action_ids = timeline
+        .items
+        .iter()
+        .filter_map(|item| item.tool_call_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let policy_items = timeline
+        .items
+        .iter()
+        .filter(|item| item.item_type == "policy.decision")
+        .collect::<Vec<_>>();
+    let policy_decision_ids = policy_items
+        .iter()
+        .filter_map(|item| {
+            json_string(
+                item.metadata.as_ref(),
+                &[
+                    "policyDecisionId",
+                    "policy_decision_id",
+                    "decisionId",
+                    "decision_id",
+                ],
+            )
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let failed_items = timeline
+        .items
+        .iter()
+        .filter(|item| item.status == "failed")
+        .count();
+    let pending_items = timeline
+        .items
+        .iter()
+        .filter(|item| item.status == "pending")
+        .count();
+    let final_response_index = timeline
+        .items
+        .iter()
+        .rposition(|item| item.item_type == "message.assistant");
+    let last_work_index = timeline.items.iter().rposition(|item| {
+        item.item_type.starts_with("tool.")
+            || item.item_type == "policy.decision"
+            || item.item_type == "wait.pending"
+            || item.item_type.starts_with("agent.run.")
+    });
+    let final_response_present = final_response_index
+        .is_some_and(|response| last_work_index.is_none_or(|work| response > work));
+    let final_response_failed = final_response_index
+        .is_some_and(|index| final_response_present && timeline.items[index].status == "failed");
+    let (state, outcome) = if pending_items > 0 {
+        ("blocked", "blocked")
+    } else if final_response_failed {
+        ("failed", "failed")
+    } else if final_response_present && failed_items > 0 {
+        ("completed", "degraded")
+    } else if final_response_present {
+        ("completed", "ok")
+    } else if failed_items > 0 {
+        ("failed", "failed")
+    } else {
+        ("incomplete", "unknown")
+    };
+    let build_digest = std::env::var("MAESTRO_BUILD_DIGEST")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let mut missing_signals = Vec::new();
+    if agent_id.is_none() {
+        missing_signals.push("agent_id".to_string());
+    }
+    if objective_id.is_none() {
+        missing_signals.push("objective_id".to_string());
+    }
+    if context_manifest.manifest_sha256.is_none() {
+        missing_signals.push("context_manifest".to_string());
+    }
+    if !policy_items.is_empty() && policy_decision_ids.is_empty() {
+        missing_signals.push("policy_decision_id".to_string());
+    }
+    if failed_items > 0 {
+        missing_signals.push("failure_requiredness".to_string());
+    }
+    if build_digest.is_none() {
+        missing_signals.push("inspector_build_digest".to_string());
+    }
+
+    EvidenceEnvelope {
+        schema_version: DETERMINISTIC_EVIDENCE_ENVELOPE_SCHEMA,
+        generated_at: generated_at.to_string(),
+        source_ref: source_ref.clone(),
+        derived_from: vec![
+            format!("{source_ref}#timeline"),
+            format!("{source_ref}#trajectory"),
+        ],
+        agent_id,
+        objective_id,
+        action_ids,
+        policy_decision_ids,
+        inspector: EvidenceInspector {
+            product: "deixic-code",
+            package_version: env!("CARGO_PKG_VERSION"),
+            reconstruction_schema_version: RUN_RECONSTRUCTION_SCHEMA,
+            build_digest,
+        },
+        digests: EvidenceDigests {
+            context_manifest_sha256: context_manifest.manifest_sha256.clone(),
+            trajectory_sha256: crate::evidence::canonical_json_sha256(trajectory),
+            inspection_sha256: crate::evidence::canonical_json_sha256(trajectory_inspection),
+        },
+        terminal: EvidenceTerminal {
+            state,
+            outcome,
+            final_response_present,
+            failed_items,
+            pending_items,
+            failure_requiredness: if failed_items > 0 {
+                "unknown"
+            } else {
+                "not_applicable"
+            },
+        },
+        redaction_state: "redacted",
+        missing_signals,
+    }
+}
+
+fn prompt_metadata_string(header: &SessionHeader, keys: &[&str]) -> Option<String> {
+    json_string(header.prompt_metadata.as_deref(), keys)
+}
+
+fn json_string(value: Option<&JsonValue>, keys: &[&str]) -> Option<String> {
+    let value = value?;
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn build_coverage(
@@ -1531,9 +1773,7 @@ fn score_rule(events: &[JsonValue], rule: &TrajectoryScorerRule) -> JsonValue {
                 {
                     pass_finding(
                         rule,
-                        &format!(
-                            "Approval wait preceded tool result for {tool_call_id}."
-                        ),
+                        &format!("Approval wait preceded tool result for {tool_call_id}."),
                         &[approval, result],
                     )
                 }
@@ -2442,6 +2682,13 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
             yn(report.durability.replay_deterministic),
         ),
         format!(
+            "Evidence envelope: {} / {}, redaction={}, missing signals={}",
+            report.evidence_envelope.terminal.state,
+            report.evidence_envelope.terminal.outcome,
+            report.evidence_envelope.redaction_state,
+            report.evidence_envelope.missing_signals.len(),
+        ),
+        format!(
             "Durability: reconstructable={}, resume summary={}, memory hash={}, checkpoints={}, pending waits={}",
             yn(report.durability.reconstructable),
             yn(report.durability.resume_summary_present),
@@ -2464,6 +2711,19 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
             report.context_manifest.mcp_resources,
             report.context_manifest.mcp_prompts,
             report.context_manifest.diagnostics,
+        ),
+        format!(
+            "Context generation: {} (declared digest verified={})",
+            report
+                .context_manifest
+                .manifest_sha256
+                .as_deref()
+                .unwrap_or("unavailable"),
+            report
+                .context_manifest
+                .manifest_sha256_verified
+                .map(yn)
+                .unwrap_or("not declared"),
         ),
         String::new(),
         "Timeline preview".into(),
@@ -2520,11 +2780,7 @@ fn render_coverage(coverage: &ReconstructionCoverage) -> String {
 }
 
 fn yn(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 fn compact_summary(text: Option<&str>) -> Option<String> {
@@ -2694,7 +2950,10 @@ mod tests {
             model_metadata: None,
             thinking_level: ThinkingLevel::Medium,
             system_prompt: None,
-            prompt_metadata: None,
+            prompt_metadata: Some(Box::new(json!({
+                "agentId": "agent-42",
+                "objectiveId": "objective-7"
+            }))),
             prompt_context_manifest: Some(Box::new(json!({
                 "entries": [{ "path": "/workspace/app/AGENTS.md", "sourceKind": "project" }]
             }))),
@@ -2747,6 +3006,7 @@ mod tests {
                             id: "call-1".into(),
                             name: "edit".into(),
                             args: json!({ "path": "README.md" }),
+                            contract: None,
                         },
                     ],
                     api: None,
@@ -2776,7 +3036,8 @@ mod tests {
                         },
                         "governedOutcome": {
                             "classification": "allowed",
-                            "code": "policy_allow"
+                            "code": "policy_allow",
+                            "decisionId": "decision-9"
                         }
                     })),
                     receipt: None,
@@ -2848,14 +3109,27 @@ mod tests {
         let operations = report.agent_runtime_ledger["promotion"]["operations"]
             .as_array()
             .expect("promotion operations");
-        assert!(operations
-            .iter()
-            .any(|operation| { operation["operation"] == "record_run_step" }));
-        assert!(operations
-            .iter()
-            .any(|operation| { operation["operation"] == "record_run_work_item" }));
+        assert!(
+            operations
+                .iter()
+                .any(|operation| { operation["operation"] == "record_run_step" })
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|operation| { operation["operation"] == "record_run_work_item" })
+        );
         assert_eq!(report.context_manifest.entries, 4);
         assert_eq!(report.context_manifest.mcp_servers, 1);
+        assert_eq!(
+            report
+                .context_manifest
+                .manifest_sha256
+                .as_deref()
+                .map(str::len),
+            Some(71)
+        );
+        assert_eq!(report.context_manifest.manifest_sha256_verified, None);
         assert!(report.coverage.prompt_inputs);
         assert!(report.coverage.tool_results);
         assert!(report.coverage.mcp_context);
@@ -2882,9 +3156,105 @@ mod tests {
                 .and_then(JsonValue::as_str),
             Some("maestro-local-ledger:sess-run-1:sess-run-1")
         );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/schemaVersion")
+                .and_then(JsonValue::as_str),
+            Some(DETERMINISTIC_EVIDENCE_ENVELOPE_SCHEMA)
+        );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/sourceRef")
+                .and_then(JsonValue::as_str),
+            Some("maestro://session/sess-run-1")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/agentId")
+                .and_then(JsonValue::as_str),
+            Some("agent-42")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/objectiveId")
+                .and_then(JsonValue::as_str),
+            Some("objective-7")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/policyDecisionIds/0")
+                .and_then(JsonValue::as_str),
+            Some("decision-9")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidenceEnvelope/redactionState")
+                .and_then(JsonValue::as_str),
+            Some("redacted")
+        );
+        for pointer in [
+            "/evidenceEnvelope/digests/contextManifestSha256",
+            "/evidenceEnvelope/digests/trajectorySha256",
+            "/evidenceEnvelope/digests/inspectionSha256",
+        ] {
+            assert_eq!(
+                value
+                    .pointer(pointer)
+                    .and_then(JsonValue::as_str)
+                    .map(str::len),
+                Some(71),
+                "{pointer}"
+            );
+        }
         let human = render_run_reconstruction(&report);
         assert!(human.contains("Run reconstruction: sess-run-1"));
+        assert!(human.contains("Evidence envelope: incomplete / unknown"));
         assert!(human.contains("Timeline preview"));
+    }
+
+    #[test]
+    fn evidence_terminal_distinguishes_completed_degraded_from_failed() {
+        let dir = TempDir::new().unwrap();
+        let mut session = sample_session(&dir);
+        session.messages.push(AppMessage::ToolResult {
+            tool_call_id: "call-2".into(),
+            tool_name: "bash".into(),
+            content: "optional probe failed".into(),
+            details: None,
+            receipt: None,
+            is_error: true,
+            timestamp: 1_715_247_604_000,
+        });
+        session.messages.push(AppMessage::Assistant {
+            content: vec![ContentBlock::Text {
+                text: "Finished with the optional probe unavailable.".into(),
+            }],
+            api: None,
+            provider: None,
+            model: Some("openai/gpt-5.5".into()),
+            usage: None,
+            stop_reason: Some("end_turn".into()),
+            timestamp: 1_715_247_605_000,
+        });
+
+        let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+        assert_eq!(report.evidence_envelope.terminal.state, "completed");
+        assert_eq!(report.evidence_envelope.terminal.outcome, "degraded");
+        assert_eq!(
+            report.evidence_envelope.terminal.failure_requiredness,
+            "unknown"
+        );
+        assert!(
+            report
+                .evidence_envelope
+                .missing_signals
+                .contains(&"failure_requiredness".to_string())
+        );
+
+        session.messages.pop();
+        let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+        assert_eq!(report.evidence_envelope.terminal.state, "failed");
+        assert_eq!(report.evidence_envelope.terminal.outcome, "failed");
     }
 
     #[test]
@@ -2933,11 +3303,13 @@ mod tests {
             findings[0].get("status").and_then(JsonValue::as_str),
             Some("pass")
         );
-        assert!(findings[0]
-            .get("evidence")
-            .and_then(JsonValue::as_array)
-            .map(|a| !a.is_empty())
-            .unwrap_or(false));
+        assert!(
+            findings[0]
+                .get("evidence")
+                .and_then(JsonValue::as_array)
+                .map(|a| !a.is_empty())
+                .unwrap_or(false)
+        );
         // No residual stub on score once lab rules are live.
         assert!(report.trajectory_score.get("residual").is_none());
     }

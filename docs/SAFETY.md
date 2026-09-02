@@ -8,7 +8,7 @@ Audience: operators and contributors configuring approvals and sandboxing.
 
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Web UI](WEB_UI.md)
 
-Maestro can execute shell commands and change files on the host. The action
+Deixic Code can execute shell commands and change files on the host. The action
 firewall, approval flow, policy checks, and optional native sandbox are
 independent layers. No layer makes an untrusted repository safe by itself.
 
@@ -91,8 +91,8 @@ Authenticated `GET /api/admin/enterprise-policy/status` and
 #### Managed policy publishing and audit
 
 Keep the private signing key in the organization KMS or HSM. The publisher
-service signs the canonical envelope outside Maestro and submits it through
-the authenticated runtime gateway; Maestro never receives private-key material.
+service signs the canonical envelope outside Deixic Code and submits it through
+the authenticated runtime gateway; Deixic Code never receives private-key material.
 Configure `MAESTRO_MANAGED_POLICY_AUDIT_PATH` to select the local JSONL audit
 file. By default it is the managed-policy state path with `.audit.jsonl`
 appended.
@@ -214,14 +214,16 @@ For a shared or remote web deployment:
 
 ```
 MAESTRO_PROFILE=prod \
-MAESTRO_WEB_API_KEY="$(openssl rand -hex 32)" \
+MAESTRO_JWT_JWKS_URL="https://identity.example/.well-known/jwks.json" \
 MAESTRO_WEB_CSRF_TOKEN="$(openssl rand -hex 32)" \
 maestro web
 ```
 
 The runtime gateway requires authentication on non-loopback binds. It accepts
 API-key, shared-secret, JWT/JWKS, or trusted-proxy authentication as described
-in `docs/THREAT_MODEL.md`. State-changing API and A2A requests are CSRF
+in `docs/THREAT_MODEL.md`. Core session and chat routes in production require
+tenant-bearing JWT or trusted-proxy identity; the static process API key alone
+does not grant access to tenant data. State-changing API and A2A requests are CSRF
 protected when CSRF enforcement is enabled. `MAESTRO_WEB_REQUIRE_KEY=0` is a
 loopback-only development switch.
 

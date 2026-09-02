@@ -1,7 +1,7 @@
 //! Welcome/Onboarding Screen Component
 //!
 //! Empty-session and onboarding chrome. Brand art is the Deixic Dex ghost
-//! ([`super::deixic_logo`]); product title remains Maestro.
+//! ([`super::deixic_logo`]); the product title is Deixic Code.
 //!
 //! # Example
 //!
@@ -99,7 +99,7 @@ impl WelcomeScreen {
 
     /// Build the content lines
     fn build_content(&self, area: Rect) -> Vec<Line<'static>> {
-        // Brand block: Dex ghost + deixic wordmark + Maestro title.
+        // Brand block: Dex ghost + Deixic wordmark + Deixic Code title.
         // Custom welcome_message replaces only the product title line.
         // Reserve rows for optional onboarding metadata before selecting the
         // logo tier. Otherwise a 17-row area picks the full logo and clips the
@@ -113,7 +113,7 @@ impl WelcomeScreen {
 
         if let Some(ref custom) = self.welcome_message {
             for line in &mut lines {
-                if line.to_string() == "Maestro" {
+                if line.to_string() == "Deixic Code" {
                     *line = if self.animations_enabled {
                         Line::from(crate::shimmer::shimmer_spans(custom))
                             .alignment(Alignment::Center)
@@ -328,7 +328,7 @@ pub struct SplashScreen {
 impl Default for SplashScreen {
     fn default() -> Self {
         Self {
-            title: "Maestro".to_string(),
+            title: "Deixic Code".to_string(),
             subtitle: None,
             show_logo: false,
         }
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_welcome_screen_uses_maestro_title_and_deixic_brand() {
+    fn test_welcome_screen_uses_deixic_code_title_and_deixic_brand() {
         let welcome = WelcomeScreen::new().animations(false);
         let lines = welcome.build_content(Rect::new(0, 0, 80, 24));
         let rendered = lines
@@ -447,10 +447,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("Maestro"));
+        assert!(rendered.contains("Deixic Code"));
         assert!(rendered.contains("deixic"));
         assert!(rendered.contains("Type a message or /help."));
-        assert!(!rendered.contains("Welcome to Maestro"));
+        assert!(!rendered.contains("Welcome to Deixic Code"));
         assert!(!rendered.contains("Welcome to Composer"));
         assert!(!rendered.contains("Getting Started"));
     }
@@ -518,9 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn test_splash_screen_default_title_uses_maestro() {
+    fn test_splash_screen_default_title_uses_deixic_code() {
         let splash = SplashScreen::default();
-        assert_eq!(splash.title, "Maestro");
+        assert_eq!(splash.title, "Deixic Code");
         assert!(!splash.show_logo);
         assert_ne!(splash.title, "Composer");
     }

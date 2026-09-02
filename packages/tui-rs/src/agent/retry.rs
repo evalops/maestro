@@ -125,6 +125,9 @@ pub enum ErrorKind {
     AuthFailure,
     /// Invalid request - won't succeed on retry
     InvalidRequest,
+    /// Provider quota or usage window is exhausted. Immediate retries cannot
+    /// succeed until the window resets.
+    QuotaExceeded,
     /// Unknown error - default to not retrying
     Unknown,
 }
@@ -134,6 +137,17 @@ impl ErrorKind {
     #[must_use]
     pub fn classify(error_message: &str) -> Self {
         let lower = error_message.to_lowercase();
+
+        // Quota windows must not be classified as transient "try again"
+        // because Codex usage-limit copy includes a future reset time.
+        if lower.contains("usage limit")
+            || lower.contains("usagelimitexceeded")
+            || lower.contains("quota exceeded")
+            || lower.contains("quota_exceeded")
+            || lower.contains("hit your usage limit")
+        {
+            return ErrorKind::QuotaExceeded;
+        }
 
         // Check for rate limiting first (most specific)
         if lower.contains("rate limit")
@@ -419,6 +433,9 @@ impl RetryPolicy {
                     ErrorKind::InvalidRequest => {
                         "Invalid request - won't succeed on retry".to_string()
                     }
+                    ErrorKind::QuotaExceeded => {
+                        "Provider usage limit reached - not retrying".to_string()
+                    }
                     ErrorKind::Unknown => "Unknown error - not retrying".to_string(),
                     _ => "Error is not retryable".to_string(),
                 },
@@ -658,7 +675,20 @@ mod tests {
         assert!(!ErrorKind::ContextOverflow.is_retryable());
         assert!(!ErrorKind::AuthFailure.is_retryable());
         assert!(!ErrorKind::InvalidRequest.is_retryable());
+        assert!(!ErrorKind::QuotaExceeded.is_retryable());
         assert!(!ErrorKind::Unknown.is_retryable());
+    }
+
+    #[test]
+    fn usage_limit_copy_is_quota_not_transient_try_again() {
+        let kind = ErrorKind::classify(
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.",
+        );
+        assert_eq!(kind, ErrorKind::QuotaExceeded);
+        assert!(!kind.is_retryable());
+
+        let kind = ErrorKind::classify("Codex turn failed (usageLimitExceeded)");
+        assert_eq!(kind, ErrorKind::QuotaExceeded);
     }
 
     #[test]
@@ -713,6 +743,12 @@ mod tests {
         // Context overflow should not retry
         let decision = policy.should_retry(ErrorKind::ContextOverflow);
         assert!(matches!(decision, RetryDecision::GiveUp { .. }));
+
+        let decision = policy.should_retry(ErrorKind::QuotaExceeded);
+        assert!(matches!(
+            decision,
+            RetryDecision::GiveUp { reason } if reason.contains("usage limit")
+        ));
     }
 
     #[test]

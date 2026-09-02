@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -71,6 +71,77 @@ pub enum ConnectionSecretRef {
     },
 }
 
+/// Secret-free metadata for a remote MCP server owned by an external
+/// connection authority. The credential reference is an opaque pointer; the
+/// credential broker that owns it is responsible for resolving authentication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionMcpBinding {
+    pub server_name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_preset: Option<String>,
+    pub credential_ref: String,
+    pub provenance: ConnectionMcpProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionMcpProvenance {
+    pub authority: String,
+    pub reference: String,
+}
+
+impl ConnectionMcpBinding {
+    pub fn validate(&self) -> Result<()> {
+        validate_mcp_server_name(&self.server_name)?;
+        let endpoint =
+            url::Url::parse(&self.endpoint).context("invalid managed MCP connection endpoint")?;
+        if endpoint.scheme() != "https"
+            || endpoint.host_str().is_none()
+            || endpoint.username() != ""
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            bail!(
+                "managed MCP connection endpoint must be HTTPS without URL credentials, query, or fragment"
+            );
+        }
+        if self.scopes.is_empty() {
+            bail!("managed MCP connections must declare at least one capability scope");
+        }
+        validate_capabilities(&self.scopes)?;
+        validate_opaque_reference("managed MCP credential_ref", &self.credential_ref)?;
+        self.provenance.validate()
+    }
+}
+
+impl ConnectionMcpProvenance {
+    fn validate(&self) -> Result<()> {
+        if self.authority.trim().is_empty() {
+            bail!("managed MCP connection provenance authority must not be empty");
+        }
+        if self.authority.starts_with("https://") {
+            let authority = url::Url::parse(&self.authority)
+                .context("invalid managed MCP provenance authority")?;
+            if authority.host_str().is_none()
+                || authority.username() != ""
+                || authority.password().is_some()
+                || authority.query().is_some()
+                || authority.fragment().is_some()
+            {
+                bail!("managed MCP provenance authority must be a credential-free HTTPS origin");
+            }
+        } else {
+            validate_identifier("managed MCP provenance authority", &self.authority)?;
+        }
+        validate_opaque_reference("managed MCP provenance reference", &self.reference)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceConnection {
@@ -86,6 +157,8 @@ pub struct ServiceConnection {
     pub state: ConnectionState,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_binding: Option<ConnectionMcpBinding>,
     pub generation: u64,
     #[serde(default)]
     pub is_default: bool,
@@ -159,7 +232,21 @@ impl ServiceConnection {
         if self.capabilities.is_empty() {
             bail!("connections must declare at least one capability");
         }
-        validate_capabilities(&self.capabilities)
+        validate_capabilities(&self.capabilities)?;
+        if let Some(binding) = &self.mcp_binding {
+            binding.validate()?;
+            let capabilities = self.capabilities.iter().collect::<BTreeSet<_>>();
+            if binding
+                .scopes
+                .iter()
+                .any(|scope| !capabilities.contains(scope))
+            {
+                bail!(
+                    "managed MCP connection scopes must be included in the connection capabilities"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -676,9 +763,12 @@ impl<B: SecretBackend> ConnectionBroker<B> {
                 let ready = crate::codex_auth::read_codex_auth_from(&identity.auth_path())
                     .is_some_and(|snapshot| snapshot.has_usable_credential());
                 if !ready {
-                    bail!("Codex subscription auth is unavailable; run `maestro codex login`");
+                    bail!("Codex subscription auth is unavailable; run `deixic-code codex login`");
                 }
                 Ok(())
+            }
+            _ if connection.mcp_binding.is_some() => {
+                crate::orb_connection::validate_managed_mcp_connection(connection)
             }
             ConnectionSecretRef::Delegated { provider, .. } => {
                 bail!("delegated authentication transport is unsupported for provider {provider}")
@@ -807,6 +897,47 @@ fn validate_identifier(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_mcp_server_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        bail!("managed MCP server name contains unsupported characters");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_opaque_reference(label: &str, value: &str) -> Result<()> {
+    let Some(reference) = value.strip_prefix("ref:") else {
+        bail!("{label} must use the ref: opaque-reference format");
+    };
+
+    // A prefix alone does not make a value an opaque broker reference: a
+    // caller could otherwise persist a literal token such as
+    // `ref:sk-proj-secretvalue`. Require the broker's typed namespace and a
+    // UUID-shaped opaque identifier so references cannot be mistaken for
+    // credential material at this boundary.
+    let mut segments = reference.split('/');
+    let namespace = segments.next().unwrap_or_default();
+    let kind = segments.next().unwrap_or_default();
+    let identifier = segments.next().unwrap_or_default();
+    if segments.next().is_some()
+        || namespace.is_empty()
+        || kind.is_empty()
+        || identifier.is_empty()
+        || reference.len() > 512
+        || !namespace.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        || !matches!(kind, "credential" | "connection" | "binding")
+        || uuid::Uuid::parse_str(identifier).is_err()
+    {
+        bail!("{label} must use a broker-owned ref:<namespace>/<kind>/<uuid> format");
+    }
+    Ok(())
+}
+
 fn validate_env_name(value: &str) -> Result<()> {
     if value.is_empty()
         || !value.chars().all(|character| {
@@ -913,6 +1044,7 @@ mod tests {
             placement: ConnectionPlacement::Local,
             state: ConnectionState::Active,
             capabilities: vec!["models.read".into(), "responses.create".into()],
+            mcp_binding: None,
             generation: 1,
             is_default: true,
             created_at_ms: 10,
@@ -958,20 +1090,24 @@ mod tests {
     fn persisted_metadata_rejects_auth_kind_and_provider_target_mismatches() {
         let mut wrong_target = connection();
         wrong_target.env_var = Some("ANTHROPIC_API_KEY".into());
-        assert!(wrong_target
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("not an authentication target"));
+        assert!(
+            wrong_target
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("not an authentication target")
+        );
 
         let mut delegated_with_materialized_secret = connection();
         delegated_with_materialized_secret.auth_kind = ConnectionAuthKind::Subscription;
         delegated_with_materialized_secret.env_var = None;
-        assert!(delegated_with_materialized_secret
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("require delegated authentication"));
+        assert!(
+            delegated_with_materialized_secret
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("require delegated authentication")
+        );
 
         let mut delegated_with_env_target = connection();
         delegated_with_env_target.auth_kind = ConnectionAuthKind::OAuth;
@@ -980,11 +1116,13 @@ mod tests {
             provider: "openai".into(),
             profile: None,
         };
-        assert!(delegated_with_env_target
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("cannot declare an env_var"));
+        assert!(
+            delegated_with_env_target
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("cannot declare an env_var")
+        );
     }
 
     #[test]
@@ -1181,6 +1319,7 @@ mod tests {
                 placement: ConnectionPlacement::Local,
                 state: ConnectionState::Active,
                 capabilities: vec!["models.invoke".into()],
+                mcp_binding: None,
                 generation: 1,
                 is_default: true,
                 created_at_ms: 10,
@@ -1243,9 +1382,11 @@ mod tests {
         let error = broker
             .check("openai-personal", &HashMap::new())
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported for provider vendor-plugin"));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported for provider vendor-plugin")
+        );
     }
 
     #[test]
@@ -1263,16 +1404,18 @@ mod tests {
             connections: vec![connection()],
         };
         let broker = ConnectionBroker::new(store, backend);
-        assert!(broker
-            .issue_lease(
-                "openai-personal",
-                "agent-1",
-                vec!["admin".into()],
-                vec![],
-                100,
-                1_000,
-            )
-            .is_err());
+        assert!(
+            broker
+                .issue_lease(
+                    "openai-personal",
+                    "agent-1",
+                    vec!["admin".into()],
+                    vec![],
+                    100,
+                    1_000,
+                )
+                .is_err()
+        );
         let lease = broker
             .issue_lease(
                 "openai-personal",
@@ -1284,26 +1427,34 @@ mod tests {
             )
             .unwrap();
         let mut env = HashMap::new();
-        assert!(broker
-            .apply_lease_to_env(&lease, "agent-2", &mut env, 1_050)
-            .is_err());
+        assert!(
+            broker
+                .apply_lease_to_env(&lease, "agent-2", &mut env, 1_050)
+                .is_err()
+        );
         let mut modified = lease.clone();
         modified.capabilities = vec!["models.read".into()];
-        assert!(broker
-            .apply_lease_to_env(&modified, "agent-1", &mut env, 1_050)
-            .unwrap_err()
-            .to_string()
-            .contains("unknown or has been modified"));
-        assert!(broker
-            .apply_lease_to_env(&lease, "agent-1", &mut env, 1_101)
-            .is_err());
+        assert!(
+            broker
+                .apply_lease_to_env(&modified, "agent-1", &mut env, 1_050)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown or has been modified")
+        );
+        assert!(
+            broker
+                .apply_lease_to_env(&lease, "agent-1", &mut env, 1_101)
+                .is_err()
+        );
         let receipt = broker
             .apply_lease_to_env(&lease, "agent-1", &mut env, 1_050)
             .unwrap();
         assert_eq!(receipt.outcome, "injected_into_client_scope");
-        assert!(!serde_json::to_string(&receipt)
-            .unwrap()
-            .contains("super-secret"));
+        assert!(
+            !serde_json::to_string(&receipt)
+                .unwrap()
+                .contains("super-secret")
+        );
     }
 
     #[test]

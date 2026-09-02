@@ -76,3 +76,12 @@ test("detached Docker conformance keeps the fixture stdin open", () => {
 	assert.equal(args.some((argument) => argument.includes("/tmp/maestro-runtime-conformance-test")), false);
 	assert.equal(args.at(-1), "conformance");
 });
+
+test("local tagged image pins run by image id so Docker does not pull Docker Hub", () => {
+	const digest = "sha256:" + "b".repeat(64);
+	const args = dockerConformanceRunArgs({
+		containerName: "maestro-runtime-conformance-local",
+		dockerImage: `maestro-conformance:123-1@${digest}`,
+	});
+	assert.equal(args.at(-2), digest);
+});

@@ -1318,11 +1318,13 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("cancelled"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cancelled")
+        );
     }
 
     #[tokio::test]

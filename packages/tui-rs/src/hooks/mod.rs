@@ -35,7 +35,7 @@
 //!
 //! Hooks can be configured via TOML files:
 //! - `~/.composer/hooks.toml` - Global hooks
-//! - `.composer/hooks.toml` - Project-local hooks
+//! - `.composer/hooks.toml` - Workspace hooks
 //!
 //! ```toml
 //! [settings]
@@ -70,20 +70,26 @@
 //! registry.register_pre_tool_use(Arc::new(LoggingHook));
 //! ```
 
+mod claude_code_import;
 mod config;
+mod context;
 mod hot_reload;
 mod integration;
 mod lua;
+mod matcher;
 mod notify;
 mod overflow;
 mod registry;
 mod types;
 mod wasm;
 
+pub use claude_code_import::*;
 pub use config::*;
+pub use context::*;
 pub use hot_reload::*;
 pub use integration::*;
 pub use lua::*;
+pub use matcher::*;
 pub use notify::*;
 pub use overflow::*;
 pub use registry::*;

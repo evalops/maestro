@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose::STANDARD;
+use anyhow::{Context, Result, bail};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use tokio::process::Command;
 
 pub const MAX_VIDEO_BYTES: u64 = 100 * 1024 * 1024;

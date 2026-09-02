@@ -25,7 +25,7 @@ class ComposerSettingsConfigurable : Configurable {
     private var showToolDetails: Boolean = settings.showToolDetails
     private var connectionTimeout: Int = settings.connectionTimeout
 
-    override fun getDisplayName(): String = "Maestro"
+    override fun getDisplayName(): String = "Deixic Code"
 
     override fun createComponent(): JComponent {
         panel = panel {
@@ -33,7 +33,7 @@ class ComposerSettingsConfigurable : Configurable {
                 row("API Endpoint:") {
                     textField()
                         .bindText(::apiEndpoint)
-                        .comment("URL of the Maestro server (e.g., http://localhost:8080)")
+                        .comment("URL of the Deixic Code server (e.g., http://localhost:8080)")
                         .columns(COLUMNS_LARGE)
                 }
                 row("Connection Timeout:") {

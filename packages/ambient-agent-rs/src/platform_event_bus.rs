@@ -3,7 +3,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
@@ -723,10 +723,12 @@ fn build_correlation(config: &PlatformEventBusConfig, session_id: &str) -> Map<S
     optional_insert(&mut correlation, "trace_id", config.trace_id.clone());
     correlation.insert(
         "request_id".to_string(),
-        json!(config
-            .request_id
-            .clone()
-            .unwrap_or_else(|| format!("ambient-daemon:{}", session_id))),
+        json!(
+            config
+                .request_id
+                .clone()
+                .unwrap_or_else(|| format!("ambient-daemon:{}", session_id))
+        ),
     );
     optional_insert(
         &mut correlation,

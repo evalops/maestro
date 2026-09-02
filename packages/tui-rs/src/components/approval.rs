@@ -2054,16 +2054,18 @@ mod tests {
                 &std::collections::HashMap::new(),
             );
 
-        assert!(lf
-            .command_source
-            .as_deref()
-            .unwrap()
-            .contains("safe ↵ name"));
-        assert!(crlf
-            .command_source
-            .as_deref()
-            .unwrap()
-            .contains("safe\\u{d} ↵ name"));
+        assert!(
+            lf.command_source
+                .as_deref()
+                .unwrap()
+                .contains("safe ↵ name")
+        );
+        assert!(
+            crlf.command_source
+                .as_deref()
+                .unwrap()
+                .contains("safe\\u{d} ↵ name")
+        );
         assert_ne!(lf.command_source, crlf.command_source);
     }
 

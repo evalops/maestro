@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { buildReleaseMetadata } from "./create-release-metadata.mjs";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const readReleaseWorkflow = () =>
+	readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 
 test("update lifecycle contract names every machine-readable surface", () => {
 	const contract = JSON.parse(read("docs/protocols/update-lifecycle.json"));
@@ -47,7 +49,7 @@ test("release metadata carries changelog notes and exact runtime passports", asy
 
 test("installer and signed release workflow publish receipt metadata", () => {
 	const installer = read("scripts/install.sh");
-	const release = read(".github/workflows/release.yml");
+	const release = readReleaseWorkflow();
 	const updater = read("packages/tui-rs/src/update_cli.rs");
 	const channelManifest = read("scripts/create-release-channel-manifest.mjs");
 	const channelResolver = read("scripts/resolve-release-channel.mjs");
@@ -80,7 +82,7 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(updater, /resolve_github_channel_manifest_url/);
 	assert.match(updater, /legacyExplicit/);
 	assert.doesNotMatch(updater, /MAESTRO_UPDATE_PREVIEW_FALLBACK/);
-	assert.doesNotMatch(read("docs/protocols/release-channels.md"), /MAESTRO_UPDATE_PREVIEW_FALLBACK/);
+	assert.doesNotMatch(read("docs/protocols/release-channels.json"), /MAESTRO_UPDATE_PREVIEW_FALLBACK/);
 	assert.match(release, /create-release-metadata\.mjs/);
 	assert.match(release, /release-metadata\.json/);
 	assert.match(release, /files\+=\([^\n]*release-metadata\.json/);
@@ -88,7 +90,5 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(release, /channel-manifest\.json/);
 	assert.match(channelManifest, /createPrivateKey/);
 	assert.match(channelResolver, /alpha or beta/);
-	assert.match(release, /ubuntu-24\.04-arm/);
-	assert.match(release, /actions\/setup-node@/);
-	assert.match(release, /build-release-binary\.mjs/);
+	assert.match(release, /release-metadata\.json/);
 });

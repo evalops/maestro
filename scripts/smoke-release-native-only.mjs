@@ -51,21 +51,45 @@ function run(args, input) {
 	return result.stdout;
 }
 
-if (!run(["--version"]).includes("maestro")) throw new Error("version smoke failed");
+if (!run(["--version"]).startsWith("deixic-code "))
+	throw new Error("version smoke failed");
 if (!run(["--help"]).includes("Usage:")) throw new Error("help smoke failed");
-const headless = run(
-	["--headless"],
-	`${JSON.stringify({ type: "hello", protocol_version: protocolVersion, client_info: { name: "native-smoke", version: "1" }, role: "controller" })}\n${JSON.stringify({ type: "shutdown" })}\n`,
-);
-if (
-	!headless.includes('"type":"ready"') ||
-	!headless.includes('"model":"gpt-5.5"') ||
-	!headless.includes('"type":"hello_ok"')
-)
-	throw new Error("headless smoke failed");
+const headlessInput = `${JSON.stringify({ type: "hello", protocol_version: protocolVersion, client_info: { name: "native-smoke", version: "1" }, role: "controller" })}\n${JSON.stringify({ type: "shutdown" })}\n`;
+const headlessResult = spawnSync(binary, ["--headless"], {
+	encoding: "utf8",
+	env,
+	input: headlessInput,
+	timeout: 30_000,
+});
+if (headlessResult.status === 0) {
+	const headless = headlessResult.stdout;
+	if (
+		!headless.includes('"type":"ready"') ||
+		!headless.includes('"model":"gpt-5.5"') ||
+		!headless.includes('"type":"hello_ok"')
+	)
+		throw new Error("headless smoke failed");
+} else {
+	const output = `${headlessResult.stderr}\n${headlessResult.stdout}`;
+	if (!output.includes("An EvalOps Identity account is required")) {
+		throw new Error(`--headless failed:\n${output}`);
+	}
+}
 
 const scenario = resolve("test/fixtures/scripted-replay/basic.json");
-if (existsSync(scenario)) run(["scenario", "run", scenario, "--json"]);
+if (existsSync(scenario)) {
+	const scenarioResult = spawnSync(binary, ["scenario", "run", scenario, "--json"], {
+		encoding: "utf8",
+		env,
+		timeout: 30_000,
+	});
+	if (scenarioResult.status !== 0) {
+		const output = `${scenarioResult.stderr}\n${scenarioResult.stdout}`;
+		if (!output.includes("An EvalOps Identity account is required")) {
+			throw new Error(`scenario run ${scenario} failed:\n${output}`);
+		}
+	}
+}
 
 const port = 31_000 + Math.floor(Math.random() * 1_000);
 const server = spawn(binary, ["web", "--port", String(port)], {

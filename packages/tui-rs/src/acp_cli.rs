@@ -6,10 +6,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use uuid::Uuid;
 
 use crate::session::{
@@ -131,7 +131,7 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                         },
                         "agentInfo": {
                             "name": "maestro",
-                            "title": "Maestro",
+                            "title": "Deixic Code",
                             "version": env!("CARGO_PKG_VERSION")
                         }
                     }),
@@ -364,6 +364,8 @@ fn create_acp_session_in(
     cwd: &Path,
     sessions_dir: Option<&Path>,
 ) -> Result<AcpSession> {
+    let unified_context_manifest = crate::context_cli::load_unified_context_manifest_json(cwd)
+        .context("failed to capture ACP context manifest")?;
     let header = SessionHeader {
         version: Some(1),
         id: session_id.to_string(),
@@ -376,7 +378,7 @@ fn create_acp_session_in(
         system_prompt: None,
         prompt_metadata: None,
         prompt_context_manifest: None,
-        unified_context_manifest: None,
+        unified_context_manifest: Some(Box::new(unified_context_manifest)),
         tools: Vec::new(),
         branched_from: None,
         parent_session: None,
@@ -542,18 +544,20 @@ async fn execute_prompt(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().context("failed to launch Maestro agent")?;
-    let mut child_stdin = child.stdin.take().context("missing Maestro stdin")?;
+    let mut child = command
+        .spawn()
+        .context("failed to launch Deixic Code agent")?;
+    let mut child_stdin = child.stdin.take().context("missing Deixic Code stdin")?;
     child_stdin
         .write_all(prompt.as_bytes())
         .await
-        .context("failed to send prompt to Maestro agent")?;
+        .context("failed to send prompt to Deixic Code agent")?;
     child_stdin
         .shutdown()
         .await
-        .context("failed to close Maestro agent stdin")?;
-    let mut child_stdout = child.stdout.take().context("missing Maestro stdout")?;
-    let mut child_stderr = child.stderr.take().context("missing Maestro stderr")?;
+        .context("failed to close Deixic Code agent stdin")?;
+    let mut child_stdout = child.stdout.take().context("missing Deixic Code stdout")?;
+    let mut child_stderr = child.stderr.take().context("missing Deixic Code stderr")?;
     let stderr_task = tokio::spawn(async move {
         let mut bytes = Vec::new();
         child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
@@ -563,7 +567,7 @@ async fn execute_prompt(
     let mut buffer = [0_u8; 4096];
     loop {
         let read = tokio::select! {
-            read = child_stdout.read(&mut buffer) => read.context("failed to read Maestro output")?,
+            read = child_stdout.read(&mut buffer) => read.context("failed to read Deixic Code output")?,
             _ = &mut cancelled => {
                 let _ = child.kill().await;
                 return Ok(None);
@@ -585,14 +589,14 @@ async fn execute_prompt(
     let status = child
         .wait()
         .await
-        .context("failed to wait for Maestro agent")?;
+        .context("failed to wait for Deixic Code agent")?;
     let stderr = stderr_task
         .await
-        .context("failed to join Maestro stderr reader")??;
+        .context("failed to join Deixic Code stderr reader")??;
     if !status.success() {
         let message = String::from_utf8_lossy(&stderr).trim().to_string();
         anyhow::bail!(
-            "Maestro agent exited with {}: {message}",
+            "Deixic Code agent exited with {}: {message}",
             status.code().unwrap_or(1)
         );
     }
@@ -748,6 +752,18 @@ mod tests {
 
         assert_eq!(parsed.header.id, "acp-session");
         assert_eq!(parsed.header.cwd, temp.path().to_string_lossy());
+        let context_manifest = parsed
+            .header
+            .unified_context_manifest
+            .as_ref()
+            .expect("ACP sessions persist their context generation");
+        assert_eq!(
+            context_manifest
+                .get("manifestSha256")
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(71)
+        );
         assert!(parsed.messages.is_empty());
     }
 
