@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Cold hosted agents spend 40m+ fetching the IntelliJ SDK. Skip that on
+# pull requests that do not touch the plugin; fail closed to a full run
+# when the base branch is unavailable.
+if [[ "${BUILDKITE_PULL_REQUEST:-false}" != "false" && -n "${BUILDKITE_PULL_REQUEST}" ]]; then
+  base_branch="${BUILDKITE_PULL_REQUEST_BASE_BRANCH:-main}"
+  git fetch --depth=80 origin "${base_branch}" >/dev/null 2>&1 || true
+  if git rev-parse --verify "origin/${base_branch}" >/dev/null 2>&1; then
+    if ! git diff --name-only "origin/${base_branch}...HEAD" | grep -q '^packages/jetbrains-plugin/'; then
+      echo "No packages/jetbrains-plugin changes on this PR; skipping JetBrains validation."
+      exit 0
+    fi
+  fi
+fi
+
 tool_root="${BUILDKITE_BUILD_CHECKOUT_PATH:-$(pwd)}/.buildkite/cache/jetbrains-tools"
 jdk_root="$tool_root/jdk-21"
 if ! java -version 2>&1 | head -1 | grep -Eq 'version "21([.]|\")'; then
