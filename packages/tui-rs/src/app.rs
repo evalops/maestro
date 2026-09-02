@@ -4213,7 +4213,7 @@ was missing; retry to review the exact execution context."
     fn show_help(&mut self) {
         let help_text = format!(
             r"
-Maestro TUI - Keyboard Shortcuts
+Deixic Code TUI - Keyboard Shortcuts
 
 Navigation:
   Up/Down       Scroll messages / Navigate completions

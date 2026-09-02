@@ -21,7 +21,7 @@ pub(super) fn initialize_result() -> Value {
 pub(super) fn tool_definition() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Execute a shell command only through EvalOps Platform ToolExecution. Platform owns policy, approval, sandbox execution, idempotency, and the durable result; Maestro never runs the command locally. Reuse the same operationId when retrying an ambiguous call.",
+        "description": "Execute a shell command only through EvalOps Platform ToolExecution. Platform owns policy, approval, sandbox execution, idempotency, and the durable result; Deixic Code never runs the command locally. Reuse the same operationId when retrying an ambiguous call.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,

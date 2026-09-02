@@ -210,7 +210,7 @@ async fn run_offer(args: &[String]) -> Result<i32> {
         )?
     } else {
         create_pairing_payload(
-            display_name.as_deref().unwrap_or("Maestro A2A Peer"),
+            display_name.as_deref().unwrap_or("Deixic Code A2A Peer"),
             &agent_card_url,
             &transport_url,
             peer_id.as_deref(),
@@ -397,12 +397,12 @@ async fn run_register(args: &[String]) -> Result<i32> {
     let name = flags
         .string("--name")
         .or_else(|| env_first(&["MAESTRO_A2A_AGENT_NAME", "MAESTRO_AGENT_NAME"]))
-        .unwrap_or_else(|| "Maestro A2A Peer".into());
+        .unwrap_or_else(|| "Deixic Code A2A Peer".into());
     let description = flags
         .string("--description")
         .or_else(|| env_first(&["MAESTRO_A2A_AGENT_DESCRIPTION", "MAESTRO_AGENT_DESCRIPTION"]))
         .unwrap_or_else(|| {
-            "Maestro peer exposing governed Codex subagent lanes through A2A.".into()
+            "Deixic Code peer exposing governed Codex subagent lanes through A2A.".into()
         });
     let workspace_id = flags.string("--workspace-id");
     let default_capabilities = default_maestro_a2a_capabilities();

@@ -378,7 +378,7 @@ fn discover_rules(
     for name in ["AGENTS.md", "AGENT.md"] {
         let path = root.join(name);
         if target.is_none_or(|target| target != path) {
-            add(path, "Existing Maestro agent instructions");
+            add(path, "Existing Deixic Code agent instructions");
         }
     }
     for path in walk(&root.join(".cursor/rules"), &|name| {

@@ -199,7 +199,7 @@ fn validate_a2a_requested_extensions(
         return Err(a2a_error_response(
             400,
             "EXTENSION_NOT_SUPPORTED",
-            &format!("A2A extension is not supported by this Maestro agent: {extension}"),
+            &format!("A2A extension is not supported by this Deixic Code agent: {extension}"),
         ));
     }
     Ok(requested)
@@ -1540,7 +1540,7 @@ pub(crate) async fn claim_a2a_send_task(
         }
     }
     history.push(a2a_user_message_value(&request.message, &context_id));
-    let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
+    let working_message = a2a_agent_message(&context_id, "Deixic Code is working on the A2A task.");
     let task = a2a_task_value(
         &task_id,
         &context_id,
@@ -1733,7 +1733,7 @@ pub(crate) async fn handle_a2a_message_send(
         return json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }));
     }
     if return_immediately {
-        let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
+        let accepted_message = a2a_agent_message(&context_id, "Deixic Code accepted the A2A task.");
         let mut accepted_history = history.clone();
         accepted_history.push(accepted_message.clone());
         let task = a2a_task_value(
@@ -1902,7 +1902,7 @@ async fn complete_a2a_task_with_capsule(
     };
 
     let assistant_text = if turn.assistant_text.trim().is_empty() {
-        "Maestro completed the A2A task without a text response.".to_string()
+        "Deixic Code completed the A2A task without a text response.".to_string()
     } else {
         turn.assistant_text
     };

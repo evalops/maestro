@@ -3,7 +3,7 @@ name = "maestro-a2a-ledger"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Authoritative local Maestro A2A SQLite task ledger"
+description = "Authoritative local Deixic Code A2A SQLite task ledger"
 
 [dependencies]
 anyhow.workspace = true

@@ -1,4 +1,4 @@
-# Maestro Threat Model
+# Deixic Code Threat Model
 
 > **Status:** Current Rust runtime. This document is checked against the
 > implementation in `packages/tui-rs/`, `packages/runtime-gateway-rs/`, and
@@ -6,14 +6,14 @@
 > does not claim that prompt injection, secret exposure, or arbitrary code
 > execution is solved.
 
-Audience: security reviewers and operators deploying Maestro in sensitive
+Audience: security reviewers and operators deploying Deixic Code in sensitive
 environments.
 
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.md)
 
 ## Scope and trust boundaries
 
-Maestro runs a local Rust agent and tool executor. The web/runtime-gateway
+Deixic Code runs a local Rust agent and tool executor. The web/runtime-gateway
 process exposes a separate HTTP boundary. Model providers, MCP servers,
 websites, files, and tool results are untrusted inputs unless the operator has
 chosen to trust them.
@@ -171,7 +171,7 @@ consume host or provider resources.
   tests.
 - Safe mode can require a plan before mutation and run validators after writes.
 
-**Residual risk:** Medium to high. Maestro does not claim a host-wide CPU,
+**Residual risk:** Medium to high. Deixic Code does not claim a host-wide CPU,
 memory, or disk quota for every child process. Use OS/container quotas and
 provider limits for multi-tenant or hostile workloads.
 
@@ -225,7 +225,7 @@ The managed policy boundary is separate from identity and authorization:
   block policy-gated actions.
 - The publish endpoint accepts only an externally signed envelope. Private
   signing keys remain in the organization's KMS/HSM and are not handled by
-  Maestro.
+  Deixic Code.
 - Successful publication replaces the configured bundle atomically and
   advances a persistent version/hash watermark, preventing a stale valid
   bundle from being replayed.
@@ -265,7 +265,7 @@ For a local or shared deployment:
 
 If a session may have executed an unsafe action:
 
-1. Stop the Maestro process and the affected child processes.
+1. Stop the Deixic Code process and the affected child processes.
 2. Revoke or rotate provider, API, proxy, and MCP credentials.
 3. Preserve the session, command, policy, and runtime-gateway logs available to
    the deployment without copying secrets into an issue.

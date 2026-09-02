@@ -622,7 +622,7 @@ pub fn setup_next_commands(
     if identity_required {
         commands.push((
             "evalops-login",
-            "Sign in to EvalOps Identity (required for every Maestro session).",
+            "Sign in to EvalOps Identity (required for every Deixic Code session).",
             "deixic-code evalops login".to_owned(),
         ));
     }

@@ -1,6 +1,6 @@
-# Maestro TUI (Rust)
+# Deixic Code TUI (Rust)
 
-Native terminal UI for Maestro, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
+Native terminal UI for Deixic Code, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
 
 ## User Guide
 
@@ -100,13 +100,13 @@ background_tasks action=waitForRotation taskId=<id> timeoutMs=10000
 
 ## Conductor Bridge Helpers
 
-The Rust crate exposes helper types for probing a Maestro web server bridge:
+The Rust crate exposes helper types for probing a Deixic Code web server bridge:
 
 ```rust
 use maestro_tui::bridge::fetch_bridge_status;
 
 let status = fetch_bridge_status("http://localhost:8080").await?;
-println!("Maestro version: {:?}", status.version);
+println!("Deixic Code version: {:?}", status.version);
 ```
 
 This is useful for tooling or diagnostics that need to confirm the bridge is
@@ -194,7 +194,7 @@ src/
 
 ## Plugins
 
-Maestro discovers filesystem plugins under `.maestro/plugins/*` and
+Deixic Code discovers filesystem plugins under `.maestro/plugins/*` and
 `~/.maestro/plugins/*` (plus legacy `.composer/plugins` paths). Each plugin
 may bundle skills, command templates, hooks, and MCP configs. See
 [docs/plugins.md](docs/plugins.md) for layout, `plugin.json` schema, and

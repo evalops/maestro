@@ -14966,7 +14966,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             !content.contains(&oversize),
             "oversize context was injected"
         );
-        assert!(content.contains("Maestro dropped"), "{content}");
+        assert!(content.contains("Deixic Code dropped"), "{content}");
         assert!(content.contains("10001"), "{content}");
     }
 

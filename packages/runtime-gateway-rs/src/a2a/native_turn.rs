@@ -728,7 +728,7 @@ pub(crate) async fn run_a2a_native_turn(
     };
     let base_system_prompt =
         trimmed_env("MAESTRO_A2A_SYSTEM_PROMPT").unwrap_or_else(|| {
-            "You are the local Maestro Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
+            "You are the local Deixic Code Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
         });
     let system_prompt = execution_policy
         .as_ref()

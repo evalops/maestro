@@ -1372,7 +1372,7 @@ impl SubagentManager {
             record.status = SubagentStatus::Interrupted;
             record.finished_at_ms = Some(now_millis());
             record.error = Some(
-                "Maestro restarted while this subagent was queued or running; resume it to continue"
+                "Deixic Code restarted while this subagent was queued or running; resume it to continue"
                     .to_string(),
             );
             self.write_record(&record)?;
@@ -3270,7 +3270,7 @@ impl SubagentManager {
         }
         let Some(token) = self.runtime.get(id) else {
             return ToolResult::failure(format!(
-                "subagent {id} is not running in this Maestro process; resume it to restart"
+                "subagent {id} is not running in this Deixic Code process; resume it to restart"
             ));
         };
         token.cancel();
@@ -4081,7 +4081,7 @@ impl SubagentManager {
         // Captured before `model` moves into the config below.
         let mut output_metering = ChildOutputMetering::for_model(&model);
         let system_prompt = format!(
-            "You are a delegated Maestro subagent in the {} role. Work independently on the assigned task.\n\
+            "You are a delegated Deixic Code subagent in the {} role. Work independently on the assigned task.\n\
              Working directory: {}\n\
              {}\
              Return a concise result for the parent agent, including files changed and any remaining risk.\n\
@@ -5786,7 +5786,7 @@ fn prepare_control_body(
     }
     if CredentialVault::has_references(body) {
         return Err(
-            "control message contains credential references that cannot be re-keyed for a child running in another Maestro process"
+            "control message contains credential references that cannot be re-keyed for a child running in another Deixic Code process"
                 .to_string(),
         );
     }

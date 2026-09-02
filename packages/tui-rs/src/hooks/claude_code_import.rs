@@ -170,13 +170,13 @@ pub fn map_matcher(matcher: Option<&str>) -> Result<Option<String>, String> {
             mapped.push_str(name);
         } else {
             return Err(format!(
-                "matcher token \"{token}\" cannot be translated safely to a Maestro tool name"
+                "matcher token \"{token}\" cannot be translated safely to a Deixic Code tool name"
             ));
         }
     }
 
     regex::Regex::new(&mapped)
-        .map_err(|error| format!("translated matcher is not a valid Maestro regex: {error}"))?;
+        .map_err(|error| format!("translated matcher is not a valid Deixic Code regex: {error}"))?;
     Ok(Some(mapped))
 }
 
@@ -197,7 +197,7 @@ pub fn import_claude_code_hooks(settings_json: &str) -> anyhow::Result<ImportOut
                 outcome.unmappable.push(UnmappableEntry {
                     event: event_name.clone(),
                     matcher: matcher.matcher.clone(),
-                    reason: format!("Maestro has no hook event equivalent to \"{event_name}\""),
+                    reason: format!("Deixic Code has no hook event equivalent to \"{event_name}\""),
                 });
                 continue;
             };
@@ -219,7 +219,7 @@ pub fn import_claude_code_hooks(settings_json: &str) -> anyhow::Result<ImportOut
                         event: event_name.clone(),
                         matcher: matcher.matcher.clone(),
                         reason: format!(
-                            "hook type \"{hook_type}\" has no Maestro equivalent; only command hooks are imported"
+                            "hook type \"{hook_type}\" has no Deixic Code equivalent; only command hooks are imported"
                         ),
                     });
                     continue;

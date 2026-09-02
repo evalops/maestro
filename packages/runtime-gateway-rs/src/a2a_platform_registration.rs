@@ -172,13 +172,13 @@ pub(crate) fn resolve_a2a_platform_registration_config(
         workspace_id: workspace_id.expect("workspace id presence checked above"),
         agent_id,
         name: first_trimmed_env(&["MAESTRO_A2A_AGENT_NAME", "MAESTRO_AGENT_NAME"])
-            .unwrap_or_else(|| "Maestro A2A Peer".to_string()),
+            .unwrap_or_else(|| "Deixic Code A2A Peer".to_string()),
         description: first_trimmed_env(&[
             "MAESTRO_A2A_AGENT_DESCRIPTION",
             "MAESTRO_AGENT_DESCRIPTION",
         ])
         .unwrap_or_else(|| {
-            "Maestro peer exposing governed Codex subagent lanes through A2A.".to_string()
+            "Deixic Code peer exposing governed Codex subagent lanes through A2A.".to_string()
         }),
         agent_type: trimmed_env("MAESTRO_A2A_AGENT_TYPE").unwrap_or_else(|| "maestro".to_string()),
         owner_id: first_trimmed_env(&["MAESTRO_A2A_OWNER_ID", "EVALOPS_USER_ID"]),

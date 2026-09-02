@@ -244,7 +244,7 @@ pub fn install_with_provenance(
     copy_tree(root, &staging)?;
     fs::write(
         staging.join(".maestro-untrusted"),
-        "Installation is incomplete; Maestro will not load this plugin.\n",
+        "Installation is incomplete; Deixic Code will not load this plugin.\n",
     )?;
     fs::rename(&staging, &destination)?;
 

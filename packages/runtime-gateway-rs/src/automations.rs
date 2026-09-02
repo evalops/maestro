@@ -1037,7 +1037,7 @@ async fn execute_native_turn(claim: &ClaimedAutomationRun, cwd: &Path) -> Automa
         model: claim.model.clone(),
         cwd: cwd.to_string_lossy().to_string(),
         system_prompt: Some(
-            "You are running a durable Maestro automation. Complete the requested task and return a concise result. No external tool calls are available in this automation contract.".to_string(),
+            "You are running a durable Deixic Code automation. Complete the requested task and return a concise result. No external tool calls are available in this automation contract.".to_string(),
         ),
         ..NativeAgentConfig::default()
     };

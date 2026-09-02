@@ -190,7 +190,7 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        println!("EvalOps Identity is required before Maestro can run.");
+        println!("EvalOps Identity is required before Deixic Code can run.");
         println!("Choose how to continue:");
         println!("  1. Sign in and use managed inference");
         println!("  2. Sign in, then use your own API key");

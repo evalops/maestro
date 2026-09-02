@@ -113,7 +113,7 @@ pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
 fn format_report(blob: &format::CrashBlob) -> String {
     let mut out = String::with_capacity(1024);
 
-    out.push_str("=== Maestro Crash Report ===\n\n");
+    out.push_str("=== Deixic Code Crash Report ===\n\n");
     out.push_str(&format!("Signal:  {}\n", signal_name(blob.signal)));
     out.push_str(&format!(
         "si_code: {} ({})\n",
@@ -1011,7 +1011,7 @@ mod tests {
         );
 
         let text = std::fs::read_to_string(&report.report_path).expect("report readable");
-        assert!(text.contains("Maestro Crash Report"));
+        assert!(text.contains("Deixic Code Crash Report"));
         assert!(text.contains("SIGSEGV"));
 
         #[cfg(unix)]
