@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.71-beta.34] - 2026-09-02
+
+### Changed
+
+- Bump docker/setup-buildx-action from 4.2.0 to 4.3.0 (#1049). <!-- maestro-release-note:22346dba1529 -->
+
 ## [0.10.70] - 2026-08-19
 
 ### Added
