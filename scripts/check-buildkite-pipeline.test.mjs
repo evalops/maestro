@@ -149,7 +149,7 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
 test("JetBrains validation fails fast and retries stuck-JVM exits", () => {
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 1[\s\S]*limit: 1/);
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
-  assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon \\/);
+  assert.match(jetbrains, /25m \\\n\s+\.\/gradlew check buildPlugin --no-daemon \\/);
   assert.match(jetbrains, /org\.gradle\.workers\.max=1/);
   assert.match(
     jetbrains,
