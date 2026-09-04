@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.72-alpha.37] - 2026-09-04
+
+### Changed
+
+- Route Maestro image receipts to evalops/k8s (#1051). <!-- maestro-release-note:11a1e5afe00f -->
+
 ## [0.10.70] - 2026-08-19
 
 ### Added
