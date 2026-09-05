@@ -139,7 +139,16 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
         run: |
+          set -euo pipefail
           node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"
+          # Also enforce marker authentication here when dispatching an older tag
+          # whose source verifier predates the optional capability contract.
+          for platform in darwin-x64 darwin-arm64; do
+            (
+              cd release-binaries
+              grep -E "^[a-f0-9]{64}  code-device-${platform}\.json$" MONO_SHA256SUMS | sha256sum --check --strict
+            )
+          done
           chmod +x release-binaries/maestro-linux-* release-binaries/maestro-darwin-*
           for platform in darwin-x64 darwin-arm64; do
             if [[ "$(jq -r '.enabled' "release-binaries/code-device-${platform}.json")" == true ]]; then

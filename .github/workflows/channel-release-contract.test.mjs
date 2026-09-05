@@ -59,3 +59,11 @@ test("only authenticated enabled device helpers are extracted and published", ()
   assert.match(releaseWorkflow, /files\+=\(runtime-passport-maestro-\*\.json code-device-\*\.json\)/);
   assert.doesNotMatch(releaseWorkflow, /files\+=\([^\n]*deixic-code-device-\*/);
 });
+
+test("older source verifiers cannot authorize unhashed capability markers", () => {
+  const authentication = releaseWorkflow.indexOf('node scripts/verify-staged-release.mjs release-binaries');
+  const markerCheck = releaseWorkflow.indexOf('code-device-${platform}\\.json$');
+  const decision = releaseWorkflow.indexOf("jq -r '.enabled'");
+  assert.ok(authentication >= 0 && authentication < markerCheck && markerCheck < decision);
+  assert.match(releaseWorkflow, /MONO_SHA256SUMS \| sha256sum --check --strict/);
+});
