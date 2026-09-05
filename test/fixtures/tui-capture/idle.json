@@ -1,0 +1,8 @@
+{
+  "name": "idle",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    }
+  ]
+}

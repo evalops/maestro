@@ -82,8 +82,8 @@ use crate::commands::{
 use crate::components::{
     ApprovalController, ApprovalDecision, ApprovalModal, ApprovalModalKind, ApprovalRequest,
     BatchedApprovalModal, ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette,
-    DetailView, FileSearchModal, ModelSelector, OperationsModal, RewindPicker, SessionSwitcher,
-    SetupAdvance, SetupModal, ShortcutsHelp, ThemeSelector, approval_modal_kind,
+    DetailView, FileSearchModal, McpManager, ModelSelector, OperationsModal, RewindPicker,
+    SessionSwitcher, SetupAdvance, SetupModal, ShortcutsHelp, ThemeSelector, approval_modal_kind,
     calculate_input_height,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
@@ -94,9 +94,9 @@ use crate::harness::HarnessStore;
 use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mailbox::MailboxStore;
-use crate::mcp::{
-    McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport, append_mcp_prompt_summary,
-};
+#[cfg(test)]
+use crate::mcp::{McpConfigScope, McpTransport};
+use crate::mcp::{McpPrompt, McpRuntimeEvent, append_mcp_prompt_summary};
 use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
 use crate::prompts::{PromptDefinition, parse_args, render_prompt};
@@ -142,6 +142,8 @@ pub enum ActiveModal {
     SessionSwitcher,
     /// Read-only persisted tool execution browser
     Operations,
+    /// Interactive MCP server lifecycle manager
+    McpManager,
     /// Command palette (Ctrl+Shift+P style)
     CommandPalette,
     /// Tool execution approval dialog
@@ -150,6 +152,8 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
+    /// Persistent Dex cosmetics.
+    DexAppearance,
     /// First-run EvalOps Identity and optional local API key setup
     Setup,
     /// Keyboard shortcuts help overlay
@@ -255,6 +259,7 @@ fn is_mcp_config_path(path: &std::path::Path) -> bool {
         )
 }
 
+#[cfg(test)]
 fn format_mcp_scope_label(scope: McpConfigScope) -> &'static str {
     match scope {
         McpConfigScope::Enterprise => "Enterprise config",
@@ -265,6 +270,7 @@ fn format_mcp_scope_label(scope: McpConfigScope) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn format_mcp_transport_label(transport: McpTransport) -> &'static str {
     match transport {
         McpTransport::Http => "HTTP",
@@ -457,6 +463,7 @@ fn snapshot_mcp_server_statuses(
         .collect()
 }
 
+#[cfg(test)]
 fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<String> {
     let mut lines = vec!["Model Context Protocol".to_string(), String::new()];
 
@@ -651,6 +658,9 @@ pub struct App {
     /// Recent persisted tool executions.
     operations: OperationsModal,
 
+    /// Unified MCP server manager.
+    mcp_manager: McpManager,
+
     /// Command palette modal (like VS Code's Ctrl+Shift+P).
     command_palette: CommandPalette,
 
@@ -682,6 +692,17 @@ pub struct App {
     /// Call IDs with a guardian review in flight. Cleared on interrupt so a
     /// review that finishes after Ctrl+C cannot auto-execute the tool.
     pending_guardian_reviews: HashSet<String>,
+
+    /// MCP connection work runs outside the input/render loop. Results are
+    /// drained here so a slow server cannot freeze keystrokes or painting.
+    mcp_status_tx: mpsc::UnboundedSender<Result<Vec<crate::tools::McpServerStatus>, String>>,
+    mcp_status_rx: mpsc::UnboundedReceiver<Result<Vec<crate::tools::McpServerStatus>, String>>,
+    mcp_status_refresh_in_flight: bool,
+    /// Long-running MCP configuration work (notably browser OAuth) also stays
+    /// off the input/render loop.
+    mcp_config_tx: mpsc::UnboundedSender<Result<String, String>>,
+    mcp_config_rx: mpsc::UnboundedReceiver<Result<String, String>>,
+    mcp_config_in_flight: bool,
 
     /// Manages session persistence (save/load conversations).
     session_manager: SessionManager,
@@ -758,6 +779,11 @@ pub struct App {
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
 
+    /// Presentation of the last explicit terminal event; cleared on session changes.
+    dex_terminal: Option<crate::components::dex_companion::DexCompanionState>,
+    dex_pose_started: Instant,
+    dex_delight: dex_presentation::DexPresentation,
+
     /// Queued prompt reserved by the agent (between `ResponseEnd` and `ResponseStart`).
     queued_prompt_inflight: Option<QueuedPromptCursor>,
 
@@ -816,6 +842,8 @@ pub struct App {
 
     /// Status-bar density (`/footer rich|solo|history|clear`).
     footer_style: FooterStyle,
+    ui_prefs: crate::ui_prefs::UiPrefs,
+    configured_animations: bool,
 
     /// Local paths attached via `/attach` or clipboard image paste for the
     /// next `submit_prompt` (cleared after send).
@@ -910,10 +938,6 @@ pub struct App {
 
     /// Modal to restore when the detail view closes (e.g. back to Approval).
     detail_return_modal: ActiveModal,
-
-    /// Last quantized Deixic welcome shimmer frame. Empty chat animates at
-    /// [`crate::shimmer::SHIMMER_FPS`] without continuous full-rate idle paints.
-    last_welcome_shimmer_frame: u64,
 }
 
 /// Build a single, user-facing notice explaining why repo-controlled
@@ -1370,6 +1394,8 @@ impl App {
         let command_registry = Arc::new(command_registry);
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
         let (guardian_tx, guardian_rx) = mpsc::unbounded_channel();
+        let (mcp_status_tx, mcp_status_rx) = mpsc::unbounded_channel();
+        let (mcp_config_tx, mcp_config_rx) = mpsc::unbounded_channel();
         let (exec_command_tx, exec_command_rx) = std::sync::mpsc::channel();
         let (a2a_handoff_tx, a2a_handoff_rx) = mpsc::unbounded_channel();
 
@@ -1442,7 +1468,8 @@ impl App {
 
         let tool_executor = {
             let executor = ToolExecutor::with_credential_vault(&cwd, credential_vault.clone())
-                .with_managed_mcp_policy(managed_mcp_policy);
+                .with_managed_mcp_policy(managed_mcp_policy)
+                .with_code_authority();
             match sandbox_policy {
                 Some(policy) => executor.with_sandbox_policy(policy),
                 None => executor,
@@ -1481,6 +1508,12 @@ impl App {
             }
         };
 
+        let ui_prefs = crate::ui_prefs::UiPrefs::load_default();
+        let configured_animations = app_config
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.animations)
+            .unwrap_or(true);
         Self {
             state,
             native_agent: None,
@@ -1505,12 +1538,19 @@ impl App {
             workspace_refresh_pending: false,
             session_switcher: SessionSwitcher::new(&cwd),
             operations: OperationsModal::new(&cwd),
+            mcp_manager: McpManager::new(),
             approval_controller: ApprovalController::new(),
             sandbox_policy: stored_sandbox_policy,
             guardian: crate::safety::guardian::Guardian::from_env(app_config.model),
             guardian_tx,
             guardian_rx,
             pending_guardian_reviews: HashSet::new(),
+            mcp_status_tx,
+            mcp_status_rx,
+            mcp_status_refresh_in_flight: false,
+            mcp_config_tx,
+            mcp_config_rx,
+            mcp_config_in_flight: false,
             session_manager: SessionManager::new(&cwd),
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
@@ -1539,6 +1579,9 @@ impl App {
             a2a_handoff_rx,
             initial_prompt: initial_prompt.filter(|p| !p.trim().is_empty()),
             queued_prompts: VecDeque::new(),
+            dex_terminal: None,
+            dex_pose_started: Instant::now(),
+            dex_delight: Default::default(),
             queued_prompt_inflight: None,
             queued_prompt_active: None,
             next_queue_id: 1,
@@ -1556,7 +1599,9 @@ impl App {
             mailbox_store,
             managed_setup,
             goal_auto_continue_armed: false,
-            footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
+            footer_style: ui_prefs.footer_style(),
+            ui_prefs,
+            configured_animations,
             pending_attachments: Vec::new(),
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
@@ -1588,7 +1633,6 @@ impl App {
             terminal_session_started: false,
             detail_view: None,
             detail_return_modal: ActiveModal::None,
-            last_welcome_shimmer_frame: 0,
         }
     }
 
@@ -1917,21 +1961,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 }
             }
 
-            // Empty chat runs the Deixic welcome sheen; advance paint only when
-            // the quantized shimmer frame changes (~12 fps), not every idle tick.
-            let welcome_animating = self.state.messages.is_empty() && !self.state.busy;
-            if welcome_animating {
-                let frame = crate::shimmer::shimmer_frame();
-                if frame != self.last_welcome_shimmer_frame {
-                    self.last_welcome_shimmer_frame = frame;
-                    needs_redraw = true;
-                }
-            }
-
-            // Poll for terminal events. Shorter timeout while busy (animations)
-            // or while the empty welcome sheen is active; longer while idle.
-            let poll_timeout =
-                terminal_poll_timeout(self.state.busy, welcome_animating, agent_activity);
+            // Poll faster while busy so the working-state sheen and spinners
+            // advance. Idle welcome screens stay still on the normal cadence.
+            let poll_timeout = terminal_poll_timeout(self.state.busy, agent_activity);
             self.poll_terminal_theme();
             if let Some(event) = self.poll_terminal_event(poll_timeout)? {
                 match event {
@@ -1940,6 +1972,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                         needs_redraw = true;
                     }
                     AppTerminalEvent::Mouse(mouse) => {
+                        if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                            && self.active_modal == ActiveModal::None
+                            && self.dex_hit(mouse.column, mouse.row)
+                        {
+                            self.pet_dex();
+                            needs_redraw = true;
+                            continue;
+                        }
                         // Handle mouse scroll wheel
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
@@ -1990,9 +2030,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     }
                     AppTerminalEvent::FocusGained => {
                         self.terminal_notifier.record_focus(true);
+                        self.dex_focus_returned();
+                        needs_redraw = true;
                     }
                     AppTerminalEvent::FocusLost => {
                         self.terminal_notifier.record_focus(false);
+                        self.dex_focus_lost();
                     }
                     AppTerminalEvent::ThemeReportingStatus(setting) => {
                         self.state.theme_reporting_available = setting.is_available();
@@ -2021,6 +2064,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
+            self.sync_dex_attention();
+
             if self.poll_model_verification() {
                 needs_redraw = true;
             }
@@ -2042,6 +2087,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // Apply MCP config changes before the periodic refresh so edits
             // show up in the footer as soon as the watcher delivers them.
             if self.poll_config_watcher().await {
+                needs_redraw = true;
+            }
+
+            if self.poll_mcp_status_refresh() {
+                needs_redraw = true;
+            }
+
+            if self.poll_mcp_config() {
                 needs_redraw = true;
             }
 
@@ -2253,7 +2306,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
 
             // Paint when dirty, or continuously while busy (thinking/spinner).
-            if needs_redraw || self.state.busy {
+            let dex_hop_active = self.dex_terminal
+                == Some(crate::components::dex_companion::DexCompanionState::Finished)
+                && self.dex_pose_started.elapsed() < Duration::from_millis(800)
+                && self
+                    .ui_prefs
+                    .animations
+                    .unwrap_or(self.configured_animations)
+                && self.ui_prefs.dex_personality()
+                    != crate::components::dex_companion::DexPersonality::Quiet;
+            if needs_redraw || self.state.busy || dex_hop_active || self.dex_pet_active() {
                 self.render()?;
                 if !self.state.busy {
                     needs_redraw = false;
@@ -2378,9 +2440,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             crate::codex_auth::resolve_default_model()
         };
 
-        let (history, session_id, thinking_level) = self.agent_context_for_spawn();
+        let (history, session_id, thinking_level) = self.agent_context_for_spawn()?;
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();
         let config = NativeAgentConfig {
+            model_dynamics: crate::config::model_dynamics_config(),
             model: model.clone(),
             max_tokens: crate::model_catalog::default_max_output_tokens(&model),
             max_tokens_source: MaxTokensSource::Catalog,
@@ -2404,6 +2467,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }),
             max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
             allow_unbounded_turn: false,
+            retry_config: crate::agent::retry::RetryConfig::default(),
         };
 
         let policy_model = policy_model_id(&model);
@@ -2441,7 +2505,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     // Startup session restore runs before the agent exists. Queue
                     // the copied conversation before any initial prompt so a
                     // fork continues with the same model context.
-                    agent.replace_history(history);
+                    let continuation = match self.session_manager.current_session_path() {
+                        Some(path) => crate::session::SessionReader::read_file(&path)?
+                            .compactions
+                            .last()
+                            .and_then(|entry| entry.continuation.clone()),
+                        None => None,
+                    };
+                    agent.replace_history_with_continuation(history, continuation);
                     agent.send_ready();
                     // Send session info with git branch
                     agent.send_session_info(&cwd, session_id, git_branch);
@@ -2486,7 +2557,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         Ok(())
     }
 
-    fn agent_context_for_spawn(&self) -> (Vec<crate::ai::Message>, Option<String>, ThinkingLevel) {
+    fn agent_context_for_spawn(
+        &mut self,
+    ) -> Result<(Vec<crate::ai::Message>, Option<String>, ThinkingLevel)> {
+        self.session_manager.flush()?;
+        if let Some(path) = self.session_manager.current_session_path() {
+            let session = crate::session::SessionReader::read_file(&path)?;
+            return Ok((
+                crate::session::model_history(&session),
+                self.state.session_id.clone(),
+                self.current_thinking_level,
+            ));
+        }
         let history = self
             .state
             .messages
@@ -2506,11 +2588,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 _ => None,
             })
             .collect();
-        (
+        Ok((
             history,
             self.state.session_id.clone(),
             self.current_thinking_level,
-        )
+        ))
     }
 
     fn build_system_prompt_assembly(&self) -> PromptAssembly {
@@ -2966,7 +3048,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let cwd_text = cwd.to_string_lossy();
         let executor =
             ToolExecutor::with_credential_vault(cwd_text.as_ref(), self.credential_vault.clone())
-                .with_managed_mcp_policy(managed_mcp_policy);
+                .with_managed_mcp_policy(managed_mcp_policy)
+                .with_code_authority();
         self.tool_executor = Arc::new(match sandbox_policy.clone() {
             Some(policy) => executor.with_sandbox_policy(policy),
             None => executor,
@@ -3185,11 +3268,32 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             return false;
         }
         self.last_mcp_status_refresh = Some(now);
+        if self.mcp_status_refresh_in_flight {
+            return false;
+        }
+        self.mcp_status_refresh_in_flight = true;
+        let executor = Arc::clone(&self.tool_executor);
+        let tx = self.mcp_status_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(executor.mcp_status().await);
+        });
+        false
+    }
 
-        if let Ok(servers) = self.tool_executor.mcp_status().await {
+    fn poll_mcp_status_refresh(&mut self) -> bool {
+        let mut dirty = false;
+        while let Ok(result) = self.mcp_status_rx.try_recv() {
+            self.mcp_status_refresh_in_flight = false;
+            let servers = match result {
+                Ok(servers) => servers,
+                Err(error) => {
+                    self.state.status = Some(format!("MCP status refresh failed: {error}"));
+                    dirty = true;
+                    continue;
+                }
+            };
             let mut status_message = None;
             let current_statuses = snapshot_mcp_server_statuses(&servers);
-
             for server in &servers {
                 if let Some(message) = format_mcp_server_transition_status(
                     self.last_mcp_server_statuses.get(&server.name),
@@ -3198,7 +3302,6 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     status_message = Some(message);
                 }
             }
-
             let mut removed_servers = self
                 .last_mcp_server_statuses
                 .keys()
@@ -3214,15 +3317,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     status_message = Some(message);
                 }
             }
-
-            let prev = (
+            let previous = (
                 self.state.mcp_connected,
                 self.state.mcp_tool_count,
                 self.state.mcp_failed,
             );
             self.update_mcp_badge_counts(&servers);
+            self.mcp_manager.set_statuses(servers.clone());
             self.last_mcp_server_statuses = current_statuses;
-            let counts_changed = prev
+            dirty |= previous
                 != (
                     self.state.mcp_connected,
                     self.state.mcp_tool_count,
@@ -3230,11 +3333,26 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 );
             if let Some(message) = status_message {
                 self.state.status = Some(message);
-                return true;
+                dirty = true;
             }
-            return counts_changed;
         }
-        false
+        dirty
+    }
+
+    fn poll_mcp_config(&mut self) -> bool {
+        let mut dirty = false;
+        while let Ok(result) = self.mcp_config_rx.try_recv() {
+            self.mcp_config_in_flight = false;
+            match result {
+                Ok(message) => self.state.add_system_message(message),
+                Err(error) => self
+                    .state
+                    .add_system_message(format!("MCP configuration failed: {error}")),
+            }
+            self.last_mcp_status_refresh = None;
+            dirty = true;
+        }
+        dirty
     }
 
     /// Returns true if MCP events updated UI state.
@@ -3473,8 +3591,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
-        self.handle_agent_message_with_options(msg, true, true)
-            .await
+        let result = self
+            .handle_agent_message_with_options(msg, true, true)
+            .await;
+        self.sync_dex_attention();
+        result
     }
 
     async fn handle_agent_message_with_options(
@@ -3507,7 +3628,51 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             _ => None,
         };
         let mut needs_post_interrupt_queue = false;
+        use crate::components::dex_companion::DexCompanionState;
+        let previous_dex_terminal = self.dex_terminal;
+        if matches!(
+            &msg,
+            FromAgent::Ready { .. }
+                | FromAgent::ResponseStart { .. }
+                | FromAgent::SideQuestionStart {
+                    standalone: true,
+                    ..
+                }
+        ) {
+            self.dex_begin_turn();
+        }
+        match &msg {
+            FromAgent::Ready { .. } | FromAgent::ResponseStart { .. } => self.dex_terminal = None,
+            FromAgent::SideQuestionStart {
+                standalone: true, ..
+            } => self.dex_terminal = None,
+            FromAgent::SideQuestionEnd {
+                standalone: true,
+                error,
+                ..
+            } => {
+                self.dex_terminal = Some(if error.is_some() {
+                    DexCompanionState::Failed
+                } else {
+                    DexCompanionState::Finished
+                });
+            }
+            FromAgent::TurnCompleted { .. } => {
+                self.dex_terminal = Some(DexCompanionState::Finished);
+            }
+            FromAgent::TurnInterrupted { .. } => self.dex_terminal = Some(DexCompanionState::Ready),
+            FromAgent::Error {
+                fatal, terminal, ..
+            } if *fatal || *terminal => {
+                self.dex_terminal = Some(DexCompanionState::Failed);
+            }
+            FromAgent::ProviderError { .. } => self.dex_terminal = Some(DexCompanionState::Failed),
+            _ => {}
+        }
 
+        if self.dex_terminal != previous_dex_terminal {
+            self.dex_pose_started = Instant::now();
+        }
         if matches!(msg, FromAgent::ResponseStart { .. }) {
             let was_busy = self.state.busy;
             self.state.busy = true;
@@ -3570,6 +3735,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.usage_tracker.set_model(model.clone());
                 self.model_monitor.verify(model.clone());
             }
+            FromAgent::BoostChanged {
+                thinking: Some(level),
+                ..
+            } => {
+                self.current_thinking_level = *level;
+                self.record_thinking_level_change(*level);
+            }
             FromAgent::ModelChanged { model, provider } => {
                 let pending_matches = self
                     .pending_model_change
@@ -3586,8 +3758,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
                 if pending_matches {
                     self.pending_model_change = None;
-                    self.record_model_change(model);
                 }
+                self.record_model_change(model);
             }
             FromAgent::ModelChangeFailed { model, .. }
                 if self
@@ -3801,6 +3973,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 requires_approval,
                 approval_inline_env,
             } => {
+                self.tool_executor
+                    .set_subagent_parent_model(crate::model_dynamics::ModelChoice {
+                        model: self.current_model.clone(),
+                        thinking: self.current_thinking_level,
+                    });
                 self.tool_history.start_with_approval(
                     call_id.clone(),
                     tool.clone(),
@@ -3936,6 +4113,7 @@ was missing; retry to review the exact execution context."
                         // Queue approval
                         self.approval_controller.enqueue(request);
                         // Show approval modal
+                        self.cancel_theme_preview();
                         self.active_modal = ActiveModal::Approval;
                     }
                 } else {
@@ -4164,6 +4342,7 @@ was missing; retry to review the exact execution context."
                         request.tool, verdict.reason
                     ));
                     self.approval_controller.enqueue(request);
+                    self.cancel_theme_preview();
                     self.active_modal = ActiveModal::Approval;
                 }
                 Err(error) => {
@@ -4179,6 +4358,7 @@ was missing; retry to review the exact execution context."
                         request.tool
                     ));
                     self.approval_controller.enqueue(request);
+                    self.cancel_theme_preview();
                     self.active_modal = ActiveModal::Approval;
                 }
             }
@@ -4274,6 +4454,9 @@ Slash Commands:
 
     /// Render the UI
     fn render(&mut self) -> Result<()> {
+        if self.active_modal != ActiveModal::ThemeSelector {
+            self.cancel_theme_preview();
+        }
         let (result, _elapsed) = crate::magic_trace::time_render(|| self.render_inner());
         result
     }
@@ -4292,12 +4475,26 @@ Slash Commands:
         }
 
         // Extract needed data to avoid borrow conflicts
+        let dex_state = self.observed_dex_state();
+        let dex_look = self.dex_look();
+        // Explicit settings/recap responses remain visible in quiet mode.
+        // Cosmetic notices are admitted by pet_dex; turn start clears old ones.
+        let dex_notice = self.dex_delight.notice.as_deref();
+        let dex_suggestion = self.dex_next_prompt();
+        let dex_tip = if !self.ui_prefs.dex_tips_dismissed && self.dex_can_delight() {
+            Some("/dex appearance · /dex pet · /dex tips-off")
+        } else {
+            None
+        };
+        let dex_picker = &mut self.dex_delight.picker;
         let state = &self.state;
         let active_modal = self.active_modal;
+        let command_registry = &self.command_registry;
         let slash_state = &mut self.slash_state;
         let file_search = &mut self.file_search;
         let session_switcher = &mut self.session_switcher;
         let operations = &mut self.operations;
+        let mcp_manager = &self.mcp_manager;
         let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
         let sandbox_label = self
@@ -4311,6 +4508,12 @@ Slash Commands:
         let rewind_picker = &mut self.rewind_picker;
         let detail_view = &self.detail_view;
         let footer_style = self.footer_style;
+        let dex_frame = (self.dex_pose_started.elapsed().as_millis() / 100) as u64;
+        let dex_personality = self.ui_prefs.dex_personality();
+        let animations = self
+            .ui_prefs
+            .animations
+            .unwrap_or(self.configured_animations);
         let goal_badge = self.goal_store.status_line();
         let attach_count = self.pending_attachments.len();
 
@@ -4334,6 +4537,12 @@ Slash Commands:
                 // Include the current request plus any queued behind it.
                 let pending_approvals = approval_controller.pending().len();
                 let view = ChatView::new(state)
+                    .with_dex_state(dex_state)
+                    .with_dex_frame(dex_frame)
+                    .with_tool_toggle_binding(self.toggle_tool_outputs_binding)
+                    .with_dex_delight(dex_look, dex_notice, dex_suggestion, dex_tip)
+                    .with_dex_presentation(dex_personality, animations)
+                    .with_timestamps(self.ui_prefs.timestamps.unwrap_or(false))
                     .with_runtime_status(sandbox_label, workspace_trusted, pending_approvals)
                     .with_footer_style(footer_style)
                     .with_goal_badge(goal_badge.as_deref())
@@ -4381,7 +4590,12 @@ Slash Commands:
 
                 // Render slash completions if active
                 if active_modal == ActiveModal::None && slash_state.has_completions() {
-                    Self::render_slash_completions_static(slash_state, frame, area);
+                    Self::render_slash_completions_static(
+                        slash_state,
+                        command_registry,
+                        frame,
+                        area,
+                    );
                 }
 
                 // Render modals
@@ -4394,6 +4608,9 @@ Slash Commands:
                     }
                     ActiveModal::Operations => {
                         operations.render(frame, area);
+                    }
+                    ActiveModal::McpManager => {
+                        mcp_manager.render(frame, area);
                     }
                     ActiveModal::CommandPalette => {
                         command_palette.render(frame, area);
@@ -4415,6 +4632,9 @@ Slash Commands:
                     }
                     ActiveModal::ModelSelector => {
                         model_selector.render(frame, area);
+                    }
+                    ActiveModal::DexAppearance => {
+                        dex_presentation::render_appearance(frame, area, dex_picker, dex_look);
                     }
                     ActiveModal::ThemeSelector => {
                         theme_selector.render(frame, area);
@@ -4526,7 +4746,7 @@ Slash Commands:
     /// same geometry that was painted.
     fn slash_popup_area(area: Rect, completion_count: usize) -> Rect {
         let popup_height = (completion_count as u16 + 2).min(10);
-        let popup_width = 40.min(area.width.saturating_sub(4));
+        let popup_width = 76.min(area.width.saturating_sub(2));
         let popup_y = area.height.saturating_sub(4 + popup_height);
         Rect {
             x: area.x + 1,
@@ -4539,25 +4759,54 @@ Slash Commands:
     /// Render slash command completions popup (static version for closure)
     fn render_slash_completions_static(
         slash_state: &mut SlashCycleState,
+        command_registry: &CommandRegistry,
         frame: &mut ratatui::Frame,
         area: Rect,
     ) {
         use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
-        let completions = slash_state.completions();
-        if completions.is_empty() {
+        let completion_count = slash_state.completions().len();
+        if completion_count == 0 {
             return;
         }
 
-        let popup_area = Self::slash_popup_area(area, completions.len());
+        let popup_area = Self::slash_popup_area(area, completion_count);
+        if popup_area.width < 3 || popup_area.height < 3 {
+            return;
+        }
 
         frame.render_widget(Clear, popup_area);
 
+        let completions = slash_state.completions();
+        let content_width = popup_area.width.saturating_sub(4) as usize;
+        let command_width = completions
+            .iter()
+            .map(String::len)
+            .max()
+            .unwrap_or(0)
+            .min(24)
+            .min(content_width.saturating_sub(3));
         let items: Vec<ListItem> = completions
             .iter()
-            .map(|cmd| {
-                // Completions already include the slash
-                ListItem::new(cmd.clone()).style(Style::default().fg(Color::White))
+            .map(|completion| {
+                let command = format!("{completion:<command_width$}");
+                let description = command_registry
+                    .get(completion.trim_start_matches('/'))
+                    .map_or_else(String::new, |command| command.description.clone());
+                let line = Line::from(vec![
+                    Span::styled(
+                        command,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(description, Style::default().fg(Color::DarkGray)),
+                ]);
+                ListItem::new(crate::field_format::truncate_line_with_ellipsis(
+                    line,
+                    content_width,
+                ))
             })
             .collect();
 
@@ -4566,8 +4815,16 @@ Slash Commands:
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" Commands ")
+                    .title_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title_bottom(" ↑/↓ select · Enter run · Tab complete ")
                     .style(Style::default().bg(Color::Black)),
             )
+            .highlight_symbol("› ")
             .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan));
 
         frame.render_stateful_widget(list, popup_area, slash_state.list_state_mut());
@@ -4854,10 +5111,10 @@ fn should_handle_key_event(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
-fn terminal_poll_timeout(busy: bool, welcome_animating: bool, agent_activity: bool) -> Duration {
+fn terminal_poll_timeout(busy: bool, agent_activity: bool) -> Duration {
     if agent_activity {
         Duration::ZERO
-    } else if busy || welcome_animating {
+    } else if busy {
         Duration::from_millis(33)
     } else {
         Duration::from_millis(100)
@@ -4953,6 +5210,7 @@ mod command_handlers;
 // `pub(crate)` so `agent::compaction` can assert that its token counts and
 // this breakdown's agree; nothing outside the crate uses it.
 pub(crate) mod context_breakdown;
+mod dex_presentation;
 mod exec_commands;
 mod input_handlers;
 mod prompt_audit;

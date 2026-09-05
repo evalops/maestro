@@ -2,11 +2,12 @@
 //!
 //! The first production slice deliberately supports interval schedules and
 //! tool-free native turns. Definitions and receipts are durable JSON state;
-//! every mutation reloads under a create-new file lock before atomically
+//! every mutation reloads under a crash-released file lock before atomically
 //! replacing the state file. This keeps a second gateway process or a crash
 //! from turning an in-memory placeholder into a false success.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use fs2::FileExt;
 use hmac::{Hmac, KeyInit, Mac};
 use maestro_tui::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub(crate) const AUTOMATION_SCHEMA: &str = "evalops.maestro.automation.v1";
@@ -37,9 +38,12 @@ const MAX_RETRY_BACKOFF_SECONDS: u64 = 86_400;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const LEASE_DURATION_MS: u64 = 5 * 60 * 1_000;
 const LEASE_HEARTBEAT_MS: u64 = 10 * 1_000;
-const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const MUTATION_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const MUTATION_RETRY_DELAY: Duration = Duration::from_millis(10);
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const AUTOMATION_LOCK_PROTOCOL: &[u8] = b"flock-v1\n";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -903,26 +907,7 @@ where
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let lock_path = path.with_extension("json.lock");
-    let started = Instant::now();
-    let lock = loop {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(file) => break file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if started.elapsed() >= LOCK_TIMEOUT {
-                    return Err(AutomationStoreError::Io(io::Error::new(
-                        ErrorKind::TimedOut,
-                        format!("timed out waiting for {}", lock_path.display()),
-                    )));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
+    let _lock = acquire_automation_state_lock(&lock_path)?;
     let temporary = path.with_file_name(format!(
         ".{}.{}.{}.tmp",
         path.file_name()
@@ -948,11 +933,83 @@ where
         }
         Ok((state, value))
     })();
-    drop(lock);
-    let _ = fs::remove_file(&lock_path);
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
+    result
+}
+
+struct AutomationStateLock {
+    file: File,
+}
+
+impl Drop for AutomationStateLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn acquire_automation_state_lock(
+    lock_path: &Path,
+) -> Result<AutomationStateLock, AutomationStoreError> {
+    loop {
+        let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                match initialize_automation_lock_file(lock_path) {
+                    Ok(Some(file)) => file,
+                    Ok(None) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let legacy_lock = file.metadata()?.len() == 0;
+        if legacy_lock {
+            return Err(AutomationStoreError::Io(io::Error::new(
+                ErrorKind::WouldBlock,
+                format!("legacy lock is still present at {}", lock_path.display()),
+            )));
+        }
+
+        match file.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(error) => {
+                return Err(AutomationStoreError::Io(io::Error::new(
+                    error.kind(),
+                    format!("failed to lock {}: {error}", lock_path.display()),
+                )));
+            }
+        }
+        return Ok(AutomationStateLock { file });
+    }
+}
+
+fn initialize_automation_lock_file(lock_path: &Path) -> io::Result<Option<File>> {
+    let temporary = lock_path.with_file_name(format!(
+        ".{}.{}.{}.init",
+        lock_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("automation-lock"),
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(AUTOMATION_LOCK_PROTOCOL)?;
+        file.sync_data()?;
+        match fs::hard_link(&temporary, lock_path) {
+            Ok(()) => Ok(Some(file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(None),
+            Err(error) => Err(error),
+        }
+    })();
+    let _ = fs::remove_file(temporary);
     result
 }
 
@@ -965,29 +1022,47 @@ pub(crate) fn spawn_scheduler(
         let owner = format!("gateway-scheduler-{}", std::process::id());
         loop {
             let now_ms = crate::now_millis();
-            let _ = api
-                .lock()
-                .await
-                .automations
-                .as_mut()
-                .map(|store| store.recover_expired(now_ms));
-            let fallback_model = {
-                let model = selected_model.lock().await;
-                format!("{}/{}", model.provider, model.id)
-            };
-            let claim = api
-                .lock()
-                .await
-                .automations
-                .as_mut()
-                .and_then(|store| store.claim_due(&owner, &fallback_model, now_ms).ok())
-                .flatten();
+            let claim =
+                scheduler_claim_due(api.clone(), selected_model.clone(), owner.clone(), now_ms)
+                    .await;
             if let Some(claim) = claim {
                 spawn_claimed(api.clone(), cwd.clone(), claim);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+}
+
+async fn scheduler_claim_due(
+    api: std::sync::Arc<Mutex<crate::extended::ExtendedApiState>>,
+    selected_model: std::sync::Arc<Mutex<crate::ModelInfo>>,
+    owner: String,
+    now_ms: u64,
+) -> Option<ClaimedAutomationRun> {
+    let fallback_model = {
+        let model = selected_model.lock().await;
+        format!("{}/{}", model.provider, model.id)
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let mut api = api.blocking_lock();
+        let Some(store) = api.automations.as_mut() else {
+            return Ok(None);
+        };
+        store.recover_expired(now_ms)?;
+        store.claim_due(&owner, &fallback_model, now_ms)
+    })
+    .await;
+    match result {
+        Ok(Ok(claim)) => claim,
+        Ok(Err(error)) => {
+            eprintln!("maestro automation scheduler tick failed: {error}");
+            None
+        }
+        Err(error) => {
+            eprintln!("maestro automation scheduler worker failed: {error}");
+            None
+        }
+    }
 }
 
 pub(crate) fn spawn_claimed(
@@ -1001,35 +1076,73 @@ pub(crate) fn spawn_claimed(
         let heartbeat = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(LEASE_HEARTBEAT_MS)).await;
-                let renewed = heartbeat_api
-                    .lock()
-                    .await
-                    .automations
-                    .as_mut()
-                    .and_then(|store| {
-                        store
-                            .renew_lease(
-                                &heartbeat_claim.run_id,
-                                &heartbeat_claim.owner,
-                                crate::now_millis(),
-                            )
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if !renewed {
-                    break;
+                let heartbeat_claim = heartbeat_claim.clone();
+                let renewed = retry_automation_mutation(heartbeat_api.clone(), move |store| {
+                    store.renew_lease(
+                        &heartbeat_claim.run_id,
+                        &heartbeat_claim.owner,
+                        crate::now_millis(),
+                    )
+                })
+                .await;
+                match renewed {
+                    Ok(Ok(Some(true))) => {}
+                    Ok(Ok(Some(false) | None)) => break,
+                    Ok(Err(error)) => {
+                        eprintln!("maestro automation lease renewal failed: {error}");
+                        break;
+                    }
+                    Err(error) => {
+                        eprintln!("maestro automation lease renewal worker failed: {error}");
+                        break;
+                    }
                 }
             }
         });
         let result = execute_native_turn(&claim, &cwd).await;
         heartbeat.abort();
-        let _ = api
-            .lock()
-            .await
-            .automations
-            .as_mut()
-            .map(|store| store.complete(&claim, result, crate::now_millis()));
+        let completion_claim = claim.clone();
+        let completion = retry_automation_mutation(api, move |store| {
+            store.complete(&completion_claim, result.clone(), crate::now_millis())
+        })
+        .await;
+        match completion {
+            Ok(Ok(Some(()))) => {}
+            Ok(Ok(None)) => eprintln!("maestro automation completion store unavailable"),
+            Ok(Err(error)) => eprintln!("maestro automation completion failed: {error}"),
+            Err(error) => eprintln!("maestro automation completion worker failed: {error}"),
+        }
     });
+}
+
+async fn retry_automation_mutation<T, F>(
+    api: std::sync::Arc<Mutex<crate::extended::ExtendedApiState>>,
+    mut mutation: F,
+) -> Result<Result<Option<T>, AutomationStoreError>, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnMut(&mut AutomationStore) -> Result<T, AutomationStoreError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        loop {
+            let result = {
+                let mut api = api.blocking_lock();
+                api.automations.as_mut().map(&mut mutation)
+            };
+            match result {
+                Some(Err(AutomationStoreError::Io(error)))
+                    if error.kind() == ErrorKind::WouldBlock
+                        && started.elapsed() < MUTATION_RETRY_TIMEOUT =>
+                {
+                    thread::sleep(MUTATION_RETRY_DELAY);
+                }
+                Some(result) => return result.map(Some),
+                None => return Ok(None),
+            }
+        }
+    })
+    .await
 }
 
 async fn execute_native_turn(claim: &ClaimedAutomationRun, cwd: &Path) -> AutomationRunResult {
@@ -1142,6 +1255,93 @@ mod tests {
         let definitions = reloaded.list_definitions().unwrap();
         assert_eq!(definitions.len(), 1);
         assert_eq!(definitions[0]["id"], "nightly");
+    }
+
+    #[test]
+    fn legacy_lock_file_is_not_stolen_from_a_live_writer() {
+        let (dir, _store) = store();
+        let lock_path = dir.path().join("automations.json.lock");
+        fs::write(&lock_path, []).unwrap();
+
+        let contender = acquire_automation_state_lock(&lock_path);
+        assert!(matches!(
+            contender,
+            Err(AutomationStoreError::Io(ref error)) if error.kind() == ErrorKind::WouldBlock
+        ));
+        assert_eq!(fs::read(&lock_path).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn live_automation_lock_remains_exclusive() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = dir.path().join("automations.json.lock");
+        let owner = acquire_automation_state_lock(&lock_path).unwrap();
+
+        let contender = acquire_automation_state_lock(&lock_path);
+        assert!(matches!(
+            contender,
+            Err(AutomationStoreError::Io(ref error)) if error.kind() == ErrorKind::WouldBlock
+        ));
+
+        drop(owner);
+        acquire_automation_state_lock(&lock_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_automation_lock_does_not_block_the_runtime() {
+        let (dir, store) = store();
+        let lock_path = dir.path().join("automations.json.lock");
+        fs::write(&lock_path, []).unwrap();
+        let mut extended_api = crate::extended::ExtendedApiState::default();
+        extended_api.automations = Some(store);
+        let api = std::sync::Arc::new(Mutex::new(extended_api));
+        let selected_model = std::sync::Arc::new(Mutex::new(crate::emergency_default_model()));
+        let owner = api.lock().await;
+        let tick = scheduler_claim_due(
+            api.clone(),
+            selected_model,
+            "scheduler-test".to_string(),
+            1_000,
+        );
+        tokio::pin!(tick);
+        // A contended worker must yield to this single-thread runtime. Poll
+        // once with its lock held instead of measuring worker startup latency.
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(std::future::Future::poll(tick.as_mut(), context))
+        })
+        .await;
+        assert!(first_poll.is_pending(), "contended scheduler must yield");
+        drop(owner);
+        let claim = tokio::time::timeout(Duration::from_secs(5), tick)
+            .await
+            .expect("legacy lock must be rejected after the worker acquires the API");
+        assert!(claim.is_none());
+        assert!(lock_path.exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_mutation_retries_off_the_runtime_thread() {
+        let (dir, store) = store();
+        let lock_path = dir.path().join("automations.json.lock");
+        let owner = acquire_automation_state_lock(&lock_path).unwrap();
+        let mut extended_api = crate::extended::ExtendedApiState::default();
+        extended_api.automations = Some(store);
+        let api = std::sync::Arc::new(Mutex::new(extended_api));
+        let mutation = retry_automation_mutation(api, |store| store.mutate(|_| Ok(())));
+        tokio::pin!(mutation);
+
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            _ = &mut mutation => panic!("live owner should keep the durable mutation pending"),
+        }
+
+        drop(owner);
+        tokio::time::timeout(Duration::from_secs(1), mutation)
+            .await
+            .expect("mutation should finish after contention clears")
+            .expect("blocking worker should finish")
+            .expect("automation mutation should succeed")
+            .expect("automation store should exist");
     }
 
     #[test]

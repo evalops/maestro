@@ -1494,7 +1494,10 @@ mod tests {
     }
 
     fn unauthenticated_local_env() -> HashMap<String, String> {
-        HashMap::from([("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string())])
+        HashMap::from([
+            ("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string()),
+            ("MAESTRO_MODEL".to_string(), "gpt-5.5".to_string()),
+        ])
     }
 
     #[test]
@@ -1505,6 +1508,7 @@ mod tests {
         let port = unused_tcp_port();
         let listen = format!("127.0.0.1:{port}");
         let env = HashMap::from([
+            ("MAESTRO_MODEL".to_string(), "gpt-5.5".to_string()),
             ("MAESTRO_PROFILE".to_string(), "sandbox".to_string()),
             ("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string()),
             (
@@ -1733,6 +1737,7 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         let listen = format!("127.0.0.1:{}", unused_tcp_port());
         let env = HashMap::from([
+            ("MAESTRO_MODEL".to_string(), "gpt-5.5".to_string()),
             ("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string()),
             (
                 "MAESTRO_EVALOPS_BASE_URL".to_string(),
@@ -2093,10 +2098,13 @@ mod tests {
         let credential = workspace.path().join("gateway-token");
         fs::write(&credential, "tenant-token\n").expect("credential");
         let runner = HostedRunnerConfig::new("runner", workspace.path()).expect("runner config");
-        let env = HashMap::from([(
-            "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
-            credential.to_string_lossy().into_owned(),
-        )]);
+        let env = HashMap::from([
+            ("MAESTRO_MODEL".to_string(), "gpt-5.5".to_string()),
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
+                credential.to_string_lossy().into_owned(),
+            ),
+        ]);
 
         let child_env = hosted_agent_env(&runner, &env).expect("child environment");
 
@@ -2263,6 +2271,30 @@ mod tests {
     }
 
     #[test]
+    fn shipped_managed_default_requires_the_resident_model_contract() {
+        let workspace = tempdir().expect("workspace");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "deixic-code hosted-runner",
+                "--runner-session-id",
+                "managed-default",
+                "--listen",
+                "127.0.0.1:8080",
+                "--workspace-root",
+                workspace.path().to_str().expect("workspace path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("managed default cannot bypass the resident model contract");
+        assert!(
+            error
+                .to_string()
+                .contains("MAESTRO_RESIDENT_CONTRACT_REVISION"),
+            "unexpected launch error: {error:#}"
+        );
+    }
+
+    #[test]
     fn cli_requires_auth_by_default_even_on_loopback() {
         let workspace = tempdir().expect("workspace");
         let args = [
@@ -2275,18 +2307,21 @@ mod tests {
             "127.0.0.1:8080",
         ];
 
-        let error = match resolve_hosted_runner_launch_config(args.iter().copied(), &HashMap::new())
-        {
+        let mut env = HashMap::from([("MAESTRO_MODEL".to_string(), "gpt-5.5".to_string())]);
+        let error = match resolve_hosted_runner_launch_config(args.iter().copied(), &env) {
             Ok(_) => panic!("missing auth should fail"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("MAESTRO_WEB_API_KEY"));
+        assert!(
+            error.to_string().contains("MAESTRO_WEB_API_KEY"),
+            "unexpected launch error: {error:#}"
+        );
 
-        let legacy_auth = HashMap::from([(
+        env.insert(
             "MAESTRO_WEB_API_KEY".to_string(),
             "legacy-secret".to_string(),
-        )]);
-        let config = resolve_hosted_runner_launch_config(args.iter().copied(), &legacy_auth)
+        );
+        let config = resolve_hosted_runner_launch_config(args.iter().copied(), &env)
             .expect("legacy auth should remain supported");
         assert_eq!(config.runner.auth_token.as_deref(), Some("legacy-secret"));
     }

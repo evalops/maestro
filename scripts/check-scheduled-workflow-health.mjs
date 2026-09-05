@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_WORKFLOWS = [
 	"maestro-sync-public-release-mirror",
@@ -12,8 +14,13 @@ const LABEL_COLOR = "d93f0b";
 const DEFAULT_RUNS = 3;
 const MIN_CONSECUTIVE_FAILURES = 2;
 const EXCERPT_LINE_LIMIT = 10;
+const MAX_REQUESTED_RUNS = 100;
+const MAX_RECEIPT_RUNS = 3;
+const MAX_EXCERPT_CHARS = 4000;
+const WATCHDOG_MARKER_PREFIX = "<!-- maestro-watchdog:";
+const FINGERPRINT_MARKER_PREFIX = "<!-- maestro-watchdog-fingerprint:";
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
 	const args = {
 		branch: "",
 		dryRun: false,
@@ -52,9 +59,13 @@ function parseArgs(argv) {
 		}
 	}
 
-	if (!Number.isInteger(args.runs) || args.runs < MIN_CONSECUTIVE_FAILURES) {
+	if (
+		!Number.isInteger(args.runs) ||
+		args.runs < MIN_CONSECUTIVE_FAILURES ||
+		args.runs > MAX_REQUESTED_RUNS
+	) {
 		throw new Error(
-			`--runs must be an integer >= ${MIN_CONSECUTIVE_FAILURES}`,
+			`--runs must be an integer between ${MIN_CONSECUTIVE_FAILURES} and ${MAX_REQUESTED_RUNS}`,
 		);
 	}
 
@@ -74,6 +85,35 @@ function warn(message) {
  * catch. Every such condition raises this and fails the job.
  */
 class BlindSpotError extends Error {}
+
+export function watchdogMarker(workflow) {
+	return `${WATCHDOG_MARKER_PREFIX}${workflow} -->`;
+}
+
+export function fingerprintMarker(fingerprint) {
+	return `${FINGERPRINT_MARKER_PREFIX}${fingerprint} -->`;
+}
+
+/**
+ * Stable identity for one observed failure streak. The run IDs and attempts
+ * make an unchanged API response idempotent while a new failed run produces a
+ * new receipt. The CLI caps the input at MAX_REQUESTED_RUNS, so this evidence
+ * cannot grow without bound.
+ */
+export function failureFingerprint(workflow, branch, runs) {
+	const canonical = {
+		branch,
+		runs: runs.map((run) => ({
+			conclusion: run?.conclusion ?? null,
+			event: run?.event ?? null,
+			head_sha: run?.head_sha ?? null,
+			id: run?.id ?? null,
+			run_attempt: run?.run_attempt ?? null,
+		})),
+		workflow,
+	};
+	return `sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex")}`;
+}
 
 // spawnSync's 1 MiB default silently becomes an ENOBUFS crash on a large run
 // page or a long job log, both of which this script fetches routinely.
@@ -223,23 +263,73 @@ function countConsecutiveFailures(runs) {
 	return count;
 }
 
-function findWatchdogIssue(repo, workflow) {
+export function selectCanonicalWatchdogIssue(issues, workflow) {
+	const prefix = `[watchdog] ${workflow} `;
+	const candidates = issues.filter(
+		(issue) =>
+			!issue.pull_request &&
+			typeof issue.title === "string" &&
+			issue.title.startsWith(prefix),
+	);
+	const open = candidates
+		.filter((issue) => issue.state === "open")
+		.sort((left, right) => left.number - right.number);
+	if (open.length > 0) {
+		return open[0];
+	}
+	const closed = candidates
+		.filter((issue) => issue.state === "closed")
+		.sort((left, right) => right.number - left.number);
+	return closed[0] ?? null;
+}
+
+function findWatchdogIssues(repo, workflow) {
 	const issues = ghJson([
-		`repos/${repo}/issues?state=open&labels=${LABEL}&per_page=100`,
+		`repos/${repo}/issues?state=all&labels=${LABEL}&per_page=100`,
 	]);
 	if (!Array.isArray(issues)) {
 		throw new BlindSpotError(
-			`unexpected issue list payload for ${repo}; cannot tell whether a watchdog issue is already open`,
+			`unexpected issue list payload for ${repo}; cannot tell whether a watchdog issue already exists`,
 		);
 	}
 	const prefix = `[watchdog] ${workflow} `;
-	return (
-		issues.find(
-			(issue) =>
-				!issue.pull_request &&
-				typeof issue.title === "string" &&
-				issue.title.startsWith(prefix),
-		) ?? null
+	const candidates = issues.filter(
+		(issue) =>
+			!issue.pull_request &&
+			typeof issue.title === "string" &&
+			issue.title.startsWith(prefix),
+	);
+	for (const issue of candidates) {
+		if (issue.state !== "open" && issue.state !== "closed") {
+			throw new BlindSpotError(
+				`watchdog issue #${issue.number ?? "unknown"} has unknown state; cannot select a canonical receipt`,
+			);
+		}
+	}
+	return candidates;
+}
+
+function issueHasFingerprint(repo, issue, fingerprint) {
+	if (!Number.isInteger(issue.number)) {
+		throw new BlindSpotError(
+			"watchdog issue payload omitted its number; cannot deduplicate the receipt",
+		);
+	}
+	const marker = fingerprintMarker(fingerprint);
+	if (typeof issue.body === "string" && issue.body.includes(marker)) {
+		return true;
+	}
+	const comments = ghJson([
+		`repos/${repo}/issues/${issue.number}/comments?per_page=100`,
+	]);
+	if (!Array.isArray(comments)) {
+		throw new BlindSpotError(
+			`unexpected comment payload for watchdog issue #${issue.number}; cannot deduplicate the receipt`,
+		);
+	}
+	return comments.some(
+		(comment) =>
+			typeof comment.body === "string" && comment.body.includes(marker),
 	);
 }
 
@@ -266,23 +356,28 @@ function failureExcerpt(repo, run) {
 	const excerpt = (errorLines.length > 0 ? errorLines : lines).slice(
 		-EXCERPT_LINE_LIMIT,
 	);
-	return excerpt.join("\n").slice(0, 4000);
+	return excerpt.join("\n").slice(0, MAX_EXCERPT_CHARS);
 }
 
-function buildFailureBody(workflow, runs, excerpt, branch) {
-	const runLinks = runs
+export function buildFailureBody(workflow, runs, excerpt, branch, fingerprint) {
+	const receiptRuns = runs.slice(0, MAX_RECEIPT_RUNS);
+	const runLinks = receiptRuns
 		.map(
 			(run) =>
 				`- ${run.html_url} (${run.event ?? "unknown event"}, ${run.created_at ?? "unknown time"})`,
 		)
 		.join("\n");
-	const excerptBlock = excerpt
-		? `\n\nFailure excerpt (latest failing run):\n\n\`\`\`\n${excerpt}\n\`\`\``
+	const boundedExcerpt = String(excerpt ?? "").slice(0, MAX_EXCERPT_CHARS);
+	const excerptBlock = boundedExcerpt
+		? `\n\nFailure excerpt (latest failing run):\n\n\`\`\`\n${boundedExcerpt}\n\`\`\``
 		: "";
 	return [
+		watchdogMarker(workflow),
+		fingerprintMarker(fingerprint),
+		`Observation fingerprint: ${fingerprint}`,
 		`Workflow \`${workflow}\` has failed ${runs.length} consecutive runs on \`${branch}\`.`,
 		"",
-		"Failing runs:",
+		`Failing runs (showing ${receiptRuns.length} of ${runs.length}):`,
 		runLinks,
 		excerptBlock,
 		"",
@@ -311,7 +406,9 @@ function ensureLabel(repo, dryRun) {
 		"description=Automated scheduled-workflow failure watchdog",
 	]);
 	if (!result.ok) {
-		warn(`failed to create label ${LABEL}: ${result.stderr}`);
+		throw new BlindSpotError(
+			`failed to create label ${LABEL}: ${result.stderr}`,
+		);
 	}
 }
 
@@ -371,7 +468,28 @@ function closeIssue(repo, issueNumber, dryRun) {
 		"state=closed",
 	]);
 	if (!result.ok) {
-		warn(`failed to close issue #${issueNumber}: ${result.stderr}`);
+		throw new BlindSpotError(
+			`failed to close issue #${issueNumber}: ${result.stderr}`,
+		);
+	}
+}
+
+function reopenIssue(repo, issueNumber, dryRun) {
+	if (dryRun) {
+		console.log(`[dry-run] would reopen issue #${issueNumber}`);
+		return;
+	}
+	const result = gh([
+		`repos/${repo}/issues/${issueNumber}`,
+		"-X",
+		"PATCH",
+		"-f",
+		"state=open",
+	]);
+	if (!result.ok) {
+		throw new BlindSpotError(
+			`failed to reopen issue #${issueNumber}: ${result.stderr}`,
+		);
 	}
 }
 
@@ -405,20 +523,37 @@ function checkWorkflow(repo, workflow, options) {
 	}
 
 	const consecutiveFailures = countConsecutiveFailures(runs);
-	const issue = findWatchdogIssue(repo, workflow);
+	const issue = selectCanonicalWatchdogIssue(
+		findWatchdogIssues(repo, workflow),
+		workflow,
+	);
 
 	if (consecutiveFailures >= MIN_CONSECUTIVE_FAILURES) {
 		const failingRuns = runs.slice(0, consecutiveFailures);
 		const title = `[watchdog] ${workflow} failing ${consecutiveFailures} consecutive runs on ${branch}`;
+		const fingerprint = failureFingerprint(workflow, branch, failingRuns);
 		const body = buildFailureBody(
 			workflow,
 			failingRuns,
 			failureExcerpt(repo, failingRuns[0]),
 			branch,
+			fingerprint,
 		);
 		if (issue) {
+			if (issue.state === "closed") {
+				console.log(
+					`${workflow}: still failing (${consecutiveFailures} consecutive); reopening #${issue.number}`,
+				);
+				reopenIssue(repo, issue.number, options.dryRun);
+			}
+			if (issueHasFingerprint(repo, issue, fingerprint)) {
+				console.log(
+					`${workflow}: unchanged failure fingerprint already recorded on #${issue.number}; no new comment`,
+				);
+				return;
+			}
 			console.log(
-				`${workflow}: still failing (${consecutiveFailures} consecutive); commenting on #${issue.number}`,
+				`${workflow}: new failure fingerprint (${consecutiveFailures} consecutive); commenting on #${issue.number}`,
 			);
 			commentIssue(repo, issue.number, body, options.dryRun);
 		} else {
@@ -498,15 +633,18 @@ function main() {
 	return 0;
 }
 
-try {
-	process.exitCode = main();
-} catch (error) {
-	if (error instanceof BlindSpotError) {
-		// Raised before per-workflow iteration could start (repo lookup, auth).
-		console.error(`::error::watchdog blind spot -- ${error.message}`);
-		reportBlindSpots(1, 1);
-		process.exitCode = 1;
-	} else {
-		throw error;
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+	try {
+		process.exitCode = main();
+	} catch (error) {
+		if (error instanceof BlindSpotError) {
+			// Raised before per-workflow iteration could start (repo lookup, auth).
+			console.error(`::error::watchdog blind spot -- ${error.message}`);
+			reportBlindSpots(1, 1);
+			process.exitCode = 1;
+		} else {
+			throw error;
+		}
 	}
 }

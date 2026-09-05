@@ -247,7 +247,7 @@ Plan file should include:\n\
 - Verification / test plan\n\
 \n\
 When the plan is ready, tell the user to run `/view-plan` and `/plan approve` \
-(or Shift+Tab away from Plan mode) before implementation.\n",
+(or use /plan off) before implementation.\n",
         path.display()
     )
 }

@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cold hosted agents spend 40m+ fetching the IntelliJ SDK. Skip that on
-# pull requests that do not touch the plugin; fail closed to a full run
-# when the base branch is unavailable.
-if [[ "${BUILDKITE_PULL_REQUEST:-false}" != "false" && -n "${BUILDKITE_PULL_REQUEST}" ]]; then
-  base_branch="${BUILDKITE_PULL_REQUEST_BASE_BRANCH:-main}"
-  git fetch --depth=80 origin "${base_branch}" >/dev/null 2>&1 || true
-  if git rev-parse --verify "origin/${base_branch}" >/dev/null 2>&1; then
-    if ! git diff --name-only "origin/${base_branch}...HEAD" | grep -q '^packages/jetbrains-plugin/'; then
-      echo "No packages/jetbrains-plugin changes on this PR; skipping JetBrains validation."
-      exit 0
-    fi
-  fi
-fi
-
 tool_root="${BUILDKITE_BUILD_CHECKOUT_PATH:-$(pwd)}/.buildkite/cache/jetbrains-tools"
 jdk_root="$tool_root/jdk-21"
 if ! java -version 2>&1 | head -1 | grep -Eq 'version "21([.]|\")'; then
@@ -46,12 +32,12 @@ fi
 java -version
 cd packages/jetbrains-plugin
 # Bound the Gradle JVM. Empty jvmargs let HotSpot pick a huge ergonomic
-# heap, and the host OOM-killer then SIGKILLs the job (exit 137) or the
-# daemon vanishes (exit 1) mid-:compileKotlin. 2g fits hosted linux-large
-# without tripping the previous unbounded-heap killer. Cold hosted agents
-# fetch the IntelliJ SDK from scratch; 40m stays under the 45m job
-# timeout and avoids the inner timeout SIGKILL looking like an OOM.
-timeout --signal=TERM --kill-after=30s 40m \
+# heap on the heavy workers, and the host OOM-killer then SIGKILLs the
+# job (Buildkite 114/351, exit 137) mid-:test. Cold Kotlin/IntelliJ builds
+# exhausted the former 256 MiB metaspace cap (public build 332); allow
+# 512 MiB while retaining the 1 GiB heap and single worker. Keep the 10m timeout so a
+# stuck IntelliJ download still dies cleanly.
+timeout --signal=TERM --kill-after=30s 10m \
   ./gradlew check buildPlugin --no-daemon \
   -Dorg.gradle.workers.max=1 \
-  -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=384m -XX:+ExitOnOutOfMemoryError"
+  -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError"

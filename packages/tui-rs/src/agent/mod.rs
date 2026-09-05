@@ -146,3 +146,5 @@ pub use session_scope::{ParentScopeId, SessionId, parent_scope_for_session};
 pub use steer_signal::SteerSignal;
 pub use text_loop::{LoopKind, TextLoopDetector, loop_reminder_message};
 pub use turn_budget::{DEFAULT_MAX_TURN_STEPS, TurnOutcome, TurnStepBudget};
+
+pub(crate) mod context_usage;

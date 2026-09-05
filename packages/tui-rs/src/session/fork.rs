@@ -6,7 +6,7 @@
 //! fresh id and then appends independently of the source.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use super::entries::{SessionEntry, SessionHeader};
@@ -37,12 +37,62 @@ pub struct ForkedSession {
 /// Returns an I/O error if the source cannot be read or the fork cannot be
 /// written, and `InvalidData` if the source has no parseable session header.
 pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
+    fork_session_prefix(source_path, None)
+}
+
+/// Locate the persisted boundary before the last `turns` user messages.
+/// Offsets refer to complete JSONL entries, including tool and compaction records.
+pub(crate) fn rewind_boundary(source_path: &Path, turns: usize) -> io::Result<u64> {
+    if turns == 0 {
+        return Err(invalid_data("rewind count must be at least one"));
+    }
+    let mut reader = BufReader::new(fs::File::open(source_path)?);
+    let mut line = String::new();
+    let mut offset = 0_u64;
+    let mut boundaries = std::collections::VecDeque::new();
+    while read_bounded_line(&mut reader, &mut line)? > 0 {
+        let entry = serde_json::from_str::<SessionEntry>(line.trim_end())
+            .map_err(|error| invalid_data(format!("invalid session entry: {error}")))?;
+        if matches!(
+            entry,
+            SessionEntry::Message(super::entries::MessageEntry {
+                message: super::entries::AppMessage::User { .. },
+                ..
+            })
+        ) {
+            boundaries.push_back(offset);
+            if boundaries.len() > turns {
+                boundaries.pop_front();
+            }
+        }
+        offset += line.len() as u64;
+    }
+    boundaries
+        .front()
+        .copied()
+        .ok_or_else(|| invalid_data("nothing to rewind"))
+}
+
+/// Fork an exact persisted prefix without changing the source transcript.
+pub(crate) fn fork_session_prefix(
+    source_path: &Path,
+    end: Option<u64>,
+) -> io::Result<ForkedSession> {
     let source = fs::File::open(source_path)?;
-    let mut reader = BufReader::new(source);
+    let source_len = source.metadata()?.len();
+    if end.is_some_and(|end| end > source_len) {
+        return Err(invalid_data("rewind boundary exceeds the saved session"));
+    }
+    let mut reader = BufReader::new(source.take(end.unwrap_or(u64::MAX)));
     let mut line = String::new();
     let header_bytes = read_bounded_line(&mut reader, &mut line)?;
     if header_bytes == 0 {
         return Err(invalid_data("empty session file"));
+    }
+    if end.is_some() && !line.ends_with('\n') {
+        return Err(invalid_data(
+            "rewind boundary must include the complete header",
+        ));
     }
     let mut header: SessionHeader = serde_json::from_str(line.trim_end())
         .map_err(|err| invalid_data(format!("invalid session header: {err}")))?;
@@ -88,10 +138,19 @@ pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
             has_pending = true;
         }
 
-        if has_pending && serde_json::from_str::<serde_json::Value>(pending.trim_end()).is_ok() {
-            writer.write_all(pending.as_bytes())?;
+        if has_pending {
+            let valid = serde_json::from_str::<serde_json::Value>(pending.trim_end()).is_ok();
+            if end.is_some() && (!valid || !pending.ends_with('\n')) {
+                return Err(invalid_data(
+                    "rewind boundary must end at a complete session entry",
+                ));
+            }
+            if valid {
+                writer.write_all(pending.as_bytes())?;
+            }
         }
-        writer.flush()
+        writer.flush()?;
+        writer.get_ref().sync_all()
     })();
 
     if let Err(error) = write_result {
@@ -102,6 +161,8 @@ pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
+
+    crate::fs_atomic::sync_dir(dir)?;
 
     Ok(ForkedSession {
         id,
@@ -176,6 +237,62 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn rewind_prefix_reopens_and_appends_without_resurrecting_removed_turns() {
+        let temp = TempDir::new().unwrap();
+        let source_path = write_source_session(temp.path());
+        let original = fs::read(&source_path).unwrap();
+        let boundary = rewind_boundary(&source_path, 1).unwrap();
+        let fork = fork_session_prefix(&source_path, Some(boundary)).unwrap();
+        let reopened = SessionReader::read_file(&fork.path).unwrap();
+        assert_eq!(reopened.stats.user_messages, 1);
+        assert_eq!(reopened.messages.last().unwrap().text_content(), "Done A.");
+        assert_eq!(reopened.header.parent_session.as_deref(), Some("source-id"));
+        {
+            let mut writer = SessionWriter::open_existing(&fork.path).unwrap();
+            writer
+                .write_entry(SessionEntry::Message(MessageEntry {
+                    id: None,
+                    parent_id: None,
+                    timestamp: "2024-01-15T10:30:04Z".into(),
+                    message: AppMessage::User {
+                        content: MessageContent::Text("try option C".into()),
+                        attachments: None,
+                        timestamp: 4,
+                    },
+                }))
+                .unwrap();
+            writer.flush().unwrap();
+        }
+        let reopened = SessionReader::read_file(&fork.path).unwrap();
+        assert_eq!(reopened.stats.user_messages, 2);
+        assert!(
+            !reopened
+                .messages
+                .iter()
+                .any(|m| m.text_content() == "now option B")
+        );
+        assert_eq!(fs::read(&source_path).unwrap(), original);
+    }
+
+    #[test]
+    fn rewind_rejects_partial_entry_and_handles_first_turn() {
+        let temp = TempDir::new().unwrap();
+        let source = write_source_session(temp.path());
+        let first = rewind_boundary(&source, usize::MAX).unwrap();
+        let fork = fork_session_prefix(&source, Some(first)).unwrap();
+        assert_eq!(
+            SessionReader::read_file(&fork.path)
+                .unwrap()
+                .stats
+                .user_messages,
+            0
+        );
+        let second = rewind_boundary(&source, 1).unwrap();
+        assert!(fork_session_prefix(&source, Some(second - 2)).is_err());
+        assert!(rewind_boundary(&source, 0).is_err());
     }
 
     #[test]

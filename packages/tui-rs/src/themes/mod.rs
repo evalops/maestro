@@ -174,16 +174,21 @@ pub struct ThemeColors {
 
 impl Default for ThemeColors {
     fn default() -> Self {
-        // Default dark theme
+        // Default dark theme; previews use the same semantic control colors.
+        let controls = maestro_presentation::palette::default_controls();
+        let hex = |color: Color| match color {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            _ => "transparent".to_string(),
+        };
         Self {
-            accent: "#6857fe".to_string(),
-            border: "#3d3272".to_string(),
-            success: "#86efac".to_string(),
-            error: "#fca5a5".to_string(),
-            warning: "#fbbf24".to_string(),
-            muted: "#9a92ba".to_string(),
+            accent: hex(controls.focus),
+            border: hex(controls.border),
+            success: hex(controls.success),
+            error: hex(controls.error),
+            warning: hex(controls.attention),
+            muted: hex(controls.muted),
             dim: "#6f678f".to_string(),
-            text: "#e9e5f7".to_string(),
+            text: hex(controls.text),
 
             user_message_bg: "#1c1830".to_string(),
             user_message_text: "#e9e5f7".to_string(),
@@ -197,7 +202,7 @@ impl Default for ThemeColors {
             md_heading: "#b9adff".to_string(),
             md_link: "#a99aff".to_string(),
             md_code: "#fde047".to_string(),
-            md_code_block: "#141122".to_string(),
+            md_code_block: hex(controls.surface),
             md_code_block_border: "#3d3272".to_string(),
             md_quote: "#9a92ba".to_string(),
 
@@ -642,5 +647,62 @@ mod auto_theme_tests {
     fn auto_theme_fallback_is_dark() {
         assert_eq!(resolve_auto_theme_from(None), "dark");
         assert_eq!(resolve_auto_theme_from(Some("garbage")), "dark");
+    }
+}
+
+/// Translate the active theme into the shared controls' semantic palette.
+/// Overlays use the existing code-block surface when message backgrounds are
+/// transparent, keeping a light palette readable on a dark terminal.
+#[must_use]
+pub fn current_ui_theme() -> maestro_ui::UiTheme {
+    current_theme().ui_theme()
+}
+
+impl Theme {
+    /// Resolve the shared control palette without changing the active theme.
+    pub fn ui_theme(&self) -> maestro_ui::UiTheme {
+        let theme = self;
+        maestro_ui::UiTheme {
+            surface: parse_color(&theme.colors.assistant_message_bg)
+                .or_else(|| parse_color(&theme.colors.md_code_block))
+                .unwrap_or(Color::Reset),
+            text: theme.get_color("text").unwrap_or(Color::Reset),
+            muted: theme.get_color("muted").unwrap_or(Color::Reset),
+            border: theme.get_color("border").unwrap_or(Color::Reset),
+            focus: theme.get_color("accent").unwrap_or(Color::Reset),
+            success: theme.get_color("success").unwrap_or(Color::Reset),
+            attention: theme.get_color("warning").unwrap_or(Color::Reset),
+            error: theme.get_color("error").unwrap_or(Color::Reset),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ui_theme_tests {
+    use super::*;
+
+    #[test]
+    fn built_in_control_surfaces_are_opaque_including_light_on_dark_terminals() {
+        for theme in [dark_theme(), light_theme(), high_contrast_theme()] {
+            let ui = theme.ui_theme();
+            assert_ne!(
+                ui.surface,
+                Color::Reset,
+                "{} must not inherit an incompatible terminal background",
+                theme.name
+            );
+            assert_ne!(ui.surface, ui.text);
+            assert_eq!(
+                ui.surface,
+                parse_color(&theme.colors.md_code_block).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_message_surface_remains_the_custom_theme_authority() {
+        let mut theme = light_theme();
+        theme.colors.assistant_message_bg = "#ddeeff".into();
+        assert_eq!(theme.ui_theme().surface, parse_color("#ddeeff").unwrap());
     }
 }

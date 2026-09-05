@@ -276,8 +276,18 @@ impl App {
             CommandAction::MagicTrace(action) => {
                 self.handle_magic_trace(action);
             }
+            CommandAction::Boost => {
+                if let Some(agent) = &self.native_agent {
+                    if let Err(error) = agent.boost() {
+                        self.state.error = Some(format!("Could not request boost: {error}"));
+                    }
+                } else {
+                    self.state.status = Some("Start a conversation before using /boost.".into());
+                }
+            }
             CommandAction::SetThinkingLevel(level_str) => {
                 if let Some(level) = ThinkingLevel::parse(&level_str) {
+                    let level = crate::model_dynamics::normalize_thinking(&self.current_model, level);
                     let (enabled, budget) = level.to_config();
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_thinking(enabled, budget) {
@@ -421,6 +431,7 @@ impl App {
             CommandAction::Harness(action) => self.handle_harness_action(action),
             CommandAction::Rlm(action) => self.handle_rlm_action(action),
             CommandAction::Mailbox(action) => self.handle_mailbox_action(action),
+            CommandAction::SetDexPresentation(setting) => self.handle_dex_command(&setting),
             CommandAction::SetFooterStyle(style) => {
                 self.footer_style = style;
                 let mut prefs = crate::ui_prefs::UiPrefs::load_default();
@@ -508,6 +519,17 @@ impl App {
             }
             CommandAction::ShowUsage(usage_action) => {
                 self.handle_usage_action(usage_action);
+            }
+            CommandAction::SetContextTool { name, excluded } => {
+                if self.state.busy {
+                    self.state.status = Some("Wait for the active response to finish before changing context tools.".into());
+                } else if let Some(agent) = &self.native_agent {
+                    if let Err(error) = agent.set_context_tool_excluded(name, excluded) {
+                        self.state.error = Some(error.to_string());
+                    }
+                } else {
+                    self.state.error = Some("The agent is not running.".into());
+                }
             }
             CommandAction::ShowContext => {
                 self.show_context_breakdown();
@@ -733,24 +755,80 @@ impl App {
     /// Show the `/context` breakdown: token usage of the current session by
     /// category, measured with the same estimator the compactor uses.
     pub(super) fn show_context_breakdown(&mut self) {
-        let system_prompt = self.build_system_prompt();
-        let model = if self.current_model.is_empty() {
-            None
-        } else {
-            Some(self.current_model.as_str())
-        };
-        let breakdown = super::context_breakdown::ContextBreakdown::compute_for_model(
-            &system_prompt,
+        let model = (!self.current_model.is_empty()).then_some(self.current_model.as_str());
+        let mut breakdown = super::context_breakdown::ContextBreakdown::compute_for_model(
+            &self.build_system_prompt(),
             &self.state.messages,
             model,
         );
-        // Prefer the configured window (matches the footer), falling back to
-        // the model catalog's `ModelCapabilities.context_tokens`.
+        let mut tool_rows = Vec::new();
+        let mut excluded = Vec::new();
+        let mut basis = "Visible transcript estimate; provider request framing is not included.";
+        let mut report_model = self.current_model.clone();
+        if let Some(agent) = &self.native_agent {
+            let snapshot = agent.runtime_audit_snapshot();
+            excluded.extend(snapshot.excluded_context_tools);
+            if let Some(request) = snapshot.request_context {
+                report_model = request.model;
+                breakdown.system_prompt = request.system;
+                breakdown.conversation = request.conversation;
+                breakdown.tool_results = request.tool_results;
+                breakdown.other = request.other;
+                tool_rows = request.tools;
+                basis = "Last prepared request estimate, not provider-reported usage. Wire framing and provider-side context are not included.";
+            } else {
+                breakdown.system_prompt = snapshot.system_prompt.as_deref().map_or(0, |prompt| {
+                    crate::agent::token_counting::count_tokens(prompt, model)
+                });
+                tool_rows = snapshot
+                    .tools
+                    .iter()
+                    .map(|definition| {
+                        (
+                            definition.tool.name.clone(),
+                            crate::agent::token_counting::count_tokens(
+                                &serde_json::to_string(&definition.tool).unwrap_or_default(),
+                                model,
+                            ),
+                        )
+                    })
+                    .collect();
+                basis = "Current context estimate; these tool schemas have not been counted as dispatched usage.";
+            }
+        }
+        breakdown.tool_schemas = tool_rows.iter().map(|(_, tokens)| tokens).sum();
         let context_window = self.state.context_window.or_else(|| {
             crate::model_catalog::find_model(&self.current_model)
                 .map(|info| u64::from(info.capabilities.context_tokens))
         });
-        let report = breakdown.render(model, context_window);
+        let mut report = breakdown.render(Some(&report_model), context_window);
+        report.push_str(&format!("\n\n{basis}"));
+        tool_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        if !tool_rows.is_empty() {
+            report.push_str("\n\nTool schemas:");
+            for (name, tokens) in tool_rows.iter().take(10) {
+                report.push_str(&format!("\n- {name}: {tokens} tokens"));
+            }
+            report.push_str("\n\nUse /context exclude TOOL to omit its schema for this session; /context include TOOL restores it.");
+        }
+        excluded.sort();
+        if !excluded.is_empty() {
+            report.push_str(&format!("\nExcluded schemas: {}.", excluded.join(", ")));
+        }
+        let audit = self.build_system_prompt_assembly().audit(model, Vec::new());
+        let mut fragments = audit.fragments;
+        fragments.sort_by_key(|fragment| std::cmp::Reverse(fragment.token_count));
+        report.push_str("\n\nCurrent instruction sources:");
+        for fragment in fragments
+            .iter()
+            .filter(|fragment| fragment.token_count > 0)
+            .take(8)
+        {
+            report.push_str(&format!(
+                "\n- {}: {} tokens ({})",
+                fragment.name, fragment.token_count, fragment.source
+            ));
+        }
         self.state.add_system_message(report);
     }
 
@@ -809,6 +887,9 @@ impl App {
             }
             SessionAction::Rewind { turns, dry_run } => {
                 self.rewind_turns(turns, dry_run);
+            }
+            SessionAction::RewindBoth { turns, dry_run } => {
+                self.rewind_saved_turns(turns, dry_run, true);
             }
             SessionAction::RewindFiles => {
                 self.rewind_files();
@@ -1123,6 +1204,8 @@ impl App {
     /// append-ready session writer. Shared by the session switcher and the
     /// `maestro fork` startup resume.
     pub(crate) fn apply_resumed_session(&mut self, session: &crate::session::ParsedSession) {
+        self.dex_terminal = None;
+        self.dex_delight = Default::default();
         let session_id = session.header.id.clone();
         // Resuming a persisted transcript begins a new credential scope.
         // Historical references intentionally cannot resolve after reload.
@@ -1265,6 +1348,8 @@ impl App {
         // until the first message creates the session file, which rotates it
         // again to the id-derived scope.
         self.adopt_session_context(None, "new");
+        self.dex_terminal = None;
+        self.dex_delight = Default::default();
         self.state.messages.clear();
         self.state.clear_focus_turn_state();
         self.plan_review_comments.clear();
@@ -1341,77 +1426,73 @@ impl App {
     }
 
     pub(super) fn rewind_turns(&mut self, turns: usize, dry_run: bool) {
-        use crate::ai::{Message as AiMessage, MessageContent, Role};
-        use crate::state::{MessageKind, MessageRole};
+        self.rewind_saved_turns(turns, dry_run, false);
+    }
 
+    pub(super) fn rewind_saved_turns(&mut self, turns: usize, dry_run: bool, files: bool) {
         if self.state.busy {
             self.state.status =
                 Some("Wait for the active response to finish before rewinding.".to_string());
             return;
         }
+        let result = (|| -> anyhow::Result<()> {
+            self.session_manager.flush()?;
+            let source = self
+                .session_manager
+                .current_session_path()
+                .ok_or_else(|| anyhow::anyhow!("No saved session to rewind."))?;
+            let boundary = crate::session::rewind_boundary(&source, turns)?;
+            let original = crate::session::SessionReader::read_file(&source)?;
+            let kept_turns = original.stats.user_messages.saturating_sub(turns);
+            if dry_run {
+                self.state.add_system_message(format!(
+                    "Rewind before the last {turns} user turn(s) into a new saved session. The original remains available."
+                ));
+                if files {
+                    self.preview_rewind_files(kept_turns)?;
+                }
+                return Ok(());
+            }
+            if files {
+                self.preview_rewind_files(kept_turns)?;
+            }
+            // Publish the branch before changing active history or files.
+            let fork = crate::session::fork_session_prefix(&source, Some(boundary))?;
+            let session = crate::session::SessionReader::read_file(&fork.path)?;
+            let source_id = self.state.session_id.clone();
+            if let Some(source_id) = source_id.as_deref() {
+                let sessions = self.session_manager.sessions_dir();
+                crate::checkpoints::fork_before_turn(
+                    &crate::checkpoints::CheckpointStore::new(sessions, source_id),
+                    &crate::checkpoints::CheckpointStore::new(sessions, &fork.id),
+                    kept_turns,
+                )?;
+            }
 
-        // Drop the last `turns` main-history user messages and everything after each.
-        let mut remaining = self.state.messages.clone();
-        let mut removed_users = 0usize;
-        while removed_users < turns {
-            let Some(user_idx) = remaining
-                .iter()
-                .rposition(|m| m.role == MessageRole::User && m.kind == MessageKind::Regular)
-            else {
-                break;
-            };
-            remaining.truncate(user_idx);
-            removed_users += 1;
+            self.session_manager
+                .resume_session_by_path(fork.id.clone(), &fork.path)?;
+            self.apply_resumed_session(&session);
+            if self.session_resume_failed {
+                anyhow::bail!("The saved branch could not be opened.");
+            }
+            if let Some(agent) = &self.native_agent {
+                agent.replace_history_with_continuation(
+                    crate::session::model_history(&session),
+                    session
+                        .compactions
+                        .last()
+                        .and_then(|entry| entry.continuation.clone()),
+                );
+            }
+            self.state.status = Some(format!("Rewound into saved session {}.", fork.id));
+            if files {
+                self.restore_rewind_files(source_id.as_deref(), kept_turns)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.state.error = Some(format!("Rewind failed: {error}"));
         }
-
-        if removed_users == 0 {
-            self.state.status = Some("Nothing to rewind.".to_string());
-            return;
-        }
-
-        if dry_run {
-            self.state.status = Some(format!(
-                "Dry run: would remove {removed_users} turn{} from in-memory history. The session file would remain unchanged.",
-                if removed_users == 1 { "" } else { "s" }
-            ));
-            return;
-        }
-
-        self.state.messages = remaining;
-        self.state.scroll_offset = 0;
-
-        // Rebuild agent history from remaining regular user/assistant text.
-        let agent_messages: Vec<AiMessage> = self
-            .state
-            .messages
-            .iter()
-            .filter(|m| m.kind == MessageKind::Regular)
-            .filter_map(|m| match m.role {
-                MessageRole::User => Some(AiMessage {
-                    role: Role::User,
-                    content: MessageContent::text(m.content.clone()),
-                }),
-                MessageRole::Assistant if m.is_assistant_reply() => Some(AiMessage {
-                    role: Role::Assistant,
-                    content: MessageContent::text(m.content.clone()),
-                }),
-                _ => None,
-            })
-            .collect();
-
-        if let Some(agent) = &self.native_agent {
-            agent.replace_history(agent_messages);
-        }
-
-        let label = if removed_users == 1 {
-            "Removed 1 turn from in-memory history. The session file is unchanged.".to_string()
-        } else {
-            format!(
-                "Removed {removed_users} turns from in-memory history. The session file is unchanged."
-            )
-        };
-        self.state.status = Some(label.clone());
-        self.state.add_system_message(label);
     }
 
     pub(super) fn cycle_interaction_mode(&mut self) {
@@ -1506,7 +1587,7 @@ impl App {
             let plan_path = crate::plan_mode::ensure_plan_file(&cwd)
                 .unwrap_or_else(|_| crate::plan_mode::plan_file_path(&cwd));
             self.state.status = Some(format!(
-                "Plan mode on — write only {}. Shift+Tab or /plan approve when ready.",
+                "Plan mode on — write only {}. Use /plan approve when ready.",
                 plan_path.display()
             ));
             self.state.add_system_message(format!(
@@ -1989,23 +2070,38 @@ Manual snapshot: `/magic-trace stop`",
         use crate::commands::McpAction;
 
         match action {
-            McpAction::Configure { args } => match crate::mcp_config_cli::apply_mcp_config(&args) {
-                Ok(message) => self.state.add_system_message(message),
-                Err(error) => self
-                    .state
-                    .add_system_message(format!("MCP configuration failed: {error}")),
-            },
-            McpAction::Status => match self.tool_executor.mcp_status().await {
-                Ok(servers) => {
-                    self.update_mcp_badge_counts(&servers);
-                    let lines = render_mcp_status_lines(&servers);
-                    self.state.add_system_message(lines.join("\n"));
+            McpAction::Configure { args } => {
+                if args.first().is_some_and(|arg| arg == "auth") {
+                    if self.mcp_config_in_flight {
+                        self.state.add_system_message(
+                            "An MCP authentication flow is already in progress.".to_string(),
+                        );
+                        return;
+                    }
+                    self.mcp_config_in_flight = true;
+                    self.state.add_system_message(
+                        "Finish MCP authentication in your browser.".to_string(),
+                    );
+                    let tx = self.mcp_config_tx.clone();
+                    tokio::spawn(async move {
+                        let result =
+                            crate::mcp_config_cli::apply_mcp_config_async_quiet(&args).await;
+                        let _ = tx.send(result.map_err(|error| error.to_string()));
+                    });
+                } else {
+                    match crate::mcp_config_cli::apply_mcp_config_async(&args).await {
+                        Ok(message) => self.state.add_system_message(message),
+                        Err(error) => self
+                            .state
+                            .add_system_message(format!("MCP configuration failed: {error}")),
+                    }
                 }
-                Err(err) => {
-                    self.state
-                        .add_system_message(format!("Failed to load MCP status: {err}"));
-                }
-            },
+            }
+            McpAction::Status => {
+                self.active_modal = ActiveModal::McpManager;
+                self.last_mcp_status_refresh = None;
+                self.refresh_mcp_badges_with_force(true).await;
+            }
             McpAction::Resources { server, uri } => {
                 let servers = match self.tool_executor.mcp_status().await {
                     Ok(servers) => servers,

@@ -1154,9 +1154,11 @@ fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandErr
     }
     let mut turns = None;
     let mut dry_run = false;
+    let mut both = false;
     for arg in tokens {
         match arg {
             "--dry-run" => dry_run = true,
+            "--files" => both = true,
             _ if turns.is_none() => {
                 turns = Some(arg.parse::<usize>().map_err(|_| CommandError::new(usage))?);
             }
@@ -1167,7 +1169,11 @@ fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandErr
     if turns == 0 {
         return Err(CommandError::new("Rewind count must be >= 1"));
     }
-    Ok(SessionAction::Rewind { turns, dry_run })
+    Ok(if both {
+        SessionAction::RewindBoth { turns, dry_run }
+    } else {
+        SessionAction::Rewind { turns, dry_run }
+    })
 }
 
 fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
@@ -1367,13 +1373,13 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Action(CommandAction::Session(
                     parse_rewind_args(
                         &ctx.raw_args,
-                        "Usage: /rewind [n] [--dry-run] | /rewind files | /rewind checkpoints",
+                        "Usage: /rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints",
                     )?,
                 )))
             }),
         )
         .alias("undo")
-        .usage("/rewind [n] [--dry-run] | /rewind files | /rewind checkpoints"),
+        .usage("/rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints"),
     );
 
     registry.register(
@@ -1878,7 +1884,7 @@ pub fn build_command_registry() -> CommandRegistry {
                                 .strip_prefix(ctx.raw_args.split_whitespace().next().unwrap_or(""))
                                 .unwrap_or("")
                                 .trim(),
-                            "Usage: /session rewind [n] [--dry-run] | /session rewind files | /session rewind checkpoints",
+                            "Usage: /session rewind [n] [--dry-run] [--files] | /session rewind files | /session rewind checkpoints",
                         )?,
                     ))),
                     "info" | "status" | "" => {
@@ -2103,6 +2109,17 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/approvals [yolo|selective|safe]"),
     );
 
+    registry.register(
+        Command::new(
+            "boost",
+            "Give this task more intelligence",
+            CommandCategory::Config,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::Boost))),
+        )
+        .alias("b")
+        .usage("/boost"),
+    );
+
     // Thinking level command
     registry.register(
         Command::new(
@@ -2153,6 +2170,13 @@ pub fn build_command_registry() -> CommandRegistry {
                 if raw.is_empty() {
                     return Ok(CommandOutput::Action(CommandAction::ShowContext));
                 }
+                let args = raw.split_whitespace().collect::<Vec<_>>();
+                if let [operation @ ("exclude" | "include"), name] = args.as_slice() {
+                    return Ok(CommandOutput::Action(CommandAction::SetContextTool {
+                        name: (*name).to_string(),
+                        excluded: *operation == "exclude",
+                    }));
+                }
                 match raw {
                     "audit" => Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
                         json: false,
@@ -2162,11 +2186,13 @@ pub fn build_command_registry() -> CommandRegistry {
                             json: true,
                         }))
                     }
-                    _ => Err(CommandError::new("Usage: /context [audit [--json]]")),
+                    _ => Err(CommandError::new(
+                        "Usage: /context [audit [--json] | exclude TOOL | include TOOL]",
+                    )),
                 }
             }),
         )
-        .usage("/context [audit [--json]]"),
+        .usage("/context [audit [--json] | exclude TOOL | include TOOL]"),
     );
 
     registry.register(
@@ -2518,7 +2544,7 @@ pub fn build_command_registry() -> CommandRegistry {
     // MCP command
     registry.register(Command::new(
         "mcp",
-        "Show MCP server status and configuration",
+        "Open the MCP server manager",
         CommandCategory::Tools,
         Box::new(|ctx| {
             let raw = ctx.raw_args.trim();
@@ -2558,30 +2584,12 @@ pub fn build_command_registry() -> CommandRegistry {
 
     registry.register(Command::new(
         "mcp-config",
-        "Configure MCP servers safely (wizard, list, add-stdio, add-http, remove)",
+        "Open or script the MCP server manager",
         CommandCategory::Tools,
         Box::new(|ctx| {
             let raw = ctx.raw_args.trim();
-            // Conversational wizard: guided next steps without mutating config yet.
-            if raw.is_empty()
-                || raw.eq_ignore_ascii_case("wizard")
-                || raw.eq_ignore_ascii_case("help")
-            {
-                return Ok(CommandOutput::Message(
-                    "## MCP config wizard\n\n\
-                     1. **List** current servers:\n\
-                     `/mcp-config list`\n\n\
-                     2. **Add stdio server** (local process):\n\
-                     `/mcp-config add-stdio <name> <command> [args…] --scope user|project|local`\n\n\
-                     3. **Add HTTP server**:\n\
-                     `/mcp-config add-http <name> <url> --scope user|project|local`\n\n\
-                     4. **Remove**:\n\
-                     `/mcp-config remove <name> --scope user|project|local`\n\n\
-                     5. **Check status**: `/mcp`\n\n\
-                     Secrets must use env references in user scope only. Project scope cannot store secrets.\n\
-                     After changing config, reload with `/mcp` or restart the session."
-                        .to_string(),
-                ));
+            if raw.is_empty() || raw.eq_ignore_ascii_case("wizard") {
+                return Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status)));
             }
             Ok(CommandOutput::Action(CommandAction::Mcp(
                 McpAction::Configure {
@@ -2642,6 +2650,33 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .alias("v"),
+    );
+
+    registry.register(
+        Command::new(
+            "dex",
+            "Dex appearance, reactions, recap, and preferences",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let setting = ctx.get_string("setting").unwrap_or(ctx.raw_args.trim());
+                if crate::dex_actions::contains(setting) {
+                    Ok(CommandOutput::Action(CommandAction::SetDexPresentation(
+                        setting.to_owned(),
+                    )))
+                } else {
+                    Err(CommandError::new("Unknown Dex action; use /dex for help"))
+                }
+            }),
+        )
+        .arg(CommandArgument::choice(
+            "setting",
+            crate::dex_actions::help(),
+            crate::dex_actions::command_ids(),
+        ))
+        .usage(format!(
+            "/dex [{}]",
+            crate::dex_actions::command_ids().join("|")
+        )),
     );
 
     // Footer command

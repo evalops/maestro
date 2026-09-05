@@ -631,43 +631,12 @@ fn codex_app_server_transport_check(selected_provider: &str) -> DoctorCheck {
 }
 
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
-    let config = crate::config::load_config(cwd, None);
-    // load_config always merges DEFAULT_CONFIG.model = "gpt-5.5". When Codex
-    // ChatGPT auth is present, prefer openai-codex/gpt-5.5 unless the user
-    // set MAESTRO_MODEL or passed --model (same policy as spawn_agent).
-    let codex_auth = crate::codex_auth::read_codex_auth();
     let requested = model_override
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
         .map(str::to_owned)
-        .filter(|m| !m.trim().is_empty())
-        .or_else(|| {
-            std::env::var("MAESTRO_MODEL")
-                .ok()
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-        })
-        .or_else(|| {
-            let configured = config
-                .model
-                .as_deref()
-                .map(str::trim)
-                .filter(|m| !m.is_empty());
-            match (
-                configured,
-                codex_auth
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.preferred_default_model()),
-            ) {
-                (Some(model), Some(codex_default))
-                    if model == "gpt-5.5" || model == "gpt-5.1-codex-max" =>
-                {
-                    Some(codex_default.to_string())
-                }
-                (Some(model), _) => Some(model.to_string()),
-                (None, Some(codex_default)) => Some(codex_default.to_string()),
-                (None, None) => Some(crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string()),
-            }
-        })
-        .unwrap_or_else(|| crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string());
+        .or_else(|| crate::config::configured_model_route(cwd, None))
+        .unwrap_or_else(|| crate::credential_mode::DEFAULT_MANAGED_MODEL.to_owned());
     let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
     let process_env = std::env::vars().collect::<HashMap<String, String>>();
     let mut env = process_env.clone();

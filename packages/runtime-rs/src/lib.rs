@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod boundary;
+pub use maestro_coding_acceptance as coding_acceptance;
 pub mod delegation;
 mod launch_spec;
 pub mod passport;

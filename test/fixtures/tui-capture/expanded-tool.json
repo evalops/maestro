@@ -1,0 +1,26 @@
+{
+  "name": "expanded-tool",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "Read the README and explain what this project does."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "The README is a good starting point"
+    },
+    {
+      "absent": "Working|Thinking"
+    },
+    {
+      "key": "C-t"
+    },
+    {
+      "wait": "read-1"
+    }
+  ]
+}

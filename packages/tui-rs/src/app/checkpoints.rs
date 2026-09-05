@@ -14,12 +14,55 @@ impl App {
         let Some(session_id) = self.state.session_id.clone() else {
             return;
         };
+        let turn_index = self
+            .session_manager
+            .flush()
+            .ok()
+            .and_then(|()| self.session_manager.current_session_path())
+            .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
+            .map(|session| session.stats.user_messages);
         self.pending_checkpoint = crate::checkpoints::begin_turn(
             &cwd,
             self.session_manager.sessions_dir(),
             &session_id,
             prompt,
         );
+        if let Some(pending) = &mut self.pending_checkpoint {
+            pending.user_turn_index = turn_index;
+        }
+    }
+
+    pub(super) fn preview_rewind_files(&mut self, first_turn: usize) -> anyhow::Result<()> {
+        let store = self
+            .file_checkpoint_store()
+            .ok_or_else(|| anyhow::anyhow!("No session checkpoint store."))?;
+        let (candidates, skipped) = crate::checkpoints::preview_turns(&store, first_turn)?;
+        let mut message = if candidates.is_empty() {
+            "No restorable file changes recorded for these turns.".to_string()
+        } else {
+            format!("Restore: {}.", candidates.join(", "))
+        };
+        if !skipped.is_empty() {
+            message.push_str(&format!(" Keep later changes: {}.", skipped.join(", ")));
+        }
+        self.state.add_system_message(message);
+        Ok(())
+    }
+
+    pub(super) fn restore_rewind_files(
+        &mut self,
+        source_id: Option<&str>,
+        first_turn: usize,
+    ) -> anyhow::Result<()> {
+        let source_id = source_id.ok_or_else(|| anyhow::anyhow!("No source session."))?;
+        let store = crate::checkpoints::CheckpointStore::new(
+            self.session_manager.sessions_dir(),
+            source_id,
+        );
+        for report in crate::checkpoints::restore_turns(&store, first_turn)? {
+            self.report_file_restore(Ok(Some(report)));
+        }
+        Ok(())
     }
 
     /// Persist the pending checkpoint now that the agent turn has ended.
@@ -97,6 +140,17 @@ impl App {
             self.state.status = Some("No file checkpoints recorded for this session.".to_string());
             return;
         };
+        if let Some(index) = checkpoint.user_turn_index {
+            match crate::checkpoints::restore_turns(&store, index) {
+                Ok(reports) => {
+                    for report in reports {
+                        self.report_file_restore(Ok(Some(report)));
+                    }
+                }
+                Err(error) => self.report_file_restore(Err(error)),
+            }
+            return;
+        }
         let result = crate::checkpoints::restore_checkpoint(&store, &checkpoint).map(Some);
         self.report_file_restore(result);
     }
@@ -137,7 +191,19 @@ impl App {
                 {
                     msg.push_str("\n- nothing to restore");
                 }
-                self.state.status = Some("Files restored from checkpoint.".to_string());
+                if !report.failed.is_empty() {
+                    msg.push_str(&format!("\n- failed: {}", report.failed.join(", ")));
+                }
+                self.state.status = Some(
+                    if !report.failed.is_empty() {
+                        "Some files could not be restored."
+                    } else if !report.skipped.is_empty() {
+                        "Restored available files; later changes were kept."
+                    } else {
+                        "Files restored from checkpoint."
+                    }
+                    .to_string(),
+                );
                 self.state.add_system_message(msg);
             }
             Ok(None) => {

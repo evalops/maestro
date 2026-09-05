@@ -1,0 +1,14 @@
+{
+  "name": "command-palette",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "key": "C-k"
+    },
+    {
+      "wait": "Search commands, files, sessions"
+    }
+  ]
+}

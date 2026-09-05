@@ -499,6 +499,14 @@ impl McpConnection {
         let mut newly_revoked = Vec::new();
 
         for mut tool in listed {
+            if self
+                .config
+                .disabled_tools
+                .iter()
+                .any(|disabled| disabled == &tool.name)
+            {
+                continue;
+            }
             let reason = self.admission_reason(&tool);
             if let Some(reason) = reason {
                 if self.revoked_tools.get(&tool.name) != Some(&reason) {
@@ -1582,6 +1590,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -2778,6 +2787,36 @@ mod tests {
         let revoked = connection.admit_tools(vec![stub_tool("search", reordered)]);
         assert!(revoked.is_empty());
         assert_eq!(connection.tools.len(), 1);
+    }
+
+    #[test]
+    fn configured_disabled_tools_never_enter_the_model_catalog() {
+        let mut config = stub_config("filtered");
+        config.disabled_tools = vec!["dangerous".to_string()];
+        let mut connection = McpConnection::new(config);
+        connection.admit_tools(vec![
+            McpTool {
+                name: "safe".to_string(),
+                description: None,
+                input_schema: Some(serde_json::json!({"type":"object"})),
+                annotations: None,
+            },
+            McpTool {
+                name: "dangerous".to_string(),
+                description: None,
+                input_schema: Some(serde_json::json!({"type":"object"})),
+                annotations: None,
+            },
+        ]);
+
+        assert_eq!(
+            connection
+                .tools()
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["safe"]
+        );
     }
 
     #[test]

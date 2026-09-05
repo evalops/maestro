@@ -6,9 +6,130 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-pub fn run_mcp_config(args: &[String]) -> Result<i32> {
-    println!("{}", apply_mcp_config(args)?);
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct McpCatalogEntry {
+    pub id: &'static str,
+    pub description: &'static str,
+    pub command: &'static str,
+    pub args: &'static [&'static str],
+}
+
+const MCP_CATALOG: &[McpCatalogEntry] = &[
+    McpCatalogEntry {
+        id: "context7",
+        description: "Current library documentation and examples",
+        command: "npx",
+        args: &["-y", "@upstash/context7-mcp"],
+    },
+    McpCatalogEntry {
+        id: "playwright",
+        description: "Browser automation through Playwright",
+        command: "npx",
+        args: &["-y", "@playwright/mcp@latest"],
+    },
+];
+
+#[must_use]
+pub fn catalog_entries() -> &'static [McpCatalogEntry] {
+    MCP_CATALOG
+}
+
+pub async fn run_mcp_config(args: &[String]) -> Result<i32> {
+    let command = args.first().map(String::as_str).unwrap_or("list");
+    if matches!(command, "list" | "status" | "tools") {
+        print_runtime_status(args).await?;
+        return Ok(0);
+    }
+    println!("{}", apply_mcp_config_async(args).await?);
     Ok(0)
+}
+
+pub async fn apply_mcp_config_async(args: &[String]) -> Result<String> {
+    apply_mcp_config_async_with_output(args, true).await
+}
+
+pub(crate) async fn apply_mcp_config_async_quiet(args: &[String]) -> Result<String> {
+    apply_mcp_config_async_with_output(args, false).await
+}
+
+async fn apply_mcp_config_async_with_output(args: &[String], announce_url: bool) -> Result<String> {
+    if args.first().map(String::as_str) != Some("auth") {
+        return apply_mcp_config(args);
+    }
+    let name = required(args, 1, "server name")?;
+    let cwd = std::env::current_dir()?;
+    let config = crate::mcp::load_mcp_config_with_managed_connections(Some(&cwd));
+    let server = config
+        .get_server(name)
+        .with_context(|| format!("MCP server {name} is not configured"))?
+        .clone();
+    if matches!(
+        server.scope,
+        crate::mcp::McpConfigScope::Managed | crate::mcp::McpConfigScope::Enterprise
+    ) {
+        bail!("managed and enterprise MCP authentication is controlled by its policy owner");
+    }
+    let scopes = option_values(args, "--oauth-scope");
+    if announce_url {
+        crate::mcp::oauth_login(&server, option_value(args, "--client-id"), &scopes).await?;
+    } else {
+        crate::mcp::oauth_login_quiet(&server, option_value(args, "--client-id"), &scopes).await?;
+    }
+    let path = path_for_scope(server.scope, &cwd)?;
+    set_server_field(&path, name, "authPreset", json!("oauth"))?;
+    Ok(format!(
+        "Authenticated MCP server {name}; token stored in the OS credential store."
+    ))
+}
+
+async fn print_runtime_status(args: &[String]) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let executor = crate::tools::ToolExecutor::new(cwd.display().to_string());
+    let statuses = executor.mcp_status().await.map_err(anyhow::Error::msg)?;
+    if args.iter().any(|arg| arg == "--json") {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        return Ok(());
+    }
+    if statuses.is_empty() {
+        println!("No MCP servers configured.");
+        return Ok(());
+    }
+    let tool_filter = (args.first().map(String::as_str) == Some("tools"))
+        .then(|| args.get(1).map(String::as_str))
+        .flatten();
+    if args.first().map(String::as_str) != Some("tools") {
+        println!("Configured MCP servers:");
+    }
+    for status in statuses {
+        if tool_filter.is_some_and(|name| name != status.name) {
+            continue;
+        }
+        if args.first().map(String::as_str) == Some("tools") {
+            println!("{}  {}", status.name, status.state.label());
+            for tool in &status.tools {
+                println!("  {tool}");
+            }
+            for tool in &status.disabled_tools {
+                println!("  {tool}  disabled");
+            }
+            if status.tools.is_empty() && status.disabled_tools.is_empty() {
+                println!("  No tools available.");
+            }
+        } else {
+            println!(
+                "  {:<24} {:<20} {:<7} [{:?}]  {} tools",
+                status.name,
+                status.state.label(),
+                format!("{:?}", status.transport).to_lowercase(),
+                status.scope,
+                status.tools.len()
+            );
+            if let Some(error) = status.error {
+                println!("    {error}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Apply a configuration command and return a UI-safe status message.
@@ -16,12 +137,10 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
     let command = args.first().map(String::as_str).unwrap_or("list");
     let cwd = std::env::current_dir()?;
     match command {
-        "list" => {
-            let config = crate::mcp::load_mcp_config_with_managed_connections(Some(&cwd));
-            Ok(serde_json::to_string_pretty(&redact_server_configs(
-                serde_json::to_value(&config.servers)?,
-            ))?)
-        }
+        "list" | "status" | "tools" => Ok(
+            "Runtime MCP status is available from the top-level maestro mcp command.".to_string(),
+        ),
+        "add" => add_unified(args, &cwd),
         "add-stdio" => {
             let name = required(args, 1, "server name")?;
             let executable = required(args, 2, "server command")?;
@@ -75,11 +194,54 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             mutate_server(&path, name, None)?;
             Ok(format!("Removed MCP server {name} from {}", path.display()))
         }
+        "enable" | "disable" => {
+            let name = required(args, 1, "server name")?;
+            let (path, _) = target_path(args, &cwd)?;
+            set_server_field(&path, name, "enabled", json!(command == "enable"))?;
+            set_server_field(&path, name, "disabled", json!(command == "disable"))?;
+            Ok(format!(
+                "{} MCP server {name} in {}",
+                if command == "enable" {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+                path.display()
+            ))
+        }
+        "tool" => {
+            let name = required(args, 1, "server name")?;
+            let tool = required(args, 2, "tool name")?;
+            let setting = required(args, 3, "on or off")?;
+            let enabled = match setting {
+                "on" | "enable" | "enabled" => true,
+                "off" | "disable" | "disabled" => false,
+                _ => bail!("tool state must be on or off"),
+            };
+            let (path, _) = target_path(args, &cwd)?;
+            set_tool_enabled(&path, name, tool, enabled)?;
+            Ok(format!(
+                "{} tool {tool} on MCP server {name}",
+                if enabled { "Enabled" } else { "Disabled" }
+            ))
+        }
+        "permissions" => permissions_command(&args[1..]),
+        "registry" | "catalog" => registry_command(&args[1..], &cwd),
+        "clear-auth" => {
+            let name = required(args, 1, "server name")?;
+            let removed = crate::mcp::clear_oauth(name)?;
+            Ok(if removed {
+                format!("Cleared OAuth credentials for MCP server {name}")
+            } else {
+                format!("No OAuth credentials stored for MCP server {name}")
+            })
+        }
         "help" | "--help" | "-h" => Ok(help_text().to_string()),
         other => bail!("unknown mcp command: {other}"),
     }
 }
 
+#[cfg(test)]
 fn redact_server_configs(mut value: Value) -> Value {
     match &mut value {
         Value::Object(servers) => {
@@ -97,6 +259,7 @@ fn redact_server_configs(mut value: Value) -> Value {
     value
 }
 
+#[cfg(test)]
 fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
     match value {
         Value::Object(object) => {
@@ -125,6 +288,7 @@ fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
     }
 }
 
+#[cfg(test)]
 fn redact_url_credentials(value: &str) -> String {
     let Ok(url) = url::Url::parse(value) else {
         return "[REDACTED]".to_string();
@@ -132,6 +296,7 @@ fn redact_url_credentials(value: &str) -> String {
     url.origin().ascii_serialization()
 }
 
+#[cfg(test)]
 fn redact_argument_array(values: &mut [Value]) {
     let mut secret_value_follows = false;
     for value in values {
@@ -185,11 +350,181 @@ fn is_secret_key(key: &str) -> bool {
 
 fn help_text() -> &'static str {
     "Usage:\n\
-         \x20 maestro mcp list\n\
+         \x20 maestro mcp list [--json]\n\
+         \x20 maestro mcp status [--json]\n\
+         \x20 maestro mcp tools [name] [--json]\n\
+         \x20 maestro mcp add <name> <url-or-command> [args...] --type stdio|http|sse [--env VAR] [--header 'Name: value'] [--no-oauth] [--scope ...]\n\
          \x20 maestro mcp add-stdio <name> <command> [args...] [--env VAR] [--scope user|project|local]\n\
          \x20 maestro mcp add-http <name> <url> [--bearer-token-env VAR] [--scope ...]\n\
+         \x20 maestro mcp enable|disable <name> [--scope ...]\n\
+         \x20 maestro mcp tool <name> <tool> on|off [--scope ...]\n\
+         \x20 maestro mcp auth <name> [--client-id ID] [--oauth-scope SCOPE]\n\
+         \x20 maestro mcp clear-auth <name>\n\
+         \x20 maestro mcp registry list|add <name> [--scope ...]\n\
+         \x20 maestro mcp permissions list [--json]\n\
+         \x20 maestro mcp permissions revoke <server> [tool]\n\
+         \x20 maestro mcp permissions clear --confirm\n\
          \x20 maestro mcp remove <name> [--scope ...]\n\n\
          Secrets must use environment references in user scope; project configs cannot read them."
+}
+
+fn registry_command(args: &[String], cwd: &Path) -> Result<String> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => Ok(MCP_CATALOG
+            .iter()
+            .map(|entry| format!("{:<14} {}", entry.id, entry.description))
+            .collect::<Vec<_>>()
+            .join("\n")),
+        "add" => {
+            let id = required(args, 1, "catalog server name")?;
+            let entry = MCP_CATALOG
+                .iter()
+                .find(|entry| entry.id == id)
+                .with_context(|| format!("unknown MCP catalog entry: {id}"))?;
+            let (path, _) = target_path(args, cwd)?;
+            mutate_server(
+                &path,
+                entry.id,
+                Some(json!({
+                    "transport": "stdio",
+                    "command": entry.command,
+                    "args": entry.args,
+                })),
+            )?;
+            Ok(format!(
+                "Added {} from the MCP registry in {}",
+                entry.id,
+                path.display()
+            ))
+        }
+        other => bail!("unknown MCP registry command: {other}"),
+    }
+}
+
+fn permissions_command(args: &[String]) -> Result<String> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => {
+            let grants = crate::mcp::list_permissions()?;
+            if args.iter().any(|arg| arg == "--json") {
+                return Ok(serde_json::to_string_pretty(&grants)?);
+            }
+            if grants.is_empty() {
+                return Ok("No persistent MCP permissions.".to_string());
+            }
+            Ok(grants
+                .into_iter()
+                .map(|grant| {
+                    format!(
+                        "{}  {}  {}  {}",
+                        grant.server,
+                        grant.tool,
+                        &grant.fingerprint[..12],
+                        grant.granted_at
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "revoke" => {
+            let server = required(args, 1, "server name")?;
+            if let Some(tool) = args.get(2) {
+                if crate::mcp::revoke_permission(server, tool)? {
+                    Ok(format!("Revoked MCP permission for {server} {tool}"))
+                } else {
+                    Ok(format!(
+                        "No persistent MCP permission matched {server} {tool}"
+                    ))
+                }
+            } else {
+                let count = crate::mcp::revoke_server_permissions(server)?;
+                Ok(format!(
+                    "Revoked {count} persistent MCP permission(s) for {server}"
+                ))
+            }
+        }
+        "clear" => {
+            if !args.iter().any(|arg| arg == "--confirm") {
+                bail!("clearing all MCP permissions requires --confirm");
+            }
+            let count = crate::mcp::clear_permissions()?;
+            Ok(format!("Cleared {count} persistent MCP permission(s)"))
+        }
+        other => bail!("unknown MCP permissions command: {other}"),
+    }
+}
+
+fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
+    let name = required(args, 1, "server name")?;
+    let target = required(args, 2, "server URL or command")?;
+    let transport = option_value(args, "--type").unwrap_or_else(|| {
+        if target.starts_with("http://") || target.starts_with("https://") {
+            "http"
+        } else {
+            "stdio"
+        }
+    });
+    match transport {
+        "stdio" => {
+            let (path, scope) = target_path(args, cwd)?;
+            let (command_args, env) = stdio_options(&args[3..])?;
+            if scope != "user" && !env.is_empty() {
+                bail!(
+                    "environment bindings are user-scope only; project configs cannot read secrets"
+                );
+            }
+            reject_literal_secrets(&command_args)?;
+            mutate_server(
+                &path,
+                name,
+                Some(
+                    json!({"transport":"stdio", "command":target, "args":command_args, "env":env}),
+                ),
+            )?;
+            Ok(format!(
+                "Configured stdio MCP server {name} in {}",
+                path.display()
+            ))
+        }
+        "http" | "sse" => {
+            validate_http_url(target)?;
+            let (path, scope) = target_path(args, cwd)?;
+            let mut server = json!({"transport":transport, "url":target});
+            let mut headers = http_headers(args)?;
+            if let Some(variable) = option_value(args, "--bearer-token-env") {
+                validate_env_name(variable)?;
+                if scope != "user" {
+                    bail!(
+                        "bearer-token bindings are user-scope only; project configs cannot read secrets"
+                    );
+                }
+                headers.insert(
+                    "Authorization".to_string(),
+                    Value::String(format!("Bearer ${{{variable}}}")),
+                );
+            }
+            if scope != "user"
+                && headers.iter().any(|(name, value)| {
+                    is_secret_key(name) || value.as_str().is_some_and(|value| value.contains("${"))
+                })
+            {
+                bail!(
+                    "secret or environment-backed headers are user-scope only; project configs cannot read secrets"
+                );
+            }
+            if !headers.is_empty() {
+                server["headers"] = Value::Object(headers);
+            }
+            if args.iter().any(|arg| arg == "--no-oauth") {
+                server["authPreset"] = json!("none");
+            }
+            mutate_server(&path, name, Some(server))?;
+            Ok(format!(
+                "Configured {transport} MCP server {name} in {}",
+                path.display()
+            ))
+        }
+        other => bail!("unknown MCP transport: {other}"),
+    }
 }
 
 fn required<'a>(args: &'a [String], index: usize, label: &str) -> Result<&'a str> {
@@ -209,6 +544,25 @@ fn option_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
         })
 }
 
+fn option_values(args: &[String], key: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == key {
+            if let Some(value) = args.get(index + 1) {
+                values.push(value.clone());
+            }
+            index += 2;
+        } else if let Some(value) = args[index].strip_prefix(&format!("{key}=")) {
+            values.push(value.to_string());
+            index += 1;
+        } else {
+            index += 1;
+        }
+    }
+    values
+}
+
 fn target_path(args: &[String], cwd: &Path) -> Result<(PathBuf, &'static str)> {
     let args = args.split(|value| value == "--").next().unwrap_or(args);
     if args.iter().any(|value| value == "--scope") && option_value(args, "--scope").is_none() {
@@ -223,6 +577,18 @@ fn target_path(args: &[String], cwd: &Path) -> Result<(PathBuf, &'static str)> {
         "project" => Ok((cwd.join(".maestro").join("mcp.json"), "project")),
         "local" => Ok((cwd.join(".maestro").join("mcp.local.json"), "local")),
         other => bail!("unknown MCP config scope: {other}"),
+    }
+}
+
+fn path_for_scope(scope: crate::mcp::McpConfigScope, cwd: &Path) -> Result<PathBuf> {
+    match scope {
+        crate::mcp::McpConfigScope::User => crate::mcp::effective_user_config_path()
+            .context("could not resolve user MCP configuration path"),
+        crate::mcp::McpConfigScope::Project => Ok(cwd.join(".maestro").join("mcp.json")),
+        crate::mcp::McpConfigScope::Local => Ok(cwd.join(".maestro").join("mcp.local.json")),
+        crate::mcp::McpConfigScope::Managed | crate::mcp::McpConfigScope::Enterprise => {
+            bail!("this MCP scope is read-only")
+        }
     }
 }
 
@@ -252,6 +618,28 @@ fn validate_http_url(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn http_headers(args: &[String]) -> Result<Map<String, Value>> {
+    let mut headers = Map::new();
+    for raw in option_values(args, "--header") {
+        let (name, value) = raw
+            .split_once(':')
+            .context("--header must use 'Name: value'")?;
+        let name = name.trim();
+        let value = value.trim();
+        reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("invalid HTTP header name: {name}"))?;
+        reqwest::header::HeaderValue::from_str(value)
+            .with_context(|| format!("invalid value for HTTP header {name}"))?;
+        if is_secret_key(name)
+            && authorization_header_has_literal_credential(&format!("{name}: {value}"))
+        {
+            bail!("literal header secrets are not allowed; use an environment reference");
+        }
+        headers.insert(name.to_string(), Value::String(value.to_string()));
+    }
+    Ok(headers)
+}
+
 fn stdio_options(args: &[String]) -> Result<(Vec<String>, Map<String, Value>)> {
     let mut command_args = Vec::new();
     let mut env = Map::new();
@@ -272,6 +660,23 @@ fn stdio_options(args: &[String]) -> Result<(Vec<String>, Map<String, Value>)> {
                 index += 2;
             }
             value if value.starts_with("--scope=") => index += 1,
+            "--type" | "--bearer-token-env" | "--header" => {
+                if args
+                    .get(index + 1)
+                    .is_none_or(|value| value.starts_with('-'))
+                {
+                    bail!("{} requires a value", args[index]);
+                }
+                index += 2;
+            }
+            value
+                if value.starts_with("--type=")
+                    || value.starts_with("--bearer-token-env=")
+                    || value.starts_with("--header=") =>
+            {
+                index += 1;
+            }
+            "--no-oauth" => index += 1,
             "--env" => {
                 let variable = args.get(index + 1).context("--env requires a variable")?;
                 validate_env_name(variable)?;
@@ -356,6 +761,57 @@ fn credential_flag(argument: &str) -> Option<bool> {
         .split_once('=')
         .map_or((value, false), |(name, _)| (name, true));
     is_secret_key(name).then_some(inline_value)
+}
+
+fn set_server_field(path: &Path, name: &str, field: &str, value: Value) -> Result<()> {
+    mutate_existing_server(path, name, |server| {
+        let object = server
+            .as_object_mut()
+            .context("MCP server entry must be an object")?;
+        object.insert(field.to_string(), value);
+        Ok(())
+    })
+}
+
+fn set_tool_enabled(path: &Path, name: &str, tool: &str, enabled: bool) -> Result<()> {
+    mutate_existing_server(path, name, |server| {
+        let object = server
+            .as_object_mut()
+            .context("MCP server entry must be an object")?;
+        let disabled = object
+            .entry("disabledTools")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .context("disabledTools must be an array")?;
+        disabled.retain(|value| value.as_str() != Some(tool));
+        if !enabled {
+            disabled.push(Value::String(tool.to_string()));
+        }
+        Ok(())
+    })
+}
+
+fn mutate_existing_server(
+    path: &Path,
+    name: &str,
+    mutate: impl FnOnce(&mut Value) -> Result<()>,
+) -> Result<()> {
+    let mut root: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("read {}", path.display()))?,
+    )
+    .with_context(|| format!("invalid JSON in {}", path.display()))?;
+    let server = root
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .with_context(|| {
+            format!(
+                "server {name} is not editable in {}; select its owning --scope",
+                path.display()
+            )
+        })?;
+    mutate(server)?;
+    crate::path_utils::atomic_private_write(path, &serde_json::to_vec_pretty(&root)?)
 }
 
 fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
@@ -473,6 +929,52 @@ mod tests {
         assert!(validate_http_url("https://example.test/mcp?client_secret=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?auth_token=secret").is_err());
         assert!(validate_http_url("http://127.0.0.1:3000/mcp").is_ok());
+    }
+
+    #[test]
+    fn http_headers_accept_safe_values_and_reject_literal_credentials() {
+        let headers = http_headers(&[
+            "--header".into(),
+            "X-Trace: enabled".into(),
+            "--header=Authorization: Bearer ${MCP_TOKEN}".into(),
+        ])
+        .unwrap();
+        assert_eq!(headers["X-Trace"], "enabled");
+        assert_eq!(headers["Authorization"], "Bearer ${MCP_TOKEN}");
+        assert!(http_headers(&["--header".into(), "Authorization: Bearer secret".into()]).is_err());
+        assert!(http_headers(&["--header".into(), "bad header: value".into()]).is_err());
+    }
+
+    #[test]
+    fn unified_remote_add_and_tool_toggle_persist_droid_compatible_options() {
+        let temp = TempDir::new().unwrap();
+        let args = vec![
+            "add".into(),
+            "remote".into(),
+            "https://example.test/mcp".into(),
+            "--type".into(),
+            "http".into(),
+            "--header".into(),
+            "X-Trace: enabled".into(),
+            "--no-oauth".into(),
+            "--scope".into(),
+            "project".into(),
+        ];
+        add_unified(&args, temp.path()).unwrap();
+        let path = temp.path().join(".maestro/mcp.json");
+        set_tool_enabled(&path, "remote", "write", false).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+
+        assert_eq!(value["mcpServers"]["remote"]["transport"], "http");
+        assert_eq!(
+            value["mcpServers"]["remote"]["headers"]["X-Trace"],
+            "enabled"
+        );
+        assert_eq!(value["mcpServers"]["remote"]["authPreset"], "none");
+        assert_eq!(
+            value["mcpServers"]["remote"]["disabledTools"],
+            json!(["write"])
+        );
     }
 
     #[test]

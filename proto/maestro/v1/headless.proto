@@ -445,6 +445,26 @@ message ApplyWorkspaceCapabilitySetMessage {
   string admission_receipt_id = 11;
 }
 
+enum PromptExperimentArm {
+  PROMPT_EXPERIMENT_ARM_UNSPECIFIED = 0;
+  PROMPT_EXPERIMENT_ARM_CONTROL = 1;
+  PROMPT_EXPERIMENT_ARM_CANDIDATE = 2;
+}
+
+message PromptExperimentAssignment {
+  string experiment_id = 1;
+  string assignment_id = 2;
+  PromptExperimentArm arm = 3;
+  string artifact_id = 4;
+  string artifact_version = 5;
+  string artifact_sha256 = 6;
+  string artifact_content = 7;
+}
+
+message ConfigurePromptExperimentMessage {
+  PromptExperimentAssignment assignment = 1;
+}
+
 message ServerRequestResponseMessage {
   string request_id = 1;
   ServerRequestType request_type = 2;
@@ -844,6 +864,7 @@ message ToAgentEnvelope {
     GovernedPromptMessage governed_steer = 20;
     GovernedClientToolResultMessage governed_client_tool_result = 21;
     ApplyWorkspaceCapabilitySetMessage apply_workspace_capability_set = 22;
+    ConfigurePromptExperimentMessage configure_prompt_experiment = 23;
   }
 }
 

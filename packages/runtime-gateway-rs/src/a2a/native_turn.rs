@@ -894,6 +894,7 @@ pub(crate) async fn run_a2a_native_turn(
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 last_error = Some(message);
                 if fatal || terminal {
@@ -997,6 +998,8 @@ mod terminal_tests {
         assert!(matches!(
             a2a_explicit_terminal(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             }),
             Some(Ok(()))
         ));

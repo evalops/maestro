@@ -349,6 +349,7 @@ impl HttpConnection {
         let scope = self.config.scope;
         let trust_config = self.config.clone();
         let workspace_dir = self.workspace_dir.clone();
+        let bearer = self.bearer_token().await?;
 
         // Spawn SSE reader task
         let task = tokio::spawn(async move {
@@ -357,6 +358,9 @@ impl HttpConnection {
             // Add custom headers
             for (key, value) in &headers {
                 request = request.header(key, expand_env_vars_for_scope(value, scope));
+            }
+            if let Some(access_token) = bearer.as_ref() {
+                request = request.bearer_auth(access_token.as_str());
             }
 
             if repository_request_requires_workspace_trust(&trust_config)
@@ -491,7 +495,7 @@ impl HttpConnection {
         let mut request = self
             .apply_config_headers(self.client.get(url))
             .header(header::ACCEPT, "application/json");
-        if let Some(access_token) = self.auth.bearer_for(&self.config)? {
+        if let Some(access_token) = self.bearer_token().await? {
             request = request.bearer_auth(access_token.as_str());
         }
         self.ensure_repository_request_allowed()?;
@@ -744,7 +748,26 @@ impl HttpConnection {
         if let Some(session_id) = self.session_id.as_deref() {
             request = request.header(MCP_SESSION_ID_HEADER, session_id);
         }
-        if let Some(access_token) = self.auth.bearer_for(&self.config)? {
+        if let Some(access_token) = self.bearer_token().await? {
+            request = request.bearer_auth(access_token.as_str());
+        }
+        Ok(request)
+    }
+
+    async fn bearer_token(&self) -> Result<Option<zeroize::Zeroizing<String>>, McpError> {
+        if requires_hosted_orb_auth(&self.config) {
+            self.auth.bearer_for(&self.config)
+        } else {
+            super::oauth_bearer_for(&self.config).await
+        }
+    }
+
+    async fn apply_authenticated_config_headers(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, McpError> {
+        let mut request = self.apply_config_headers(request);
+        if let Some(access_token) = self.bearer_token().await? {
             request = request.bearer_auth(access_token.as_str());
         }
         Ok(request)
@@ -895,7 +918,7 @@ impl HttpConnection {
             .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request);
-        req = self.apply_config_headers(req);
+        req = self.apply_authenticated_config_headers(req).await?;
 
         self.ensure_repository_request_allowed()?;
         let response = req
@@ -937,7 +960,7 @@ impl HttpConnection {
             .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request);
-        req = self.apply_config_headers(req);
+        req = self.apply_authenticated_config_headers(req).await?;
 
         if let Err(error) = self.ensure_repository_request_allowed() {
             let mut pending = self.pending_sse.lock().await;
@@ -1020,7 +1043,7 @@ impl HttpConnection {
             .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(value);
-        req = self.apply_config_headers(req);
+        req = self.apply_authenticated_config_headers(req).await?;
 
         self.ensure_repository_request_allowed()?;
         let response = req
@@ -1128,6 +1151,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: Some(5000),
             enabled: true,
             disabled: false,
@@ -1485,6 +1509,7 @@ mod tests {
             managed_generation: Some(1),
             supports_parallel_tool_calls: None,
             requires_project_approval: Some(false),
+            disabled_tools: Vec::new(),
             timeout: Some(5000),
             enabled: true,
             disabled: false,

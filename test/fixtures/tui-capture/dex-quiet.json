@@ -1,0 +1,17 @@
+{
+  "name": "dex-quiet",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/dex quiet"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Dex: quiet"
+    }
+  ]
+}

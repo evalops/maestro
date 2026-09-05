@@ -26,7 +26,12 @@ fn manifest() -> serde_json::Value {
         "engine_kind": "maestro",
         "protocol_version": "2026-08-08",
         "tool_protocol_version": "evalops.maestro.tool-bridge.v1",
-        "supported_tools": ["artifact.create_document", "artifact.create_presentation"],
+        "supported_tools": [
+            "artifact.create_document",
+            "artifact.create_presentation",
+            "dex.search_coding_sessions",
+            "dex.read_coding_session"
+        ],
         "native_tool_calls": true,
         "approvals": true,
         "continuation": false,
@@ -41,7 +46,7 @@ fn controller_binding_matches_the_cross_repository_digest_vector() {
     assert_eq!(
         controller_binding_sha256(CONTROLLER_BINDING_VERSION, &context(), &manifest())
             .expect("binding digest"),
-        "sha256:bd127868ecacc1994952c5fb6ca60b989b91c05defb70016d826a2ee97136375"
+        "sha256:d68e8538816cfcdc7a7622c8aaae8ab98d53e422417fb4cf819eede6d54e2d52"
     );
 }
 
@@ -68,7 +73,7 @@ fn controller_binding_requires_complete_scope_and_matching_runtime_identity() {
     assert_eq!(receipt.binding_version, CONTROLLER_BINDING_VERSION);
     assert_eq!(
         receipt.binding_sha256,
-        "sha256:bd127868ecacc1994952c5fb6ca60b989b91c05defb70016d826a2ee97136375"
+        "sha256:d68e8538816cfcdc7a7622c8aaae8ab98d53e422417fb4cf819eede6d54e2d52"
     );
 
     let wrong_scope = ControllerScopeExpectation {

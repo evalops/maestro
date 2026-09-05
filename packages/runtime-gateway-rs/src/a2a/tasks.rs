@@ -1064,7 +1064,7 @@ pub(crate) fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool
     }
 }
 
-fn a2a_task_tenant(task: &Value) -> (Option<String>, Option<String>) {
+pub(super) fn a2a_task_tenant(task: &Value) -> (Option<String>, Option<String>) {
     let Some(metadata) = task.get("metadata").and_then(Value::as_object) else {
         return (None, None);
     };

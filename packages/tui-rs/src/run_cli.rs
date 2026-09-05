@@ -260,9 +260,87 @@ struct RunReconstructionReport {
     trajectory_inspection: JsonValue,
     agent_runtime_ledger: JsonValue,
     evidence_envelope: EvidenceEnvelope,
+    execution_evidence: ExecutionEvidenceSummary,
     durability: DurabilitySummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     residual: Option<JsonValue>,
+}
+
+/// A projection of recorded tool results, independent of assistant completion prose.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionEvidenceSummary {
+    recorded: usize,
+    succeeded: usize,
+    failed: usize,
+    denied: usize,
+    cancelled: usize,
+    indeterminate: usize,
+    unverified: usize,
+    file_changes: usize,
+    commands: Vec<CommandEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandEvidence {
+    call_id: String,
+    exit_code: i32,
+    status: crate::agent::ExecutionStatus,
+}
+
+fn execution_evidence_summary(session: &ParsedSession) -> ExecutionEvidenceSummary {
+    use crate::agent::ExecutionStatus;
+    let mut summary = ExecutionEvidenceSummary::default();
+    // Replayed entries and reconciliation updates describe the same call.
+    // Project its latest recorded result instead of counting another execution.
+    let mut calls = BTreeMap::new();
+    for message in &session.messages {
+        if let AppMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            receipt,
+            is_error,
+            ..
+        } = message
+        {
+            calls.insert(tool_call_id, (tool_name, receipt, is_error));
+        }
+    }
+    for (tool_call_id, (tool_name, receipt, is_error)) in calls {
+        let Some(receipt) = receipt.as_ref().filter(|r| {
+            r.call_id == *tool_call_id
+                && r.tool_name == *tool_name
+                && !(r.status == ExecutionStatus::Succeeded && *is_error)
+        }) else {
+            summary.unverified += 1;
+            continue;
+        };
+        summary.recorded += 1;
+        match receipt.status {
+            ExecutionStatus::Succeeded => summary.succeeded += 1,
+            ExecutionStatus::Failed => summary.failed += 1,
+            ExecutionStatus::Denied => summary.denied += 1,
+            ExecutionStatus::Cancelled { .. } => summary.cancelled += 1,
+            ExecutionStatus::Indeterminate => summary.indeterminate += 1,
+        }
+        match &receipt.details {
+            ToolReceiptDetails::BuiltIn(ToolDetails::Bash(details)) => {
+                summary.commands.push(CommandEvidence {
+                    call_id: tool_call_id.clone(),
+                    exit_code: details.exit_code,
+                    status: receipt.status,
+                });
+            }
+            ToolReceiptDetails::BuiltIn(ToolDetails::Write(_) | ToolDetails::Edit(_))
+                if receipt.status == ExecutionStatus::Succeeded =>
+            {
+                summary.file_changes += 1;
+            }
+            _ => {}
+        }
+    }
+    summary
 }
 
 /// Dispatch `maestro run <subcommand> <session-id> [--json]`.
@@ -415,6 +493,7 @@ fn build_report_from_session(
         trajectory_inspection,
         agent_runtime_ledger,
         evidence_envelope,
+        execution_evidence: execution_evidence_summary(session),
         durability,
         residual: None,
     }
@@ -2361,7 +2440,7 @@ fn replay_tool_executor(session: &ParsedSession, pins: &BTreeMap<String, String>
     } else {
         session.header.cwd.as_str()
     };
-    let mut executor = ToolExecutor::new(cwd);
+    let mut executor = ToolExecutor::new(cwd).with_code_authority();
     for (tool, version) in pins {
         // Pins come from `recorded_tool_version_pins`, which validates
         // against the version catalog, so pinning cannot fail here.
@@ -2649,6 +2728,20 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
         .and_then(JsonValue::as_u64)
         .unwrap_or(0);
     let mut lines = vec![
+        format!(
+            "Execution evidence: {} succeeded, {} failed, {} denied, {} cancelled, {} unknown outcomes, {} without matching receipts",
+            report.execution_evidence.succeeded,
+            report.execution_evidence.failed,
+            report.execution_evidence.denied,
+            report.execution_evidence.cancelled,
+            report.execution_evidence.indeterminate,
+            report.execution_evidence.unverified
+        ),
+        format!(
+            "Recorded changes: {} file operations; {} command results",
+            report.execution_evidence.file_changes,
+            report.execution_evidence.commands.len()
+        ),
         format!("Run reconstruction: {}", report.session.id),
         format!("Session file: {}", report.session.session_file),
         format!("Messages: {}", report.session.message_count),
@@ -2745,6 +2838,16 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
             "  ... {} more item(s)",
             report.timeline.items.len() - 12
         ));
+    }
+    if report.execution_evidence.indeterminate > 0 {
+        lines.push("Reconcile unknown remote outcomes before retrying those calls.".into());
+    }
+    if report.execution_evidence.failed
+        + report.execution_evidence.denied
+        + report.execution_evidence.cancelled
+        > 0
+    {
+        lines.push("Inspect the recorded failures or denials before resuming the session.".into());
     }
     lines.join("\n")
 }
@@ -3495,6 +3598,7 @@ mod tests {
             content: "ok".into(),
             details: None,
             receipt: Some(crate::agent::ExecutionReceipt {
+                code_authority: None,
                 call_id: "call-bash".into(),
                 tool_name: "bash".into(),
                 source: crate::agent::ExecutionSource::Native,
@@ -3514,6 +3618,85 @@ mod tests {
             .messages
             .push(bash_receipt_message(version, "cargo check"));
         session
+    }
+
+    #[test]
+    fn execution_summary_requires_matching_receipts_and_preserves_unknown_outcomes() {
+        let dir = TempDir::new().unwrap();
+        let mut session = sample_session(&dir);
+        session.messages = vec![bash_receipt_message("current", "cargo check")];
+        let mut unknown = bash_receipt_message("current", "private command text");
+        if let AppMessage::ToolResult {
+            tool_call_id,
+            receipt: Some(receipt),
+            ..
+        } = &mut unknown
+        {
+            *tool_call_id = "unknown-call".into();
+            receipt.call_id.clone_from(tool_call_id);
+            receipt.status = crate::agent::ExecutionStatus::Indeterminate;
+        }
+        session.messages.push(unknown);
+        let mut mismatched = bash_receipt_message("current", "secret command text");
+        if let AppMessage::ToolResult {
+            tool_call_id,
+            receipt: Some(receipt),
+            ..
+        } = &mut mismatched
+        {
+            *tool_call_id = "mismatched-call".into();
+            receipt.call_id = "different-call".into();
+        }
+        session.messages.push(mismatched);
+        // Persist and reopen through the production JSONL boundary, including compaction.
+        let path = dir.path().join("evidence.jsonl");
+        let mut writer =
+            crate::session::SessionWriter::create(&path, session.header.clone()).unwrap();
+        for (index, message) in session.messages.iter().enumerate() {
+            writer
+                .write_entry(crate::session::SessionEntry::Message(
+                    crate::session::MessageEntry {
+                        id: Some(format!("entry-{index}")),
+                        parent_id: None,
+                        timestamp: "2026-09-04T00:00:00Z".into(),
+                        message: message.clone(),
+                    },
+                ))
+                .unwrap();
+        }
+        for compaction in &session.compactions {
+            writer
+                .write_entry(crate::session::SessionEntry::Compaction(compaction.clone()))
+                .unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+        let session = crate::session::SessionReader::read_file(&path).unwrap();
+        let summary = execution_evidence_summary(&session);
+        assert_eq!(summary.succeeded, 1);
+        assert_eq!(summary.indeterminate, 1);
+        assert_eq!(summary.unverified, 1);
+        let wire = serde_json::to_string(&summary).unwrap();
+        assert!(!wire.contains("command text"));
+        let report = build_report_from_session(&session, "2026-09-04T00:00:00Z");
+        assert!(render_run_reconstruction(&report).contains("Reconcile unknown remote outcomes"));
+    }
+
+    #[test]
+    fn execution_summary_counts_replayed_calls_once() {
+        let dir = TempDir::new().unwrap();
+        let mut session = sample_session(&dir);
+        let result = bash_receipt_message("current", "cargo check");
+        session.messages = vec![result.clone(), result];
+        let summary = execution_evidence_summary(&session);
+        assert_eq!(summary.recorded, 1);
+        assert_eq!(summary.commands.len(), 1);
+        if let AppMessage::ToolResult { is_error, .. } = session.messages.last_mut().unwrap() {
+            *is_error = true;
+        }
+        let summary = execution_evidence_summary(&session);
+        assert_eq!(summary.succeeded, 0);
+        assert_eq!(summary.unverified, 1);
     }
 
     #[test]

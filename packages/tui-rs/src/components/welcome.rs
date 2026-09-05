@@ -1,7 +1,7 @@
 //! Welcome/Onboarding Screen Component
 //!
-//! Empty-session and onboarding chrome. Brand art is the Deixic Dex ghost
-//! ([`super::deixic_logo`]); the product title is Deixic Code.
+//! Empty-session and onboarding chrome. Brand art is the Dex-derived mark
+//! ([`super::deixic_logo`]); the launch title is Dex Code.
 //!
 //! # Example
 //!
@@ -18,7 +18,7 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Clear, Paragraph, Widget, Wrap},
+    widgets::{Clear, Paragraph, Widget},
 };
 
 /// Welcome screen widget
@@ -26,12 +26,14 @@ use ratatui::{
 pub struct WelcomeScreen {
     /// Whether Deixic sheen animations are enabled
     animations_enabled: bool,
+    /// Presentation intensity; independent of model and activity.
+    personality: super::dex_companion::DexPersonality,
     /// Application version
     version: Option<String>,
+    session_id: Option<String>,
+    summary: Option<(String, String)>,
     /// Current model name
     model: Option<String>,
-    /// Whether user is authenticated
-    is_authenticated: bool,
     /// Custom welcome message (replaces product title)
     welcome_message: Option<String>,
     /// Show keyboard hints (default hint is always present on the brand block)
@@ -50,12 +52,28 @@ impl WelcomeScreen {
     pub fn new() -> Self {
         Self {
             animations_enabled: false,
+            personality: super::dex_companion::DexPersonality::default(),
             version: None,
+            session_id: None,
+            summary: None,
             model: None,
-            is_authenticated: false,
             welcome_message: None,
             show_hints: false,
         }
+    }
+
+    /// Display the existing session identity without inventing a placeholder.
+    #[must_use]
+    pub fn with_session(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
+    /// Preserve the current runtime and workspace facts on compact presentations.
+    #[must_use]
+    pub fn with_summary(mut self, runtime: String, location: String) -> Self {
+        self.summary = Some((runtime, location));
+        self
     }
 
     /// Set the version string
@@ -67,13 +85,6 @@ impl WelcomeScreen {
     /// Set the current model
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
-        self
-    }
-
-    /// Set authentication status
-    #[must_use]
-    pub fn authenticated(mut self, is_authenticated: bool) -> Self {
-        self.is_authenticated = is_authenticated;
         self
     }
 
@@ -90,6 +101,13 @@ impl WelcomeScreen {
         self
     }
 
+    /// Set Dex presentation intensity without changing agent behavior.
+    #[must_use]
+    pub fn personality(mut self, personality: super::dex_companion::DexPersonality) -> Self {
+        self.personality = personality;
+        self
+    }
+
     /// Enable/disable keyboard hints
     #[must_use]
     pub fn show_hints(mut self, show: bool) -> Self {
@@ -99,22 +117,37 @@ impl WelcomeScreen {
 
     /// Build the content lines
     fn build_content(&self, area: Rect) -> Vec<Line<'static>> {
-        // Brand block: Dex ghost + Deixic wordmark + Deixic Code title.
+        // Brand block: Dex mark + Dex Code title.
         // Custom welcome_message replaces only the product title line.
         // Reserve rows for optional onboarding metadata before selecting the
         // logo tier. Otherwise a 17-row area picks the full logo and clips the
-        // version/model/authentication rows appended below it.
+        // version/model rows appended below it.
         let reserved_rows = u16::from(self.version.is_some())
             + u16::from(self.model.is_some())
-            + u16::from(self.is_authenticated);
+            + u16::from(self.session_id.is_some())
+            + 1;
         let brand_height = area.height.saturating_sub(reserved_rows);
-        let mut lines =
-            super::deixic_logo::welcome_content_lines(brand_height, self.animations_enabled);
+        let mut lines = if self.personality == super::dex_companion::DexPersonality::Quiet {
+            vec![
+                super::deixic_logo::product_title_line(false),
+                Line::from(super::deixic_logo::COMPOSER_HINT),
+            ]
+        } else {
+            super::deixic_logo::welcome_content_lines(brand_height, false)
+        };
+        // An empty session is ready, even when decorative motion is enabled.
+        lines.push(
+            super::dex_companion::DexCompanion::new(super::dex_companion::DexCompanionState::Ready)
+                .personality(self.personality)
+                .status_line(),
+        );
 
         if let Some(ref custom) = self.welcome_message {
             for line in &mut lines {
-                if line.to_string() == "Deixic Code" {
-                    *line = if self.animations_enabled {
+                if line.to_string() == super::deixic_logo::PRODUCT_TITLE {
+                    *line = if self.animations_enabled
+                        && self.personality != super::dex_companion::DexPersonality::Quiet
+                    {
                         Line::from(crate::shimmer::shimmer_spans(custom))
                             .alignment(Alignment::Center)
                     } else {
@@ -145,11 +178,12 @@ impl WelcomeScreen {
             ]));
         }
 
-        if self.is_authenticated {
-            lines.push(Line::from(vec![
-                Span::raw("status "),
-                Span::styled("authenticated", Style::default().fg(Color::DarkGray)),
-            ]));
+        if let Some((runtime, location)) = &self.summary {
+            lines.push(Line::from(runtime.clone()));
+            lines.push(Line::from(location.clone()));
+        }
+        if let Some(session_id) = &self.session_id {
+            lines.push(Line::from(format!("session {session_id}")));
         }
 
         let _ = self.show_hints;
@@ -162,8 +196,12 @@ impl Widget for WelcomeScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
 
-        let content = self.build_content(area);
-        let content_height = content.len() as u16;
+        let content = crate::wrapping::word_wrap_lines(
+            &self.build_content(area),
+            usize::from(area.width.max(1)),
+        );
+        let content_height = content.len().min(usize::from(area.height)) as u16;
+        let paragraph = Paragraph::new(content).alignment(Alignment::Center);
         let y_offset = if area.height > content_height {
             (area.height - content_height) / 2
         } else {
@@ -177,10 +215,7 @@ impl Widget for WelcomeScreen {
             content_height.min(area.height),
         );
 
-        Paragraph::new(content)
-            .wrap(Wrap { trim: false })
-            .alignment(Alignment::Center)
-            .render(content_area, buf);
+        paragraph.render(content_area, buf);
     }
 }
 
@@ -328,7 +363,7 @@ pub struct SplashScreen {
 impl Default for SplashScreen {
     fn default() -> Self {
         Self {
-            title: "Deixic Code".to_string(),
+            title: super::deixic_logo::PRODUCT_TITLE.to_owned(),
             subtitle: None,
             show_logo: false,
         }
@@ -418,7 +453,6 @@ mod tests {
         let welcome = WelcomeScreen::new();
         assert!(!welcome.animations_enabled);
         assert!(!welcome.show_hints);
-        assert!(!welcome.is_authenticated);
     }
 
     #[test]
@@ -426,19 +460,17 @@ mod tests {
         let welcome = WelcomeScreen::new()
             .with_version("1.0.0")
             .with_model("claude-sonnet")
-            .authenticated(true)
             .with_message("Hello!")
             .animations(false);
 
         assert_eq!(welcome.version.as_deref(), Some("1.0.0"));
         assert_eq!(welcome.model.as_deref(), Some("claude-sonnet"));
-        assert!(welcome.is_authenticated);
         assert_eq!(welcome.welcome_message.as_deref(), Some("Hello!"));
         assert!(!welcome.animations_enabled);
     }
 
     #[test]
-    fn test_welcome_screen_uses_deixic_code_title_and_deixic_brand() {
+    fn test_welcome_screen_uses_deixic_code_title() {
         let welcome = WelcomeScreen::new().animations(false);
         let lines = welcome.build_content(Rect::new(0, 0, 80, 24));
         let rendered = lines
@@ -447,10 +479,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("Deixic Code"));
-        assert!(rendered.contains("deixic"));
-        assert!(rendered.contains("Type a message or /help."));
-        assert!(!rendered.contains("Welcome to Deixic Code"));
+        assert!(rendered.contains(crate::components::deixic_logo::PRODUCT_TITLE));
+        assert!(!rendered.contains("Maestro"));
+        assert!(rendered.contains(crate::components::deixic_logo::COMPOSER_HINT));
         assert!(!rendered.contains("Welcome to Composer"));
         assert!(!rendered.contains("Getting Started"));
     }
@@ -459,15 +490,88 @@ mod tests {
     fn test_welcome_screen_reserves_rows_for_optional_metadata() {
         let welcome = WelcomeScreen::new()
             .with_version("1.0.0")
-            .with_model("claude-sonnet")
-            .authenticated(true);
+            .with_model("claude-sonnet");
         let lines = welcome.build_content(Rect::new(0, 0, 80, 17));
 
         assert!(lines.len() <= 17);
         assert_eq!(
             lines.last().map(Line::to_string).as_deref(),
-            Some("status authenticated")
+            Some("model claude-sonnet")
         );
+    }
+
+    #[test]
+    fn welcome_animation_never_claims_work_and_model_does_not_change_dex() {
+        for model in ["model-a", "model-b"] {
+            let lines = WelcomeScreen::new()
+                .with_model(model)
+                .animations(true)
+                .build_content(Rect::new(0, 0, 80, 24));
+            let text = lines
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Dex · ready"));
+            assert!(!text.contains("working"));
+            assert!(!text.contains("· · ·"));
+            assert!(text.contains(model));
+        }
+    }
+
+    #[test]
+    fn quiet_welcome_keeps_identity_and_ready_text_without_art() {
+        let lines = WelcomeScreen::new()
+            .personality(super::super::dex_companion::DexPersonality::Quiet)
+            .animations(true)
+            .build_content(Rect::new(0, 0, 80, 24));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[0].to_string(),
+            super::super::deixic_logo::PRODUCT_TITLE
+        );
+        assert_eq!(lines[2].to_string(), "Dex · ready");
+    }
+
+    fn rendered_welcome(welcome: WelcomeScreen, area: Rect) -> String {
+        let mut buf = Buffer::empty(area);
+        welcome.render(area, &mut buf);
+        (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn quiet_narrow_welcome_preserves_ready_after_wrapped_hint() {
+        let rendered = rendered_welcome(
+            WelcomeScreen::new().personality(super::super::dex_companion::DexPersonality::Quiet),
+            Rect::new(0, 0, 32, 12),
+        );
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains(super::super::deixic_logo::COMPOSER_HINT));
+        assert!(rendered.contains("Dex · ready"));
+    }
+
+    #[test]
+    fn narrow_welcome_reserves_wrapped_custom_title_and_model_rows() {
+        let rendered = rendered_welcome(
+            WelcomeScreen::new()
+                .personality(super::super::dex_companion::DexPersonality::Quiet)
+                .with_message("A long custom welcome title that spans several terminal rows")
+                .with_version("1.0.0")
+                .with_model("a-long-model-name-that-needs-a-second-row"),
+            Rect::new(0, 0, 32, 16),
+        );
+        assert!(rendered.contains("Dex · ready"));
+        assert!(rendered.contains("version 1.0.0"));
+        let compact: String = rendered.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(compact.contains("modela-long-model-name-that-needs-a-second-row"));
+        assert!(rendered.contains("terminal rows"));
     }
 
     #[test]
@@ -520,7 +624,7 @@ mod tests {
     #[test]
     fn test_splash_screen_default_title_uses_deixic_code() {
         let splash = SplashScreen::default();
-        assert_eq!(splash.title, "Deixic Code");
+        assert_eq!(splash.title, crate::components::deixic_logo::PRODUCT_TITLE);
         assert!(!splash.show_logo);
         assert_ne!(splash.title, "Composer");
     }

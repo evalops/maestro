@@ -1,5 +1,7 @@
 use super::*;
-use crate::a2a::{a2a_push_select_pinned_addr, a2a_task_visible_to_auth};
+use crate::a2a::{
+    a2a_push_notification_tenant_headers, a2a_push_select_pinned_addr, a2a_task_visible_to_auth,
+};
 use crate::chat::system_prompt_from_chat;
 use crate::session_messaging::{
     SendError, SendOutcome, delete_session_inbox, persist_message_store_snapshot,
@@ -2157,10 +2159,25 @@ rl.on("line", (line) => {
 async fn codex_headless_approval_wait_does_not_consume_request_timeout() {
     let _guard = ENV_LOCK.lock().await;
     let root = TestDir::new("codex-headless-approval-timeout");
-    let cli_path = root.path().join("cli.js");
-    fs::write(
-            &cli_path,
-            r#"const readline = require("readline");
+    let cli_path = root
+        .path()
+        .join(if cfg!(unix) { "cli.sh" } else { "cli.js" });
+    // Keep cold Node startup outside the approval timeout assertion on Unix.
+    // This fixture only exchanges fixed JSON lines; shell builtins suffice.
+    let fixture = if cfg!(unix) {
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      printf '%s\n' '{"type":"server_request","request_id":"approval-wait","request_type":"approval","call_id":"approval-wait","tool":"write","args":{"path":"file.txt"},"reason":"Need approval"}' ;;
+    *'"type":"server_request_response"'*)
+      printf '%s\n' '{"type":"response_start","response_id":"response-1"}' '{"type":"response_chunk","response_id":"response-1","content":"waited output","is_thinking":false}' '{"type":"response_end","response_id":"response-1","duration_ms":1}' ;;
+    *'"type":"shutdown"'*) exit 0 ;;
+  esac
+done
+"#
+    } else {
+        r#"const readline = require("readline");
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -2185,9 +2202,16 @@ rl.on("line", (line) => {
     process.exit(0);
   }
 });
-"#,
-        )
-        .expect("cli fixture should be written");
+"#
+    };
+    fs::write(&cli_path, fixture).expect("cli fixture should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cli_path, fs::Permissions::from_mode(0o700))
+            .expect("CLI fixture should be executable");
+    }
+
     let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
     let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
     env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
@@ -2996,10 +3020,10 @@ fn configured_web_origins_allow_multiple_first_party_hosts_only() {
     clear_env(CORS_ENV_NAMES);
     env::set_var(
         "MAESTRO_WEB_ORIGINS",
-        "https://app.deixic.com, https://maestro.evalops.dev",
+        "https://app.deixic.com, https://orb.deixic.com",
     );
 
-    for origin in ["https://app.deixic.com", "https://maestro.evalops.dev"] {
+    for origin in ["https://app.deixic.com", "https://orb.deixic.com"] {
         let request = format!(
             "GET /api/chat/ws HTTP/1.1\r\nHost: app.deixic.com\r\nOrigin: {origin}\r\n\r\n"
         );
@@ -5567,6 +5591,59 @@ async fn platform_a2a_push_callback_accepts_workspace_derived_token() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn platform_a2a_push_callback_accepts_legacy_agent_runtime_without_org_header() {
+    // The deployed agent-runtime callback sender binds the workspace in the
+    // HMAC token but predates the redundant organization header. The receiver
+    // must use its configured organization as the service tenant in that case.
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(A2A_PUSH_AUTH_ENV_NAMES);
+    let shared_secret = "callback-token";
+    let workspace_id = "evalops";
+    env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", shared_secret);
+    env::set_var("MAESTRO_ORGANIZATION_ID", "org-evalops");
+    env::remove_var("MAESTRO_WORKSPACE_ID");
+    env::remove_var("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID");
+    env::remove_var("MAESTRO_EVALOPS_WORKSPACE_ID");
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(shared_secret.as_bytes()).unwrap();
+    mac.update(workspace_id.as_bytes());
+    let derived = format!(
+        "workspace-v1.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+
+    let body = r#"{"statusUpdate":{"taskId":"platform-legacy-org","contextId":"ctx-legacy-org","status":{"state":"TASK_STATE_WORKING"}}}"#;
+    let request = format!(
+        "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: {derived}\r\nX-Evalops-Workspace-Id: {workspace_id}\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response = handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+    assert_eq!(response_status(&response), 202);
+    let task = state
+        .a2a_tasks
+        .lock()
+        .await
+        .get("platform-legacy-org")
+        .cloned()
+        .expect("legacy callback task should be recorded");
+    assert_eq!(task["metadata"]["organizationId"], "org-evalops");
+    assert_eq!(task["metadata"]["workspaceId"], workspace_id);
+
+    restore_env(snapshot);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn platform_a2a_push_callback_rejects_unconfigured_organization_binding() {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -5603,6 +5680,51 @@ async fn platform_a2a_push_callback_rejects_unconfigured_organization_binding() 
     assert_eq!(
         response_json(response)["error"]["code"],
         "TENANT_BINDING_REQUIRED"
+    );
+    assert!(state.a2a_tasks.lock().await.is_empty());
+
+    restore_env(snapshot);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn platform_a2a_push_callback_rejects_mismatched_organization_header() {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(A2A_PUSH_AUTH_ENV_NAMES);
+    let shared_secret = "callback-token";
+    let workspace_id = "evalops";
+    env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", shared_secret);
+    env::set_var("MAESTRO_ORGANIZATION_ID", "org-evalops");
+    env::remove_var("MAESTRO_WORKSPACE_ID");
+    env::remove_var("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID");
+    env::remove_var("MAESTRO_EVALOPS_WORKSPACE_ID");
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(shared_secret.as_bytes()).unwrap();
+    mac.update(workspace_id.as_bytes());
+    let derived = format!(
+        "workspace-v1.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+    let body = r#"{"statusUpdate":{"taskId":"platform-wrong-org","status":{"state":"TASK_STATE_WORKING"}}}"#;
+    let request = format!(
+        "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: {derived}\r\nX-Evalops-Organization-Id: attacker-chosen-org\r\nX-Evalops-Workspace-Id: {workspace_id}\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response = handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+    assert_eq!(response_status(&response), 403);
+    assert_eq!(
+        response_json(response)["error"]["code"],
+        "TENANT_BINDING_MISMATCH"
     );
     assert!(state.a2a_tasks.lock().await.is_empty());
 
@@ -5917,6 +6039,39 @@ fn a2a_push_notification_payloads_use_stream_response_shape() {
             .count();
         assert_eq!(stream_response_fields, 1);
     }
+}
+
+#[test]
+fn a2a_push_notification_tenant_headers_require_independent_durable_ids() {
+    let task = serde_json::json!({
+        "metadata": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-1"
+        }
+    });
+
+    let headers = a2a_push_notification_tenant_headers(&task)
+        .expect("tenant-bound tasks should emit callback tenant headers");
+    assert_eq!(
+        headers
+            .get("X-Evalops-Organization-Id")
+            .and_then(|value| value.to_str().ok()),
+        Some("org-1")
+    );
+    assert_eq!(
+        headers
+            .get("X-Evalops-Workspace-Id")
+            .and_then(|value| value.to_str().ok()),
+        Some("ws-1")
+    );
+
+    let workspace_only = serde_json::json!({
+        "metadata": {"workspaceId": "ws-1"}
+    });
+    assert!(a2a_push_notification_tenant_headers(&workspace_only).is_none());
+
+    let no_metadata = serde_json::json!({"id": "task-without-tenant"});
+    assert!(a2a_push_notification_tenant_headers(&no_metadata).is_none());
 }
 
 #[test]
@@ -7287,14 +7442,25 @@ async fn a2a_task_ledger_lock_heartbeat_refreshes_while_owned() {
 
     let heartbeat_task =
         spawn_a2a_task_ledger_lock_heartbeat(&file_lock, Duration::from_millis(10));
-    tokio::time::sleep(Duration::from_millis(35)).await;
+    let refreshed_heartbeat = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let heartbeat = tokio::fs::read_to_string(&heartbeat_path)
+                .await
+                .expect("heartbeat should still be readable");
+            if heartbeat != first_heartbeat && !heartbeat.is_empty() {
+                break heartbeat;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
 
-    let refreshed_heartbeat = tokio::fs::read_to_string(&heartbeat_path)
-        .await
-        .expect("heartbeat should still be readable");
-    assert_ne!(refreshed_heartbeat, first_heartbeat);
+    assert_ne!(
+        refreshed_heartbeat.expect("owned lock heartbeat should refresh"),
+        first_heartbeat
+    );
 
     release_a2a_task_ledger_file_lock(file_lock).await;
 }
@@ -8710,6 +8876,7 @@ async fn a2a_message_stream_emits_task_status_and_artifact_events() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a2a_task_subscribe_rejects_existing_terminal_task() {
+    let _guard = ENV_LOCK.lock().await;
     let state = test_app_state_with_sessions(HashMap::new());
     let task = a2a_task_value(
         "maestro-task-subscribe",
@@ -9015,6 +9182,7 @@ async fn a2a_task_subscribe_first_frame_redacts_push_notification_credentials() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn a2a_task_subscribe_reconciles_current_task_after_broadcast_lag() {
+    let _guard = ENV_LOCK.lock().await;
     let base_state = test_app_state_with_sessions(HashMap::new());
     let (a2a_task_events, _) = broadcast::channel(1);
     let state = AppState {
@@ -13681,6 +13849,7 @@ fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
         prompt: "edit src.txt".to_string(),
         repo_root: temp.clone(),
         head: None,
+        user_turn_index: None,
         entries: vec![FileEntry {
             path: "src.txt".to_string(),
             kind: EntryKind::Modified,
@@ -13708,6 +13877,19 @@ fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
     assert_eq!(restored["success"], true);
     assert_eq!(std::fs::read(&file).unwrap(), before);
     assert_eq!(store.list().len(), 0);
+    // A missing restore blob must not become success after other file work.
+    std::fs::create_dir_all(&checkpoint_dir).unwrap();
+    std::fs::write(
+        checkpoint_dir.join("checkpoint.json"),
+        serde_json::to_vec(&checkpoint).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&file, after).unwrap();
+    let failed = restore_undo_response_for_store(&store);
+    assert_eq!(failed["success"], false);
+    assert_eq!(failed["failedFiles"].as_array().unwrap().len(), 1);
+    assert_eq!(std::fs::read(&file).unwrap(), after);
+    assert_eq!(store.list().len(), 1);
     let _ = std::fs::remove_dir_all(temp);
 }
 

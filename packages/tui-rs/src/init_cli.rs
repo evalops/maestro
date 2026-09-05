@@ -658,6 +658,14 @@ async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCre
 }
 
 async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredentials> {
+    login_with_scopes(options, client, REQUIRED_LOGIN_SCOPES).await
+}
+
+async fn login_with_scopes(
+    options: &InitOptions,
+    client: &Client,
+    requested_scopes: &str,
+) -> Result<OAuthCredentials> {
     let identity = identity_base_from_env();
     let callback_port = callback_port();
     let listener = TcpListener::bind(("127.0.0.1", callback_port))
@@ -697,7 +705,7 @@ async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredential
             .append_pair("response_type", "code")
             .append_pair("client_id", &registration.client_id)
             .append_pair("redirect_uri", &callback_uri)
-            .append_pair("scope", REQUIRED_LOGIN_SCOPES)
+            .append_pair("scope", requested_scopes)
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256");
@@ -1457,7 +1465,7 @@ fn load_credentials_uncached(
     context: &CredentialStorageContext,
 ) -> Result<Option<OAuthCredentials>> {
     if !context.force_file {
-        match keyring::Entry::new("maestro-oauth", "evalops") {
+        match crate::native_credentials::entry("maestro-oauth", "evalops") {
             Ok(entry) => match entry.get_password() {
                 Ok(raw) => return Ok(Some(serde_json::from_str(&raw)?)),
                 Err(keyring::Error::NoEntry) => {}
@@ -1492,7 +1500,7 @@ fn save_credentials(credentials: &OAuthCredentials) -> Result<()> {
     if !context.force_file {
         let keychain_result = (|| -> Result<()> {
             migrate_plaintext_credentials_to_keychain("evalops")?;
-            let entry = keyring::Entry::new("maestro-oauth", "evalops")
+            let entry = crate::native_credentials::entry("maestro-oauth", "evalops")
                 .context("open EvalOps keychain storage")?;
             entry
                 .set_password(&serialized)
@@ -1562,7 +1570,7 @@ fn migrate_plaintext_credentials_to_keychain(replaced_provider: &str) -> Result<
         if provider == replaced_provider {
             continue;
         }
-        let entry = keyring::Entry::new("maestro-oauth", provider)
+        let entry = crate::native_credentials::entry("maestro-oauth", provider)
             .with_context(|| format!("open {provider} keychain storage"))?;
         entry
             .set_password(&serde_json::to_string(credentials)?)
@@ -2230,6 +2238,21 @@ pub fn store_evalops_provider_ref(provider_ref: Value) -> Result<()> {
 ///
 /// After a successful token exchange, best-effort enrolls desktop device identity
 /// (no-op when the helper is unavailable).
+pub(crate) async fn perform_code_authority_login() -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let options = InitOptions {
+        force_login: true,
+        ..InitOptions::default()
+    };
+    let scopes = format!("{REQUIRED_LOGIN_SCOPES} code:tools:execute");
+    let credentials = login_with_scopes(&options, &client, &scopes).await?;
+    save_credentials(&credentials)?;
+    Ok(())
+}
+
 pub async fn perform_evalops_login() -> Result<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
@@ -2353,7 +2376,7 @@ async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -
 fn delete_credentials() -> Result<()> {
     invalidate_evalops_credentials_cache();
     if !force_file_storage() {
-        match keyring::Entry::new("maestro-oauth", "evalops") {
+        match crate::native_credentials::entry("maestro-oauth", "evalops") {
             Ok(entry) => match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => {}
                 Err(error) if force_keychain_storage() => {
@@ -2732,8 +2755,6 @@ mod tests {
         assert_eq!(response_detail(""), "no response body");
     }
 
-    static LOGIN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     #[test]
     fn evalops_credential_load_is_cached_until_invalidated() {
         let home = tempfile::tempdir().expect("maestro home");
@@ -2909,7 +2930,7 @@ mod tests {
 
     #[tokio::test]
     async fn evalops_pkce_login_persists_a_platform_session() {
-        let _guard = LOGIN_TEST_LOCK.lock().await;
+        let _guard = crate::config::test_process_env_lock_async().await;
         let home = tempfile::tempdir().expect("maestro home");
         let callback = TcpListener::bind("127.0.0.1:0")
             .await
@@ -2996,7 +3017,7 @@ mod tests {
 
     #[tokio::test]
     async fn evalops_login_rejects_callback_state_mismatch() {
-        let _guard = LOGIN_TEST_LOCK.lock().await;
+        let _guard = crate::config::test_process_env_lock_async().await;
         let home = tempfile::tempdir().expect("maestro home");
         let callback = TcpListener::bind("127.0.0.1:0")
             .await

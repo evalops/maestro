@@ -156,6 +156,14 @@ impl App {
         }
 
         let dropped = self.enqueue_pending_prompt(queue_id, content, kind, front);
+        self.state.status = Some(match kind {
+            PromptKind::Steer => {
+                "Steering queued for the next checkpoint; current work continues.".to_owned()
+            }
+            PromptKind::FollowUp => "Follow-up queued after this turn.".to_owned(),
+            PromptKind::SideQuestion => "Side question queued.".to_owned(),
+            PromptKind::Prompt => "Message queued.".to_owned(),
+        });
         if let Some(dropped) = dropped {
             self.state.status = Some(format!(
                 "Queue full, dropped oldest {}.",

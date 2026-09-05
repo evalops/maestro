@@ -570,14 +570,7 @@ fn join_markitdown_pipe(
 
 #[cfg(unix)]
 fn configure_markitdown_process(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    unsafe {
-        command.pre_exec(|| {
-            let _ = libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
+    super::process_utils::set_std_process_group(command);
 }
 
 #[cfg(windows)]
@@ -592,21 +585,12 @@ fn configure_markitdown_process(command: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn configure_markitdown_process(_command: &mut Command) {}
 
-#[cfg(unix)]
-fn kill_markitdown_process_group(process_group_id: u32) {
-    if let Ok(process_group_id) = i32::try_from(process_group_id) {
-        unsafe {
-            let _ = libc::kill(-process_group_id, libc::SIGKILL);
-        }
-    }
-}
-
 fn kill_markitdown_process(
     child: &mut std::process::Child,
     #[cfg_attr(not(unix), allow(unused_variables))] process_group_id: u32,
 ) {
     #[cfg(unix)]
-    kill_markitdown_process_group(process_group_id);
+    super::process_utils::kill_process_group(process_group_id);
     let _ = child.kill();
 }
 
@@ -625,6 +609,8 @@ fn run_markitdown_command_with_cancellation(
     // Unix configures the child as its own process-group leader before exec,
     // so retain that identifier even after try_wait reaps the launcher.
     let process_group_id = child.id();
+    #[cfg(unix)]
+    let mut process_group = super::process_utils::ProcessGroupGuard::new(Some(process_group_id));
     #[cfg(windows)]
     let mut windows_job = Some({
         let job = match MarkitdownJobObject::assign(&child) {
@@ -660,6 +646,8 @@ fn run_markitdown_command_with_cancellation(
     loop {
         if cancelled.load(AtomicOrdering::Acquire) {
             kill_markitdown_process(&mut child, process_group_id);
+            #[cfg(unix)]
+            process_group.disarm();
             #[cfg(windows)]
             drop(windows_job.take());
             let _ = child.wait();
@@ -673,7 +661,7 @@ fn run_markitdown_command_with_cancellation(
             // its stdout/stderr. Terminate the retained Unix process group
             // before joining the pipe readers or they can block forever.
             #[cfg(unix)]
-            kill_markitdown_process_group(process_group_id);
+            process_group.terminate();
             #[cfg(windows)]
             drop(windows_job.take());
             let stdout = join_markitdown_pipe(
@@ -705,6 +693,8 @@ fn run_markitdown_command_with_cancellation(
         }
         if started.elapsed() > MARKITDOWN_EXTRACT_TIMEOUT {
             kill_markitdown_process(&mut child, process_group_id);
+            #[cfg(unix)]
+            process_group.disarm();
             #[cfg(windows)]
             drop(windows_job.take());
             let _ = child.wait();
@@ -1530,7 +1520,7 @@ mod tests {
         fs::write(
             &script_path,
             format!(
-                "printf '%s' \"$$\" > '{}'\nsleep 2\nprintf 'conversion completed\\n'\n",
+                "printf '%s' \"$$\" > '{}'\nwhile :; do sleep 1; done\n",
                 pid_path.to_string_lossy()
             ),
         )
@@ -1550,16 +1540,19 @@ mod tests {
             None,
         ));
 
-        let readiness_started = Instant::now();
         let pid = read_pid_file_when_ready(&pid_path).await;
+        // On this single-thread runtime, observing readiness while conversion
+        // is pending proves extraction yielded to the caller. Keep the peer
+        // blocked until cancellation; startup and OS scheduling are not part
+        // of that invariant. The converter's watchdog bounds a regression
+        // that performs conversion synchronously on the runtime thread.
         assert!(
-            readiness_started.elapsed() < Duration::from_millis(500),
-            "synchronous extraction blocked the async runtime for {:?}",
-            readiness_started.elapsed()
+            !extraction.is_finished(),
+            "the runtime must observe readiness before conversion finishes"
         );
 
         extraction.abort();
-        let _ = extraction.await;
+        assert!(matches!(extraction.await, Err(error) if error.is_cancelled()));
 
         let cancellation_started = Instant::now();
         while unsafe { libc::kill(pid, 0) } == 0

@@ -2,12 +2,13 @@
 //!
 //! Provides fuzzy file search with live preview.
 
+use maestro_ui::{KeyHint, Modal, ModalSize, Picker, key_hints};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::Rect,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{ListItem, ListState},
 };
 
 use crate::files::{FileMatch, FileSearch, FileSearchResult, WorkspaceFile, highlight_matches};
@@ -170,85 +171,37 @@ impl FileSearchModal {
             return;
         }
 
-        // Center the modal
-        let modal_width = area.width.clamp(40, 60);
-        let modal_height = area.height.clamp(10, 20);
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear background
-        frame.render_widget(Clear, modal_area);
-
-        // Draw modal block
-        let block = Block::default()
-            .title(" Search Files (@) ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // Layout: input at top, results below
-        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
-
-        // Render input (cursor is rendered inline)
-        self.render_input(frame, chunks[0]);
-
-        // Render results
-        self.render_results(frame, chunks[1]);
-    }
-
-    fn render_input(&mut self, frame: &mut Frame, area: Rect) {
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let input = Paragraph::new(self.query.as_str())
-            .style(Style::default().fg(Color::White))
-            .block(input_block);
-
-        frame.render_widget(input, area);
-
-        // Position cursor inside input
-        use unicode_width::UnicodeWidthStr;
-        let inner_x = area.x + 1;
-        let inner_y = area.y + 1;
-        let col = self.query[..self.cursor.min(self.query.len())].width() as u16;
-        frame.set_cursor_position((inner_x + col, inner_y));
-    }
-
-    fn render_results(&mut self, frame: &mut Frame, area: Rect) {
-        if self.results.matches.is_empty() {
-            let empty_msg = if self.query.is_empty() {
-                format!("Type to search {} files", self.results.total_files)
-            } else {
-                "No matches found".to_string()
-            };
-            let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(paragraph, area);
-            return;
-        }
-
-        let items: Vec<ListItem> = self
+        let theme = crate::themes::current_ui_theme();
+        let inner = Modal::sized("Search Files (@)", ModalSize::Standard)
+            .theme(theme)
+            .render(frame, area);
+        let items = self
             .results
             .matches
             .iter()
             .map(|m| self.render_match(m))
             .collect();
-
-        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
-        frame.render_stateful_widget(list, area, &mut self.list_state);
+        let empty = if self.query.is_empty() {
+            format!("Type to search {} files", self.results.total_files)
+        } else {
+            "No matches found".to_string()
+        };
+        Picker::new(&self.query, "", items, theme)
+            .cursor(self.cursor)
+            .empty(empty)
+            .help(key_hints(
+                &[
+                    KeyHint::new("↑↓", "navigate"),
+                    KeyHint::new("Enter", "select"),
+                    KeyHint::new("Esc", "cancel"),
+                ],
+                theme,
+            ))
+            .render(frame, inner, &mut self.list_state);
     }
 
     fn render_match(&self, file_match: &FileMatch) -> ListItem<'static> {
+        let theme = crate::themes::current_ui_theme();
         let file = &file_match.file;
 
         // Build highlighted name using highlight_matches utility
@@ -270,7 +223,7 @@ impl FileSearchModal {
                         spans.push(Span::styled(
                             std::mem::take(&mut current_text),
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(theme.attention)
                                 .add_modifier(Modifier::BOLD),
                         ));
                     } else {
@@ -287,7 +240,7 @@ impl FileSearchModal {
                     spans.push(Span::styled(
                         current_text,
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(theme.attention)
                             .add_modifier(Modifier::BOLD),
                     ));
                 } else {
@@ -303,7 +256,7 @@ impl FileSearchModal {
         if file.relative_path != file.name {
             line_spans.push(Span::styled(
                 format!("  {}", file.relative_path),
-                Style::default().fg(Color::DarkGray),
+                theme.muted_style(),
             ));
         }
 
@@ -320,6 +273,29 @@ impl Default for FileSearchModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_search_shared_picker_renders_empty_query_result_and_help() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut selector = FileSearchModal::new();
+        selector.show();
+        selector.insert_str("no-such-result-zzz");
+        let before = selector.query.clone();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("No matches found"));
+        assert!(text.contains("Enter select"));
+        assert_eq!(selector.query, before);
+    }
+
     use std::path::PathBuf;
 
     fn make_file(name: &str, path: &str) -> WorkspaceFile {
@@ -417,14 +393,8 @@ mod tests {
             })
             .expect("draw modal");
 
-        // Centered geometry: width 80.clamp(40, 60) = 60, height
-        // 24.clamp(10, 20) = 20, x = (80-60)/2 = 10, y = (24-20)/2 = 2.
-        let modal_area = Rect {
-            x: 10,
-            y: 2,
-            width: 60,
-            height: 20,
-        };
+        let modal_area =
+            Modal::sized("Search Files (@)", ModalSize::Standard).area(Rect::new(0, 0, 80, 24));
         let buffer = terminal.backend().buffer();
         for y in modal_area.top()..modal_area.bottom() {
             for x in modal_area.left()..modal_area.right() {

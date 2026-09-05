@@ -5,10 +5,15 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/ui-rs ./packages/ui-rs
+COPY packages/interaction-rs ./packages/interaction-rs
+COPY packages/presentation-rs ./packages/presentation-rs
+COPY packages/ui-preview-rs ./packages/ui-preview-rs
 COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
+COPY packages/coding-acceptance-rs ./packages/coding-acceptance-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs
@@ -21,10 +26,15 @@ RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/ui-rs ./packages/ui-rs
+COPY packages/interaction-rs ./packages/interaction-rs
+COPY packages/presentation-rs ./packages/presentation-rs
+COPY packages/ui-preview-rs ./packages/ui-preview-rs
 COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
+COPY packages/coding-acceptance-rs ./packages/coding-acceptance-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs

@@ -48,6 +48,7 @@ use crate::headless::controller_binding::{
 use crate::headless::messages::{
     ApprovalMode, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
     ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType,
+    PromptExperimentArm, PromptExperimentAssignment, PromptExperimentExposure,
     ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, ToAgentMessage,
     TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult, ToolRetryDecisionAction,
     UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
@@ -75,6 +76,8 @@ struct RuntimeMeta {
     response_chunks: Vec<(String, bool)>,
     /// Last safe managed-Gateway evidence for the active turn.
     managed_gateway_receipt: Option<maestro_ai::ManagedGatewayReceipt>,
+    /// Controller assignment proven against the provider-bound system prompt.
+    prompt_experiment: Option<PromptExperimentExposure>,
     /// Detached consumption-receipt acknowledgement tasks. Shutdown drains
     /// these so a dropped receipt's protocol error and rollback are emitted
     /// before the process exits. Shared behind an `Arc` because `RuntimeMeta`
@@ -214,6 +217,7 @@ impl HeadlessState {
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
                 managed_gateway_receipt: None,
+                prompt_experiment: None,
                 receipt_tasks: Arc::new(Mutex::new(Vec::new())),
             })),
             agent: None,
@@ -348,6 +352,7 @@ impl HeadlessState {
         if self.agent.is_none() {
             let started = Instant::now();
             let config = NativeAgentConfig {
+                model_dynamics: crate::config::model_dynamics_config(),
                 model: self.model.clone(),
                 max_tokens: crate::model_catalog::default_max_output_tokens(&self.model),
                 max_tokens_source: MaxTokensSource::Catalog,
@@ -371,6 +376,7 @@ impl HeadlessState {
                 managed_mcp_policy: None,
                 max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
                 allow_unbounded_turn: false,
+                retry_config: crate::agent::retry::RetryConfig::hosted_outage(),
             };
             let (agent, mut event_rx) = if let Some(grant) = self.governed_grant.as_ref() {
                 let (allowed_tools, external_tools, bindings) = governed_agent_inputs(grant)?;
@@ -449,6 +455,7 @@ impl HeadlessState {
             }
             // This is a protocol identity, not a SessionManager transcript
             // with an owner that deletes tool-output spills.
+            agent.set_subagent_parent_scope(format!("session:{session_id}"))?;
             agent.set_session_context(Some(session_id.clone()), "headless", false)?;
             if emit_ready {
                 agent.send_session_info(&self.cwd, self.session_id(), git_branch);
@@ -1194,6 +1201,31 @@ fn managed_request_lineage_id(grant: &GovernedToolGrant) -> String {
     )
 }
 
+fn sha256_prefixed(content: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(content.as_bytes()))
+}
+
+fn validate_prompt_experiment(assignment: &PromptExperimentAssignment) -> Result<(), &'static str> {
+    if [
+        assignment.experiment_id.as_str(),
+        assignment.assignment_id.as_str(),
+        assignment.artifact_id.as_str(),
+        assignment.artifact_version.as_str(),
+    ]
+    .iter()
+    .any(|value| value.is_empty() || value.trim() != *value || value.chars().any(char::is_control))
+    {
+        return Err("prompt experiment identity is invalid");
+    }
+    if assignment.artifact_content.trim().is_empty() {
+        return Err("prompt experiment artifact content is empty");
+    }
+    if sha256_prefixed(&assignment.artifact_content) != assignment.artifact_sha256 {
+        return Err("prompt experiment artifact digest does not match its content");
+    }
+    Ok(())
+}
+
 fn apply_init_settings(
     state: &mut HeadlessState,
     system_prompt: Option<String>,
@@ -1239,6 +1271,56 @@ fn apply_init_settings(
             agent.replace_history(messages);
         }
     }
+}
+
+fn configure_prompt_experiment(
+    state: &mut HeadlessState,
+    assignment: PromptExperimentAssignment,
+) -> Result<()> {
+    if !state.init_applied {
+        anyhow::bail!("prompt experiment requires a prior init");
+    }
+    validate_prompt_experiment(&assignment).map_err(anyhow::Error::msg)?;
+    let mut meta = state
+        .meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if meta.turn_active {
+        anyhow::bail!("prompt experiment cannot change during a turn");
+    }
+    if let Some(existing) = meta.prompt_experiment.as_ref() {
+        if existing.assignment_id == assignment.assignment_id
+            && existing.artifact_sha256 == assignment.artifact_sha256
+            && existing.arm == assignment.arm
+        {
+            return Ok(());
+        }
+        anyhow::bail!("prompt experiment assignment cannot change in place");
+    }
+    if assignment.arm == PromptExperimentArm::Candidate {
+        let mut base_prompt = state.workspace_capabilities.base_prompt().to_string();
+        base_prompt.push_str("\n\n");
+        base_prompt.push_str(&assignment.artifact_content);
+        state.workspace_capabilities.set_base_prompt(base_prompt);
+        state.system_prompt = state.workspace_capabilities.current_prompt().to_string();
+        if let Some(agent) = state.agent.as_ref() {
+            agent.set_system_prompt(state.system_prompt.clone())?;
+        }
+    }
+    meta.prompt_experiment = Some(PromptExperimentExposure {
+        experiment_id: assignment.experiment_id,
+        assignment_id: assignment.assignment_id,
+        arm: assignment.arm,
+        artifact_id: assignment.artifact_id,
+        artifact_version: assignment.artifact_version,
+        artifact_sha256: assignment.artifact_sha256,
+        provider_prompt_sha256: sha256_prefixed(
+            &crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
+                .unwrap_or_default(),
+        ),
+        applied: assignment.arm == PromptExperimentArm::Candidate,
+    });
+    Ok(())
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
@@ -1468,6 +1550,15 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                         format!("workspace prompt capability activation rejected: {error:#}"),
                     )?,
                 }
+            }
+            ToAgentMessage::ConfigurePromptExperiment { assignment } => {
+                if let Err(error) = configure_prompt_experiment(&mut state, assignment) {
+                    protocol_error(None, format!("prompt experiment rejected: {error:#}"))?;
+                    continue;
+                }
+                emit(&FromAgentMessage::Status {
+                    message: "prompt experiment configured".to_string(),
+                })?;
             }
             ToAgentMessage::RestoreConversation {
                 protocol_version,
@@ -2444,6 +2535,20 @@ fn take_interrupted_tool_terminal_messages(
         .collect()
 }
 
+pub(crate) fn headless_error_type(
+    fatal: bool,
+    terminal: bool,
+    retryable: bool,
+) -> HeadlessErrorType {
+    if fatal {
+        HeadlessErrorType::Fatal
+    } else if retryable || !terminal {
+        HeadlessErrorType::Transient
+    } else {
+        HeadlessErrorType::Protocol
+    }
+}
+
 async fn handle_agent_event(
     msg: FromAgent,
     meta: &Arc<Mutex<RuntimeMeta>>,
@@ -2470,20 +2575,34 @@ async fn handle_agent_event(
             record_id,
             lineage_id,
             record_status,
+            provider_prompt_sha256,
         } => {
-            meta.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .managed_gateway_receipt = Some(maestro_ai::ManagedGatewayReceipt {
-                request_id: request_id.clone(),
-                record_id: record_id.clone(),
-                lineage_id: lineage_id.clone(),
-                record_status: record_status.clone(),
-            });
+            let prompt_experiment = {
+                let mut meta = meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                meta.managed_gateway_receipt = Some(maestro_ai::ManagedGatewayReceipt {
+                    request_id: request_id.clone(),
+                    record_id: record_id.clone(),
+                    lineage_id: lineage_id.clone(),
+                    record_status: record_status.clone(),
+                    provider_prompt_sha256: provider_prompt_sha256.clone(),
+                });
+                // Bind each exposure to this successful HTTP request, including
+                // dynamic prompt context. Error receipts never attest delivery.
+                provider_prompt_sha256.and_then(|digest| {
+                    meta.prompt_experiment.clone().map(|mut exposure| {
+                        exposure.provider_prompt_sha256 = digest;
+                        exposure
+                    })
+                })
+            };
             emit(&FromAgentMessage::ManagedGatewayReceipt {
                 request_id,
                 record_id,
                 lineage_id,
                 record_status,
+                prompt_experiment,
             })?;
         }
         FromAgent::Ready { model, provider } => {
@@ -2598,11 +2717,19 @@ async fn handle_agent_event(
                 ttft_ms: None,
             })?;
         }
-        FromAgent::TurnCompleted { response_id } => {
+        FromAgent::TurnCompleted {
+            response_id,
+            coding_completion,
+            coding_child_records,
+        } => {
             meta.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .turn_active = false;
-            emit(&FromAgentMessage::TurnCompleted { response_id })?;
+            emit(&FromAgentMessage::TurnCompleted {
+                response_id,
+                coding_completion,
+                coding_child_records,
+            })?;
         }
         FromAgent::TurnInterrupted {
             response_id,
@@ -2743,6 +2870,7 @@ async fn handle_agent_event(
             message,
             fatal,
             terminal,
+            retryable,
         } => {
             if terminal {
                 meta.lock()
@@ -2775,13 +2903,7 @@ async fn handle_agent_event(
                 message,
                 fatal,
                 terminal,
-                error_type: Some(if fatal {
-                    HeadlessErrorType::Fatal
-                } else if terminal {
-                    HeadlessErrorType::Protocol
-                } else {
-                    HeadlessErrorType::Transient
-                }),
+                error_type: Some(headless_error_type(fatal, terminal, retryable)),
             })?;
         }
         FromAgent::ProviderError { kind, message } => {
@@ -2965,7 +3087,7 @@ pub(crate) fn resolve_headless_model(
                 .find(|model| !model.is_empty())
                 .map(ToOwned::to_owned)
         })
-        .unwrap_or_else(|| "gpt-5.5".to_string())
+        .unwrap_or_else(|| crate::credential_mode::DEFAULT_MANAGED_MODEL.to_string())
 }
 
 /// Return the identity of the provider/model selected by the hosted caller.
@@ -3653,6 +3775,22 @@ mod tests {
 
     const TEST_GRANT_KEY_ID: &str = "test-key";
     const TEST_GRANT_KEY_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn terminal_retryability_survives_the_headless_boundary() {
+        assert_eq!(
+            headless_error_type(false, true, true),
+            HeadlessErrorType::Transient
+        );
+        assert_eq!(
+            headless_error_type(false, true, false),
+            HeadlessErrorType::Protocol
+        );
+        assert_eq!(
+            headless_error_type(true, true, true),
+            HeadlessErrorType::Fatal
+        );
+    }
 
     fn test_grant_key_pair() -> Ed25519KeyPair {
         Ed25519KeyPair::from_seed_unchecked(TEST_GRANT_KEY_SEED).expect("test signing key")
@@ -4464,7 +4602,10 @@ mod tests {
             ),
             "evalops/gpt-5.5"
         );
-        assert_eq!(resolve_headless_model(None, &HashMap::new()), "gpt-5.5");
+        assert_eq!(
+            resolve_headless_model(None, &HashMap::new()),
+            "evalops/accounts/fireworks/models/glm-5p3"
+        );
     }
 
     #[tokio::test]
@@ -4641,6 +4782,47 @@ mod tests {
         assert!(!String::from_utf8_lossy(&output.stderr).contains("OPENAI_API_KEY"));
     }
 
+    struct HeadlessFixtureChild {
+        child: std::process::Child,
+        #[cfg(unix)]
+        group: crate::tools::process_utils::ProcessGroupGuard,
+    }
+
+    impl Drop for HeadlessFixtureChild {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            self.group.terminate();
+            #[cfg(not(unix))]
+            crate::tools::process_utils::kill_process_tree(self.child.id());
+            if let Err(error) = self.child.wait() {
+                eprintln!("failed to reap headless fixture: {error}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headless_fixture_drop_reaps_its_child() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        crate::tools::process_utils::set_std_process_group(&mut command);
+        let child = command.spawn().expect("spawn fixture");
+        let pid = i32::try_from(child.id()).expect("fixture pid");
+        let fixture = HeadlessFixtureChild {
+            group: crate::tools::process_utils::ProcessGroupGuard::new(Some(child.id())),
+            child,
+        };
+        drop(fixture);
+        // SAFETY: this PID identifies only the child owned above. WNOHANG
+        // checks that Drop already reaped it without blocking the test.
+        let result = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(result, -1, "fixture child must already be reaped");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
     #[tokio::test]
     async fn steer_message_reaches_codex_as_turn_steer_not_turn_start() {
         if std::env::var_os("MAESTRO_HEADLESS_STEER_FIXTURE").is_some() {
@@ -4654,6 +4836,11 @@ mod tests {
         let root = tempfile::tempdir().expect("fixture root");
         let script = root.path().join("app-server.js");
         let log = root.path().join("app-server.log");
+        let output = root.path().join("headless.log");
+        // This fixture uses only loopback HTTP. Do not enumerate the developer's
+        // macOS certificate Keychain while building its Identity client.
+        let roots = root.path().join("roots.pem");
+        std::fs::write(&roots, "").expect("isolated certificate roots");
         let home = root.path().join("maestro-home");
         std::fs::write(
             &script,
@@ -4663,6 +4850,7 @@ const log=process.env.MAESTRO_HEADLESS_STEER_LOG;
 function send(x){process.stdout.write(JSON.stringify(x)+'\n')}
 rl.on('line',line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+'\n');
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread-headless'}}})}
 else if(x.method==='thread/resume'){send({id:x.id,result:{thread:{id:x.params.threadId}}})}
 else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-active'}}})}
@@ -4671,10 +4859,15 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         )
         .expect("app-server script");
         let current = std::env::current_exe().expect("current test binary");
-        let mut child = std::process::Command::new(current)
+        let mut command = std::process::Command::new(current);
+        command
             .arg("headless_server::tests::steer_message_reaches_codex_as_turn_steer_not_turn_start")
             .arg("--exact")
             .arg("--nocapture")
+            .current_dir(root.path())
+            .env("SSL_CERT_FILE", &roots)
+            .env_remove("SSL_CERT_DIR")
+            .env("MAESTRO_DISABLE_KEYCHAIN", "1")
             .env("MAESTRO_HEADLESS_STEER_FIXTURE", "1")
             .env("MAESTRO_HEADLESS_STEER_LOG", &log)
             .env(
@@ -4696,10 +4889,16 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             )
             .env("OPENAI_CODEX_TOKEN", "fixture-token")
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn headless fixture");
-        let mut stdin = child.stdin.take().expect("fixture stdin");
+            .stdout(std::fs::File::create(&output).expect("headless log"));
+        #[cfg(unix)]
+        crate::tools::process_utils::set_std_process_group(&mut command);
+        let child = command.spawn().expect("spawn headless fixture");
+        let mut fixture = HeadlessFixtureChild {
+            #[cfg(unix)]
+            group: crate::tools::process_utils::ProcessGroupGuard::new(Some(child.id())),
+            child,
+        };
+        let mut stdin = fixture.child.stdin.take().expect("fixture stdin");
         use std::io::Write as _;
         writeln!(
             stdin,
@@ -4715,8 +4914,9 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         {
             assert!(
                 turn_started.elapsed() < std::time::Duration::from_secs(5),
-                "headless prompt never reached turn/start: {}",
-                std::fs::read_to_string(&log).unwrap_or_default()
+                "headless prompt never reached turn/start: {}\nheadless output: {}",
+                std::fs::read_to_string(&log).unwrap_or_default(),
+                std::fs::read_to_string(&output).unwrap_or_default()
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -4741,7 +4941,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         }
         writeln!(stdin, "{}", json!({"type":"shutdown"})).expect("write shutdown");
         drop(stdin);
-        let status = child.wait().expect("headless fixture status");
+        let status = fixture.child.wait().expect("headless fixture status");
         assert!(status.success(), "headless fixture failed: {status}");
 
         let requests = std::fs::read_to_string(log).expect("app-server log");
@@ -4905,6 +5105,7 @@ const fs=require("fs"); const log=process.env.MAESTRO_STAGED_ROTATION_LOG;
 function send(x){process.stdout.write(JSON.stringify(x)+"\n")}
 rl.on("line",line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+"\n");
 if(x.method==="initialize"){send({id:x.id,result:{protocolVersion:"2025-01-01",capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==="thread/start"){const n=(fs.readFileSync(log,"utf8").match(/"method":"thread\/start"/g)||[]).length;send({id:x.id,result:{thread:{id:"provider-thread-"+n}}})}
 else if(x.method==="thread/inject_items"){send({id:x.id,result:{}})}
 else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:{turn:{id:turnId}}});setTimeout(()=>send({method:"turn/completed",params:{turnId}}),5)}
@@ -4975,6 +5176,7 @@ const barrier=process.env.MAESTRO_HEADLESS_WORKSPACE_PROMPT_BARRIER;
 function send(x){process.stdout.write(JSON.stringify(x)+"\n")}
 rl.on("line",line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+"\n");
 if(x.method==="initialize"){send({id:x.id,result:{protocolVersion:"2025-01-01",capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==="thread/start"){const threadCount=(fs.readFileSync(log,"utf8").match(/"method":"thread\/start"/g)||[]).length;const ack=()=>send({id:x.id,result:{thread:{id:"provider-thread-"+threadCount}}});if(threadCount===1&&barrier&&!fs.existsSync(barrier)){const timer=setInterval(()=>{if(fs.existsSync(barrier)){clearInterval(timer);ack()}},5)}else{ack()}}
 else if(x.method==="thread/inject_items"){send({id:x.id,result:{}})}
 else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:{turn:{id:turnId}}});setTimeout(()=>{send({method:"item/agentMessage/delta",params:{turnId,delta:"fixture answer"}});send({method:"turn/completed",params:{turnId}})},10)}
@@ -6225,5 +6427,98 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
     fn env_session_id_filters_blank_value() {
         assert_eq!(normalize_session_id(Some("   ")), None);
         assert_eq!(normalize_session_id(None), None);
+    }
+
+    #[test]
+    fn candidate_prompt_experiment_reaches_provider_bound_system_prompt() {
+        let artifact_content = "When debugging, state the causal path before proposing a fix.";
+        let mut state = HeadlessState::new(Some("gpt-test".to_string()));
+        apply_init_settings(
+            &mut state,
+            Some("base prompt".to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
+        configure_prompt_experiment(
+            &mut state,
+            PromptExperimentAssignment {
+                experiment_id: "debug-causal-path-v1".to_string(),
+                assignment_id: "assignment-1".to_string(),
+                arm: PromptExperimentArm::Candidate,
+                artifact_id: "skill-debug-causal-path".to_string(),
+                artifact_version: "1".to_string(),
+                artifact_sha256: sha256_prefixed(artifact_content),
+                artifact_content: artifact_content.to_string(),
+            },
+        )
+        .expect("candidate assignment is valid");
+
+        assert!(state.system_prompt.contains(artifact_content));
+        let exposure = state
+            .meta
+            .lock()
+            .expect("runtime metadata")
+            .prompt_experiment
+            .clone()
+            .expect("exposure prepared");
+        let provider_prompt =
+            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
+                .expect("provider prompt");
+        assert!(exposure.applied);
+        assert_eq!(
+            exposure.provider_prompt_sha256,
+            sha256_prefixed(&provider_prompt)
+        );
+    }
+
+    #[test]
+    fn control_prompt_experiment_leaves_provider_bound_system_prompt_unchanged() {
+        let artifact_content = "When debugging, state the causal path before proposing a fix.";
+        let mut state = HeadlessState::new(Some("gpt-test".to_string()));
+        apply_init_settings(
+            &mut state,
+            Some("base prompt".to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
+        let provider_prompt_before =
+            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
+                .expect("provider prompt");
+
+        configure_prompt_experiment(
+            &mut state,
+            PromptExperimentAssignment {
+                experiment_id: "debug-causal-path-v1".to_string(),
+                assignment_id: "assignment-control-1".to_string(),
+                arm: PromptExperimentArm::Control,
+                artifact_id: "skill-debug-causal-path".to_string(),
+                artifact_version: "1".to_string(),
+                artifact_sha256: sha256_prefixed(artifact_content),
+                artifact_content: artifact_content.to_string(),
+            },
+        )
+        .expect("control assignment is valid");
+
+        let provider_prompt_after =
+            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
+                .expect("provider prompt");
+        let exposure = state
+            .meta
+            .lock()
+            .expect("runtime metadata")
+            .prompt_experiment
+            .clone()
+            .expect("exposure prepared");
+        assert_eq!(provider_prompt_after, provider_prompt_before);
+        assert!(!provider_prompt_after.contains(artifact_content));
+        assert!(!exposure.applied);
+        assert_eq!(
+            exposure.provider_prompt_sha256,
+            sha256_prefixed(&provider_prompt_before)
+        );
     }
 }

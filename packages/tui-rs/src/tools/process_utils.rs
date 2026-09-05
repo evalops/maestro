@@ -3,6 +3,9 @@
 /// Return whether a Unix process group still has at least one member.
 #[cfg(unix)]
 pub(crate) fn process_group_exists(process_group_id: u32) -> bool {
+    if process_group_id <= 1 {
+        return false;
+    }
     let Ok(process_group_id) = i32::try_from(process_group_id) else {
         return false;
     };
@@ -18,6 +21,9 @@ pub(crate) fn process_group_exists(process_group_id: u32) -> bool {
 /// This works after the original leader exits while descendants remain.
 #[cfg(unix)]
 pub(crate) fn kill_process_group(process_group_id: u32) {
+    if process_group_id <= 1 {
+        return;
+    }
     let Ok(process_group_id) = i32::try_from(process_group_id) else {
         return;
     };
@@ -54,42 +60,42 @@ fn descendant_processes(root_pid: u32) -> Vec<u32> {
     descendants
 }
 
-#[cfg(unix)]
-fn kill_process_or_group(pid: u32) -> Option<u32> {
-    let Ok(pid) = i32::try_from(pid) else {
-        return None;
-    };
-    // SAFETY: `getpgid` accepts and returns integer process identifiers only.
-    let process_group_id = unsafe { libc::getpgid(pid) };
-    let target = if process_group_id == pid { -pid } else { pid };
-    // SAFETY: `kill` accepts integer process/group and signal identifiers only.
-    unsafe {
-        let _ = libc::kill(target, libc::SIGKILL);
-    }
-    (process_group_id == pid).then_some(pid as u32)
-}
-
 /// Kill an entire process tree by PID.
 ///
-/// On Unix systems, this uses SIGKILL to terminate the process and all its descendants.
-/// On Windows, it uses `taskkill /T /F`.
+/// Signal parents before children: killing a child first can wake a waiting
+/// shell and let it execute another command before shutdown reaches the shell.
+/// Snapshot owned process groups before any leaders exit, then sweep those
+/// groups for children forked after discovery.
 #[cfg(unix)]
 pub(crate) fn kill_process_tree_tracked(pid: u32) -> Vec<u32> {
-    let descendants = descendant_processes(pid);
-    let mut killed_process_groups = Vec::new();
-    for descendant_pid in descendants.into_iter().rev() {
-        if let Some(process_group_id) = kill_process_or_group(descendant_pid) {
-            if !killed_process_groups.contains(&process_group_id) {
-                killed_process_groups.push(process_group_id);
-            }
+    if pid <= 1 || i32::try_from(pid).is_err() {
+        return Vec::new();
+    }
+    let processes: Vec<i32> = std::iter::once(pid)
+        .chain(descendant_processes(pid))
+        .filter_map(|pid| i32::try_from(pid).ok())
+        .collect();
+    let mut process_groups = Vec::new();
+    for &pid in &processes {
+        // SAFETY: `getpgid` accepts and returns integer process identifiers.
+        let group = unsafe { libc::getpgid(pid) };
+        // A group's leader must belong to this tree before we may kill the
+        // whole group; a descendant can belong to an unrelated caller's group.
+        if group == pid && !process_groups.contains(&(group as u32)) {
+            process_groups.push(group as u32);
         }
     }
-    if let Some(process_group_id) = kill_process_or_group(pid) {
-        if !killed_process_groups.contains(&process_group_id) {
-            killed_process_groups.push(process_group_id);
+    for pid in processes {
+        // SAFETY: `kill` takes integer identifiers. Each positive PID came
+        // from the requested root or its descendant snapshot, parent first.
+        unsafe {
+            let _ = libc::kill(pid, libc::SIGKILL);
         }
     }
-    killed_process_groups
+    for &group in &process_groups {
+        kill_process_group(group);
+    }
+    process_groups
 }
 
 #[cfg(unix)]
@@ -99,16 +105,7 @@ pub(crate) fn kill_process_tree(pid: u32) {
 
 #[cfg(unix)]
 pub(crate) fn set_new_process_group(cmd: &mut tokio::process::Command) {
-    // SAFETY: `pre_exec` runs in the forked child between `fork()` and `exec()`,
-    // so the closure must be async-signal-safe. `setpgid(0, 0)` is the only
-    // call made here; it takes no pointers, performs no allocation, and is
-    // async-signal-safe, satisfying `pre_exec`'s contract.
-    unsafe {
-        cmd.pre_exec(|| {
-            let _ = libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
+    set_std_process_group(cmd.as_std_mut());
 }
 
 /// Make the spawned Linux process a child subreaper.
@@ -153,3 +150,94 @@ pub(crate) fn kill_process_tree(pid: u32) {
 
 #[cfg(not(unix))]
 pub(crate) fn set_new_process_group(_cmd: &mut tokio::process::Command) {}
+
+/// Establish containment before exec; failure is returned by spawn.
+#[cfg(unix)]
+pub(crate) fn set_std_process_group(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+/// Own a group created before exec, including pipes inherited after leader exit.
+#[cfg(unix)]
+pub(crate) struct ProcessGroupGuard(Option<u32>);
+
+#[cfg(unix)]
+impl ProcessGroupGuard {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
+        Self(pid.filter(|pid| *pid > 1 && i32::try_from(*pid).is_ok()))
+    }
+    pub(crate) fn disarm(&mut self) {
+        self.0 = None;
+    }
+    pub(crate) fn terminate(&mut self) {
+        if let Some(pid) = self.0.take() {
+            kill_process_group(pid);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_group_owner_stops_commands_after_readiness() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("unexpected");
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "printf ready; sleep 30; touch unexpected"])
+            .current_dir(dir.path())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        set_new_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let guard = ProcessGroupGuard::new(child.id());
+        let mut stdout = child.stdout.take().unwrap();
+        let mut ready = [0; 5];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stdout.read_exact(&mut ready),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&ready, b"ready");
+        drop(guard);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!status.success());
+        let mut tail = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stdout.read_to_end(&mut tail),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(tail.is_empty());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn invalid_process_roots_do_not_signal_the_calling_group() {
+        assert!(!process_group_exists(0));
+        kill_process_group(0);
+        assert!(!process_group_exists(1));
+        kill_process_group(1);
+        assert!(kill_process_tree_tracked(1).is_empty());
+        assert!(kill_process_tree_tracked(0).is_empty());
+        assert!(kill_process_tree_tracked(u32::MAX).is_empty());
+    }
+}

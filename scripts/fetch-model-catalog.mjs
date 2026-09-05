@@ -37,11 +37,11 @@ const PROVIDER_PROTOCOLS = {
 };
 
 /**
- * Mirror of `uses_responses_api` in packages/tui-rs/src/ai/openai.rs:
- * Codex models and gpt-5.x/o3 models use the Responses API.
+ * Mirror of `uses_responses_api` in packages/ai-rs/src/openai.rs:
+ * Codex, GPT-5, GPT-6 Astra, and o3 models use the Responses API.
  */
 function openAiProtocol(modelId) {
-	return modelId.includes("codex") || modelId.startsWith("gpt-5") || modelId.startsWith("o3")
+	return modelId.includes("codex") || modelId.startsWith("gpt-5") || modelId === "gpt-6-astra" || modelId.startsWith("o3")
 		? "openai-responses"
 		: "openai-chat";
 }
@@ -246,6 +246,19 @@ async function main() {
 			}
 			models.push(mapModel(providerId, modelId, model));
 		}
+	}
+
+	// Native launch metadata from OpenAI while models.dev catches up.
+	if (!models.some((model) => model.provider === "openai" && model.id === "gpt-6-astra")) {
+		const astra = mapModel("openai", "gpt-6-astra", {
+			name: "GPT-6 Astra",
+			description: "Reasoning, coding, research, and document creation",
+			reasoning: true,
+			modalities: { input: ["text", "image"] },
+			limit: { context: 1050000, output: 128000 },
+		});
+		astra.verification.source = "https://developers.openai.com/api/docs/models/gpt-6-astra";
+		models.push(astra);
 	}
 
 	const openrouterModels = Array.isArray(openrouterPayload?.data) ? openrouterPayload.data : null;

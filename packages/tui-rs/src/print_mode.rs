@@ -21,6 +21,8 @@ use crate::tools::ToolExecutor;
 /// Options for print / exec-style runs.
 #[derive(Debug, Clone)]
 pub struct PrintModeOptions {
+    /// Named specialist profile, resolved once before the run.
+    pub specialist: Option<String>,
     pub prompt: String,
     /// Emit simple JSONL events instead of plain text.
     pub json: bool,
@@ -297,10 +299,69 @@ fn validate_print_local_model(
     Ok(())
 }
 
+/// Establish per-run managed request lineage before the first print prompt.
+/// This identity does not claim ownership of a persisted transcript or spills.
+pub(crate) async fn start_print_prompt(agent: &NativeAgent, prompt: String) -> Result<()> {
+    agent
+        .set_session_context(Some(uuid::Uuid::new_v4().to_string()), "print", false)
+        .context("Failed to establish print session context")?;
+    agent.send_ready();
+    agent
+        .prompt(prompt, vec![])
+        .await
+        .context("Failed to send prompt")
+}
+
+fn response_usage_event(
+    response_id: &str,
+    usage: &Option<crate::agent::TokenUsage>,
+) -> Option<serde_json::Value> {
+    (response_id != "done").then(|| {
+        serde_json::json!({
+            "type": "item", "subtype": "response_usage",
+            "response_id": response_id, "usage": usage,
+        })
+    })
+}
+
+// This changes model-visible text only; canonical cwd still governs every file tool.
+fn print_system_prompt(cwd: &str, stable: bool) -> String {
+    if stable {
+        "You are Deixic Code, an AI coding assistant. File paths are relative to the tool workspace. Be concise and use tools when helpful.".to_string()
+    } else {
+        format!(
+            "You are Deixic Code, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
+        )
+    }
+}
+
+/// Intersect specialist tools with the caller's existing ceiling.
+fn specialist_tool_ceiling(existing: Option<HashSet<String>>, tools: &[String]) -> HashSet<String> {
+    let tools = tools
+        .iter()
+        .map(|t| t.trim().to_ascii_lowercase())
+        .collect();
+    match existing {
+        Some(allowed) => allowed.intersection(&tools).cloned().collect(),
+        None => tools,
+    }
+}
+
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
+    let workspace = dunce::canonicalize(
+        &std::env::current_dir().context("resolve print-mode working directory")?,
+    )
+    .context("canonicalize print-mode working directory")?;
+    let specialist = options
+        .specialist
+        .as_deref()
+        .map(|name| crate::agents_cli::resolve_specialist(name, &workspace))
+        .transpose()?;
     let model = options
         .model
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| specialist.as_ref().and_then(|p| p.model.clone()))
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(crate::codex_auth::resolve_default_model);
     if crate::local_models::is_local_model_route(&model) {
@@ -314,25 +375,35 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         validate_print_local_model(&model, &discovered)?;
         crate::local_models::replace_discovered_models(0, &[discovered], Some(&model));
     }
-    let limits = PrintModeLimits::from_env(&model)?;
+    let mut limits = PrintModeLimits::from_env(&model)?;
+    if let Some(tools) = specialist.as_ref().and_then(|p| p.tools.as_ref()) {
+        limits.allowed_tools = Some(specialist_tool_ceiling(limits.allowed_tools.take(), tools));
+    }
 
-    let workspace = dunce::canonicalize(
-        &std::env::current_dir().context("resolve print-mode working directory")?,
-    )
-    .context("canonicalize print-mode working directory")?;
     let cwd = workspace.to_string_lossy().to_string();
 
-    let system_prompt = format!(
-        "You are Deixic Code, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
+    let mut system_prompt = print_system_prompt(
+        &cwd,
+        std::env::var("MAESTRO_PRINT_STABLE_SYSTEM_PROMPT").as_deref() == Ok("true"),
     );
 
+    if let Some(specialist) = &specialist {
+        system_prompt.push_str("\n\nSpecialist focus:\n");
+        system_prompt.push_str(&specialist.prompt);
+    }
+    let (thinking_enabled, thinking_budget) = specialist
+        .as_ref()
+        .and_then(|p| p.thinking)
+        .map(|level| level.to_config())
+        .unwrap_or((false, 0));
     let config = NativeAgentConfig {
+        model_dynamics: crate::config::model_dynamics_config(),
         model: model.clone(),
         max_tokens: limits.max_tokens,
         max_tokens_source: limits.max_tokens_source,
         system_prompt: Some(system_prompt),
-        thinking_enabled: false,
-        thinking_budget: 0,
+        thinking_enabled,
+        thinking_budget,
         cwd: cwd.clone(),
         // Print mode owns the limits, workspace policy, and executor below.
         // Defer every call to this event loop so native cannot auto-execute a
@@ -353,8 +424,28 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         // event loop notices and cancels.
         max_turn_steps: limits.max_turns,
         allow_unbounded_turn: false,
+        retry_config: crate::agent::retry::RetryConfig::default(),
     };
 
+    let mut parent_choice = crate::model_dynamics::ModelChoice {
+        model: config.model.clone(),
+        thinking: crate::model_dynamics::thinking_level(
+            config.thinking_enabled,
+            config.thinking_budget,
+        ),
+    };
+    if let Some(specialist) = &specialist {
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(specialist)?));
+        if options.json {
+            println!(
+                "{}",
+                serde_json::json!({"type":"thread", "subtype":"specialist", "name":specialist.name, "scope":specialist.scope, "digest":digest})
+            );
+        } else {
+            eprintln!("Specialist: {} ({digest})", specialist.name);
+        }
+    }
     let credential_vault = CredentialVault::new();
     let (agent, mut event_rx) = match &limits.allowed_tools {
         Some(allowed_tools) => NativeAgent::new_with_allowed_tools_and_credential_vault(
@@ -376,11 +467,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         None => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()).unattended(),
     };
 
-    agent.send_ready();
-    agent
-        .prompt(options.prompt, vec![])
-        .await
-        .context("Failed to send prompt")?;
+    start_print_prompt(&agent, options.prompt).await?;
 
     let mut exit_code = 0i32;
     let mut assistant_buf = String::new();
@@ -394,6 +481,15 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         };
         let typed_terminal_exit_code = typed_terminal_exit_code(&msg);
 
+        match &msg {
+            FromAgent::ModelChanged { model, .. } => parent_choice.model.clone_from(model),
+            FromAgent::BoostChanged {
+                thinking: Some(thinking),
+                ..
+            } => parent_choice.thinking = *thinking,
+            _ => {}
+        }
+        tool_executor.set_subagent_parent_model(parent_choice.clone());
         match msg {
             FromAgent::ResponseChunk {
                 content,
@@ -541,6 +637,12 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 }
             }
             FromAgent::ResponseEnd { response_id, usage } => {
+                if options.json {
+                    if let Some(event) = response_usage_event(&response_id, &usage) {
+                        println!("{event}");
+                    }
+                }
+
                 if response_id != "done" {
                     turns += 1;
                     if turns > limits.max_turns {
@@ -610,6 +712,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 if options.json {
                     let line = serde_json::json!({
@@ -712,6 +815,7 @@ pub async fn run_print_prompts(
         }
         // Only attach file/schema capture on the final prompt (exec parity).
         let result = run_print_mode(PrintModeOptions {
+            specialist: None,
             prompt,
             json,
             model: model.clone(),
@@ -853,6 +957,53 @@ pub fn resolve_output_path(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn specialist_tools_only_narrow_the_run_ceiling() {
+        let allowed = Some(["read".to_string()].into_iter().collect());
+        let narrowed = super::specialist_tool_ceiling(allowed, &["read".into(), "bash".into()]);
+        assert_eq!(narrowed, ["read".to_string()].into_iter().collect());
+        assert!(super::specialist_tool_ceiling(Some(narrowed), &[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_specialist_fails_before_provider_access() {
+        let result = super::run_print_mode(super::PrintModeOptions {
+            specialist: Some("missing-specialist-8335".into()),
+            prompt: "review".into(),
+            json: false,
+            model: None,
+            output_last_message: None,
+            output_schema: None,
+            sandbox_policy: None,
+            fail_on_approval: true,
+        })
+        .await;
+        assert!(result.unwrap_err().to_string().contains("authorized scope"));
+    }
+
+    #[test]
+    fn response_usage_is_independent_of_assistant_text() {
+        let usage = Some(crate::agent::TokenUsage {
+            input_tokens: 100,
+            cost: Some(0.012),
+            ..Default::default()
+        });
+        let event = super::response_usage_event("tool-only", &usage).unwrap();
+        assert_eq!(event["usage"]["input_tokens"], 100);
+        assert_eq!(event["usage"]["cost"], 0.012);
+        assert!(super::response_usage_event("done", &usage).is_none());
+        assert!(super::response_usage_event("missing-usage", &None).unwrap()["usage"].is_null());
+    }
+
+    #[test]
+    fn stable_print_prompt_does_not_include_random_workspace() {
+        assert_eq!(
+            super::print_system_prompt("/tmp/one", true),
+            super::print_system_prompt("/tmp/two", true)
+        );
+        assert!(super::print_system_prompt("/tmp/one", false).contains("/tmp/one"));
+    }
+
     use super::*;
 
     fn discovered_local_model(
@@ -950,6 +1101,7 @@ mod tests {
     #[test]
     fn print_options_default_json_false() {
         let opts = PrintModeOptions {
+            specialist: None,
             prompt: "hi".into(),
             json: false,
             model: None,
@@ -1002,6 +1154,8 @@ mod tests {
         assert_eq!(
             typed_terminal_exit_code(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             }),
             Some(0)
         );

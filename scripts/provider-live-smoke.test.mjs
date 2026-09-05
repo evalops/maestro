@@ -114,3 +114,22 @@ test("redacts every occurrence of provider keys", () => {
 		"[REDACTED] [REDACTED] [REDACTED]",
 	);
 });
+
+test("usage-only events preserve strict semantic verification", () => {
+	const events = parseJsonl(transcript());
+	events.splice(2, 0, {
+		type: "item",
+		subtype: "response_usage",
+		response_id: "tool",
+		usage: { input_tokens: 100 },
+	});
+	assert.deepEqual(
+		verifyScenarioOutput(events.map(JSON.stringify).join("\n"), scenario).callIds,
+		["call-glob", "call-read"],
+	);
+	events.find((event) => event.subtype === "message_complete").text = "WRONG";
+	assert.throws(
+		() => verifyScenarioOutput(events.map(JSON.stringify).join("\n"), scenario),
+		/final assistant marker/,
+	);
+});

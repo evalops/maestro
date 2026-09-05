@@ -1,0 +1,53 @@
+{
+  "name": "dex-appearance-picker-scrolled",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/dex appearance"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Make Dex yours"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "wait": "(?s)\u203a Accent: rose.*12/12"
+    }
+  ]
+}

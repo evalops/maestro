@@ -1,0 +1,20 @@
+{
+  "name": "error",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "Read missing-checklist.md."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "README.md to continue"
+    },
+    {
+      "absent": "Working|Thinking|Ctrl.C cancel"
+    }
+  ]
+}

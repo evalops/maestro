@@ -492,17 +492,91 @@ fn is_probably_binary(data: &[u8]) -> bool {
     data.iter().take(2048).any(|byte| *byte == 0)
 }
 
-/// MCP server status snapshot for UI rendering
-#[derive(Debug, Clone)]
+/// Lifecycle state shown by the MCP manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpLifecycleState {
+    Connecting,
+    Ready,
+    NeedsAuth,
+    Failed,
+    Disabled,
+    BlockedByPolicy,
+    NeedsWorkspaceTrust,
+    ConfigError,
+}
+
+impl McpLifecycleState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Ready => "ready",
+            Self::NeedsAuth => "needs auth",
+            Self::Failed => "failed",
+            Self::Disabled => "disabled",
+            Self::BlockedByPolicy => "blocked by policy",
+            Self::NeedsWorkspaceTrust => "needs workspace trust",
+            Self::ConfigError => "config error",
+        }
+    }
+}
+
+/// MCP server status snapshot for UI and CLI rendering.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct McpServerStatus {
     pub name: String,
+    pub state: McpLifecycleState,
     pub connected: bool,
     pub scope: McpConfigScope,
     pub transport: McpTransport,
     pub error: Option<String>,
     pub tools: Vec<String>,
+    pub disabled_tools: Vec<String>,
     pub resources: Vec<String>,
     pub prompts: Vec<String>,
+}
+
+fn mcp_lifecycle_state(
+    server: &crate::mcp::McpServerConfig,
+    connected: bool,
+    error: Option<&str>,
+    workspace: &Path,
+) -> McpLifecycleState {
+    if !server.is_enabled() {
+        return McpLifecycleState::Disabled;
+    }
+    if crate::mcp::server_requires_workspace_approval(server)
+        && !crate::config::workspace_trusted_in_global_config(workspace)
+    {
+        return McpLifecycleState::NeedsWorkspaceTrust;
+    }
+    if connected {
+        return McpLifecycleState::Ready;
+    }
+    let Some(error) = error else {
+        return McpLifecycleState::Connecting;
+    };
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("sandbox policy")
+        || lower.contains("managed policy")
+        || lower.contains("blocked")
+    {
+        McpLifecycleState::BlockedByPolicy
+    } else if lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("authentication")
+        || lower.contains("access token")
+        || lower.contains("oauth")
+    {
+        if server.auth_preset.as_deref() == Some("none") {
+            McpLifecycleState::Failed
+        } else {
+            McpLifecycleState::NeedsAuth
+        }
+    } else {
+        McpLifecycleState::Failed
+    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -532,6 +606,7 @@ pub struct McpServerStatus {
 /// non-Sync primitives. However, it can be moved across async tasks and used within
 /// a single-threaded context safely.
 pub struct ToolExecutor {
+    code_authority: Option<crate::code_authority::CodeToolAuthority>,
     /// Shared vault used to keep credential references valid across this execution session.
     credential_vault: CredentialVault,
 
@@ -581,6 +656,7 @@ pub struct ToolExecutor {
 
     /// Durable child-agent delegation shared by tool calls in this workspace.
     subagents: Arc<SubagentManager>,
+    coding_task: std::sync::Mutex<Option<coding_task::CodingTaskState>>,
 
     /// Capability-bound identity for model-facing mailbox operations.
     mailbox_identity: String,
@@ -623,6 +699,10 @@ pub struct ToolExecutor {
 
     /// Last reconnect attempt timestamp for configured MCP servers.
     mcp_last_connect_attempts: RwLock<HashMap<String, Instant>>,
+
+    /// Stable local permission identities for the currently admitted MCP
+    /// tools. Managed/enterprise tools are deliberately absent.
+    mcp_permission_identities: RwLock<HashMap<String, crate::mcp::McpPermissionIdentity>>,
 
     /// Executor used for the tools in
     /// [`crate::tools::executor::PROCESS_ISOLATABLE_TOOLS`], when the caller
@@ -670,7 +750,8 @@ fn is_reserved_execute_dispatch_name(name: &str) -> bool {
     // `Bash` are intercepted by built-in dispatch.
     matches!(
         name,
-        "bash"
+        "coding_task"
+            | "bash"
             | "Bash"
             | "read"
             | "Read"
@@ -776,6 +857,7 @@ fn register_inline_tools(
 }
 
 struct ToolExecutionContext<'a> {
+    code_decision: Option<crate::code_authority::CodeAuthorityDecision>,
     cancel: Option<CancellationToken>,
     approved_inline_env: Option<&'a HashMap<String, String>>,
     hooks: Option<&'a mut crate::hooks::IntegratedHookSystem>,
@@ -791,6 +873,68 @@ pub(crate) struct ToolExecutionOptions<'a> {
 }
 
 impl ToolExecutor {
+    #[cfg(test)]
+    pub(crate) fn with_test_code_authority(mut self) -> Self {
+        self.code_authority = Some(crate::code_authority::CodeToolAuthority::for_test(vec![]));
+        self
+    }
+
+    pub(crate) fn with_code_authority(mut self) -> Self {
+        self.code_authority = crate::code_authority::CodeToolAuthority::configured();
+        self
+    }
+
+    pub(crate) fn has_code_authority(&self) -> bool {
+        self.code_authority.is_some()
+    }
+
+    async fn authorize_code_call(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        generation: u64,
+        inline_env: Option<&HashMap<String, String>>,
+    ) -> anyhow::Result<Option<crate::code_authority::CodeAuthorityDecision>> {
+        use sha2::{Digest as _, Sha256};
+        let Some(authority) = &self.code_authority else {
+            return Ok(None);
+        };
+        let definition = if let Some(definition) = self.registry.get(tool_name) {
+            definition.tool.clone()
+        } else if McpClient::is_mcp_tool(tool_name) {
+            self.ensure_mcp_client()
+                .await
+                .map_err(anyhow::Error::msg)?
+                .list_all_tools()
+                .await
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .ok_or_else(|| anyhow::anyhow!("Code MCP schema unavailable"))?
+        } else {
+            anyhow::bail!("Code tool schema unavailable");
+        };
+        let task_id = self
+            .coding_contract()
+            .map(|c| c.task_id)
+            .unwrap_or_else(|| authority.session_id().to_string());
+        let repository = dunce::canonicalize(&self.cwd)?;
+        let inline = self.get_inline_tool(tool_name).map(|tool| serde_json::json!({
+            "command": tool.definition.command, "cwd": tool.definition.cwd,
+            "environment": inline_env.unwrap_or(&tool.definition.env), "timeout": tool.definition.timeout,
+            "sourcePath": tool.source_path,
+        }));
+        let definition = serde_json::json!({"schema": definition, "inlineExecution": inline});
+        let invocation = serde_json::json!({
+            "codeSessionId": authority.session_id(), "taskId": task_id,
+            "repositoryId": repository.to_string_lossy(), "runtimeGeneration": generation.checked_add(1).ok_or_else(|| anyhow::anyhow!("Code runtime generation exhausted"))?.to_string(),
+            "callId": call_id, "toolId": tool_name,
+            "toolSchemaDigest": format!("{:x}", Sha256::digest(serde_json::to_vec(&definition)?)),
+            "argumentsDigest": format!("{:x}", Sha256::digest(serde_json::to_vec(args)?)),
+        });
+        Ok(Some(authority.authorize(invocation).await?))
+    }
+
     /// Stop and reap background Bash commands owned by this executor.
     pub async fn shutdown_background_processes(&self) {
         self.bash.shutdown_background_processes().await;
@@ -838,6 +982,7 @@ impl ToolExecutor {
         let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
+            code_authority: None,
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
@@ -850,6 +995,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
             mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
@@ -860,6 +1006,7 @@ impl ToolExecutor {
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
             isolated_dispatch: None,
         }
     }
@@ -885,6 +1032,7 @@ impl ToolExecutor {
         let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
+            code_authority: None,
             credential_vault: CredentialVault::new(),
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
@@ -897,6 +1045,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
             mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
@@ -907,6 +1056,7 @@ impl ToolExecutor {
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
             isolated_dispatch: None,
         }
     }
@@ -936,6 +1086,7 @@ impl ToolExecutor {
         let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
+            code_authority: None,
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
@@ -948,6 +1099,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
             mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
@@ -958,6 +1110,7 @@ impl ToolExecutor {
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
             isolated_dispatch: None,
         }
     }
@@ -1040,6 +1193,7 @@ impl ToolExecutor {
             &invocation.call_id,
             self.credential_generation(),
             ToolExecutionContext {
+                code_decision: None,
                 cancel: Some(cancel),
                 approved_inline_env: None,
                 hooks: None,
@@ -1203,7 +1357,14 @@ impl ToolExecutor {
         self.subagents.set_steer_signal(signal);
     }
 
+    pub(crate) fn set_subagent_parent_model(&self, choice: crate::model_dynamics::ModelChoice) {
+        self.subagents.set_parent_model(choice);
+    }
+
     pub(crate) fn set_subagent_parent_scope(&self, parent_scope_id: String) {
+        if self.subagents.parent_scope_id() != parent_scope_id {
+            self.reset_coding_turn();
+        }
         self.subagents.set_parent_scope_id(parent_scope_id);
     }
 
@@ -1487,6 +1648,21 @@ impl ToolExecutor {
         // recorder can stamp each call with the definition it was issued
         // against. See `tools::tool_call_contract`.
         let live_tools = client.list_all_tools().await;
+        if let Ok(mut identities) = self.mcp_permission_identities.write() {
+            identities.clear();
+            for tool in &live_tools {
+                let server = servers.iter().find(|server| {
+                    tool.name
+                        .strip_prefix("mcp__")
+                        .is_some_and(|rest| rest.starts_with(&format!("{}__", server.name)))
+                });
+                if let Some(identity) = server.and_then(|server| {
+                    crate::mcp::permission_identity(server, &tool.name, &tool.input_schema)
+                }) {
+                    identities.insert(tool.name.to_lowercase(), identity);
+                }
+            }
+        }
         crate::tools::tool_call_contract::publish_live_identities(
             live_tools
                 .iter()
@@ -1494,6 +1670,39 @@ impl ToolExecutor {
         );
 
         Ok(client)
+    }
+
+    /// Whether a local remembered grant matches this exact admitted MCP tool.
+    #[must_use]
+    pub(crate) fn mcp_permission_allows(&self, tool_name: &str) -> bool {
+        self.mcp_permission_identities
+            .read()
+            .ok()
+            .and_then(|identities| identities.get(&tool_name.to_lowercase()).cloned())
+            .is_some_and(|identity| crate::mcp::permission_is_allowed(&identity))
+    }
+
+    /// Remember approval for this exact local MCP transport + schema identity.
+    pub(crate) fn remember_mcp_permission(
+        &self,
+        tool_name: &str,
+        persistent: bool,
+    ) -> Result<(), String> {
+        let identity = self
+            .mcp_permission_identities
+            .read()
+            .map_err(|_| "MCP permission identity lock poisoned".to_string())?
+            .get(&tool_name.to_lowercase())
+            .cloned()
+            .ok_or_else(|| {
+                "Only admitted local MCP tools can receive remembered permissions".to_string()
+            })?;
+        if persistent {
+            crate::mcp::grant_persistent_permission(&identity).map_err(|error| error.to_string())
+        } else {
+            crate::mcp::grant_session_permission(&identity);
+            Ok(())
+        }
     }
 
     /// Identity of an MCP tool as the currently configured servers define it.
@@ -1571,16 +1780,25 @@ impl ToolExecutor {
     /// Get MCP server status snapshots for UI display
     pub async fn mcp_status(&self) -> Result<Vec<McpServerStatus>, String> {
         let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
-        let client = self.ensure_mcp_client().await?;
+        let connect_error = self.ensure_mcp_client().await.err();
+        let client = self.mcp_client.lock().await.as_ref().cloned();
 
-        let connected: std::collections::HashSet<_> =
-            client.connected_servers().await.into_iter().collect();
-        let tools_map: HashMap<String, Vec<String>> =
-            client.list_tools_by_server().await.into_iter().collect();
-        let resources_map: HashMap<String, Vec<String>> =
-            client.list_all_resources().await.into_iter().collect();
-        let prompts_map: HashMap<String, Vec<String>> =
-            client.list_all_prompts().await.into_iter().collect();
+        let connected: std::collections::HashSet<_> = match &client {
+            Some(client) => client.connected_servers().await.into_iter().collect(),
+            None => std::collections::HashSet::new(),
+        };
+        let tools_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_tools_by_server().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
+        let resources_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_all_resources().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
+        let prompts_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_all_prompts().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
         let last_errors = self
             .mcp_last_errors
             .read()
@@ -1588,22 +1806,68 @@ impl ToolExecutor {
             .unwrap_or_default();
 
         let mut statuses = Vec::new();
-        for server in config.enabled_servers() {
+        for server in &config.servers {
             let name = server.name.clone();
+            let error = if server.is_enabled() {
+                last_errors
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| connect_error.clone())
+            } else {
+                None
+            };
+            let state = mcp_lifecycle_state(
+                server,
+                connected.contains(&name),
+                error.as_deref(),
+                Path::new(&self.cwd),
+            );
             let status = McpServerStatus {
                 name: name.clone(),
+                state,
                 connected: connected.contains(&name),
                 scope: server.scope,
                 transport: server.transport,
-                error: last_errors.get(&name).cloned(),
+                error,
                 tools: tools_map.get(&name).cloned().unwrap_or_default(),
+                disabled_tools: server.disabled_tools.clone(),
                 resources: resources_map.get(&name).cloned().unwrap_or_default(),
                 prompts: prompts_map.get(&name).cloned().unwrap_or_default(),
             };
             statuses.push(status);
         }
 
+        for issue in config.issues {
+            statuses.push(McpServerStatus {
+                name: issue
+                    .server
+                    .unwrap_or_else(|| issue.path.display().to_string()),
+                state: McpLifecycleState::ConfigError,
+                connected: false,
+                scope: issue.scope,
+                transport: crate::mcp::McpTransport::Stdio,
+                error: Some(issue.message),
+                tools: Vec::new(),
+                disabled_tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            });
+        }
+        statuses.sort_by(|left, right| left.name.cmp(&right.name));
+
         Ok(statuses)
+    }
+
+    /// Clear the reconnect cooldown and disconnect one cached server so the
+    /// next background status refresh performs a fresh connection attempt.
+    pub async fn retry_mcp_server(&self, name: &str) {
+        if let Ok(mut attempts) = self.mcp_last_connect_attempts.write() {
+            attempts.remove(name);
+        }
+        let client = self.mcp_client.lock().await.as_ref().cloned();
+        if let Some(client) = client {
+            let _ = client.disconnect(name).await;
+        }
     }
 
     /// Get detailed MCP prompt metadata for connected servers
@@ -1690,18 +1954,16 @@ impl ToolExecutor {
 
     /// Drain live MCP notifications and refresh cached metadata when server lists change.
     pub async fn poll_mcp_updates(&self) -> Result<Vec<crate::mcp::McpRuntimeEvent>, String> {
-        // Reconcile the merged config and global workspace trust before
-        // touching cached connections. This disconnects repository-controlled
-        // servers immediately after trust revocation instead of allowing a
-        // stale HTTP/SSE refresh or stdio respawn through the poll path.
-        let has_cached_client = {
+        // Connection reconciliation runs on the background status worker.
+        // The UI loop only drains already-connected notification queues here;
+        // it must never dial or respawn a server while handling input.
+        let client = {
             let guard = self.mcp_client.lock().await;
-            guard.is_some()
+            guard.as_ref().cloned()
         };
-        if !has_cached_client {
+        let Some(client) = client else {
             return Ok(Vec::new());
-        }
-        let client = self.ensure_mcp_client().await?;
+        };
 
         let events = client
             .poll_notifications()
@@ -2082,6 +2344,7 @@ impl ToolExecutor {
             call_id,
             generation,
             ToolExecutionContext {
+                code_decision: None,
                 cancel,
                 approved_inline_env: None,
                 hooks: None,
@@ -2100,6 +2363,33 @@ impl ToolExecutor {
         generation: u64,
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolResult {
+        let mut execution_context = execution_context;
+        if execution_context.code_decision.is_none() {
+            execution_context.code_decision = match self
+                .authorize_code_call(
+                    tool_name,
+                    args,
+                    call_id,
+                    generation,
+                    execution_context.approved_inline_env,
+                )
+                .await
+            {
+                Ok(decision) => decision,
+                Err(error) => {
+                    return ToolResult::failure(format!(
+                        "Code tool authority denied execution: {error}"
+                    ));
+                }
+            };
+        }
+        if execution_context
+            .code_decision
+            .as_ref()
+            .is_some_and(|decision| !decision.is_current())
+        {
+            return ToolResult::failure("Code tool authority expired before dispatch");
+        }
         let emit_tool_events = execution_context.emit_tool_events;
         if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
             return ToolResult::failure(message);
@@ -2144,7 +2434,7 @@ impl ToolExecutor {
             if let Ok(mut cache) = self.cache.write() {
                 if let Some(cached) = cache.get(&cache_key) {
                     // Cache hit for tool execution
-                    let result = ToolResult {
+                    let mut result = ToolResult {
                         success: !cached.is_error,
                         output: cached.output.clone(),
                         error: if cached.is_error {
@@ -2154,6 +2444,8 @@ impl ToolExecutor {
                         },
                         details: None,
                     };
+
+                    self.append_directory_skill_catalog(tool_name, args, generation, &mut result);
 
                     // Send events for cached result
                     if emit_tool_events {
@@ -2246,7 +2538,7 @@ impl ToolExecutor {
         };
 
         // Execute the tool
-        let result =
+        let mut result =
             vault_tool_result_credentials(&self.credential_vault, generation, uncached_result);
 
         // Store result in cache for cacheable tools
@@ -2270,7 +2562,41 @@ impl ToolExecutor {
             }
         }
 
+        // Derive catalogs after caching so trust revocation is effective on cached reads.
+        self.append_directory_skill_catalog(tool_name, args, generation, &mut result);
         result
+    }
+
+    fn append_directory_skill_catalog(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        generation: u64,
+        result: &mut ToolResult,
+    ) {
+        if !result.success
+            || args
+                .get("asBase64")
+                .or_else(|| args.get("as_base64"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            || self.isolated_dispatch_for(tool_name).is_some()
+            || !matches!(tool_name, "read" | "Read" | "list" | "List" | "ls")
+        {
+            return;
+        }
+        let raw_path = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&self.cwd);
+        let path = Path::new(&self.cwd).join(raw_path);
+        let catalog = crate::skills::directory::catalog(Path::new(&self.cwd), &path);
+        result.output.push_str(
+            &self
+                .credential_vault
+                .vault_in_text_at_generation(generation, &catalog),
+        );
     }
 
     /// Execute a tool and convert the legacy transport DTO into the typed internal outcome.
@@ -2332,6 +2658,7 @@ impl ToolExecutor {
             call_id,
             self.credential_generation(),
             ToolExecutionContext {
+                code_decision: None,
                 cancel: Some(options.cancel),
                 approved_inline_env: options.approved_inline_env,
                 hooks: options.hooks,
@@ -2357,6 +2684,7 @@ impl ToolExecutor {
             call_id,
             generation,
             ToolExecutionContext {
+                code_decision: None,
                 cancel,
                 approved_inline_env: None,
                 hooks: None,
@@ -2375,6 +2703,31 @@ impl ToolExecutor {
         generation: u64,
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolExecution {
+        let code_decision = match self
+            .authorize_code_call(
+                tool_name,
+                args,
+                call_id,
+                generation,
+                execution_context.approved_inline_env,
+            )
+            .await
+        {
+            Ok(decision) => decision,
+            Err(error) => {
+                let execution = ToolExecution::denied(
+                    call_id,
+                    tool_name,
+                    DenialReason::IdentityAuthority {
+                        message: format!("Code tool authority denied execution: {error}"),
+                    },
+                );
+                emit_typed_tool_end(event_tx, call_id, &execution);
+                return execution;
+            }
+        };
+        let mut execution_context = execution_context;
+        execution_context.code_decision = code_decision.clone();
         if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
             let execution =
                 ToolExecution::denied(call_id, tool_name, DenialReason::SandboxPolicy { message });
@@ -2439,6 +2792,7 @@ impl ToolExecutor {
             result,
         )
         .with_duration(started.elapsed().as_millis() as u64);
+        execution.receipt.code_authority = code_decision.map(Box::new);
         if used_cache {
             execution.receipt.details = crate::agent::ToolReceiptDetails::Cached;
         }
@@ -2477,6 +2831,7 @@ fn emit_typed_tool_end(
     });
 }
 
+mod coding_task;
 mod execute;
 mod tool_registry;
 pub use tool_registry::ToolRegistry;

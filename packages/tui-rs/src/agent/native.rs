@@ -306,6 +306,21 @@ fn request_retry_decision(
     }
 }
 
+fn coding_turn_completed_event(
+    executor: &ToolExecutor,
+    response_id: &str,
+) -> Result<FromAgent, String> {
+    let (coding_completion, coding_child_records) = match executor.coding_completion()? {
+        Some((_contract, submission, children)) => (Some(submission), children),
+        None => (None, Vec::new()),
+    };
+    Ok(FromAgent::TurnCompleted {
+        response_id: response_id.to_owned(),
+        coding_completion,
+        coding_child_records,
+    })
+}
+
 fn closed_tool_response_failure(call_id: &str) -> anyhow::Error {
     anyhow::Error::new(ProviderStreamFailure {
         kind: ProviderStreamErrorKind::TransientProtocol,
@@ -313,6 +328,7 @@ fn closed_tool_response_failure(call_id: &str) -> anyhow::Error {
     })
 }
 
+mod model_dynamics;
 mod read_only_tools;
 mod tool_execution;
 mod tool_responses;
@@ -665,7 +681,9 @@ pub enum MaxTokensSource {
 ///     sandbox_policy: None,
 ///     max_turn_steps: maestro_tui::agent::DEFAULT_MAX_TURN_STEPS,
 ///     allow_unbounded_turn: false,
+///     retry_config: maestro_tui::agent::retry::RetryConfig::default(),
 ///     managed_mcp_policy: None,
+///     model_dynamics: Default::default(),
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -702,6 +720,9 @@ pub struct NativeAgentConfig {
     /// Maximum tokens allocated to the thinking/reasoning phase. Only used when
     /// `thinking_enabled` is true. Typical values: 5000-20000.
     pub thinking_budget: u32,
+
+    /// Explicit local routing preferences, loaded from the user configuration by default.
+    pub model_dynamics: crate::model_dynamics::ModelDynamicsConfig,
 
     /// Current working directory
     ///
@@ -763,6 +784,12 @@ pub struct NativeAgentConfig {
     /// [`crate::agent::safety`] blocks only three identical consecutive
     /// calls, so a model alternating between two calls never stops.
     pub allow_unbounded_turn: bool,
+
+    /// Retry policy for provider request failures within the current turn.
+    ///
+    /// Callers may extend this bounded window, but retries remain inside the
+    /// owning runtime so completed tool effects are never replayed.
+    pub retry_config: super::retry::RetryConfig,
 }
 
 impl NativeAgentConfig {
@@ -790,6 +817,7 @@ impl Default for NativeAgentConfig {
             system_prompt: None,
             thinking_enabled: false,
             thinking_budget: 10000,
+            model_dynamics: crate::config::model_dynamics_config(),
             cwd: std::env::current_dir()
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             approval_mode: ApprovalMode::default(),
@@ -798,6 +826,7 @@ impl Default for NativeAgentConfig {
             managed_mcp_policy: None,
             max_turn_steps: DEFAULT_MAX_TURN_STEPS,
             allow_unbounded_turn: false,
+            retry_config: super::retry::RetryConfig::default(),
         }
     }
 }
@@ -1067,6 +1096,11 @@ fn goal_tools_visible_from_execution(execution: &ToolExecution) -> Option<bool> 
 /// This enum is private to the module - external code interacts through
 /// `NativeAgent` methods which create and send these commands.
 enum AgentCommand {
+    Boost,
+    SetContextToolExcluded {
+        name: String,
+        excluded: bool,
+    },
     /// User submitted a prompt
     ///
     /// Adds the user message to conversation history and triggers a new
@@ -1096,19 +1130,28 @@ enum AgentCommand {
     ///
     /// Triggers the cancellation token to stop the active AI request.
     /// The runner will clean up and send a `FromAgent::ResponseEnd` event.
-    Cancel { clear_pending: bool },
+    Cancel {
+        clear_pending: bool,
+    },
 
     /// Cancel a queued prompt by id
-    CancelQueued { id: u64 },
+    CancelQueued {
+        id: u64,
+    },
 
     /// Reorder a queued prompt without changing its id or contents.
-    ReorderQueued { id: u64, placement: QueuePlacement },
+    ReorderQueued {
+        id: u64,
+        placement: QueuePlacement,
+    },
 
     /// Change the active model
     ///
     /// Switches to a different AI model (e.g., from Claude to GPT-5).
     /// The conversation history is preserved.
-    SetModel { model: String },
+    SetModel {
+        model: String,
+    },
 
     /// Re-resolve catalog/runtime limits for the already active model.
     RefreshModelBudgets,
@@ -1116,14 +1159,19 @@ enum AgentCommand {
     /// Update thinking configuration
     ///
     /// Enables or disables the extended thinking mode and sets the token budget.
-    SetThinking { enabled: bool, budget: u32 },
+    SetThinking {
+        enabled: bool,
+        budget: u32,
+    },
 
     /// Update the per-request output-token limit
     ///
     /// `max_tokens` bounds a single provider response, so a caller enforcing a
     /// budget across a whole run (the subagent scheduler) lowers it between
     /// requests to the allowance that is still unspent.
-    SetMaxTokens { max_tokens: u32 },
+    SetMaxTokens {
+        max_tokens: u32,
+    },
 
     /// Cap the cumulative output tokens this runner may request across a run.
     ///
@@ -1133,7 +1181,9 @@ enum AgentCommand {
     /// the next request. This hands the accounting to the runner, which
     /// subtracts what each response spent and clamps the request it is about to
     /// build. Sent once, before the prompt it applies to.
-    SetOutputTokenBudget { max_total_output_tokens: u32 },
+    SetOutputTokenBudget {
+        max_total_output_tokens: u32,
+    },
 
     /// Point the runner's tool executor at a different subagent scope.
     ///
@@ -1141,7 +1191,9 @@ enum AgentCommand {
     /// children, so it stamps the scope onto every child it starts. A new or
     /// resumed conversation rotates the scope on both sides; without this the
     /// caller would drain a scope no new child is ever tagged with.
-    SetSubagentParentScope { parent_scope_id: String },
+    SetSubagentParentScope {
+        parent_scope_id: String,
+    },
 
     /// Tell the runner which conversation is active.
     ///
@@ -1168,17 +1220,23 @@ enum AgentCommand {
     /// Does not load project hook config; only enables
     /// [`IntegratedHookSystem`]'s existing `log_event` writer so session and
     /// recovery dispatches become assertable without trusting a temp workspace.
-    SetHookLogFile { path: String },
+    SetHookLogFile {
+        path: String,
+    },
 
     /// Update whether the goal lifecycle tools are exposed to the model.
-    SetGoalToolsVisible { visible: bool },
+    SetGoalToolsVisible {
+        visible: bool,
+    },
 
     /// Update the active approval mode
     ///
     /// Keeps the runner's tool-execution gate (`requires_approval`) in sync
     /// with the caller's approval UI so the two never disagree about whether
     /// a tool needs approval before it executes.
-    SetApprovalMode { mode: ApprovalMode },
+    SetApprovalMode {
+        mode: ApprovalMode,
+    },
 
     /// Replace the exact governed native allowlist and caller-owned tools
     /// without rebuilding the runner or losing its private conversation state.
@@ -1188,15 +1246,21 @@ enum AgentCommand {
     },
 
     /// Update steering queue drain mode.
-    SetSteeringMode { mode: QueueMode },
+    SetSteeringMode {
+        mode: QueueMode,
+    },
 
     /// Update follow-up queue drain mode.
-    SetFollowUpMode { mode: QueueMode },
+    SetFollowUpMode {
+        mode: QueueMode,
+    },
 
     /// Update the system prompt
     ///
     /// Replaces the base system prompt used for subsequent requests.
-    SetSystemPrompt { system_prompt: String },
+    SetSystemPrompt {
+        system_prompt: String,
+    },
 
     /// Materialize the provider session that owns the current standing prompt.
     ///
@@ -1234,11 +1298,16 @@ enum AgentCommand {
     ClearHistory,
 
     /// Replace conversation history (used by /rewind and /fork rebuilds).
-    ReplaceHistory { messages: Vec<Message> },
+    ReplaceHistory {
+        messages: Vec<Message>,
+        continuation: Option<super::compaction::ContinuationRecord>,
+    },
 
     /// Replace history for a delegated child resume without clearing the
     /// credential vault shared with its parent runner.
-    ReplaceHistoryPreservingCredentials { messages: Vec<Message> },
+    ReplaceHistoryPreservingCredentials {
+        messages: Vec<Message>,
+    },
 
     /// Append a host-generated user note to conversation history without
     /// starting a model turn. Used for background-task lifecycle notices so
@@ -1343,6 +1412,8 @@ pub struct NativeAgent {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeAuditSnapshot {
+    pub(crate) request_context: Option<super::context_usage::RequestContextUsage>,
+    pub(crate) excluded_context_tools: HashSet<String>,
     pub(crate) prompt_revision: u64,
     pub(crate) system_prompt: Option<String>,
     pub(crate) tools: Vec<ToolDefinition>,
@@ -1716,6 +1787,8 @@ impl NativeAgent {
         let active_tool_names =
             initial_active_tool_names(tool_profile, &tools, &external_tools, allowed_tools);
         let runtime_audit = Arc::new(RwLock::new(RuntimeAuditSnapshot {
+            request_context: None,
+            excluded_context_tools: HashSet::new(),
             prompt_revision: 0,
             system_prompt: config.system_prompt.clone(),
             tools: effective_tool_definitions(
@@ -1767,7 +1840,16 @@ impl NativeAgent {
         // Create the agent extension registry. Loop behaviors -- doom-loop and
         // rate-limit enforcement today -- are registered tenants, not branches
         // inside `run_loop`. See `docs/agent-extensions.md`.
-        let extensions = ExtensionRegistry::with_default_tenants();
+        let dynamics = Arc::new(std::sync::Mutex::new(
+            crate::model_dynamics::DynamicsState::default(),
+        ));
+        let mut extensions = ExtensionRegistry::with_default_tenants();
+        extensions.register(Box::new(
+            super::extensions::model_dynamics::ModelDynamicsExtension::new(
+                Arc::clone(&dynamics),
+                event_tx.clone(),
+            ),
+        ));
 
         // Create context compactor for handling long conversations
         let compactor = super::compaction::ContextCompactor::new(
@@ -1775,7 +1857,7 @@ impl NativeAgent {
         );
 
         // Create retry policy for transient API errors
-        let retry_policy = super::retry::RetryPolicy::default();
+        let retry_policy = super::retry::RetryPolicy::new(config.retry_config.clone());
 
         // Create message queue for pending prompts (bounded)
         let pending_messages = MessageQueue::with_max_size(MAX_PENDING_MESSAGES);
@@ -1874,12 +1956,15 @@ impl NativeAgent {
             hooks,
             owns_persistent_tool_spills: false,
             extensions,
+            dynamics,
+            boost_original: None,
             current_turn_id: String::new(),
             turn_index: 0,
             turn_tool_calls: 0,
             denial_memory: DenialMemory::new(),
             workflow_state: WorkflowStateTracker::default(),
             compactor,
+            semantic_continuation: None,
             retry_policy,
             pending_messages,
             steering_mode: QueueMode::All,
@@ -2103,9 +2188,18 @@ impl NativeAgent {
 
     /// Replace conversation history with the provided messages.
     pub fn replace_history(&self, messages: Vec<Message>) {
-        let _ = self
-            .command_tx
-            .send(AgentCommand::ReplaceHistory { messages });
+        self.replace_history_with_continuation(messages, None);
+    }
+
+    pub(crate) fn replace_history_with_continuation(
+        &self,
+        messages: Vec<Message>,
+        continuation: Option<super::compaction::ContinuationRecord>,
+    ) {
+        let _ = self.command_tx.send(AgentCommand::ReplaceHistory {
+            messages,
+            continuation,
+        });
     }
 
     /// Replace conversation history while retaining credentials supplied by
@@ -2157,6 +2251,13 @@ impl NativeAgent {
         self.command_tx
             .send(AgentCommand::RefreshModelBudgets)
             .map_err(|e| anyhow::anyhow!("Failed to refresh model budgets: {e}"))
+    }
+
+    /// Request a bounded boost at the next safe provider request boundary.
+    pub fn boost(&self) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::Boost)
+            .map_err(|e| anyhow::anyhow!("Failed to request boost: {e}"))
     }
 
     /// Set thinking level
@@ -2332,6 +2433,12 @@ impl NativeAgent {
                 anyhow::anyhow!("Provider prompt install acknowledgement dropped: {error}")
             })?
             .map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) fn set_context_tool_excluded(&self, name: String, excluded: bool) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetContextToolExcluded { name, excluded })
+            .map_err(|_| anyhow::anyhow!("The agent is not running."))
     }
 
     #[must_use]
@@ -2714,6 +2821,8 @@ struct NativeAgentRunner {
     /// tenant. New loop behavior is registered here rather than branched into
     /// `run_loop`; see `docs/agent-extensions.md`.
     extensions: ExtensionRegistry,
+    dynamics: Arc<std::sync::Mutex<crate::model_dynamics::DynamicsState>>,
+    boost_original: Option<crate::model_dynamics::ModelChoice>,
 
     /// Identifier of the turn `run_loop` is executing, carried in every
     /// extension hook context.
@@ -2739,6 +2848,7 @@ struct NativeAgentRunner {
     /// Summarizes older messages when the context grows too large to fit
     /// within the model's token limit.
     compactor: super::compaction::ContextCompactor,
+    semantic_continuation: Option<super::compaction::ContinuationRecord>,
 
     /// Retry policy for handling transient API errors
     ///
@@ -3944,6 +4054,25 @@ fn set_explicit_max_tokens(config: &mut NativeAgentConfig, max_tokens: u32) {
 }
 
 impl NativeAgentRunner {
+    fn managed_gateway_receipt_event(
+        receipt: maestro_ai::ManagedGatewayReceipt,
+        experiment_eligible: bool,
+    ) -> FromAgent {
+        FromAgent::ManagedGatewayReceipt {
+            request_id: receipt.request_id,
+            record_id: receipt.record_id,
+            lineage_id: receipt.lineage_id,
+            record_status: receipt.record_status,
+            // Auxiliary compaction uses its own instructions. Keep its cost
+            // receipt, but never label it as exposure to the turn's treatment.
+            provider_prompt_sha256: if experiment_eligible {
+                receipt.provider_prompt_sha256
+            } else {
+                None
+            },
+        }
+    }
+
     fn resolve_managed_request_lineage(
         &mut self,
         explicit_lineage: Option<String>,
@@ -3993,6 +4122,7 @@ impl NativeAgentRunner {
             message: format!("Managed request rejected: {error:#}"),
             fatal: false,
             terminal: true,
+            retryable: false,
         });
     }
 
@@ -4009,12 +4139,50 @@ impl NativeAgentRunner {
         self.refresh_runtime_audit();
     }
 
+    fn set_context_tool_excluded(&mut self, name: &str, excluded: bool) {
+        let name = name.to_ascii_lowercase();
+        if self.model_route.uses_app_server() || !self.tools.contains_key(&name) {
+            let _ = self.event_tx.send(FromAgent::Status {
+                message: "Context tool selection requires a registered tool on the native provider route.".into()
+            });
+            return;
+        }
+        {
+            let mut audit = self
+                .runtime_audit
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            if excluded {
+                audit.excluded_context_tools.insert(name.clone());
+            } else {
+                audit.excluded_context_tools.remove(&name);
+            }
+        }
+        self.model_tool_cache = None;
+        self.refresh_runtime_audit();
+        let _ = self.event_tx.send(FromAgent::Status {
+            message: format!(
+                "{} {name} {} this session's request schemas.",
+                if excluded { "Excluded" } else { "Included" },
+                if excluded { "from" } else { "in" }
+            ),
+        });
+    }
+
     fn refresh_runtime_audit(&self) {
         self.refresh_runtime_audit_with_prompt(self.config.system_prompt.clone());
     }
 
     fn refresh_runtime_audit_with_prompt(&self, system_prompt: Option<String>) {
+        let excluded_context_tools = self
+            .runtime_audit
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .excluded_context_tools
+            .clone();
         let snapshot = RuntimeAuditSnapshot {
+            request_context: None,
+            excluded_context_tools: excluded_context_tools.clone(),
             prompt_revision: self.runtime_prompt_revision,
             system_prompt,
             tools: effective_tool_definitions(
@@ -4022,7 +4190,12 @@ impl NativeAgentRunner {
                 &self.active_tool_names,
                 self.goal_tools_visible,
                 self.include_ide_tools,
-            ),
+            )
+            .into_iter()
+            .filter(|definition| {
+                !excluded_context_tools.contains(&definition.tool.name.to_ascii_lowercase())
+            })
+            .collect(),
         };
         *self
             .runtime_audit
@@ -4503,7 +4676,22 @@ impl NativeAgentRunner {
                     }
                     Err(error) => self.reject_managed_request(error),
                 },
+                AgentCommand::SetContextToolExcluded { name, excluded } => {
+                    self.set_context_tool_excluded(&name, excluded);
+                }
+                AgentCommand::Boost => {
+                    let mut state = self.dynamics.lock().expect("model dynamics mutex");
+                    if !state.used {
+                        state.requested = true;
+                        state.status = crate::model_dynamics::BoostStatus::Pending;
+                        let _ = self.event_tx.send(FromAgent::BoostChanged {
+                            status: state.status,
+                            thinking: None,
+                        });
+                    }
+                }
                 AgentCommand::SetThinking { enabled, budget } => {
+                    self.preserve_explicit_intelligence_choice();
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
@@ -4775,6 +4963,7 @@ impl NativeAgentRunner {
                     message: format!("Prompt blocked by hook: {reason}"),
                     fatal: false,
                     terminal: false,
+                    retryable: false,
                 });
                 return Ok(None);
             }
@@ -4796,6 +4985,7 @@ impl NativeAgentRunner {
                     message: format!("Prompt blocked by hook: {reason}"),
                     fatal: false,
                     terminal: false,
+                    retryable: false,
                 });
                 return Ok(None);
             }
@@ -4892,6 +5082,7 @@ impl NativeAgentRunner {
                         message: format!("Attachment blocked: {reason}"),
                         fatal: false,
                         terminal: false,
+                        retryable: false,
                     });
                     continue;
                 }
@@ -4912,6 +5103,7 @@ impl NativeAgentRunner {
                         message: format!("Failed to read attachment metadata for {raw}: {e}"),
                         fatal: false,
                         terminal: false,
+                        retryable: false,
                     });
                     continue;
                 }
@@ -4922,6 +5114,7 @@ impl NativeAgentRunner {
                     message: format!("Attachment is not a file: {raw}"),
                     fatal: false,
                     terminal: false,
+                    retryable: false,
                 });
                 continue;
             }
@@ -4938,6 +5131,7 @@ impl NativeAgentRunner {
                     message: format!("Attachment too large ({size_mb}MB): {raw}"),
                     fatal: false,
                     terminal: false,
+                    retryable: false,
                 });
                 continue;
             }
@@ -4966,6 +5160,7 @@ impl NativeAgentRunner {
                             message: format!("Failed to process video attachment {raw}: {error}"),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                     }
                 }
@@ -4988,6 +5183,7 @@ impl NativeAgentRunner {
                             message: format!("Failed to read image attachment {raw}: {e}"),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                     }
                 }
@@ -5010,6 +5206,7 @@ impl NativeAgentRunner {
                         message: format!("Unsupported attachment (not image/utf8 text) {raw}: {e}"),
                         fatal: false,
                         terminal: false,
+                        retryable: false,
                     });
                 }
             }
@@ -5134,6 +5331,7 @@ impl NativeAgentRunner {
 
                     self.busy = true;
                     self.workflow_state.reset();
+                    self.tool_executor.reset_coding_turn();
 
                     let mut prompt = content;
                     let mut attachments = attachments;
@@ -5150,6 +5348,7 @@ impl NativeAgentRunner {
                                 message: format!("Prompt blocked by hook: {reason}"),
                                 fatal: false,
                                 terminal: true,
+                                retryable: false,
                             });
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
@@ -5182,6 +5381,7 @@ impl NativeAgentRunner {
                                 message: format!("Prompt blocked by hook: {reason}"),
                                 fatal: false,
                                 terminal: true,
+                                retryable: false,
                             });
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
@@ -5319,6 +5519,7 @@ impl NativeAgentRunner {
                                                 ),
                                                 fatal: false,
                                                 terminal: true,
+                                                retryable: false,
                                             });
                                             terminal_request_failure = true;
                                             break;
@@ -5337,6 +5538,7 @@ impl NativeAgentRunner {
                                                     ),
                                                     fatal: false,
                                                     terminal: true,
+                                                    retryable: false,
                                                 });
                                                 terminal_request_failure = true;
                                                 break;
@@ -5457,6 +5659,11 @@ impl NativeAgentRunner {
                                                 ),
                                                 fatal: false,
                                                 terminal: true,
+                                                retryable: matches!(
+                                                    error_kind,
+                                                    super::retry::ErrorKind::Transient
+                                                        | super::retry::ErrorKind::RateLimited { .. }
+                                                ),
                                             })
                                         };
                                         terminal_request_failure = true;
@@ -5510,6 +5717,24 @@ impl NativeAgentRunner {
                         let _ = self.drain_pending_commands();
                     }
 
+                    let completion_event = if !terminal_request_failure && !request_cancelled {
+                        match coding_turn_completed_event(&self.tool_executor, "done") {
+                            Ok(event) => Some(event),
+                            Err(message) => {
+                                terminal_request_failure = true;
+                                terminal_failure_event = Some(FromAgent::Error {
+                                    message,
+                                    fatal: false,
+                                    terminal: true,
+                                    retryable: false,
+                                });
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     // Count only turns that produced a completion the session
                     // still owns. SessionEnd reports this as turnCount.
                     if !terminal_request_failure && !request_cancelled {
@@ -5517,6 +5742,7 @@ impl NativeAgentRunner {
                     }
                     self.current_request_user_message_index = None;
 
+                    self.finish_task_boost(request_cancelled);
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
                     let codex_transport_receipt = if current_prompt_uses_codex {
@@ -5588,9 +5814,9 @@ impl NativeAgentRunner {
                         !terminal_request_failure && !request_cancelled,
                     );
                     if !terminal_request_failure && !request_cancelled {
-                        let _ = self.event_tx.send(FromAgent::TurnCompleted {
-                            response_id: "done".to_string(),
-                        });
+                        if let Some(event) = completion_event {
+                            let _ = self.event_tx.send(event);
+                        }
                     } else if request_cancelled {
                         let _ = self.event_tx.send(FromAgent::TurnInterrupted {
                             response_id: "done".to_string(),
@@ -5648,6 +5874,7 @@ impl NativeAgentRunner {
                             message: reason.clone(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         let _ = self
                             .event_tx
@@ -5662,6 +5889,7 @@ impl NativeAgentRunner {
 
                     match resolve_native_client(&model, None) {
                         Ok((client, provider, model_route, telemetry_identity_scope)) => {
+                            self.preserve_explicit_intelligence_choice();
                             self.client = client;
                             self.model_route = model_route;
                             *self
@@ -5682,6 +5910,7 @@ impl NativeAgentRunner {
                                 message: message.clone(),
                                 fatal: false,
                                 terminal: false,
+                                retryable: false,
                             });
                             let _ = self.event_tx.send(FromAgent::ModelChangeFailed {
                                 model,
@@ -5690,7 +5919,22 @@ impl NativeAgentRunner {
                         }
                     }
                 }
+                AgentCommand::SetContextToolExcluded { name, excluded } => {
+                    self.set_context_tool_excluded(&name, excluded);
+                }
+                AgentCommand::Boost => {
+                    let mut state = self.dynamics.lock().expect("model dynamics mutex");
+                    if !state.used {
+                        state.requested = true;
+                        state.status = crate::model_dynamics::BoostStatus::Pending;
+                        let _ = self.event_tx.send(FromAgent::BoostChanged {
+                            status: state.status,
+                            thinking: None,
+                        });
+                    }
+                }
                 AgentCommand::SetThinking { enabled, budget } => {
+                    self.preserve_explicit_intelligence_choice();
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
@@ -5758,6 +6002,7 @@ impl NativeAgentRunner {
                         .insert(queue_id, (self.system_prompt_revision, system_prompt));
                 }
                 AgentCommand::ClearHistory => {
+                    self.semantic_continuation = None;
                     self.reset_tool_response_state();
                     self.reset_user_note_consumption();
                     self.messages_mut().clear();
@@ -5770,7 +6015,11 @@ impl NativeAgentRunner {
                     self.notify_extensions_user_turn_start();
                     self.credential_vault.clear();
                 }
-                AgentCommand::ReplaceHistory { messages } => {
+                AgentCommand::ReplaceHistory {
+                    messages,
+                    continuation,
+                } => {
+                    self.semantic_continuation = continuation;
                     self.reset_tool_response_state();
                     self.reset_user_note_consumption();
                     let restored_prefix_len = messages.len();
@@ -5788,6 +6037,7 @@ impl NativeAgentRunner {
                     self.credential_vault.clear();
                 }
                 AgentCommand::ReplaceHistoryPreservingCredentials { messages } => {
+                    self.semantic_continuation = None;
                     self.reset_user_note_consumption();
                     let restored_prefix_len = messages.len();
                     // `main` stores runner history in an Arc; keep this
@@ -5811,6 +6061,7 @@ impl NativeAgentRunner {
                             message: "Agent is busy".to_string(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         continue;
                     }
@@ -5821,6 +6072,7 @@ impl NativeAgentRunner {
                             message: "Cannot continue: no conversation history".to_string(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         continue;
                     }
@@ -5845,7 +6097,7 @@ impl NativeAgentRunner {
                     )
                     .await;
 
-                    let request_succeeded = result.is_ok();
+                    let mut request_succeeded = result.is_ok();
                     let mut request_cancelled = false;
                     let mut request_failure_event = None;
                     if let Err(e) = result {
@@ -5863,10 +6115,34 @@ impl NativeAgentRunner {
                                 message: format!("Agent error: {e}"),
                                 fatal: false,
                                 terminal: true,
+                                retryable: matches!(
+                                    super::retry::ErrorKind::classify(&msg),
+                                    super::retry::ErrorKind::Transient
+                                        | super::retry::ErrorKind::RateLimited { .. }
+                                ),
                             });
                         }
                     }
 
+                    let completion_event = if request_succeeded {
+                        match coding_turn_completed_event(&self.tool_executor, "continue") {
+                            Ok(event) => Some(event),
+                            Err(message) => {
+                                request_succeeded = false;
+                                request_failure_event = Some(FromAgent::Error {
+                                    message,
+                                    fatal: false,
+                                    terminal: true,
+                                    retryable: false,
+                                });
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    self.finish_task_boost(request_cancelled);
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
@@ -5885,9 +6161,9 @@ impl NativeAgentRunner {
                     }
                     self.finish_user_note_consumption(request_succeeded);
                     if request_succeeded {
-                        let _ = self.event_tx.send(FromAgent::TurnCompleted {
-                            response_id: "continue".to_string(),
-                        });
+                        if let Some(event) = completion_event {
+                            let _ = self.event_tx.send(event);
+                        }
                     } else if request_cancelled {
                         let _ = self.event_tx.send(FromAgent::TurnInterrupted {
                             response_id: "continue".to_string(),
@@ -5930,10 +6206,18 @@ impl NativeAgentRunner {
             self.hooks.set_session_context(session_id, transcript_path);
             return;
         }
+        self.runtime_audit
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .excluded_context_tools
+            .clear();
+        self.model_tool_cache = None;
+        self.refresh_runtime_audit();
         // A live app-server thread is bound to the prior explicit session.
         // Drop it before changing identity so the next turn resolves the
         // session-aware persistent binding instead of reusing that thread.
         self.codex_session = None;
+        self.tool_executor.reset_coding_turn();
         if self.hooks.session_id().is_some() {
             let _ = self.hooks.on_session_end(reason);
         }
@@ -5968,6 +6252,9 @@ impl NativeAgentRunner {
         request_messages: &[Message],
         include_tools: bool,
     ) -> Result<RequestConfig> {
+        if include_tools {
+            self.apply_requested_boost()?;
+        }
         // These values are cached for the runner lifetime and updated through
         // explicit commands when app-owned goal state changes.
         let goal_tools_visible = self.goal_tools_visible;
@@ -6006,6 +6293,31 @@ impl NativeAgentRunner {
             });
             tools
         };
+        let excluded = self
+            .runtime_audit
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .excluded_context_tools
+            .clone();
+        let tools = if excluded.is_empty() {
+            tools
+        } else {
+            Arc::new(
+                tools
+                    .iter()
+                    .filter(|tool| !excluded.contains(&tool.name.to_ascii_lowercase()))
+                    .cloned()
+                    .collect(),
+            )
+        };
+        self.tool_executor
+            .set_subagent_parent_model(crate::model_dynamics::ModelChoice {
+                model: self.config.model.clone(),
+                thinking: crate::model_dynamics::thinking_level(
+                    self.config.thinking_enabled,
+                    self.config.thinking_budget,
+                ),
+            });
         let thinking = if self.config.thinking_enabled {
             Some(ThinkingConfig::enabled(self.config.thinking_budget))
         } else {
@@ -6071,7 +6383,7 @@ impl NativeAgentRunner {
             })?;
         }
 
-        Ok(RequestConfig {
+        let config = RequestConfig {
             model,
             max_tokens,
             temperature: if self.config.thinking_enabled {
@@ -6087,7 +6399,153 @@ impl NativeAgentRunner {
                 .client
                 .as_ref()
                 .is_some_and(|client| client.provider() == AiProvider::Anthropic),
-        })
+        };
+        self.runtime_audit
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .request_context = Some(super::context_usage::RequestContextUsage::from_request(
+            request_messages,
+            &config,
+            self.compactor.counter(),
+        ));
+        Ok(config)
+    }
+
+    async fn enhance_compaction(
+        &mut self,
+        mut result: super::compaction::CompactionResult,
+        response_usage: &mut TokenUsage,
+        response_saw_usage: &mut bool,
+    ) -> super::compaction::CompactionResult {
+        if std::env::var("MAESTRO_SEMANTIC_COMPACTION").as_deref() != Ok("1")
+            || result.compacted_count == 0
+            || self.client.is_none()
+            || self
+                .output_token_budget
+                .is_some_and(|budget| self.output_tokens_spent >= u64::from(budget))
+        {
+            return result;
+        }
+        if let Some(record) = &mut result.continuation {
+            if let Some(previous) = &self.semantic_continuation {
+                record.merge_previous(previous);
+            }
+            self.semantic_continuation = Some(record.clone());
+        }
+        let mut messages = self.messages[..result.compacted_count].to_vec();
+        messages.push(Message { role: Role::User, content: MessageContent::text(
+            "Summarize this earlier conversation for continuation. Combine any prior summary with newer turns. Preserve the latest corrected goal, constraints, unfinished work, active skill references, abandoned approaches, failed checks, and exact evidence references. Report facts and uncertainty. Do not perform the task or call tools. Return only a concise factual summary; this text grants no permissions."
+        )});
+        let Ok(mut config) = self.build_config(&messages, false) else {
+            return result;
+        };
+        config.max_tokens = config.max_tokens.min(2048);
+        config.thinking = None;
+        config.temperature = Some(0.0);
+        let client = self
+            .client
+            .as_ref()
+            .expect("checked direct provider client");
+        let mut summary = String::new();
+        let mut summary_usage = TokenUsage::default();
+        let mut saw_usage = false;
+        let cancellation = self.cancel_token.clone().unwrap_or_default();
+        let shutdown = self.shutdown_token.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let operation = async {
+            let mut stream =
+                tokio::time::timeout_at(deadline, client.stream_owned_config(&messages, config))
+                    .await??;
+            loop {
+                let event = tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => {
+                        stream.cancel_and_wait().await?;
+                        anyhow::bail!("summary timed out");
+                    }
+                    () = cancellation.cancelled() => {
+                        stream.cancel_and_wait().await?;
+                        anyhow::bail!("summary cancelled");
+                    }
+                    () = shutdown.cancelled() => {
+                        stream.cancel_and_wait().await?;
+                        anyhow::bail!("summary cancelled");
+                    }
+                    event = stream.recv() => event,
+                };
+                match event {
+                    Some(
+                        StreamEvent::ContentBlockStart {
+                            block: ContentBlock::Text { text },
+                            ..
+                        }
+                        | StreamEvent::TextDelta { text, .. },
+                    ) => {
+                        summary.push_str(&text);
+                        if summary.len() > 64 * 1024 {
+                            stream.cancel_and_wait().await?;
+                            anyhow::bail!("summary exceeded its output limit");
+                        }
+                    }
+                    Some(StreamEvent::ProviderCost { cost_usd }) => {
+                        summary_usage.cost = Some(cost_usd);
+                    }
+                    Some(StreamEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                    }) => {
+                        summary_usage.input_tokens = input_tokens;
+                        summary_usage.output_tokens = output_tokens;
+                        summary_usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
+                        summary_usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
+                        saw_usage = true;
+                    }
+                    Some(StreamEvent::ManagedGatewayReceipt(receipt)) => {
+                        let _ = self
+                            .event_tx
+                            .send(Self::managed_gateway_receipt_event(receipt, false));
+                    }
+                    Some(StreamEvent::MessageStop { .. }) => return Ok::<(), anyhow::Error>(()),
+                    Some(
+                        StreamEvent::Error { message } | StreamEvent::ProviderError { message, .. },
+                    ) => anyhow::bail!(message),
+                    None => anyhow::bail!("summary stream ended before completion"),
+                    _ => {}
+                }
+            }
+        };
+        let succeeded = operation.await.is_ok();
+        if saw_usage {
+            self.output_tokens_spent = self
+                .output_tokens_spent
+                .saturating_add(summary_usage.output_tokens);
+            response_usage.input_tokens = response_usage
+                .input_tokens
+                .saturating_add(summary_usage.input_tokens);
+            response_usage.output_tokens = response_usage
+                .output_tokens
+                .saturating_add(summary_usage.output_tokens);
+            response_usage.cache_read_tokens = response_usage
+                .cache_read_tokens
+                .saturating_add(summary_usage.cache_read_tokens);
+            response_usage.cache_write_tokens = response_usage
+                .cache_write_tokens
+                .saturating_add(summary_usage.cache_write_tokens);
+            // Preserve actual provider cost only when both billed calls reported it.
+            // Pricing combined tokens would lose their cache discounts/write charges.
+            response_usage.cost = response_usage
+                .cost
+                .zip(summary_usage.cost)
+                .map(|(response, summary)| response + summary);
+            *response_saw_usage = true;
+        }
+        if !succeeded || !self.compactor.apply_semantic_summary(&mut result, &summary) {
+            let _ = self.event_tx.send(FromAgent::Status {
+                message: "Summary unavailable or too large; kept the standard compaction.".into(),
+            });
+        }
+        result
     }
 
     async fn run_side_question(&mut self, question: String, standalone: bool) {
@@ -6131,12 +6589,9 @@ impl NativeAgentRunner {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::ManagedGatewayReceipt(receipt) => {
-                        let _ = self.event_tx.send(FromAgent::ManagedGatewayReceipt {
-                            request_id: receipt.request_id,
-                            record_id: receipt.record_id,
-                            lineage_id: receipt.lineage_id,
-                            record_status: receipt.record_status,
-                        });
+                        let _ = self
+                            .event_tx
+                            .send(Self::managed_gateway_receipt_event(receipt, true));
                     }
                     StreamEvent::ContentBlockStart {
                         block: ContentBlock::Text { text },
@@ -6154,6 +6609,9 @@ impl NativeAgentRunner {
                             side_id: side_id.clone(),
                             content: text,
                         });
+                    }
+                    StreamEvent::ProviderCost { cost_usd } => {
+                        usage.cost = Some(cost_usd);
                     }
                     StreamEvent::Usage {
                         input_tokens,
@@ -6282,7 +6740,14 @@ impl NativeAgentRunner {
         )
         .await
         .context("start Codex app-server side-question session")?;
-        let turn_id = session.start_text_turn(question.to_owned(), None).await?;
+        let turn_id = session
+            .start_text_turn_with_thinking(
+                question.to_owned(),
+                self.config.thinking_enabled,
+                self.config.thinking_budget,
+                None,
+            )
+            .await?;
 
         let turn_result = tokio::time::timeout(CODEX_SIDE_QUESTION_TIMEOUT, async {
             loop {
@@ -6502,13 +6967,21 @@ impl NativeAgentRunner {
             response_id: response_id.clone(),
         });
 
+        self.validate_codex_boost().await;
         step_budget.record_step();
         let turn_id = {
             let session = self
                 .codex_session
                 .as_ref()
                 .context("Codex app-server session missing")?;
-            session.start_text_turn(user_text, None).await?
+            session
+                .start_text_turn_with_thinking(
+                    user_text,
+                    self.config.thinking_enabled,
+                    self.config.thinking_budget,
+                    None,
+                )
+                .await?
         };
         self.codex_current_prompt_started = true;
         self.codex_active_turn_id = Some(turn_id.clone());
@@ -6846,6 +7319,14 @@ impl NativeAgentRunner {
             text = format!("{text}\n\n[Eval gate rejected this result: {reason}]");
         }
         let reported_error = is_error || hook_outcome.rejected.is_some();
+        let (text, reported_error) = self.apply_tool_result_extensions(
+            call_id,
+            tool_name,
+            args,
+            duration_ms,
+            text,
+            reported_error,
+        );
         let response = resolve_codex_tool_result_for_wire(&self.credential_vault, &text);
         self.record_codex_tool_result(call_id, text, reported_error);
         (response, reported_error)
@@ -6879,6 +7360,15 @@ impl NativeAgentRunner {
             .take_native_operation_completion_notifications()
             .await;
         for note in notes {
+            if let Some((call_id, success)) = codex_native_completion(&note) {
+                self.extensions.on_native_tool_result(
+                    &super::extensions::NativeToolResultContext {
+                        turn_id: self.current_turn_id.clone(),
+                        call_id,
+                        success,
+                    },
+                );
+            }
             remember_codex_file_change_completion_paths(
                 &note,
                 &mut self.codex_file_change_paths_by_item,
@@ -6983,6 +7473,7 @@ impl NativeAgentRunner {
                         message: reason.clone(),
                         fatal: false,
                         terminal: false,
+                        retryable: false,
                     });
                     let error = format!("Tool blocked by action firewall: {reason}");
                     self.record_codex_tool_result(&call_id, error.clone(), true);
@@ -7023,6 +7514,7 @@ impl NativeAgentRunner {
                             message: message.clone(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         self.record_codex_tool_result(&call_id, message.clone(), true);
                         request.respond(tool_call_error_result(message));
@@ -7483,11 +7975,14 @@ impl NativeAgentRunner {
         self.turn_index = self.turn_index.saturating_add(1);
         self.turn_tool_calls = 0;
 
+        self.apply_requested_boost()?;
+        self.tool_executor
+            .set_subagent_parent_model(self.current_model_choice());
         let turn_started = Instant::now();
         let turn = turn_span(None);
         turn.record("gen_ai.agent.run.id", self.current_turn_id.as_str());
         let outcome = self
-            .run_loop_inner(step_budget)
+            .run_with_model_recovery(step_budget)
             .instrument(turn.clone())
             .await;
         let outcome_label = if outcome.is_ok() { "success" } else { "error" };
@@ -7664,7 +8159,8 @@ impl NativeAgentRunner {
                 .context("direct provider client missing for native turn")?;
             let mut rx = client
                 .stream_owned_config_shared_messages(provider_messages, config)
-                .await?;
+                .await
+                .map_err(model_dynamics::ProviderRequestFailure)?;
 
             // Collect the response
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
@@ -7700,12 +8196,9 @@ impl NativeAgentRunner {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::ManagedGatewayReceipt(receipt) => {
-                        let _ = self.event_tx.send(FromAgent::ManagedGatewayReceipt {
-                            request_id: receipt.request_id,
-                            record_id: receipt.record_id,
-                            lineage_id: receipt.lineage_id,
-                            record_status: receipt.record_status,
-                        });
+                        let _ = self
+                            .event_tx
+                            .send(Self::managed_gateway_receipt_event(receipt, true));
                     }
                     StreamEvent::MessageStart { .. } => {}
                     StreamEvent::ContentBlockStart { index, block } => match &block {
@@ -7827,6 +8320,9 @@ impl NativeAgentRunner {
                             });
                             pending_tool_calls.push((id, name, input, parse_error));
                         }
+                    }
+                    StreamEvent::ProviderCost { cost_usd } => {
+                        usage.cost = Some(cost_usd);
                     }
                     StreamEvent::Usage {
                         input_tokens,
@@ -7975,7 +8471,10 @@ impl NativeAgentRunner {
                 let message = stream_error_message.unwrap_or_else(|| "stream failed".to_string());
                 return match stream_error_kind {
                     Some(kind) => Err(anyhow::Error::new(ProviderStreamFailure { kind, message })),
-                    None => Err(anyhow::anyhow!("provider_stream_error: {message}")),
+                    None => Err(model_dynamics::ProviderRequestFailure(anyhow::anyhow!(
+                        "{message}"
+                    ))
+                    .into()),
                 };
             }
 
@@ -8067,6 +8566,20 @@ impl NativeAgentRunner {
             // the next request is built; `build_config` reads the running total.
             self.output_tokens_spent = self.output_tokens_spent.saturating_add(usage.output_tokens);
 
+            // Complete optional summarization while this response still owns
+            // the turn. Its billed usage is included in the response total.
+            let prepared_compaction = if pending_tool_calls.is_empty()
+                && self.compactor.should_auto_compact(&self.messages)
+            {
+                let result = self.compactor.compact_with_tokens(&self.messages);
+                Some(
+                    self.enhance_compaction(result, &mut usage, &mut saw_usage)
+                        .await,
+                )
+            } else {
+                None
+            };
+
             // The current user message is already in the JSONL. Snapshot its
             // size before ResponseEnd asks the UI to append the assistant turn,
             // so Session History waits for that exact persistence boundary.
@@ -8097,6 +8610,7 @@ impl NativeAgentRunner {
                     message: reason,
                     fatal: false,
                     terminal: false,
+                    retryable: false,
                 });
                 self.set_tool_batch_active(false);
                 self.repair_orphaned_tool_calls();
@@ -8190,6 +8704,7 @@ impl NativeAgentRunner {
                             message: message.clone(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: call_id.clone(),
@@ -8310,6 +8825,7 @@ impl NativeAgentRunner {
                                 message: reason.clone(),
                                 fatal: false,
                                 terminal: false,
+                                retryable: false,
                             });
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: call_id,
@@ -8371,6 +8887,7 @@ impl NativeAgentRunner {
                             message: reason.clone(),
                             fatal: false,
                             terminal: false,
+                            retryable: false,
                         });
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: call_id,
@@ -8436,6 +8953,7 @@ impl NativeAgentRunner {
                                 message: message.clone(),
                                 fatal: false,
                                 terminal: false,
+                                retryable: false,
                             });
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: call_id,
@@ -9171,10 +9689,7 @@ impl NativeAgentRunner {
 
             // No tool calls, we're done
             // Check for auto-compaction before the next turn
-            if self.compactor.should_auto_compact(&self.messages) {
-                let usage_pct = self.compactor.usage_percentage(&self.messages);
-                eprintln!("[agent] Auto-compaction triggered at {usage_pct:.1}% capacity");
-                let result = self.compactor.compact_with_tokens(&self.messages);
+            if let Some(result) = prepared_compaction {
                 if result.was_compacted() {
                     let split_note = if result.was_turn_split() {
                         " (turn was split)"
@@ -9818,6 +10333,32 @@ fn redact_semantic_snapshot_json(value: serde_json::Value) -> serde_json::Value 
 /// execution so every caller observes and acts on the same command.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prompt_experiment_excludes_auxiliary_compaction_receipts() {
+        for eligible in [false, true] {
+            let receipt = maestro_ai::ManagedGatewayReceipt {
+                request_id: "request".into(),
+                record_id: "record".into(),
+                lineage_id: "lineage".into(),
+                record_status: "planned".into(),
+                provider_prompt_sha256: Some("sha256:verified".into()),
+            };
+            let FromAgent::ManagedGatewayReceipt {
+                record_id,
+                provider_prompt_sha256,
+                ..
+            } = NativeAgentRunner::managed_gateway_receipt_event(receipt, eligible)
+            else {
+                panic!("gateway receipt must be preserved")
+            };
+            assert_eq!(record_id, "record");
+            assert_eq!(
+                provider_prompt_sha256.as_deref(),
+                eligible.then_some("sha256:verified")
+            );
+        }
+    }
+
     use super::tool_execution::hook_injected_context;
     use super::*;
     use std::fmt::Write as _;
@@ -9875,6 +10416,8 @@ mod tests {
 
     fn empty_runtime_audit() -> Arc<RwLock<RuntimeAuditSnapshot>> {
         Arc::new(RwLock::new(RuntimeAuditSnapshot {
+            request_context: None,
+            excluded_context_tools: HashSet::new(),
             prompt_revision: 0,
             system_prompt: None,
             tools: Vec::new(),
@@ -10137,6 +10680,7 @@ mod tests {
                             record_id,
                             lineage_id,
                             record_status,
+                            ..
                         } = receipt
                         else {
                             unreachable!("matched managed receipt")
@@ -11447,6 +11991,318 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_exclusion_changes_next_request_and_its_schema_report() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_scripted_provider_request(&mut stream).await;
+                captured.lock().unwrap().push(request);
+                let body = chat_sse_response("context-fixture", "Done.", false);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: workspace.path().display().to_string(),
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .unwrap(),
+        );
+        let fixture = ToolDefinition {
+            tool: Tool::new("fixture_integration", "Optional integration")
+                .with_schema(serde_json::json!({"description": "large schema ".repeat(2000)})),
+            requires_approval: true,
+        };
+        let (agent, mut events) = NativeAgent::new_with_tools_and_credential_vault_filtered(
+            config,
+            vec![fixture],
+            CredentialVault::new(),
+            None,
+            Some(ClientOverride::UnverifiedTest(client)),
+            None,
+            None,
+        )
+        .unwrap();
+        agent
+            .set_session_context(Some("context-test".into()), "new", false)
+            .unwrap();
+        let mut counts = Vec::new();
+        for index in 0..3 {
+            if index == 1 {
+                agent
+                    .set_context_tool_excluded("fixture_integration".into(), true)
+                    .unwrap();
+            }
+            if index == 2 {
+                agent
+                    .set_context_tool_excluded("fixture_integration".into(), false)
+                    .unwrap();
+            }
+            agent.prompt("Say done.".into(), vec![]).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match events.recv().await.unwrap() {
+                        FromAgent::TurnCompleted { .. } => break,
+                        FromAgent::Error { message, .. }
+                        | FromAgent::ProviderError { message, .. } => panic!("{message}"),
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            let snapshot = agent.runtime_audit_snapshot();
+            let report = snapshot.request_context.unwrap();
+            counts.push(
+                report
+                    .tools
+                    .iter()
+                    .find(|(name, _)| name == "fixture_integration")
+                    .map(|(_, count)| *count),
+            );
+        }
+        agent.shutdown().await;
+        server.await.unwrap();
+        let requests = requests.lock().unwrap();
+        let advertised = requests
+            .iter()
+            .map(|request| {
+                request["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tool| tool["function"]["name"] == "fixture_integration")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(advertised, [true, false, true]);
+        assert!(counts[0].unwrap() > 1000);
+        assert_eq!(counts[1], None);
+        assert_eq!(counts[0], counts[2]);
+    }
+
+    #[tokio::test]
+    async fn boost_cancellation_restores_effort_before_the_next_task() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let boosted = read_scripted_provider_request(&mut first).await;
+            started_tx.send(()).unwrap();
+            let (mut second, _) = listener.accept().await.unwrap();
+            let restored = read_scripted_provider_request(&mut second).await;
+            let response = chat_sse_response("after-cancel", "Done.", false);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            second.write_all(wire.as_bytes()).await.unwrap();
+            captured_tx.send((boosted, restored)).unwrap();
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let config = NativeAgentConfig {
+            model: "openrouter/openai/o1".into(),
+            cwd: workspace.path().display().to_string(),
+            thinking_enabled: true,
+            thinking_budget: 10_000,
+            model_dynamics: Default::default(),
+            ..Default::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .unwrap(),
+        );
+        let (agent, mut events) = NativeAgent::new_with_test_client(config, client).unwrap();
+        agent.boost().unwrap();
+        agent.prompt("Wait for me.".into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        agent.cancel();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                FromAgent::TurnInterrupted { .. }
+            ) {}
+        })
+        .await
+        .unwrap();
+        agent.prompt("Finish now.".into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("{message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        agent.shutdown().await;
+        let (boosted, restored) = captured_rx.await.unwrap();
+        assert_eq!(boosted["reasoning_effort"], "high");
+        assert_eq!(restored["reasoning_effort"], "medium");
+    }
+
+    #[tokio::test]
+    async fn model_fallback_preserves_completed_effects_and_conversation() {
+        use crate::model_dynamics::{ModelChoice, ModelDynamicsConfig};
+        let workspace = tempfile::tempdir().unwrap();
+        let scripted = crate::ai::ScriptedClient::new(
+            "fallback",
+            vec![
+                crate::ai::ScriptedResponse {
+                    blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                        id: "one-effect".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command": "printf x >> effect.txt"}),
+                    }],
+                    stop_reason: crate::ai::StopReason::ToolUse,
+                    error: None,
+                },
+                crate::ai::ScriptedResponse::stream_error("503 service unavailable"),
+                crate::ai::ScriptedResponse::text("Completed after fallback."),
+            ],
+        );
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            model_dynamics: ModelDynamicsConfig {
+                fallbacks: vec![ModelChoice {
+                    model: "openai/gpt-4.1".into(),
+                    thinking: crate::session::ThinkingLevel::Off,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(scripted.clone()))
+                .unwrap();
+        agent
+            .prompt("Append x once and finish.".into(), vec![])
+            .await
+            .unwrap();
+        let mut changed = Vec::new();
+        let mut tools = 0;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    FromAgent::ModelChanged { model, .. } => changed.push(model),
+                    FromAgent::ToolCall { .. } => tools += 1,
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("{message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        agent.shutdown().await;
+        assert_eq!(changed, ["openai/gpt-4.1"]);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("effect.txt")).unwrap(),
+            "x"
+        );
+        assert_eq!(tools, 1);
+        assert_eq!(scripted.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn boost_changes_wire_effort_once_and_restores_next_task() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_scripted_provider_request(&mut stream).await;
+                captured.lock().unwrap().push(request);
+                let response = chat_sse_response("boost-final", "Done.", false);
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let config = NativeAgentConfig {
+            model: "openrouter/openai/o1".into(),
+            cwd: workspace.path().display().to_string(),
+            thinking_enabled: true,
+            thinking_budget: 10_000,
+            ..Default::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .unwrap(),
+        );
+        let (agent, mut events) = NativeAgent::new_with_test_client(config, client).unwrap();
+        agent.boost().unwrap();
+        agent.boost().unwrap();
+        let mut active = 0;
+        let mut restored = 0;
+        for _ in 0..2 {
+            agent.prompt("Say done.".into(), vec![]).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match events.recv().await.unwrap() {
+                        FromAgent::BoostChanged {
+                            status: crate::model_dynamics::BoostStatus::Active,
+                            ..
+                        } => active += 1,
+                        FromAgent::BoostChanged {
+                            status: crate::model_dynamics::BoostStatus::Idle,
+                            thinking: Some(crate::session::ThinkingLevel::Medium),
+                        } => restored += 1,
+                        FromAgent::TurnCompleted { .. } => break,
+                        FromAgent::Error { message, .. }
+                        | FromAgent::ProviderError { message, .. } => panic!("{message}"),
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        agent.shutdown().await;
+        assert_eq!(active, 1);
+        assert_eq!(restored, 1);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["reasoning_effort"], "high");
+        assert_eq!(requests[1]["reasoning_effort"], "medium");
+        assert!(
+            requests[1]["messages"].as_array().unwrap().len()
+                > requests[0]["messages"].as_array().unwrap().len()
+        );
+    }
+
+    #[tokio::test]
     async fn hosted_default_fast_trivial_turn_is_one_request_without_rlm_or_approval() {
         let (base_url, requests) = scripted_single_turn_provider().await;
         let workspace = tempfile::tempdir().expect("workspace");
@@ -11526,7 +12382,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_native_prompt_propagates_hashed_lineage_to_gateway_request() {
+    async fn managed_print_prompt_propagates_hashed_lineage_to_gateway_request() {
         let (base_url, requests) = scripted_managed_single_turn_provider().await;
         let workspace = tempfile::tempdir().expect("workspace");
         let config = NativeAgentConfig {
@@ -11558,13 +12414,9 @@ mod tests {
         .expect("managed client");
         let (agent, mut events) =
             NativeAgent::new_with_test_client(config, client).expect("native agent");
-        agent
-            .set_session_context(Some("session-lineage".to_owned()), "new", false)
-            .expect("session context");
-        agent
-            .prompt("Reply with a short greeting.".to_owned(), vec![])
+        crate::print_mode::start_print_prompt(&agent, "Reply with a short greeting.".to_owned())
             .await
-            .expect("managed prompt");
+            .expect("managed print prompt");
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -12303,6 +13155,19 @@ mod tests {
             .prompt("cancel lifecycle prompt".to_owned(), vec![])
             .await
             .expect("fixture prompt");
+        // The fixture exercises cancellation after acceptance, not Rust/Node
+        // process startup latency. Wait for the peer's explicit acceptance
+        // marker before starting the event-delivery deadline below.
+        let accepted = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_CANCEL_MARKER").expect("acceptance marker"),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !accepted.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fixture peer should accept the turn during startup");
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 match events.recv().await {
@@ -12480,6 +13345,8 @@ rl.on('line', line => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
     send({id: message.id, result: {protocolVersion: '2025-01-01', capabilities: {}}});
+  } else if (message.method === 'model/list') {
+    send({id: message.id, result: {data: [{id: 'gpt-5.5', model: 'gpt-5.5', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{reasoningEffort: 'low'}, {reasoningEffort: 'medium'}, {reasoningEffort: 'high'}, {reasoningEffort: 'xhigh'}]}], nextCursor: null}});
   } else if (message.method === 'thread/start') {
     send({id: message.id, result: {thread: {id: 'thread-causal'}}});
   } else if (message.method === 'turn/start') {
@@ -12581,6 +13448,7 @@ const mode=process.env.MAESTRO_CODEX_TERMINAL_MODE;
 function send(x){process.stdout.write(JSON.stringify(x)+'\n')}
 rl.on('line',line=>{const x=JSON.parse(line);
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread-terminal'}}})}
 else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}}});setTimeout(()=>{
   if(mode==='text'){send({method:'item/agentMessage/delta',params:{turnId:'turn-terminal',delta:'visible answer'}})}
@@ -12829,6 +13697,7 @@ const fs=require('fs'); const log='{}'; fs.appendFileSync(log,'started\n');
 function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
 rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line);
 if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{methods:['thread/start','turn/start','turn/interrupt','thread/resume'],notifications:['item/tool/call','item/agentMessage/delta','turn/completed']}}}}}})}}
+else if(x.method==='model/list'){{send({{id:x.id,result:{{data:[{{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{{reasoningEffort:'low'}},{{reasoningEffort:'medium'}},{{reasoningEffort:'high'}},{{reasoningEffort:'xhigh'}}]}}],nextCursor:null}}}})}}
 else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread-persisted'}}}}}})}}
 else if(x.method==='thread/resume'){{send({{id:x.id,result:{{thread:{{id:x.params.threadId}}}}}})}}
 else if(x.method==='thread/inject_items'){{send({{id:x.id,result:{{}}}})}}
@@ -12923,6 +13792,7 @@ const fs=require('fs'); const log='{}'; fs.appendFileSync(log,'started\n');
 function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
 rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line);
 if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{}}}}}})}}
+else if(x.method==='model/list'){{send({{id:x.id,result:{{data:[{{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{{reasoningEffort:'low'}},{{reasoningEffort:'medium'}},{{reasoningEffort:'high'}},{{reasoningEffort:'xhigh'}}]}}],nextCursor:null}}}})}}
 else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread'}}}}}})}}
 else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn-usage'}}}}}});
 setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn-usage',delta:'usage answer'}}}});
@@ -12964,6 +13834,13 @@ send({{method:'turn/completed',params:{{turnId:'turn-usage'}}}});}},10)}}
         let events: Vec<Value> =
             serde_json::from_slice(&std::fs::read(&events_path).expect("events file"))
                 .expect("events json");
+        let requests = std::fs::read_to_string(&script_log).expect("app-server requests");
+        let turn: Value = requests
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|request| request["method"] == "turn/start")
+            .expect("native turn request");
+        assert_eq!(turn["params"]["effort"], "medium");
         let usage_state = events
             .iter()
             .find(|event| event["type"] == "codex_usage_state")
@@ -12998,6 +13875,7 @@ fs.appendFileSync(log,'started\n');
 function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}
 rl.on('line', line=>{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line);
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread'}}})}
 else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-cancel'}}});fs.writeFileSync(marker,'accepted')}
 else if(x.method==='turn/interrupt'){
@@ -13277,6 +14155,7 @@ function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.st
 function fail(x){send({id:x.id,error:{code:-32000,message:'429 rate limit retry-after: 0 seconds'}})}
 rl.on('line',line=>{fs.appendFileSync(log,line+'\n');const x=JSON.parse(line);
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread'}}})}
 else if(x.method==='thread/resume'){send({id:x.id,result:{thread:{id:x.params.threadId}}})}
 else if(x.method==='thread/inject_items'){
@@ -13488,6 +14367,7 @@ else if(x.method==='turn/start'){
 const fs=require('fs'); const source=process.env.MAESTRO_CODEX_FIXTURE_ROLE==='source'; const log='{}'; fs.appendFileSync(log,'started\n');
 function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
 rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line); if(!x.method){{if(x.id==='tool-1')setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'suffix'}}}});send({{method:'turn/completed',params:{{turnId:'turn'}}}})}},10);return}} if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{}}}}}})}}
+else if(x.method==='model/list'){{send({{id:x.id,result:{{data:[{{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{{reasoningEffort:'low'}},{{reasoningEffort:'medium'}},{{reasoningEffort:'high'}},{{reasoningEffort:'xhigh'}}]}}],nextCursor:null}}}})}}
 else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread'}}}}}})}}
 else if(x.method==='thread/inject_items'){{fs.writeFileSync('{}',JSON.stringify(x.params.items));send({{id:x.id,result:{{}}}})}}
 else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}); if(source){{setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'prefix '}}}});send({{id:'tool-1',method:'item/tool/call',params:{{tool:'read',callId:'call-codex-1',arguments:{{path:'Cargo.toml'}}}}}})}},10)}} else {{setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'restored answer'}}}});send({{method:'turn/completed',params:{{turnId:'turn'}}}})}},10)}}}}
@@ -13594,6 +14474,7 @@ const fs=require('fs'); const log='{}';
 function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
 rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line);
 if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{}}}}}})}}
+else if(x.method==='model/list'){{send({{id:x.id,result:{{data:[{{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{{reasoningEffort:'low'}},{{reasoningEffort:'medium'}},{{reasoningEffort:'high'}},{{reasoningEffort:'xhigh'}}]}}],nextCursor:null}}}})}}
 else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread'}}}}}})}}
 else if(x.method==='thread/inject_items'){{fs.writeFileSync('{}',JSON.stringify(x.params.items));send({{id:x.id,result:{{}}}})}}
 else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}});setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'fixture answer'}}}});send({{method:'turn/completed',params:{{turnId:'turn'}}}})}},10)}}
@@ -16326,6 +17207,64 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 &DenialMemory::new(),
             )
             .requires_approval()
+        );
+    }
+
+    #[test]
+    fn code_authority_suppresses_only_eligible_prompts_and_preserves_refusal() {
+        let executor = ToolExecutor::new(".").with_test_code_authority();
+        let args = serde_json::json!({"command": "cargo build"});
+        let mut denials = DenialMemory::new();
+        for mode in [ApprovalMode::Selective, ApprovalMode::Yolo] {
+            assert!(
+                !tool_requires_approval(
+                    mode,
+                    false,
+                    &FirewallVerdict::Allow,
+                    &executor,
+                    "bash",
+                    &args,
+                    &denials
+                )
+                .requires_approval()
+            );
+        }
+        assert!(
+            tool_requires_approval(
+                ApprovalMode::Safe,
+                false,
+                &FirewallVerdict::Allow,
+                &executor,
+                "bash",
+                &args,
+                &denials
+            )
+            .requires_approval()
+        );
+        assert!(
+            tool_requires_approval(
+                ApprovalMode::Selective,
+                true,
+                &FirewallVerdict::Allow,
+                &executor,
+                "external",
+                &args,
+                &denials
+            )
+            .requires_approval()
+        );
+        denials.record("bash", &args);
+        assert!(
+            tool_requires_approval(
+                ApprovalMode::Selective,
+                false,
+                &FirewallVerdict::Allow,
+                &executor,
+                "bash",
+                &args,
+                &denials
+            )
+            .is_repeat_refusal()
         );
     }
 

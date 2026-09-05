@@ -20,6 +20,8 @@ pub struct ContextBreakdown {
     pub system_prompt: u64,
     /// Tool call inputs and tool result outputs.
     pub tool_results: u64,
+    /// Tool definitions included in the selected request surface.
+    pub tool_schemas: u64,
     /// User and assistant text, including compaction summaries.
     pub conversation: u64,
     /// Everything else: thinking/reasoning blocks and framing overhead.
@@ -74,7 +76,7 @@ impl ContextBreakdown {
     /// Total estimated tokens across all categories.
     #[must_use]
     pub fn total(&self) -> u64 {
-        self.system_prompt + self.tool_results + self.conversation + self.other
+        self.system_prompt + self.tool_results + self.tool_schemas + self.conversation + self.other
     }
 
     /// Category rows in display order: `(label, tokens, share of total in %)`.
@@ -83,6 +85,7 @@ impl ContextBreakdown {
         let total = self.total();
         [
             ("System prompt", self.system_prompt),
+            ("Tool schemas", self.tool_schemas),
             ("Tool results", self.tool_results),
             ("Conversation", self.conversation),
             ("Other / overhead", self.other),

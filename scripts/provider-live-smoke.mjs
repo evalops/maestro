@@ -38,7 +38,7 @@ export function verifyScenarioOutput(output, scenario) {
 	const events = parseJsonl(output);
 	const semantic = events.filter((event) => {
 		if (event?.type === "thread" || event?.type === "turn") return false;
-		return !(event?.type === "item" && event.subtype === "message_delta");
+		return !(event?.type === "item" && ["message_delta", "response_usage"].includes(event.subtype));
 	});
 	const expectedLength = scenario.tools.length * 2 + 2;
 	if (semantic.length !== expectedLength) {

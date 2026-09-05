@@ -89,7 +89,90 @@ pub fn notify_session_start() {
 
 /// Notify turn complete.
 pub fn notify_turn_complete() {
-    // Stub
+    // The App owns the opt-in/focus/deduplication gate for Dex notifications.
+}
+
+/// A notification names an observed event, never transcript text or inferred success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DexAttention {
+    Finished,
+    Failed,
+    NeedsInput,
+}
+
+impl DexAttention {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Finished => "Dex finished your request.",
+            Self::Failed => "Dex hit a problem. Return to your task for details.",
+            Self::NeedsInput => "Dex needs your answer. Return to your task to continue.",
+        }
+    }
+}
+
+/// Send an opt-in, focus-gated native notification without blocking the TUI.
+/// Arguments are fixed strings; workspace/model output is never executable text.
+pub fn notify_dex_attention(event: DexAttention) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    runtime.spawn(async move {
+        let (program, args) = notification_command(event);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::process::Command::new(program)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .status(),
+        )
+        .await;
+        match result {
+            Ok(Ok(status)) if status.success() => {}
+            result => tracing::warn!(?result, "Dex desktop notification was not delivered"),
+        }
+    });
+}
+
+fn notification_command(event: DexAttention) -> (&'static str, Vec<String>) {
+    if cfg!(target_os = "macos") {
+        (
+            "osascript",
+            vec![
+                "-e".into(),
+                format!(
+                    "display notification \"{}\" with title \"Dex · Deixic Code\"",
+                    event.message()
+                ),
+            ],
+        )
+    } else if cfg!(target_os = "windows") {
+        // Static XML and script; event messages contain no XML/script delimiters.
+        (
+            "powershell.exe",
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                format!(
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml('<toast><visual><binding template=\"ToastText02\"><text id=\"1\">Dex</text><text id=\"2\">{}</text></binding></visual></toast>'); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Deixic Code').Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
+                    event.message()
+                ),
+            ],
+        )
+    } else {
+        (
+            "notify-send",
+            vec![
+                "--app-name=Deixic Code".into(),
+                "--".into(),
+                "Dex".into(),
+                event.message().into(),
+            ],
+        )
+    }
 }
 
 /// Notify error.
@@ -515,5 +598,32 @@ mod tests {
         assert!(notifier.tab_progress);
         assert!(!notifier.title_updates);
         assert!(!notifier.focus_gating);
+    }
+}
+
+#[cfg(test)]
+mod dex_attention_tests {
+    use super::*;
+
+    #[test]
+    fn native_notifications_use_fixed_event_text_without_transcript_interpolation() {
+        for event in [
+            DexAttention::Finished,
+            DexAttention::Failed,
+            DexAttention::NeedsInput,
+        ] {
+            let (program, args) = notification_command(event);
+            assert!(!program.is_empty());
+            assert!(args.iter().any(|arg| arg.contains(event.message())));
+            assert!(!event.message().contains('"'));
+            assert!(!event.message().contains('\''));
+            assert!(!event.message().contains('<'));
+        }
+        assert!(
+            DexAttention::NeedsInput
+                .message()
+                .contains("needs your answer")
+        );
+        assert!(!DexAttention::Finished.message().contains("tests passed"));
     }
 }

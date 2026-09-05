@@ -19,7 +19,7 @@ const coverageScript = await readFile(new URL("scripts/verify-release-smoke-cove
 
 const validCodesignOutput = `
 Executable=/tmp/maestro
-Identifier=dev.evalops.maestro
+Identifier=maestro
 Format= Mach-O 64-bit executable arm64
 CodeDirectory v=20500 size=123 flags=0x0(none) hashes=1+5 location=embedded
 TeamIdentifier=TEAMID1234
@@ -43,7 +43,7 @@ test("parses and accepts a non-ad-hoc Developer ID signature with TeamIdentifier
 		{
 			authority: "Developer ID Application: EvalOps (TEAMID1234)",
 			teamIdentifier: "TEAMID1234",
-			identifier: "dev.evalops.maestro",
+			identifier: "maestro",
 			codeDirectoryHash: "fixturehash",
 		},
 	);
@@ -89,4 +89,11 @@ test("release CI preserves the macOS artifact trust boundary", () => {
 	assert.match(coverageScript, /status !== "Accepted"/);
 	assert.match(coverageScript, /binarySha256 !== actual/);
 	assert.match(coverageScript, /stable Developer ID authority and TeamIdentifier/);
+});
+
+test("rejects a missing or changed identifier that would invalidate saved Keychain grants", () => {
+    for (const identifier of ["", "maestro-darwin-arm64", "maestro-new", "dev.evalops.maestro"]) {
+        const details = parseCodesignDetails(validCodesignOutput.replace("Identifier=maestro", `Identifier=${identifier}`));
+        assert.throws(() => validateDeveloperIdSignature(details), /identifier/i);
+    }
 });

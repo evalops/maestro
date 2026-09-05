@@ -187,6 +187,7 @@ impl TurnTracker {
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 // Only end turn on fatal errors. Non-fatal errors are informational
                 // (e.g., "Attachment blocked", "Attachment too large") and the turn continues.
@@ -331,6 +332,8 @@ mod tests {
         assert!(event.is_none(), "model response end is not a turn terminal");
         let event = tracker.handle_event(&FromAgent::TurnCompleted {
             response_id: "done".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
         });
         assert!(event.is_some());
         let event = event.unwrap();
@@ -415,6 +418,8 @@ mod tests {
         let event = tracker
             .handle_event(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             })
             .expect("explicit terminal should complete telemetry turn");
         assert_eq!(event.tokens.input, 30);
@@ -441,6 +446,8 @@ mod tests {
         let origin_event = tracker
             .handle_event(&FromAgent::TurnCompleted {
                 response_id: "origin-complete".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             })
             .expect("origin turn completion");
         assert_eq!(origin_event.identity_scope, Some(origin_scope));
@@ -451,6 +458,8 @@ mod tests {
         let switched_event = tracker
             .handle_event(&FromAgent::TurnCompleted {
                 response_id: "switched-complete".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             })
             .expect("switched turn completion");
         assert_eq!(switched_event.identity_scope, Some(switched_scope));

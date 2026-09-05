@@ -436,6 +436,41 @@ fn test_slash_cycle_state_reset() {
 }
 
 #[test]
+fn slash_popup_renders_command_descriptions_and_controls() {
+    let registry = Arc::new(crate::commands::build_command_registry());
+    let matcher = SlashCommandMatcher::new(Arc::clone(&registry));
+    let mut state = SlashCycleState::new();
+    state.set_query("he", &matcher);
+    let description = registry
+        .get("help")
+        .expect("help command")
+        .description
+        .clone();
+
+    let backend = ratatui::backend::TestBackend::new(100, 24);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            App::render_slash_completions_static(&mut state, &registry, frame, frame.area());
+        })
+        .expect("render slash popup");
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("Commands"));
+    assert!(rendered.contains("/help"));
+    assert!(rendered.contains(&description));
+    assert!(rendered.contains("Enter run"));
+}
+
+#[test]
 fn switch_model_without_agent_remembers_the_route() {
     let mut app = new_test_app();
     assert!(app.native_agent.is_none());
@@ -1980,6 +2015,25 @@ async fn test_rebound_shortcuts_open_expected_modals() {
 }
 
 #[tokio::test]
+async fn question_mark_opens_palette_only_from_empty_composer() {
+    let mut app = new_test_app();
+
+    app.handle_key(KeyCode::Char('?'), CrosstermModifiers::NONE)
+        .await
+        .expect("open command palette");
+    assert_eq!(app.active_modal, ActiveModal::CommandPalette);
+    assert!(app.state.input().is_empty());
+
+    app.active_modal = ActiveModal::None;
+    app.state.set_input("explain ");
+    app.handle_key(KeyCode::Char('?'), CrosstermModifiers::NONE)
+        .await
+        .expect("type question mark");
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert_eq!(app.state.input(), "explain ?");
+}
+
+#[tokio::test]
 async fn test_handle_config_event_reloads_keybindings() {
     let _guard = acquire_keybindings_test_lock_async().await;
     let temp = tempdir().expect("tempdir");
@@ -2136,6 +2190,7 @@ async fn test_queue_counts_clear_on_error() {
         message: "oops".to_string(),
         fatal: false,
         terminal: true,
+        retryable: false,
     })
     .await
     .expect("handle error");
@@ -2154,6 +2209,7 @@ async fn test_alerts_command_lists_recorded_alerts() {
         message: "API error 400 Bad Request: invalid_request_error: messages.0: empty".to_string(),
         fatal: false,
         terminal: false,
+        retryable: false,
     })
     .await
     .expect("handle error");
@@ -2161,6 +2217,7 @@ async fn test_alerts_command_lists_recorded_alerts() {
         message: "API error 429 Too Many Requests: rate_limit_error: slow down".to_string(),
         fatal: false,
         terminal: false,
+        retryable: false,
     })
     .await
     .expect("handle error");
@@ -2427,6 +2484,8 @@ async fn turn_summary_waits_for_idle_sentinel_and_includes_tool_facts() {
 
     app.handle_agent_message(FromAgent::TurnCompleted {
         response_id: "done".to_string(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
     })
     .await
     .expect("explicit turn completion");
@@ -2458,11 +2517,13 @@ fn test_error_and_status_fields() {
 fn test_render_mcp_status_lines_include_source_transport_and_error() {
     let lines = render_mcp_status_lines(&[crate::tools::McpServerStatus {
         name: "remote".to_string(),
+        state: crate::tools::McpLifecycleState::Failed,
         connected: false,
         scope: McpConfigScope::Project,
         transport: McpTransport::Sse,
         error: Some("Connection refused".to_string()),
         tools: Vec::new(),
+        disabled_tools: Vec::new(),
         resources: Vec::new(),
         prompts: Vec::new(),
     }]);
@@ -2478,11 +2539,13 @@ fn test_render_mcp_status_lines_include_source_transport_and_error() {
 fn test_render_mcp_status_lines_use_blank_error_fallback() {
     let lines = render_mcp_status_lines(&[crate::tools::McpServerStatus {
         name: "offline".to_string(),
+        state: crate::tools::McpLifecycleState::Failed,
         connected: false,
         scope: McpConfigScope::User,
         transport: McpTransport::Stdio,
         error: Some("   ".to_string()),
         tools: Vec::new(),
+        disabled_tools: Vec::new(),
         resources: Vec::new(),
         prompts: Vec::new(),
     }]);
@@ -2548,21 +2611,25 @@ fn test_update_mcp_badge_counts_tracks_failures() {
     app.update_mcp_badge_counts(&[
         crate::tools::McpServerStatus {
             name: "connected".to_string(),
+            state: crate::tools::McpLifecycleState::Ready,
             connected: true,
             scope: McpConfigScope::Project,
             transport: McpTransport::Stdio,
             error: None,
             tools: vec!["read".to_string(), "write".to_string()],
+            disabled_tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
         },
         crate::tools::McpServerStatus {
             name: "failed".to_string(),
+            state: crate::tools::McpLifecycleState::Failed,
             connected: false,
             scope: McpConfigScope::User,
             transport: McpTransport::Http,
             error: Some("timed out".to_string()),
             tools: Vec::new(),
+            disabled_tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
         },
@@ -2579,11 +2646,13 @@ fn test_format_mcp_server_transition_status_for_connection() {
         None,
         Some(&crate::tools::McpServerStatus {
             name: "docs".to_string(),
+            state: crate::tools::McpLifecycleState::Ready,
             connected: true,
             scope: McpConfigScope::Project,
             transport: McpTransport::Stdio,
             error: None,
             tools: vec!["read".to_string(), "write".to_string()],
+            disabled_tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
         }),
@@ -2599,11 +2668,13 @@ fn test_format_mcp_server_transition_status_for_connection() {
 fn test_format_mcp_server_transition_status_for_disconnection() {
     let previous = crate::tools::McpServerStatus {
         name: "docs".to_string(),
+        state: crate::tools::McpLifecycleState::Ready,
         connected: true,
         scope: McpConfigScope::Project,
         transport: McpTransport::Stdio,
         error: None,
         tools: vec!["read".to_string()],
+        disabled_tools: Vec::new(),
         resources: Vec::new(),
         prompts: Vec::new(),
     };
@@ -2617,21 +2688,25 @@ fn test_format_mcp_server_transition_status_for_disconnection() {
 fn test_format_mcp_server_transition_status_for_error_change() {
     let previous = crate::tools::McpServerStatus {
         name: "docs".to_string(),
+        state: crate::tools::McpLifecycleState::Failed,
         connected: false,
         scope: McpConfigScope::Project,
         transport: McpTransport::Stdio,
         error: Some("timed out".to_string()),
         tools: Vec::new(),
+        disabled_tools: Vec::new(),
         resources: Vec::new(),
         prompts: Vec::new(),
     };
     let current = crate::tools::McpServerStatus {
         name: "docs".to_string(),
+        state: crate::tools::McpLifecycleState::Failed,
         connected: false,
         scope: McpConfigScope::Project,
         transport: McpTransport::Stdio,
         error: Some(String::new()),
         tools: Vec::new(),
+        disabled_tools: Vec::new(),
         resources: Vec::new(),
         prompts: Vec::new(),
     };
@@ -2661,6 +2736,17 @@ async fn test_handle_config_event_forces_mcp_badge_refresh() {
     )))
     .await;
 
+    assert!(app.mcp_status_refresh_in_flight);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if app.poll_mcp_status_refresh() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background MCP status refresh");
     assert_eq!(app.state.mcp_connected, 0);
     assert_eq!(app.state.mcp_tool_count, 0);
     assert_eq!(app.state.mcp_failed, 0);
@@ -2738,19 +2824,19 @@ fn test_session_id_handling() {
 
 #[test]
 fn test_tool_call_toggle() {
-    let mut state = AppState::new();
-    let call_id = "call-123";
+    for compact in [true, false] {
+        let mut state = AppState::new();
+        state.compact_tool_outputs = compact;
+        let call_id = "call-123";
 
-    // Default: expanded when compact mode is off
-    assert!(state.is_tool_call_expanded(call_id));
+        assert_eq!(state.is_tool_call_expanded(call_id), !compact);
 
-    // Toggle off
-    state.toggle_tool_call(call_id);
-    assert!(!state.is_tool_call_expanded(call_id));
+        state.toggle_tool_call(call_id);
+        assert_eq!(state.is_tool_call_expanded(call_id), compact);
 
-    // Toggle on
-    state.toggle_tool_call(call_id);
-    assert!(state.is_tool_call_expanded(call_id));
+        state.toggle_tool_call(call_id);
+        assert_eq!(state.is_tool_call_expanded(call_id), !compact);
+    }
 }
 
 #[test]
@@ -3358,6 +3444,7 @@ fn write_rewind_checkpoint(
         prompt: format!("prompt for {id}"),
         repo_root: repo.to_path_buf(),
         head: None,
+        user_turn_index: None,
         entries: vec![crate::checkpoints::FileEntry {
             path: "a.rs".to_string(),
             kind: crate::checkpoints::EntryKind::Modified,
@@ -3373,6 +3460,87 @@ async fn press_esc(app: &mut App) {
     app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
         .await
         .unwrap();
+}
+
+#[test]
+fn rewind_both_reopens_before_two_edits_and_keeps_manual_changes() {
+    let mut app = new_test_app();
+    let (_tmp, repo) = setup_rewind_session(&mut app);
+    app.state.session_id = None;
+    app.record_user_message("first edit");
+    app.record_user_message("second edit");
+    app.session_manager.flush().unwrap();
+    let source_id = app.state.session_id.clone().unwrap();
+    // The fixture helper writes to rewind-test; move its completed store to
+    // this real saved session after assigning explicit turn coordinates.
+    write_rewind_checkpoint(&app, &repo, "cp-0", "2026-07-24T00:00:00Z", "v0", "v1");
+    write_rewind_checkpoint(&app, &repo, "cp-1", "2026-07-24T01:00:00Z", "v1", "v2");
+    let fixture_store =
+        crate::checkpoints::CheckpointStore::new(app.session_manager.sessions_dir(), "rewind-test");
+    for index in 0..2 {
+        let manifest = fixture_store
+            .root()
+            .join(format!("cp-{index}/checkpoint.json"));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        value["user_turn_index"] = index.into();
+        let mut second_file = value["entries"][0].clone();
+        second_file["path"] = "b.rs".into();
+        value["entries"].as_array_mut().unwrap().push(second_file);
+        std::fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+    let source_store =
+        crate::checkpoints::CheckpointStore::new(app.session_manager.sessions_dir(), &source_id);
+    std::fs::rename(fixture_store.root(), source_store.root()).unwrap();
+    std::fs::write(repo.join("a.rs"), "later manual edit").unwrap();
+    std::fs::write(repo.join("b.rs"), "v2").unwrap();
+    app.rewind_saved_turns(2, false, true);
+    assert!(app.state.error.is_none(), "{:?}", app.state.error);
+    assert_ne!(app.state.session_id.as_deref(), Some(source_id.as_str()));
+    let branch = app.session_manager.current_session_path().unwrap();
+    app.session_manager.flush().unwrap();
+    let reopened = crate::session::SessionReader::read_file(branch).unwrap();
+    assert_eq!(reopened.stats.user_messages, 0);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("a.rs")).unwrap(),
+        "later manual edit"
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("b.rs")).unwrap(), "v0");
+}
+
+#[test]
+fn rewind_saved_conversation_reopens_at_selected_turn_and_keeps_source() {
+    let mut app = new_test_app();
+    let (_tmp, _) = setup_rewind_session(&mut app);
+    app.state.session_id = None;
+    app.record_user_message("first request");
+    app.record_user_message("abandoned request");
+    app.session_manager.flush().unwrap();
+    let source_path = app.session_manager.current_session_path().unwrap();
+    let original = std::fs::read(&source_path).unwrap();
+    let source_id = app.state.session_id.clone();
+    app.rewind_turns(1, true);
+    assert_eq!(app.state.session_id, source_id);
+    assert_eq!(std::fs::read(&source_path).unwrap(), original);
+    app.rewind_turns(1, false);
+    assert!(app.state.error.is_none(), "{:?}", app.state.error);
+    assert_ne!(app.state.session_id, source_id);
+    app.record_user_message("replacement request");
+    app.session_manager.flush().unwrap();
+    let branch = app.session_manager.current_session_path().unwrap();
+    let reopened = crate::session::SessionReader::read_file(&branch).unwrap();
+    assert_eq!(
+        reopened
+            .messages
+            .iter()
+            .map(AppMessage::text_content)
+            .collect::<Vec<_>>(),
+        ["first request", "replacement request"]
+    );
+    assert_eq!(std::fs::read(&source_path).unwrap(), original);
+    let (history, _, _) = app.agent_context_for_spawn().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1].content.as_text(), Some("replacement request"));
 }
 
 #[tokio::test]
@@ -3544,6 +3712,12 @@ async fn test_detail_view_opens_with_full_untruncated_tool_output() {
     assert_eq!(app.active_modal, ActiveModal::DetailView);
     let detail = app.detail_view.as_ref().expect("detail view open");
     assert_eq!(detail.title(), "Tool: bash");
+    assert!(
+        detail
+            .content()
+            .starts_with("Session evidence:\nLatest recorded checkpoint:")
+    );
+    assert!(detail.content().contains("tests not recorded"));
     assert!(detail.content().contains("\"command\": \"seq 1 120\""));
     assert!(detail.content().contains("line 1\n"));
     assert!(detail.content().contains("line 120"));
@@ -3610,6 +3784,21 @@ async fn test_detail_view_falls_back_to_latest_message_text() {
     let detail = app.detail_view.as_ref().expect("detail view open");
     assert_eq!(detail.title(), "System message");
     assert_eq!(detail.content(), "full system body that was clipped inline");
+}
+
+#[tokio::test]
+async fn test_detail_evidence_follows_expanded_message_past_empty_notices() {
+    let mut app = new_test_app();
+    app.state.messages.clear();
+    push_tool_call_message(&mut app, "recorded tool output".to_string());
+    app.state.add_system_message(String::new());
+
+    app.open_detail_view();
+
+    let detail = app.detail_view.as_ref().expect("detail view open");
+    assert_eq!(detail.title(), "Tool: bash");
+    assert!(detail.content().starts_with("Session evidence:\n"));
+    assert!(detail.content().contains("recorded tool output"));
 }
 
 #[tokio::test]
@@ -3718,7 +3907,7 @@ fn resume_session_at_startup_restores_agent_context_for_spawn() {
     assert_eq!(app.current_model, "openai/gpt-5.2");
     assert_eq!(app.current_thinking_level, ThinkingLevel::Medium);
 
-    let (history, session_id, thinking_level) = app.agent_context_for_spawn();
+    let (history, session_id, thinking_level) = app.agent_context_for_spawn().unwrap();
     assert_eq!(session_id.as_deref(), Some("fork-target"));
     assert_eq!(thinking_level, ThinkingLevel::Medium);
     assert_eq!(history.len(), 2);
@@ -3877,6 +4066,8 @@ async fn lifecycle_consumption_waits_for_durable_turn_completion() {
 
     app.handle_agent_message(FromAgent::TurnCompleted {
         response_id: "done".to_string(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
     })
     .await
     .expect("turn completion");
@@ -4875,14 +5066,497 @@ fn signal_shutdown_only_ends_a_started_terminal_session() {
 
 #[test]
 fn queued_agent_activity_skips_the_terminal_poll_delay() {
-    assert_eq!(terminal_poll_timeout(true, false, true), Duration::ZERO);
-    assert_eq!(terminal_poll_timeout(false, false, true), Duration::ZERO);
+    assert_eq!(terminal_poll_timeout(true, true), Duration::ZERO);
+    assert_eq!(terminal_poll_timeout(false, true), Duration::ZERO);
     assert_eq!(
-        terminal_poll_timeout(true, false, false),
+        terminal_poll_timeout(true, false),
         Duration::from_millis(33)
     );
     assert_eq!(
-        terminal_poll_timeout(false, false, false),
+        terminal_poll_timeout(false, false),
         Duration::from_millis(100)
     );
+}
+
+#[tokio::test]
+async fn dex_lifecycle_requires_explicit_terminal_event() {
+    use crate::components::dex_companion::DexCompanionState;
+    let mut app = new_test_app();
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "dex-turn".into(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_terminal, None);
+    app.handle_agent_message(FromAgent::ResponseEnd {
+        response_id: "dex-turn".into(),
+        usage: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        app.dex_terminal, None,
+        "a response boundary is not completion"
+    );
+    app.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "dex-turn".into(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_terminal, Some(DexCompanionState::Finished));
+    // An old, completed pose cannot restart because a completion is delivered twice.
+    let settled = Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .expect("settled animation timestamp");
+    app.dex_pose_started = settled;
+    app.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "dex-turn".into(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_pose_started, settled);
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "dex-next".into(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_terminal, None);
+    app.handle_agent_message(FromAgent::TurnInterrupted {
+        response_id: "dex-next".into(),
+        reason: "user".into(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_terminal, Some(DexCompanionState::Ready));
+}
+
+#[tokio::test]
+async fn dex_standalone_side_question_owns_its_terminal_state() {
+    use crate::components::dex_companion::DexCompanionState;
+    let mut app = new_test_app();
+    for error in [Some("failure".to_owned()), None] {
+        app.dex_terminal = Some(DexCompanionState::Finished);
+        app.handle_agent_message(FromAgent::SideQuestionStart {
+            side_id: "dex-side".into(),
+            question: "question".into(),
+            standalone: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.dex_terminal, None);
+        app.handle_agent_message(FromAgent::SideQuestionEnd {
+            side_id: "dex-side".into(),
+            question: "question".into(),
+            answer: "answer".into(),
+            standalone: true,
+            error: error.clone(),
+            provider_error_kind: None,
+            usage: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            app.dex_terminal,
+            Some(if error.is_some() {
+                DexCompanionState::Failed
+            } else {
+                DexCompanionState::Finished
+            })
+        );
+    }
+    app.dex_terminal = None;
+    app.handle_agent_message(FromAgent::SideQuestionEnd {
+        side_id: "dex-side".into(),
+        question: "question".into(),
+        answer: "answer".into(),
+        standalone: false,
+        error: Some("failure".into()),
+        provider_error_kind: None,
+        usage: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        app.dex_terminal, None,
+        "concurrent side question does not finish main turn"
+    );
+}
+
+#[tokio::test]
+async fn shift_tab_cycles_thinking_while_busy_and_preserves_draft_and_approvals() {
+    let mut app = new_test_app();
+    app.current_model = "fixture/custom-thinking".into();
+    app.current_thinking_level = ThinkingLevel::Off;
+    app.state.set_input("unfinished prompt");
+    app.state.busy = true;
+    let mode = app.state.interaction_mode;
+    let approvals = app.state.approval_mode;
+    for expected in [
+        ThinkingLevel::Minimal,
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Max,
+        ThinkingLevel::Off,
+    ] {
+        app.handle_key(KeyCode::BackTab, CrosstermModifiers::SHIFT)
+            .await
+            .unwrap();
+        assert_eq!(app.current_thinking_level, expected);
+        assert_eq!(app.state.thinking_level, expected);
+        assert_eq!(app.state.input(), "unfinished prompt");
+        assert!(app.state.busy);
+        assert_eq!(app.state.interaction_mode, mode);
+        assert_eq!(app.state.approval_mode, approvals);
+    }
+}
+
+#[tokio::test]
+async fn shift_tab_terminal_encodings_persist_thinking_changes() {
+    let mut app = new_test_app();
+    let dir = tempfile::tempdir().unwrap();
+    app.session_manager = SessionManager::with_sessions_dir("thinking-test", dir.path());
+    app.current_model = "fixture/custom-thinking".into();
+    app.current_thinking_level = ThinkingLevel::Off;
+    app.ensure_session_started().unwrap();
+    for (code, modifiers) in [
+        (KeyCode::BackTab, CrosstermModifiers::NONE),
+        (KeyCode::Tab, CrosstermModifiers::SHIFT),
+    ] {
+        app.handle_key(code, modifiers).await.unwrap();
+    }
+    assert_eq!(app.current_thinking_level, ThinkingLevel::Low);
+    app.session_manager.flush().unwrap();
+    let content = std::fs::read_to_string(find_session_jsonl(dir.path())).unwrap();
+    let changes: Vec<_> = content
+        .lines()
+        .filter_map(
+            |line| match serde_json::from_str::<SessionEntry>(line).unwrap() {
+                SessionEntry::ThinkingLevelChange(change) => Some(change.thinking_level),
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(changes, vec![ThinkingLevel::Minimal, ThinkingLevel::Low]);
+}
+
+#[tokio::test]
+async fn shift_tab_in_modal_does_not_change_thinking() {
+    let mut app = new_test_app();
+    app.active_modal = ActiveModal::ShortcutsHelp;
+    let original = app.current_thinking_level;
+    app.handle_key(KeyCode::BackTab, CrosstermModifiers::SHIFT)
+        .await
+        .unwrap();
+    assert_eq!(app.current_thinking_level, original);
+}
+
+#[tokio::test]
+async fn dex_suggestion_acceptance_only_fills_composer_and_respects_dismissal() {
+    use crate::components::dex_companion::DexCompanionState;
+    let mut app = new_test_app();
+    app.ui_prefs.dex_suggestions_disabled = false;
+    app.active_modal = ActiveModal::None;
+    app.state.add_user_message("Edit a file".into());
+    app.state
+        .messages
+        .last_mut()
+        .unwrap()
+        .tool_calls
+        .push(crate::state::ToolCallState {
+            call_id: "edit-1".into(),
+            tool: "edit".into(),
+            args: serde_json::json!({}),
+            status: crate::state::ToolCallStatus::Completed,
+            output: String::new(),
+        });
+    app.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "dex-suggest".into(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.dex_terminal, Some(DexCompanionState::Finished));
+    let count = app.state.messages.len();
+    assert_eq!(app.dex_next_prompt(), Some("/diff"));
+    app.handle_key(KeyCode::Right, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "/diff");
+    assert!(!app.state.busy);
+    assert_eq!(app.state.messages.len(), count);
+    app.state.set_input("");
+    assert_eq!(app.dex_next_prompt(), None);
+}
+
+#[test]
+fn dex_return_recap_is_factual_and_consumed_once() {
+    let mut app = new_test_app();
+    app.ui_prefs.dex_recap_disabled = false;
+    app.dex_terminal = Some(crate::components::dex_companion::DexCompanionState::Finished);
+    app.dex_delight.clock = maestro_presentation::clock::ViewClock::Fixed(Duration::from_secs(181));
+    app.dex_delight.attention.update(
+        maestro_interaction::Event::FocusLost,
+        Duration::ZERO,
+        maestro_interaction::Policy::default(),
+    );
+    app.dex_observe_attention(crate::components::dex_companion::DexCompanionState::Finished);
+    app.dex_focus_returned();
+    assert!(
+        app.dex_delight
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("Last request completed")
+    );
+    app.dex_delight.notice = None;
+    app.dex_focus_returned();
+    assert!(app.dex_delight.notice.is_none());
+    app.ui_prefs.dex_personality = Some("quiet".into());
+    app.ui_prefs.animations = Some(true);
+    app.pet_dex();
+    assert!(!app.dex_pet_active());
+}
+
+#[test]
+fn dex_notifications_require_opt_in_and_away_transition_and_deduplicate() {
+    use crate::components::dex_companion::DexCompanionState as State;
+    use crate::notifications::DexAttention;
+    let mut app = new_test_app();
+    app.ui_prefs.dex_notifications = true;
+    assert_eq!(
+        app.dex_observe_attention(State::Finished),
+        None,
+        "unknown focus is quiet"
+    );
+    app.terminal_notifier.record_focus(false);
+    app.dex_focus_lost();
+    assert_eq!(
+        app.dex_observe_attention(State::Finished),
+        None,
+        "old completion is not replayed"
+    );
+    assert_eq!(app.dex_observe_attention(State::Working), None);
+    assert_eq!(
+        app.dex_observe_attention(State::NeedsInput),
+        Some(DexAttention::NeedsInput)
+    );
+    assert_eq!(app.dex_observe_attention(State::NeedsInput), None);
+    app.dex_begin_turn();
+    assert_eq!(
+        app.dex_observe_attention(State::NeedsInput),
+        Some(DexAttention::NeedsInput),
+        "a new turn may need attention without an intervening frame"
+    );
+    app.state.busy = true;
+    assert!(
+        crate::dex_delight::recap(&app.state, Some(State::NeedsInput))
+            .starts_with("Your answer is needed")
+    );
+    app.ui_prefs.dex_notifications = false;
+    assert_eq!(app.dex_observe_attention(State::Failed), None);
+    assert!(
+        app.dex_delight.attention.changed_while_away(),
+        "recap works with notifications disabled"
+    );
+    app.ui_prefs.dex_notifications = true;
+    app.terminal_notifier.record_focus(true);
+    app.dex_focus_returned();
+    assert_eq!(app.dex_observe_attention(State::Finished), None);
+}
+
+#[tokio::test]
+async fn dex_paste_dismisses_suggestions_and_modal_keys_do_not_accept_them() {
+    let mut app = new_test_app();
+    app.dex_delight.notice = Some("Welcome back".into());
+    app.handle_paste("My own draft");
+    assert_eq!(app.dex_delight.suggestion.visible(Some("candidate")), None);
+    assert!(app.dex_delight.notice.is_none());
+    assert_eq!(app.state.input(), "My own draft");
+    app.handle_dex_command("appearance");
+    app.handle_key(KeyCode::Down, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.dex_delight.picker.selected().map(|action| action.id),
+        Some("accessory-glasses")
+    );
+    app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "My own draft");
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.active_modal, ActiveModal::None);
+}
+
+#[test]
+fn dex_return_recap_observes_completion_before_the_next_frame() {
+    use crate::components::dex_companion::DexCompanionState;
+    let mut app = new_test_app();
+    app.ui_prefs.dex_recap_disabled = false;
+    app.dex_begin_turn();
+    app.dex_delight.clock = maestro_presentation::clock::ViewClock::Fixed(Duration::from_secs(181));
+    app.dex_delight.attention.update(
+        maestro_interaction::Event::FocusLost,
+        Duration::ZERO,
+        maestro_interaction::Policy::default(),
+    );
+    app.dex_terminal = Some(DexCompanionState::Finished);
+    app.state.busy = false;
+    app.dex_focus_returned();
+    assert!(
+        app.dex_delight
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("Last request completed")
+    );
+}
+
+#[tokio::test]
+async fn dex_attention_updates_from_events_without_rendering() {
+    let mut app = new_test_app();
+    app.state.busy = true;
+    app.dex_begin_turn();
+    app.handle_agent_message(FromAgent::Error {
+        message: "fixture failure".into(),
+        fatal: false,
+        terminal: true,
+        retryable: false,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        app.dex_delight.attention.last_observed(),
+        Some(crate::components::dex_companion::DexCompanionState::Failed)
+    );
+}
+
+#[test]
+fn dex_appearance_command_uses_stable_id_without_executing_work() {
+    let registry = crate::commands::build_command_registry();
+    for id in ["accent-mint", "accessory-crown", "accessory-bow"] {
+        let output = registry
+            .execute(&format!("/dex {id}"), ".", None, None)
+            .unwrap();
+        assert!(
+            matches!(output, crate::commands::CommandOutput::Action(crate::commands::CommandAction::SetDexPresentation(value)) if value == id)
+        );
+    }
+    assert!(
+        registry
+            .execute("/dex not-a-real-setting", ".", None, None)
+            .is_err()
+    );
+}
+
+#[test]
+fn dex_pet_reactions_cycle_without_noise_during_work_or_quiet_mode() {
+    let mut app = new_test_app();
+    app.active_modal = ActiveModal::None;
+    app.ui_prefs.dex_personality = Some("standard".into());
+    for expected in [
+        "Dex appreciates the boop.",
+        "A tiny bow from Dex.",
+        "Dex is all ears.",
+        "Dex appreciates the boop.",
+    ] {
+        app.pet_dex();
+        assert_eq!(app.dex_delight.notice.as_deref(), Some(expected));
+    }
+    app.dex_delight.notice = None;
+    app.state.busy = true;
+    app.pet_dex();
+    assert!(app.dex_delight.notice.is_none());
+    app.state.busy = false;
+    app.ui_prefs.dex_personality = Some("quiet".into());
+    app.pet_dex();
+    assert!(app.dex_delight.notice.is_none());
+    app.ui_prefs.dex_personality = Some("standard".into());
+    app.active_modal = ActiveModal::ShortcutsHelp;
+    app.pet_dex();
+    assert!(app.dex_delight.notice.is_none());
+    app.active_modal = ActiveModal::None;
+    app.pet_dex();
+    assert_eq!(
+        app.dex_delight.notice.as_deref(),
+        Some("A tiny bow from Dex.")
+    );
+}
+
+#[test]
+fn dex_picker_previews_current_choice_without_changing_preferences_and_cancel_restores() {
+    use crate::dex_delight::{DexAccent, DexAccessory};
+    let mut app = new_test_app();
+    app.ui_prefs.dex_accessory = DexAccessory::Crown;
+    app.ui_prefs.dex_accent = DexAccent::Mint;
+    app.handle_dex_command("appearance");
+    assert_eq!(
+        app.dex_delight.picker.selected().unwrap().id,
+        "accessory-crown"
+    );
+    app.handle_dex_appearance_key(KeyCode::Down).unwrap();
+    assert_eq!(app.dex_look().accessory, DexAccessory::Bow);
+    assert_eq!(app.dex_look().accent, DexAccent::Mint);
+    assert_eq!(app.ui_prefs.dex_accessory, DexAccessory::Crown);
+    assert!(app.dex_delight.notice.is_none());
+    app.handle_dex_appearance_key(KeyCode::Esc).unwrap();
+    assert_eq!(app.dex_look().accessory, DexAccessory::Crown);
+    assert_eq!(app.active_modal, ActiveModal::None);
+}
+
+#[tokio::test]
+async fn incoming_approval_cancels_the_open_theme_preview() {
+    let mut app = new_test_app();
+    app.theme_selector.show();
+    app.active_modal = ActiveModal::ThemeSelector;
+    // Exercise the real asynchronous modal replacement without executing a tool.
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "preview-approval".into(),
+        tool: "read".into(),
+        args: serde_json::json!({"file_path": "README.md"}),
+        requires_approval: true,
+        approval_inline_env: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert!(
+        !app.theme_selector.is_visible(),
+        "the displaced preview must be cancelled"
+    );
+}
+
+#[test]
+fn dex_reactions_respect_attention_and_reduced_motion() {
+    let mut app = new_test_app();
+    app.active_modal = ActiveModal::None;
+    app.ui_prefs.dex_personality = Some("standard".into());
+    app.ui_prefs.animations = Some(true);
+    app.pet_dex();
+    assert!(app.dex_pet_active());
+    assert!(app.dex_look().pet_frame.is_some());
+    app.state.error = Some("Request failed".into());
+    assert!(!app.dex_can_delight());
+    assert!(!app.dex_pet_active());
+    assert!(app.dex_look().pet_frame.is_none());
+    app.dex_delight.notice = None;
+    app.pet_dex();
+    assert!(app.dex_delight.notice.is_none());
+    app.state.error = None;
+    app.active_modal = ActiveModal::Approval;
+    assert!(!app.dex_can_delight());
+    assert!(app.dex_look().pet_frame.is_none());
+    app.active_modal = ActiveModal::None;
+    app.ui_prefs.animations = Some(false);
+    app.pet_dex();
+    assert!(!app.dex_pet_active());
+    assert!(app.dex_look().pet_frame.is_none());
 }

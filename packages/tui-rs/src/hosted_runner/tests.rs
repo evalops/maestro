@@ -290,6 +290,8 @@ fn runtime_receipt_tracks_generation_bound_durable_lifecycle_boundaries() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "receipt-terminal".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
     }
@@ -400,6 +402,8 @@ fn late_terminal_event_does_not_override_first_terminal_receipt() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "late-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         let after_late = state
@@ -438,6 +442,8 @@ fn late_ready_event_does_not_replace_a_durable_terminal_receipt() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "late-ready-terminal-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         let terminal = state
@@ -830,6 +836,8 @@ fn same_generation_restart_does_not_resurrect_terminal_after_failed_user_turn() 
         state.thread.apply_agent_message(
             &FromAgentMessage::TurnCompleted {
                 response_id: "response-completed-user".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
             3,
         );
@@ -976,6 +984,8 @@ fn failed_terminal_journal_write_does_not_publish_or_replay_the_terminal() {
         &mut state,
         FromAgentMessage::TurnCompleted {
             response_id: "response_uncommitted".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
         },
     );
 
@@ -1002,6 +1012,8 @@ fn failed_terminal_journal_write_does_not_publish_or_replay_the_terminal() {
         &mut state,
         FromAgentMessage::TurnCompleted {
             response_id: "response_trailing_after_failure".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
         },
     );
     shared.retry_thread_persistence(&mut state);
@@ -1079,6 +1091,8 @@ fn terminal_receipt_waits_for_session_recorder_flush() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "session-flush-failure-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
 
@@ -1166,6 +1180,8 @@ fn failed_session_flush_does_not_replay_terminal_when_failure_fence_write_fails(
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "session-flush-fence-write-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         assert_eq!(flush_calls.load(Ordering::Acquire), 1);
@@ -1225,6 +1241,8 @@ fn terminal_receipt_keeps_durable_model_provider_binding_across_restart() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "durable-binding-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         shared.publish_message(
@@ -1503,6 +1521,8 @@ fn failed_snapshot_persistence_replaces_a_terminal_receipt_after_retry() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "snapshot-terminal-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         assert_eq!(
@@ -1527,6 +1547,8 @@ fn published_turn_terminals_survive_journal_reload_with_their_replay_envelopes()
     for terminal in [
         FromAgentMessage::TurnCompleted {
             response_id: "response_completed".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
         },
         FromAgentMessage::ProviderError {
             kind: maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
@@ -1611,6 +1633,8 @@ fn startup_receipt_fences_old_generations_and_prefers_a_restored_interrupted_tur
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "response-completed".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         state.thread.append(
@@ -2262,6 +2286,8 @@ impl SteeringLifecycleExecutor {
         self.queued.lock().expect("steering lifecycle events").push(
             FromAgentMessage::TurnCompleted {
                 response_id: "turn-steered".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
     }
@@ -2328,6 +2354,8 @@ impl HostedRunnerHeadlessMessageExecutor for TerminalThenPendingExecutor {
                 },
                 FromAgentMessage::TurnCompleted {
                     response_id: "turn-a".to_string(),
+                    coding_completion: None,
+                    coding_child_records: Vec::new(),
                 },
             ]
         } else {
@@ -2409,6 +2437,8 @@ impl HostedRunnerHeadlessMessageExecutor for RecordingThreadExecutor {
                 },
                 FromAgentMessage::TurnCompleted {
                     response_id: format!("turn-{content}"),
+                    coding_completion: None,
+                    coding_child_records: Vec::new(),
                 },
             ]
         };
@@ -13467,6 +13497,8 @@ fn draining_terminal_messages_keep_the_draining_receipt_until_finalization() {
             &mut state,
             FromAgentMessage::TurnCompleted {
                 response_id: "draining-terminal-response".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
 

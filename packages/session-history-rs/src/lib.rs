@@ -208,6 +208,8 @@ struct TranscriptManifest {
     working_directory: String,
     branch: String,
     head_sha: String,
+    #[serde(default)]
+    pull_request_url: String,
     title: String,
     completeness: TranscriptCompletenessArg,
     redaction_policy_version: String,
@@ -673,6 +675,10 @@ fn prepare_transcript(
             "input contains no JSONL entries".to_string(),
         ));
     }
+    let pull_request_url = first_env(&["EVALOPS_PULL_REQUEST_URL", "GITHUB_PULL_REQUEST_URL"])
+        .and_then(|value| canonical_pull_request_url(&value, args.repository_url.as_deref()))
+        .or_else(|| detect_pull_request_url(&entries, args.repository_url.as_deref()))
+        .unwrap_or_default();
     let manifest_path = spool_root.join("manifest.json");
     let mut manifest = TranscriptManifest {
         version: MANIFEST_VERSION,
@@ -686,6 +692,7 @@ fn prepare_transcript(
         working_directory: args.working_directory.unwrap_or_default(),
         branch: args.branch.unwrap_or_default(),
         head_sha: args.head_sha.unwrap_or_default(),
+        pull_request_url,
         title: args.title.unwrap_or_default(),
         completeness: args.completeness,
         redaction_policy_version: REDACTION_POLICY_VERSION.to_string(),
@@ -1052,6 +1059,7 @@ fn upload_request(
             working_directory: manifest.working_directory.clone(),
             branch: manifest.branch.clone(),
             head_sha: manifest.head_sha.clone(),
+            pull_request_url: manifest.pull_request_url.clone(),
             title: manifest.title.clone(),
             completeness: manifest.completeness.proto() as i32,
             ..Default::default()
@@ -1219,6 +1227,45 @@ fn validate_endpoint(value: &str) -> Result<(), TranscriptError> {
     Ok(())
 }
 
+fn detect_pull_request_url(entries: &[Vec<u8>], repository_url: Option<&str>) -> Option<String> {
+    let repository = github_repository_base(repository_url?)?;
+    let prefix = format!("{repository}/pull/");
+    entries.iter().find_map(|entry| {
+        let text = String::from_utf8_lossy(entry);
+        let start = text.find(&prefix)? + prefix.len();
+        let number = text[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        (!number.is_empty()).then(|| format!("{prefix}{number}"))
+    })
+}
+
+fn canonical_pull_request_url(value: &str, repository_url: Option<&str>) -> Option<String> {
+    let repository = github_repository_base(repository_url?)?;
+    let prefix = format!("{repository}/pull/");
+    let value = value.trim().trim_end_matches('/');
+    let number = value.strip_prefix(&prefix)?;
+    (!number.is_empty() && number.chars().all(|character| character.is_ascii_digit()))
+        .then(|| format!("{prefix}{number}"))
+}
+
+fn github_repository_base(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = value
+        .strip_prefix("https://github.com/")
+        .or_else(|| value.strip_prefix("http://github.com/"))
+        .or_else(|| value.strip_prefix("git@github.com:"))
+        .or_else(|| value.strip_prefix("ssh://git@github.com/"))?;
+    let mut components = path.split('/');
+    let owner = components.next()?;
+    let repository = components.next()?;
+    if owner.is_empty() || repository.is_empty() || components.next().is_some() {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repository}"))
+}
+
 fn stable_session_id(
     agent: TranscriptAgent,
     source_session_id: &str,
@@ -1318,6 +1365,53 @@ mod tests {
         assert_eq!(request.redaction_policy_version, REDACTION_POLICY_VERSION);
         assert_eq!(request.last_entry_index, 1);
         assert_eq!(request.sha256, manifest.segments[0].sha256);
+    }
+
+    #[test]
+    fn prepare_detects_the_repository_pull_request_from_redacted_transcript_content() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("codex.jsonl");
+        fs::write(
+            &input,
+            "{\"type\":\"message\",\"text\":\"Opened https://github.com/evalops/mono/pull/8044 for review\"}\n",
+        )
+        .unwrap();
+        let state = temp.path().join("state");
+        let output = prepare_transcript(
+            PrepareTranscriptArgs {
+                input,
+                agent: TranscriptAgent::Codex,
+                source_session_id: "source-pr-1".to_string(),
+                session_id: Some("session-pr-1".to_string()),
+                organization: "org-1".to_string(),
+                workspace: "workspace-1".to_string(),
+                repository_url: Some("git@github.com:evalops/mono.git".to_string()),
+                working_directory: Some(temp.path().display().to_string()),
+                branch: Some("agent/session-history".to_string()),
+                head_sha: Some("0123456789abcdef".to_string()),
+                title: Some("PR-aware session".to_string()),
+                completeness: TranscriptCompletenessArg::Complete,
+            },
+            Some(&state),
+        )
+        .unwrap();
+        let manifest_path = PathBuf::from(output["manifest"].as_str().unwrap());
+        let manifest: TranscriptManifest =
+            serde_json::from_reader(File::open(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            manifest.pull_request_url,
+            "https://github.com/evalops/mono/pull/8044"
+        );
+        let request = upload_request(
+            &manifest,
+            &manifest.segments[0],
+            manifest_path.parent().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            request.session.unwrap().pull_request_url,
+            "https://github.com/evalops/mono/pull/8044"
+        );
     }
 
     #[test]

@@ -3503,7 +3503,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "maestro"
-version = "0.10.70"
+version = "0.10.71"
 dependencies = [
  "anyhow",
  "ctor",
@@ -3543,11 +3543,21 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
  "uuid",
  "wait-timeout",
+]
+
+[[package]]
+name = "maestro-coding-acceptance"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -3562,11 +3572,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "maestro-interaction"
+version = "0.1.0"
+
+[[package]]
+name = "maestro-presentation"
+version = "0.1.0"
+dependencies = [
+ "maestro-interaction",
+ "maestro-ui",
+ "ratatui",
+ "serde",
+ "unicode-width",
+]
+
+[[package]]
 name = "maestro-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "http 1.5.0",
+ "maestro-coding-acceptance",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -3587,6 +3613,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dunce",
+ "fs2",
  "getrandom 0.4.3",
  "hmac 0.13.0",
  "jsonwebtoken 11.0.0",
@@ -3666,8 +3693,11 @@ dependencies = [
  "maestro-a2a-ledger",
  "maestro-ai",
  "maestro-execpolicy",
+ "maestro-interaction",
+ "maestro-presentation",
  "maestro-runtime",
  "maestro-session-history",
+ "maestro-ui",
  "mlua",
  "notify",
  "once_cell",
@@ -3727,6 +3757,29 @@ dependencies = [
  "x509-parser",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "maestro-ui"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "maestro-interaction",
+ "ratatui",
+]
+
+[[package]]
+name = "maestro-ui-preview"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "maestro-interaction",
+ "maestro-presentation",
+ "maestro-ui",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

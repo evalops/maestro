@@ -64,6 +64,8 @@ mod auth;
 mod client;
 mod config;
 mod http;
+mod oauth;
+mod permissions;
 mod prompt_formatting;
 pub mod protocol;
 
@@ -74,6 +76,17 @@ pub use config::{
     McpConfig, McpConfigScope, McpServerConfig, McpTransport, append_managed_mcp_connections,
     expand_env_vars_for_scope, load_mcp_config, load_mcp_config_with_managed_connections,
     server_requires_workspace_approval,
+};
+pub(crate) use oauth::bearer_for as oauth_bearer_for;
+pub(crate) use oauth::login_quiet as oauth_login_quiet;
+pub use oauth::{clear as clear_oauth, login as oauth_login};
+pub(crate) use permissions::{
+    McpPermissionIdentity, grant_persistent as grant_persistent_permission,
+    grant_session as grant_session_permission, identity_for as permission_identity,
+    is_allowed as permission_is_allowed,
+};
+pub use permissions::{
+    clear_permissions, list_permissions, revoke_permission, revoke_server_permissions,
 };
 pub use prompt_formatting::append_mcp_prompt_summary;
 pub use protocol::{

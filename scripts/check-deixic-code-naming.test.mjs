@@ -61,3 +61,15 @@ test("the guard rejects stale Maestro copy in runtime messages", () => {
 	const problems = findDeixicCodeNamingProblems(root, new Map([[path, content]]));
 	assert(problems.some((problem) => problem.includes("Maestro is working on the A2A task")));
 });
+
+test("the guard requires the Dex Code terminal title and shared title renderer", () => {
+	const path = "packages/presentation-rs/src/components/deixic_logo.rs";
+	const content = readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+	for (const stale of [
+		content.replace('PRODUCT_TITLE: &str = "Dex Code"', 'PRODUCT_TITLE: &str = "Dex"'),
+		content.replace("shimmer_spans(PRODUCT_TITLE)", 'shimmer_spans("Deixic Code")'),
+	]) {
+		const problems = findDeixicCodeNamingProblems(root, new Map([[path, stale]]));
+		assert(problems.some((problem) => problem.startsWith(`${path} is missing`)));
+	}
+});

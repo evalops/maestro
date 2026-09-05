@@ -125,16 +125,16 @@
 //! - **Stateless rendering**: Modal can be re-rendered without state loss
 
 use crossterm::event::KeyCode;
+use maestro_ui::{KeyHint, Modal, UiTheme, key_hints};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agent::credential_store::redact_credentials_in_json;
-use crate::palette::theme;
 
 /// A pending tool approval request for safe mode.
 ///
@@ -900,6 +900,7 @@ pub struct ApprovalModal<'a> {
     queue_size: usize,
     /// Whether the modal is focused
     focused: bool,
+    theme: UiTheme,
 }
 
 impl<'a> ApprovalModal<'a> {
@@ -909,12 +910,20 @@ impl<'a> ApprovalModal<'a> {
             request,
             queue_size: 0,
             focused: true,
+            theme: crate::themes::current_ui_theme(),
         }
     }
 
     #[must_use]
     pub fn queue_size(mut self, size: usize) -> Self {
         self.queue_size = size;
+        self
+    }
+
+    /// Supply the shared palette for a preview or embedded surface.
+    #[must_use]
+    pub fn theme(mut self, theme: UiTheme) -> Self {
+        self.theme = theme;
         self
     }
 
@@ -951,49 +960,29 @@ impl Widget for ApprovalModal<'_> {
         // Calculate modal size from the content. A fixed 20-row ceiling left
         // only two command-content rows and silently clipped long commands
         // before the user could approve them.
-        let modal_width = area.width.clamp(40, 70);
+        let palette = self.theme;
+        let modal_width = area.width.min(72);
         let command = self.request.display_command();
-        let command_rows = estimate_wrapped_rows("", &command, modal_width.saturating_sub(4))
+        let command_rows = estimate_wrapped_rows("", &command, modal_width.saturating_sub(6))
             .saturating_add(1)
             .max(4);
         let source_rows = self.request.reason.as_deref().map_or(0, |reason| {
-            estimate_wrapped_rows("Reason: ", reason, modal_width.saturating_sub(2))
+            estimate_wrapped_rows("Reason: ", reason, modal_width.saturating_sub(4))
         }) + self.request.command_source.as_deref().map_or(0, |source| {
-            estimate_wrapped_rows("Source: ", source, modal_width.saturating_sub(2))
+            estimate_wrapped_rows("Source: ", source, modal_width.saturating_sub(4))
         });
         // Outer border (2) + reason/source + tool (2) + command + queue (1)
         // + hints (2).
         let wanted_height = 7_u16
             .saturating_add(source_rows.max(2))
             .saturating_add(command_rows);
-        let modal_height = wanted_height.clamp(10, area.height.max(10));
+        let modal_height = wanted_height.max(10).min(area.height);
 
-        let x = (area.width.saturating_sub(modal_width)) / 2 + area.x;
-        let y = (area.height.saturating_sub(modal_height)) / 2 + area.y;
-
-        let modal_area = Rect::new(x, y, modal_width, modal_height);
-
-        // Clear the area
-        Clear.render(modal_area, buf);
-
-        // Amber/warning colors for the border
-        let border_color = Color::Rgb(251, 191, 36); // amber-400
-        let bg_color = Color::Rgb(30, 30, 30);
-
-        // Create double-bordered block
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title(" Action Approval Required ")
-            .title_style(
-                Style::default()
-                    .fg(border_color)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .style(Style::default().bg(bg_color));
-
-        let inner = block.inner(modal_area);
-        block.render(modal_area, buf);
+        let inner = Modal::new("Action Approval Required", modal_width, modal_height)
+            .theme(palette)
+            .border_style(Style::default().fg(palette.attention))
+            .margin(0)
+            .render_buffer(area, buf);
 
         // Reason / source section content, built before the layout so its
         // row budget can be sized to what it actually needs: a fixed
@@ -1010,14 +999,14 @@ impl Widget for ApprovalModal<'_> {
         let mut reason_section_rows: u16 = 0;
         if let Some(ref reason) = self.request.reason {
             reason_lines.push(Line::from(vec![
-                Span::styled("Reason: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Reason: ", Style::default().fg(palette.muted)),
                 Span::raw(reason.as_str()),
             ]));
             reason_section_rows += estimate_wrapped_rows("Reason: ", reason, inner.width);
         }
         if let Some(ref source) = self.request.command_source {
             reason_lines.push(Line::from(vec![
-                Span::styled("Source: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Source: ", Style::default().fg(palette.muted)),
                 Span::raw(source.as_str()),
             ]));
             reason_section_rows += estimate_wrapped_rows("Source: ", source, inner.width);
@@ -1062,15 +1051,15 @@ impl Widget for ApprovalModal<'_> {
 
         // Tool section
         let tool_line = Line::from(vec![
-            Span::styled("Tool: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tool: ", Style::default().fg(palette.muted)),
             Span::styled(
                 &self.request.tool,
                 Style::default()
-                    .fg(theme::syntax_function())
+                    .fg(palette.focus)
                     .add_modifier(Modifier::BOLD),
             ),
             if self.request.is_shell {
-                Span::styled(" (shell)", Style::default().fg(Color::DarkGray))
+                Span::styled(" (shell)", Style::default().fg(palette.muted))
             } else {
                 Span::raw("")
             },
@@ -1083,14 +1072,14 @@ impl Widget for ApprovalModal<'_> {
             .map(|line| {
                 Line::from(Span::styled(
                     line.to_string(),
-                    Style::default().fg(theme::syntax_string()),
+                    Style::default().fg(palette.text),
                 ))
             })
             .collect();
 
         let command_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(palette.muted))
             .title(" Command ");
 
         let command_inner = command_block.inner(chunks[2]);
@@ -1107,37 +1096,22 @@ impl Widget for ApprovalModal<'_> {
                     self.queue_size,
                     if self.queue_size == 1 { "" } else { "s" }
                 ),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette.muted),
             )]);
             Paragraph::new(queue_line)
                 .alignment(Alignment::Center)
                 .render(chunks[3], buf);
         }
-
-        // Key hints
-        let hints = Line::from(vec![
-            Span::styled(
-                "[y]",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" approve  "),
-            Span::styled(
-                "[n]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" deny  "),
-            Span::styled("[esc]", Style::default().fg(Color::DarkGray)),
-            Span::raw(" cancel  "),
-            Span::styled(
-                "[Ctrl+E]",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" details"),
-        ]);
+        let mut bindings = vec![
+            KeyHint::new("y", "approve"),
+            KeyHint::new("n", "deny"),
+            KeyHint::new("Esc", "cancel"),
+            KeyHint::new("Ctrl+E", "details"),
+        ];
+        if crate::mcp::McpClient::is_mcp_tool(&self.request.tool) {
+            bindings.extend([KeyHint::new("s", "session"), KeyHint::new("w", "always")]);
+        }
+        let hints = key_hints(&bindings, palette);
         Paragraph::new(hints)
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center)
@@ -1159,6 +1133,7 @@ pub struct BatchedApprovalModal<'a> {
     selected: usize,
     /// Whether the modal is focused
     focused: bool,
+    theme: UiTheme,
 }
 
 impl<'a> BatchedApprovalModal<'a> {
@@ -1168,12 +1143,20 @@ impl<'a> BatchedApprovalModal<'a> {
             requests,
             selected: 0,
             focused: true,
+            theme: crate::themes::current_ui_theme(),
         }
     }
 
     #[must_use]
     pub fn selected(mut self, selected: usize) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Supply the shared palette for a preview or embedded surface.
+    #[must_use]
+    pub fn theme(mut self, theme: UiTheme) -> Self {
+        self.theme = theme;
         self
     }
 
@@ -1186,42 +1169,28 @@ impl<'a> BatchedApprovalModal<'a> {
 
 impl Widget for BatchedApprovalModal<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let modal_width = area.width.clamp(50, 90);
-        // Height: borders (2) + status (1) + list rows + hints (2)
-        let wanted_height = self.requests.len() as u16 + 5;
-        let modal_height = wanted_height.clamp(10, area.height.clamp(10, 24));
-
-        let x = (area.width.saturating_sub(modal_width)) / 2 + area.x;
-        let y = (area.height.saturating_sub(modal_height)) / 2 + area.y;
-
-        let modal_area = Rect::new(x, y, modal_width, modal_height);
-
-        Clear.render(modal_area, buf);
-
-        let border_color = Color::Rgb(251, 191, 36); // amber-400
-        let bg_color = Color::Rgb(30, 30, 30);
-
-        let title = format!(" {} Actions Require Approval ", self.requests.len());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title(title)
-            .title_style(
-                Style::default()
-                    .fg(border_color)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .style(Style::default().bg(bg_color));
-
-        let inner = block.inner(modal_area);
-        block.render(modal_area, buf);
+        let palette = self.theme;
+        // Preserve the existing execution-context budget after shared padding.
+        let modal_width = area.width.min(92);
+        // Reserve room for the explicit batch decisions and detail shortcut.
+        let wanted_height = (self.requests.len().min(u16::MAX as usize) as u16).saturating_add(6);
+        let modal_height = wanted_height.max(10).min(area.height.min(24));
+        let inner = Modal::new(
+            format!("{} Actions Require Approval", self.requests.len()),
+            modal_width,
+            modal_height,
+        )
+        .theme(palette)
+        .border_style(Style::default().fg(palette.attention))
+        .margin(0)
+        .render_buffer(area, buf);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Status line
                 Constraint::Min(1),    // Request list
-                Constraint::Length(2), // Key hints
+                Constraint::Length(3), // Key hints
             ])
             .split(inner);
 
@@ -1232,7 +1201,7 @@ impl Widget for BatchedApprovalModal<'_> {
                 (self.selected + 1).min(self.requests.len().max(1)),
                 self.requests.len()
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )]);
         Paragraph::new(status).render(chunks[0], buf);
 
@@ -1254,7 +1223,7 @@ impl Widget for BatchedApprovalModal<'_> {
             .take(visible_rows)
             .map(|(i, request)| {
                 let is_selected = i == selected;
-                let marker = if is_selected { ">" } else { " " };
+                let marker = if is_selected { "›" } else { " " };
                 let mut tool = request.tool.clone();
                 if request.is_shell {
                     tool.push_str(" (shell)");
@@ -1268,58 +1237,35 @@ impl Widget for BatchedApprovalModal<'_> {
                 let summary_width = (list_area.width as usize).saturating_sub(row_prefix_width);
                 let summary = request.summary(summary_width);
                 let row_style = if is_selected {
-                    Style::default()
-                        .bg(Color::Rgb(60, 50, 20))
-                        .add_modifier(Modifier::BOLD)
+                    palette.selection_style()
                 } else {
                     Style::default()
                 };
                 Line::from(vec![
                     Span::styled(format!("{marker} "), row_style),
-                    Span::styled(tool_display, row_style.fg(theme::syntax_function())),
-                    Span::styled(" — ", row_style.fg(Color::DarkGray)),
-                    Span::styled(summary, row_style.fg(theme::syntax_string())),
+                    Span::styled(tool_display, row_style.fg(palette.focus)),
+                    Span::styled(" — ", row_style.fg(palette.muted)),
+                    Span::styled(summary, row_style.fg(palette.text)),
                 ])
             })
             .collect();
         Paragraph::new(rows).render(list_area, buf);
-
-        // Key hints
-        let hints = Line::from(vec![
-            Span::styled(
-                "[y]",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" approve  "),
-            Span::styled(
-                "[n]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" deny  "),
-            Span::styled(
-                "[a]",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" approve all  "),
-            Span::styled(
-                "[d]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" deny all  "),
-            Span::styled("[↑/↓]", Style::default().fg(Color::DarkGray)),
-            Span::raw(" select  "),
-            Span::styled(
-                "[Ctrl+E]",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" details"),
-        ]);
+        let mut bindings = vec![
+            KeyHint::new("y", "approve"),
+            KeyHint::new("n", "deny"),
+            KeyHint::new("a", "approve all"),
+            KeyHint::new("d", "deny all"),
+            KeyHint::new("↑↓", "select"),
+            KeyHint::new("Ctrl+E", "details"),
+        ];
+        if self
+            .requests
+            .get(self.selected)
+            .is_some_and(|request| crate::mcp::McpClient::is_mcp_tool(&request.tool))
+        {
+            bindings.extend([KeyHint::new("s", "session"), KeyHint::new("w", "always")]);
+        }
+        let hints = key_hints(&bindings, palette);
         Paragraph::new(hints)
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center)
@@ -1521,6 +1467,67 @@ pub fn approval_modal_kind(controller: &ApprovalController) -> ApprovalModalKind
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_surfaces_use_injected_light_and_dark_palettes() {
+        use ratatui::style::Color;
+        let request = ApprovalRequest::new(
+            "test",
+            "bash",
+            serde_json::json!({"command": "printf hello"}),
+        );
+        let requests = vec![request.clone(), request.clone()];
+        for (surface, text) in [(Color::White, Color::Black), (Color::Black, Color::White)] {
+            let palette = UiTheme {
+                surface,
+                text,
+                attention: Color::Magenta,
+                ..UiTheme::default()
+            };
+            let area = Rect::new(0, 0, 100, 30);
+            for batch in [false, true] {
+                let mut buf = Buffer::empty(area);
+                if batch {
+                    BatchedApprovalModal::new(&requests)
+                        .theme(palette)
+                        .render(area, &mut buf);
+                } else {
+                    ApprovalModal::new(&request)
+                        .theme(palette)
+                        .render(area, &mut buf);
+                }
+                assert!(
+                    buf.content
+                        .iter()
+                        .any(|cell| cell.fg == palette.attention && cell.bg == surface)
+                );
+                assert!(
+                    buf.content
+                        .iter()
+                        .any(|cell| cell.fg == text && cell.bg == surface && cell.symbol() == "p")
+                );
+                let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(rendered.contains("y approve"));
+                assert!(rendered.contains("n deny"));
+                assert!(rendered.contains("Ctrl+E details"));
+            }
+        }
+    }
+
+    #[test]
+    fn approval_surfaces_clip_to_tiny_parent_without_panicking() {
+        let request = ApprovalRequest::new(
+            "test",
+            "bash",
+            serde_json::json!({"command": "printf hello"}),
+        );
+        for (width, height) in [(1, 1), (8, 4), (30, 10)] {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            ApprovalModal::new(&request).render(area, &mut buf);
+            BatchedApprovalModal::new(std::slice::from_ref(&request)).render(area, &mut buf);
+        }
+    }
 
     #[test]
     fn approval_request_display_command() {

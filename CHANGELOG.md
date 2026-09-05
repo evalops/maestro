@@ -8,6 +8,10 @@ versioning when releases are cut.
 
 ### Added
 
+- Add an opt-in coding acceptance workflow with task readiness checks, independent
+  review and behavior validators, revision-bound evidence, and enforced handoff
+  dispositions. Hosted completion records the decision in Platform before a task
+  can succeed.
 - Catalog every current interactive OpenRouter model from OpenRouter's public
   `/api/v1/models` list in `maestro models`, the TUI selector, and the
   runtime-gateway registry. Selections use `openrouter/<vendor>/<model>` and
@@ -42,6 +46,53 @@ versioning when releases are cut.
 - Release version bumps now include the generated changelog entry in the PR body
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
+
+## [0.10.71] - 2026-09-02
+
+### Added
+
+- Score production-shaped professional worlds. <!-- maestro-release-note:d849494e422e -->
+- Bind professional worlds to customer value. <!-- maestro-release-note:c1177cf619a9 -->
+- Serve UpdateArtifactAccess so app sharing saves. <!-- maestro-release-note:9b1b78101799 -->
+- Add the Evals view over EvalControlService. <!-- maestro-release-note:9ff32ca81341 -->
+- Serve people, linked candidates, and radar filters from the hosted owners. <!-- maestro-release-note:e42dab534522 -->
+- Add professional world library factory. <!-- maestro-release-note:32f8ff138dd2 -->
+- Add an optional metrics scrape bearer. <!-- maestro-release-note:809579dc9aa6 -->
+- Understand uploaded documents in later turns (#7931). <!-- maestro-release-note:1b635276642f -->
+- Route broad computer intent through governed tools. <!-- maestro-release-note:b35724444bfe -->
+- Complete portable plugin wiring (#7942). <!-- maestro-release-note:a100bf473b12 -->
+- Scaffold services on platform-service-bootstrap and the fail-closed tenant extractor. <!-- maestro-release-note:53e0f1d3435b -->
+- Add deterministic evidence envelopes. <!-- maestro-release-note:fbff0ee9e364 -->
+
+### Changed
+
+- Drop the two guard baseline entries whose findings were fixed. <!-- maestro-release-note:71ee554a9153 -->
+- Refresh bundled model catalog (#8016). <!-- maestro-release-note:18b7bb8e1c2f -->
+- Reclaim runner disk before the amd64 ubuntu-dev runtime build. <!-- maestro-release-note:cb472e97c61b -->
+- Send the follow-up while the timed-out response is still held. <!-- maestro-release-note:467d4e3eb7be -->
+- Prove admission release instead of racing a 25 ms deadline. <!-- maestro-release-note:02ada66eb25a -->
+- Skip queued main builds when a newer main commit arrives. <!-- maestro-release-note:02cc843f2a62 -->
+- Keep world contract docs unchanged. <!-- maestro-release-note:1114ed1e02b9 -->
+- Await empty drain retirement. <!-- maestro-release-note:58584b099687 -->
+- Make all-target gates deterministic. <!-- maestro-release-note:5cdb7680af87 -->
+- Describe Identity minting as satisfying the connectors mutation bearer. <!-- maestro-release-note:084424bd2c64 -->
+- Re-scope the retired guard checkers to the live Rust and UI trees. <!-- maestro-release-note:e062b776030b -->
+- Pin poison recovery on the rate limiter and metrics store. <!-- maestro-release-note:6bb8b4944ce3 -->
+
+### Fixed
+
+- Enforce the provider budget as a sliding window across replicas. <!-- maestro-release-note:484410cd0632 -->
+- Bound the JetStream pull batch and split multi-subject filters. <!-- maestro-release-note:619531598255 -->
+- Close the sharing round-trip test the merge left open. <!-- maestro-release-note:a13a332f140b -->
+- Log why a resident provider call failed. <!-- maestro-release-note:cc4bd453f758 -->
+- Preserve causal customer outcome facts. <!-- maestro-release-note:f2f6c632a619 -->
+- Make budget admission atomic under concurrency. <!-- maestro-release-note:dd1a8ef5057a -->
+- Remove unused tower-http dependency. <!-- maestro-release-note:f6cc76a305cd -->
+- Give the Evals rerun command a keyboard focus stop. <!-- maestro-release-note:18219e6729c8 -->
+- Redact push-notification credentials from the first A2A subscribe frame. <!-- maestro-release-note:383634d8a486 -->
+- Authorize GatewayService/GetInfo like its siblings. <!-- maestro-release-note:c05b6bb6f31e -->
+- Accept Identity connector token minting (#7956). <!-- maestro-release-note:d240e7c72bfe -->
+- Nest the Evals form labels and update the route and nav counts. <!-- maestro-release-note:b994dbe8ef05 -->
 
 ## [0.10.70] - 2026-08-19
 

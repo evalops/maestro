@@ -440,7 +440,7 @@ pub struct KeyringSecretBackend;
 
 impl SecretBackend for KeyringSecretBackend {
     fn get(&self, service: &str, account: &str) -> Result<Zeroizing<String>> {
-        let value = keyring::Entry::new(service, account)
+        let value = crate::native_credentials::entry(service, account)
             .context("OS credential store is unavailable")?
             .get_password()
             .with_context(|| {
@@ -453,14 +453,14 @@ impl SecretBackend for KeyringSecretBackend {
         if value.trim().is_empty() {
             bail!("credential value must not be empty");
         }
-        keyring::Entry::new(service, account)
+        crate::native_credentials::entry(service, account)
             .context("OS credential store is unavailable")?
             .set_password(value)
             .with_context(|| format!("failed to store credential for connection {account}"))
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<()> {
-        match keyring::Entry::new(service, account)
+        match crate::native_credentials::entry(service, account)
             .context("OS credential store is unavailable")?
             .delete_credential()
         {

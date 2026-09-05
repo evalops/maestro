@@ -1,0 +1,17 @@
+{
+  "name": "dex-pet",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/dex pet"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Dex appreciates the boop"
+    }
+  ]
+}

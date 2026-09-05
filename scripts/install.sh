@@ -121,6 +121,7 @@ install_dir="${MAESTRO_INSTALL_DIR:-$HOME/.local/bin}"
 data_dir="${MAESTRO_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/maestro}"
 allow_unsigned="${MAESTRO_ALLOW_UNSIGNED_INSTALL:-0}"
 require_signed="${MAESTRO_REQUIRE_SIGNED_INSTALL:-0}"
+update_progress="${MAESTRO_UPDATE_PROGRESS:-0}"
 case "$allow_unsigned" in
   0|false|no|"") ;;
   1|true|yes) ;;
@@ -130,6 +131,10 @@ case "$require_signed" in
   0|false|no|"") ;;
   1|true|yes) ;;
   *) fail "MAESTRO_REQUIRE_SIGNED_INSTALL must be 0 or 1" ;;
+esac
+case "$update_progress" in
+  0|1) ;;
+  *) fail "MAESTRO_UPDATE_PROGRESS must be 0 or 1" ;;
 esac
 if { [[ "$allow_unsigned" == "1" || "$allow_unsigned" == "true" || "$allow_unsigned" == "yes" ]]; } &&
   { [[ "$require_signed" == "1" || "$require_signed" == "true" || "$require_signed" == "yes" ]]; }; then
@@ -868,9 +873,16 @@ download() {
   local url="$1"
   local destination="$2"
   local label="$3"
-  printf 'Downloading %s...\n' "$label" >&2
+  if [[ "$update_progress" != "1" ]]; then
+    printf 'Downloading %s...\n' "$label" >&2
+  fi
   curl_to "$destination" "$url" ||
     fail "Download failed: $url"
+}
+
+progress_step() {
+  [[ "$update_progress" == "1" ]] || return 0
+  printf '[%s/3] %s\n' "$1" "$2" >&2
 }
 
 bootstrap_cosign() {
@@ -936,6 +948,7 @@ trap cleanup EXIT
 if [[ -z "$release_url" ]]; then
   release_url="$(resolve_channel_release_url "$install_channel")"
 fi
+progress_step 1 "Downloading version ${requested_version:-latest}..."
 
 channel_manifest_verified=0
 channel_manifest_version=""
@@ -943,7 +956,9 @@ channel_manifest="$tmpdir/channel-manifest.json"
 if [[ -f "$tmpdir/channel-manifest-verified" ]]; then
   channel_manifest_verified=1
 elif fetch_channel_manifest "$channel_manifest" "${release_url}/channel-manifest.json"; then
-  printf 'Downloading channel manifest...\n' >&2
+  if [[ "$update_progress" != "1" ]]; then
+    printf 'Downloading channel manifest...\n' >&2
+  fi
   validate_channel_manifest "$channel_manifest" "$install_channel" ||
     fail "Channel manifest verification failed for $install_channel"
   channel_manifest_verified=1
@@ -1022,6 +1037,7 @@ fi
 
 download "${release_url}/${asset}" "$tmpdir/$asset" "$asset"
 download "${release_url}/${web_asset}" "$tmpdir/$web_asset" "$web_asset"
+progress_step 2 "Verifying checksum..."
 if [[ "$manifest_available" == "1" ]]; then
   verify_manifest_checksum "$manifest" "$tmpdir/$asset" "$asset"
   verify_manifest_checksum "$manifest" "$tmpdir/$web_asset" "$web_asset"
@@ -1034,6 +1050,7 @@ if [[ "$manifest_available" == "1" ]]; then
   fi
 fi
 
+progress_step 3 "Installing update..."
 chmod 755 "$tmpdir/$asset"
 mkdir -p "$tmpdir/maestro-web"
 tar -xzf "$tmpdir/$web_asset" -C "$tmpdir/maestro-web"
@@ -1162,7 +1179,9 @@ chmod 755 "$canonical_launcher_stage"
 mv -f "$canonical_launcher_stage" "$install_dir/deixic-code"
 canonical_launcher_stage=""
 
-printf 'Installed Deixic Code %s to %s\n' "$release_version" "$install_dir/deixic-code" >&2
-printf 'The maestro command remains available as a compatibility alias at %s.\n' "$install_dir/maestro" >&2
-printf 'Release files retained under %s for rollback.\n' "$release_root" >&2
-"$install_dir/deixic-code" --version
+if [[ "$update_progress" != "1" ]]; then
+  printf 'Installed Deixic Code %s to %s\n' "$release_version" "$install_dir/deixic-code" >&2
+  printf 'The maestro command remains available as a compatibility alias at %s.\n' "$install_dir/maestro" >&2
+  printf 'Release files retained under %s for rollback.\n' "$release_root" >&2
+  "$install_dir/deixic-code" --version
+fi

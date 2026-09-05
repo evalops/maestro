@@ -240,6 +240,8 @@ pub enum CommandAction {
     SetTheme(String),
     /// Set the current model
     SetModel(String),
+    /// Increase intelligence for the current task at a safe request boundary.
+    Boost,
     /// Review uncommitted changes with a different model (second opinion).
     /// `None` lets the app pick a model from a different provider.
     RubberDuck { model: Option<String> },
@@ -259,6 +261,8 @@ pub enum CommandAction {
     ShowUsage(UsageAction),
     /// Show a token breakdown of the current session's context by category
     ShowContext,
+    /// Exclude or include a registered tool schema for this session.
+    SetContextTool { name: String, excluded: bool },
     /// Audit the prompt and tool surface that will be sent to the model.
     ShowPromptAudit { json: bool },
     /// Change the transcript's turn-level Focus projection.
@@ -313,6 +317,8 @@ pub enum CommandAction {
     Mailbox(MailboxAction),
     /// Change status-bar footer density.
     SetFooterStyle(FooterStyle),
+    /// Change Dex presentation through the existing UI preferences.
+    SetDexPresentation(String),
     /// Manage files queued for the next prompt (`/attach`).
     Attach(AttachAction),
     /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
@@ -543,6 +549,8 @@ pub enum SessionAction {
     Fork,
     /// Rewind last N user turns (default 1)
     Rewind { turns: usize, dry_run: bool },
+    /// Rewind saved conversation and corresponding file changes.
+    RewindBoth { turns: usize, dry_run: bool },
     /// Restore files from the most recent turn checkpoint
     RewindFiles,
     /// List file checkpoints recorded for this session

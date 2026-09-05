@@ -483,47 +483,24 @@ pub fn is_final_state(state: &str) -> bool {
 }
 
 pub fn is_completed_state(state: &str) -> bool {
-    matches_state(
-        state,
-        &["COMPLETED", "SUCCEEDED", "SUCCESS", "TASK_STATE_COMPLETED"],
-    )
+    matches_state(state, &["COMPLETED", "SUCCEEDED", "SUCCESS"])
 }
 
 pub fn is_failed_state(state: &str) -> bool {
-    matches_state(
-        state,
-        &[
-            "FAILED",
-            "CANCELED",
-            "CANCELLED",
-            "REJECTED",
-            "TASK_STATE_FAILED",
-            "TASK_STATE_CANCELED",
-            "TASK_STATE_CANCELLED",
-        ],
-    )
+    matches_state(state, &["FAILED", "CANCELED", "CANCELLED", "REJECTED"])
 }
 
 pub fn is_action_required_state(state: &str) -> bool {
-    matches_state(
-        state,
-        &[
-            "INPUT_REQUIRED",
-            "AUTH_REQUIRED",
-            "TASK_STATE_INPUT_REQUIRED",
-            "TASK_STATE_AUTH_REQUIRED",
-        ],
-    )
+    matches_state(state, &["INPUT_REQUIRED", "AUTH_REQUIRED"])
 }
 
 fn matches_state(state: &str, candidates: &[&str]) -> bool {
     let normalized = normalize_state(state);
-    candidates.iter().any(|candidate| {
-        let candidate = normalize_state(candidate);
-        normalized == candidate
-            || normalized.ends_with(&format!("_{candidate}"))
-            || candidate.ends_with(&format!("_{normalized}"))
-    })
+    // Accept the wire enum prefix, but never infer a state from arbitrary suffixes.
+    let canonical = normalized
+        .strip_prefix("TASK_STATE_")
+        .unwrap_or(&normalized);
+    candidates.contains(&canonical)
 }
 
 fn normalize_state(state: &str) -> String {

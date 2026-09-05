@@ -446,6 +446,14 @@ pub fn workspace_trusted_in_global_config(workspace_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Load routing preferences from the user's global configuration only.
+pub fn model_dynamics_config() -> crate::model_dynamics::ModelDynamicsConfig {
+    dirs::home_dir()
+        .and_then(|home| load_global_config_cached(&home.join(".composer/config.toml")))
+        .and_then(|config| config.model_dynamics.clone())
+        .unwrap_or_default()
+}
+
 /// Grant or revoke trust for `workspace_dir` in the global `~/.composer/config.toml`.
 ///
 /// Only the global file is written: a repository must never be able to grant
@@ -580,6 +588,8 @@ pub struct ProfileConfig {
 /// Main Maestro configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComposerConfig {
+    /// Global-only routing preferences; project config cannot grant model access.
+    pub model_dynamics: Option<crate::model_dynamics::ModelDynamicsConfig>,
     // Model settings
     pub model: Option<String>,
     pub model_provider: Option<String>,
@@ -702,8 +712,8 @@ impl ComposerConfig {
 /// Default configuration values
 pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
     std::sync::LazyLock::new(|| ComposerConfig {
-        model: Some("gpt-5.5".to_string()),
-        model_provider: Some("openai".to_string()),
+        model: Some(crate::credential_mode::DEFAULT_MANAGED_MODEL.to_string()),
+        model_provider: Some("evalops".to_string()),
         approval_policy: Some(ApprovalPolicy::Untrusted),
         sandbox_mode: Some(SandboxMode::WorkspaceWrite),
         subagent_inbound_control: Some(InboundControlPolicy::Hold),
@@ -1610,6 +1620,9 @@ pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
 /// Serialize tests that mutate process-global `HOME` / `MAESTRO_*` env vars.
 /// `cargo test` runs `#[test]` functions concurrently; without this lock,
 /// Maestro-home config tests observe each other's directories and fail.
+/// Tests overriding `HOME` or `MAESTRO_HOME` must share this lock across modules;
+/// a module-local mutex cannot protect process-wide state.
+/// Acquire it before any narrower test locks and hold it through restoration.
 #[cfg(test)]
 fn test_process_env_mutex() -> Arc<tokio::sync::Mutex<()>> {
     static LOCK: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
@@ -1627,6 +1640,41 @@ pub(crate) async fn test_process_env_lock_async() -> tokio::sync::OwnedMutexGuar
     test_process_env_mutex().lock_owned().await
 }
 
+/// Re-run a CWD-mutating test alone in a child process. Return true in the
+/// parent after the child passes, so the caller can return without changing
+/// this process's directory. Locking only CWD writers cannot protect readers
+/// that capture a temporary directory and use it after the writer deletes it.
+#[cfg(test)]
+pub(crate) fn test_reexec_for_cwd_isolation() -> bool {
+    test_reexec_for_process_isolation()
+}
+
+/// Isolate process-wide test mutations from readers that cannot acquire a test lock.
+#[cfg(test)]
+pub(crate) fn test_reexec_for_process_isolation() -> bool {
+    const MARKER: &str = "MAESTRO_TEST_ISOLATED_PROCESS";
+    let thread = std::thread::current();
+    let name = thread.name().expect("test thread has a name");
+    if std::env::var(MARKER).as_deref() == Ok(name) {
+        return false;
+    }
+    // Snapshot HOME and configuration overrides only between other writers.
+    let _guard = test_process_env_lock();
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", name, "--nocapture"])
+        .env(MARKER, name)
+        .output()
+        .expect("spawn isolated process test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "isolated test {name} failed: {}\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*; // Import everything from parent (config) module
@@ -1635,8 +1683,11 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DEFAULT_CONFIG.clone();
-        assert_eq!(config.model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(config.model_provider.as_deref(), Some("openai"));
+        assert_eq!(
+            config.model.as_deref(),
+            Some("evalops/accounts/fireworks/models/glm-5p3")
+        );
+        assert_eq!(config.model_provider.as_deref(), Some("evalops"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
         assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
     }
@@ -1951,6 +2002,9 @@ model_reasoning_effort = "high"
         // process-global env vars and `#[test]` functions run concurrently by
         // default, so every scenario lives in one sequential test rather
         // than racing separate tests against the same two env vars.
+        if test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = test_process_env_lock();
         env::remove_var("MAESTRO_SANDBOX_MODE");
         env::remove_var("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT");
@@ -2276,6 +2330,9 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn test_set_workspace_trust_in_global_config_round_trip() {
+        if test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = test_process_env_lock();
         let home = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
@@ -2379,6 +2436,9 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn load_config_reads_maestro_home_model_settings() {
+        if test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
@@ -2405,6 +2465,9 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn configured_model_route_composes_maestro_home_settings() {
+        if test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
@@ -2436,6 +2499,9 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn configured_model_route_is_none_without_user_settings() {
+        if test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();

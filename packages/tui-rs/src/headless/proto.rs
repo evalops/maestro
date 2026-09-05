@@ -16,9 +16,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::headless::messages::{
-        ResponseToolsSummary, ServerRequestResolutionStatus, ServerRequestResolvedBy,
-        ToolRetryDecisionAction, UtilityCommandTerminalMode, UtilityFileSearchMatch,
-        UtilityFileWatchChangeType,
+        PromptExperimentArm, PromptExperimentAssignment, ResponseToolsSummary,
+        ServerRequestResolutionStatus, ServerRequestResolvedBy, ToolRetryDecisionAction,
+        UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityFileWatchChangeType,
     };
     use crate::headless::workspace_capabilities::{
         ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied, WorkspacePromptCapability,
@@ -140,6 +140,17 @@ mod tests {
                     admission_receipt_id: "admission-1".into(),
                 },
             },
+            ToAgentMessage::ConfigurePromptExperiment {
+                assignment: PromptExperimentAssignment {
+                    experiment_id: "experiment-1".into(),
+                    assignment_id: "assignment-1".into(),
+                    arm: PromptExperimentArm::Candidate,
+                    artifact_id: "skill-1".into(),
+                    artifact_version: "v1".into(),
+                    artifact_sha256: format!("sha256:{}", "0".repeat(64)),
+                    artifact_content: "Use the focused skill.".into(),
+                },
+            },
             ToAgentMessage::Interrupt,
             ToAgentMessage::ToolResponse {
                 call_id: "call-1".into(),
@@ -250,6 +261,7 @@ mod tests {
             | ToAgentMessage::Steer { .. }
             | ToAgentMessage::GovernedSteer { .. }
             | ToAgentMessage::ApplyWorkspaceCapabilitySet { .. }
+            | ToAgentMessage::ConfigurePromptExperiment { .. }
             | ToAgentMessage::Interrupt
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
@@ -504,6 +516,8 @@ mod tests {
             },
             FromAgentMessage::TurnCompleted {
                 response_id: "response-1".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
             FromAgentMessage::TurnInterrupted {
                 response_id: "response-1".into(),
@@ -900,6 +914,8 @@ mod tests {
             },
             FromAgentMessage::TurnCompleted {
                 response_id: "response-1".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         ] {
             let event = message.terminal_event().expect("terminal event projection");
@@ -971,6 +987,8 @@ mod tests {
             },
             FromAgentMessage::TurnCompleted {
                 response_id: "done".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         ];
         let mut reducer = maestro_runtime::TerminalReducer::new();
@@ -998,6 +1016,8 @@ mod tests {
             },
             FromAgentMessage::TurnCompleted {
                 response_id: "done".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         ];
         let mut reducer = maestro_runtime::TerminalReducer::new();
@@ -1090,6 +1110,7 @@ mod tests {
             Payload::GovernedSteer(_) => "governed_steer",
             Payload::GovernedClientToolResult(_) => "governed_client_tool_result",
             Payload::ApplyWorkspaceCapabilitySet(_) => "apply_workspace_capability_set",
+            Payload::ConfigurePromptExperiment(_) => "configure_prompt_experiment",
         }
     }
 
@@ -1157,6 +1178,7 @@ mod tests {
             Payload::GovernedSteer(Default::default()),
             Payload::GovernedClientToolResult(Default::default()),
             Payload::ApplyWorkspaceCapabilitySet(ApplyWorkspaceCapabilitySetMessage::default()),
+            Payload::ConfigurePromptExperiment(Default::default()),
         ];
         let to_names = to_payloads
             .into_iter()

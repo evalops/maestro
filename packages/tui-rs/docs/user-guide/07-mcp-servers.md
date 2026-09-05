@@ -6,29 +6,23 @@ Deixic Code supports the Model Context Protocol so the agent can call external t
 
 ## Quick start
 
-1. Install an MCP server (example: GitHub):
+1. Add a server from the built-in registry:
 
 ```bash
-npm install -g @modelcontextprotocol/server-github
+maestro mcp registry list
+maestro mcp registry add context7
 ```
 
-2. Create `~/.maestro/mcp.json`:
+Or add a custom local/remote server:
 
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_your_token_here"
-      }
-    }
-  }
-}
+```bash
+maestro mcp add local-docs npx -y @upstash/context7-mcp --type stdio
+maestro mcp add remote-tools https://host.example/mcp --type http
+maestro mcp add private-tools https://host.example/mcp --type http \
+  --header 'Authorization: Bearer ${MCP_API_KEY}'
 ```
 
-3. Launch Deixic Code and check status:
+2. Launch Deixic Code and open the manager:
 
 ```text
 /mcp
@@ -61,7 +55,7 @@ Project entries override user entries by server name where applicable.
     "server-name": {
       "command": "node",
       "args": ["path/to/server.js"],
-      "env": { "API_KEY": "…" },
+      "env": { "API_KEY": "${API_KEY}" },
       "cwd": "/optional/working/dir"
     }
   }
@@ -106,7 +100,9 @@ For a Streamable HTTP server, set `url` to its MCP endpoint (for example, `https
 }
 ```
 
-The same Streamable HTTP shape can be used when Deixic Code consumes a centrally configured third-party MCP server, whether it runs locally or inside a hosted Computer. The host supplies the authoritative endpoint and can provision an OAuth access token as a bearer value in `headers`; Deixic Code replays that header on initialization, notifications, requests, retries, and session termination. Deixic Code does not perform the browser OAuth flow, read per-invocation `mcp_config`, or log the token. Keep centrally configured remote servers and exposed tool sets small and high-level; host-side filtering such as `includeTools` is outside this client transport.
+For a user-configured remote server, run `maestro mcp auth <name>`. Maestro follows the MCP protected-resource and OAuth authorization-server metadata, uses browser PKCE, and stores access/refresh credentials in the operating-system credential store. Servers without dynamic client registration can be used with `--client-id`. `maestro mcp clear-auth <name>` removes the stored credential.
+
+Centrally managed MCP authentication remains owned by the managed connection authority. Local remembered approvals never bypass managed or enterprise policy.
 
 MCP servers do **not** inherit full `process.env` by default; pass required secrets explicitly in `env`.
 
@@ -116,16 +112,19 @@ MCP servers do **not** inherit full `process.env` by default; pass required secr
 
 ```text
 /mcp
+/mcp-config
 /mcp resources [server] [uri]
 /mcp prompts …
 /tools mcp
 /diag mcp
 ```
 
-Footer badges can show connected MCP counts (for example `mcp:2(14)`).
+The manager shows connecting, ready, needs-auth, failed, disabled, blocked-policy, workspace-trust, and config-error states. Use Space to enable/disable a server or selected tool, `r` to retry, `c` for the registry, `o` for OAuth, and `p` for remembered permissions. Connection checks run in the background so slow servers do not freeze input.
 
 ---
 
 ## Trust and safety
 
-MCP tools still flow through approvals and the action firewall. Workspace trust, guarded files, and sandbox policy compose with MCP; see [Agent Safety Boundary](../../../../docs/design/AGENT_SAFETY_BOUNDARY.md) and [Sandbox and Safety](12-sandbox-and-safety.md).
+MCP tools still flow through approvals and the action firewall. On a local MCP approval, `s` remembers the exact server/tool/schema identity for this session and `w` persists it. Any endpoint, command, arguments, credential reference, or schema change requires approval again. Inspect or revoke grants with `maestro mcp permissions list|revoke|clear`.
+
+Workspace trust, guarded files, and sandbox policy compose with MCP; see [Agent Safety Boundary](../../../../docs/design/AGENT_SAFETY_BOUNDARY.md) and [Sandbox and Safety](12-sandbox-and-safety.md).
