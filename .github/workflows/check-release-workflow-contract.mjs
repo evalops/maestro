@@ -436,6 +436,8 @@ export function validateReleaseWorkflow(source) {
 
     const authenticate = findStep(binaries, "Authenticate artifacts and release receipts");
     const authLines = executableLines(authenticate?.run ?? "");
+    // A strict shell preamble is permitted; no other command may precede authentication.
+    if (authLines[0] === "set -euo pipefail") authLines.shift();
     const verifyCommand = 'node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"';
     const authIndex = binaries.steps.indexOf(authenticate);
     if (requiredStepCanBeSkippedOrIgnored(authenticate) || authLines[0] !== verifyCommand ||
