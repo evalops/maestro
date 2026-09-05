@@ -21,6 +21,7 @@ struct SkillArgs {
     command: Option<String>,
     positionals: Vec<String>,
     json: bool,
+    limit: Option<usize>,
     directory: Option<PathBuf>,
     description: Option<String>,
     force: bool,
@@ -81,12 +82,21 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
             "--force" => parsed.force = true,
             "--describe-toolbox" => parsed.describe_toolbox = true,
             "--help" | "-h" => parsed.help = true,
-            "--dir" | "--description" | "--scope" | "--profile" => {
+            "--dir" | "--description" | "--scope" | "--profile" | "--limit" => {
                 let value = args
                     .get(index + 1)
                     .filter(|value| !value.starts_with('-'))
                     .with_context(|| format!("{arg} requires a value"))?;
                 match arg.as_str() {
+                    "--limit" => {
+                        let limit = value
+                            .parse::<usize>()
+                            .context("--limit must be an integer from 1 to 100")?;
+                        if !(1..=100).contains(&limit) {
+                            bail!("--limit must be an integer from 1 to 100");
+                        }
+                        parsed.limit = Some(limit);
+                    }
                     "--dir" => parsed.directory = Some(PathBuf::from(value)),
                     "--description" => parsed.description = Some(value.clone()),
                     "--scope" => {
@@ -111,7 +121,7 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
 
 fn print_help() {
     println!(
-        "deixic-code skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help"
+        "deixic-code skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  search <query>               Find skills without loading their instructions\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --limit <1..100>             Maximum search matches (default: 8)\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help"
     );
 }
 
@@ -581,6 +591,74 @@ fn list_skills(json: bool) -> Result<i32> {
         }
         if !errors.is_empty() {
             eprintln!("\n{} skill load warning(s).", errors.len());
+        }
+    }
+    Ok(0)
+}
+
+/// Search the complete loaded catalog, independently of prompt-budget omission.
+/// Results contain discovery metadata only; this does not activate a skill.
+fn skill_search_payload(
+    skills: &[LoadedSkill],
+    query: &str,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let query = query.trim().to_lowercase();
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    if terms.is_empty() {
+        bail!("deixic-code skill search requires a non-empty query");
+    }
+    let mut matches = skills
+        .iter()
+        .filter_map(|skill| {
+            let name = skill.definition.name.to_lowercase();
+            let description = skill.definition.description.to_lowercase();
+            if !terms
+                .iter()
+                .all(|term| name.contains(term) || description.contains(term))
+            {
+                return None;
+            }
+            let score = usize::from(name == query) * 1000
+                + terms.iter().filter(|term| name.contains(**term)).count() * 50;
+            Some((score, name, skill))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let total = matches.len();
+    let results = matches
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, skill)| {
+            serde_json::json!({
+                "name": skill.definition.name,
+                "description": skill.definition.description,
+                "path": skill.source_path,
+                "source": skill.definition.source,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({"skills": results, "totalMatches": total, "truncated": total > limit}))
+}
+
+fn search_skills(query: &str, limit: usize, json: bool) -> Result<i32> {
+    let (skills, errors) = loaded_skills();
+    let mut payload = skill_search_payload(&skills, query, limit)?;
+    payload["errors"] = serde_json::to_value(&errors)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        for skill in payload["skills"].as_array().expect("search results") {
+            println!(
+                "{} - {} ({})",
+                skill["name"].as_str().unwrap_or_default(),
+                skill["description"].as_str().unwrap_or_default(),
+                skill["path"].as_str().unwrap_or_default()
+            );
+        }
+        println!("{} matching skill(s).", payload["totalMatches"]);
+        if !errors.is_empty() {
+            eprintln!("{} skill load warning(s).", errors.len());
         }
     }
     Ok(0)
@@ -1313,6 +1391,11 @@ pub async fn run_skill(args: &[String]) -> Result<i32> {
     }
     match command.expect("checked command") {
         "list" => list_skills(parsed.json),
+        "search" => search_skills(
+            &parsed.positionals.join(" "),
+            parsed.limit.unwrap_or(8),
+            parsed.json,
+        ),
         "inspect" => inspect_skill(parsed.positionals.first().map(String::as_str), parsed.json),
         "lint" => lint_command(&parsed.positionals, parsed.json),
         "eval" => eval_command(&parsed.positionals, parsed.json, parsed.describe_toolbox),
@@ -1335,6 +1418,54 @@ pub async fn run_skill(args: &[String]) -> Result<i32> {
 mod tests {
     use super::*;
     use crate::skills::SkillSource;
+
+    #[test]
+    fn search_recovers_skills_from_large_catalogs_without_instructions() {
+        for count in [20, 100, 300] {
+            let temp = tempfile::tempdir().expect("catalog");
+            let mut skills = Vec::new();
+            for index in 0..count {
+                let name = format!("skill-{index:03}");
+                let directory = temp.path().join(&name);
+                fs::create_dir(&directory).expect("directory");
+                fs::write(directory.join("SKILL.md"), format!(
+                    "---\nname: {name}\ndescription: Diagnose regression failures\n---\nPRIVATE INSTRUCTIONS\n"
+                )).expect("manifest");
+                skills.push(
+                    SkillLoader::new()
+                        .load_skill_file(&directory.join("SKILL.md"), SkillSource::Project)
+                        .expect("load"),
+                );
+            }
+            let last = format!("skill-{:03}", count - 1);
+            let found = skill_search_payload(&skills, &last.to_uppercase(), 8).expect("search");
+            assert_eq!(found["skills"][0]["name"], last);
+            assert_eq!(found["totalMatches"], 1);
+            assert!(!found.to_string().contains("PRIVATE INSTRUCTIONS"));
+            let broad = skill_search_payload(&skills, "diagnose regression", 8).expect("search");
+            assert_eq!(broad["skills"].as_array().unwrap().len(), 8);
+            assert_eq!(broad["totalMatches"], count);
+            assert_eq!(broad["truncated"], true);
+            assert_eq!(broad["skills"][0]["name"], "skill-000");
+            assert_eq!(
+                skill_search_payload(&skills, "diagnose missing", 8).unwrap()["totalMatches"],
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn search_rejects_empty_queries_and_invalid_limits() {
+        assert!(skill_search_payload(&[], "  ", 8).is_err());
+        for limit in ["0", "101", "many"] {
+            let args = ["search", "test", "--limit", limit].map(str::to_string);
+            assert!(parse_args(&args).is_err());
+        }
+        let args = ["search", "regression", "--limit", "20", "--json"].map(str::to_string);
+        let parsed = parse_args(&args).expect("search options");
+        assert_eq!(parsed.limit, Some(20));
+        assert!(parsed.json);
+    }
 
     #[test]
     fn parses_skill_options() {

@@ -98,6 +98,8 @@ const DEFAULT_SESSION_HISTORY_URL: &str = "https://api.evalops.dev";
 
 pub async fn run_evalops(args: &[String]) -> Result<i32> {
     match args.first().map(String::as_str) {
+        Some("device-revoke") => crate::code_authority::revoke().await,
+        Some("device-enroll") => crate::code_authority::enroll().await,
         Some("init") => crate::init_cli::run_init(&args[1..]).await,
         Some("platform-tools") => platform_tools::run(&args[1..]).await,
         Some("ci-auth") => ci_auth::run(&args[1..]).await,
@@ -129,7 +131,7 @@ fn is_help(arg: &str) -> bool {
 }
 
 fn evalops_help() -> &'static str {
-    "maestro login                         Authenticate with EvalOps Identity\n  maestro evalops logout                  Remove stored EvalOps credentials\n  maestro evalops status                  Show managed EvalOps session status\n  maestro evalops init ...                Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...      Install and operate Platform-governed tools\n\n`maestro evalops login` remains a compatibility alias for `maestro login`."
+    "deixic-code evalops device-enroll       Enroll this device for tool authority\n  deixic-code evalops device-revoke       Revoke this device authority\n  maestro login                         Authenticate with EvalOps Identity\n  maestro evalops logout                  Remove stored EvalOps credentials\n  maestro evalops status                  Show managed EvalOps session status\n  maestro evalops init ...                Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...      Install and operate Platform-governed tools\n\n`maestro evalops login` remains a compatibility alias for `maestro login`."
 }
 
 pub(crate) fn authenticated_session_history_endpoint() -> String {

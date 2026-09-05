@@ -581,7 +581,7 @@ impl Executor {
             .post(format!("{}/chat/completions", self.config.api_base_url))
             .bearer_auth(&self.config.api_key)
             .header("content-type", "application/json")
-            .header("HTTP-Referer", "https://maestro.evalops.dev")
+            .header("HTTP-Referer", "https://orb.deixic.com")
             .header("X-OpenRouter-Title", "EvalOps Maestro Ambient Agent")
             .json(&request)
             .send()

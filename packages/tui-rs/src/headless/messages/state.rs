@@ -691,6 +691,7 @@ impl AgentState {
             }
             ToAgentMessage::Init { .. }
             | ToAgentMessage::GovernedInit { .. }
+            | ToAgentMessage::ConfigurePromptExperiment { .. }
             | ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => {}
             ToAgentMessage::RestoreConversation { .. } => {}
             ToAgentMessage::Prompt { .. } | ToAgentMessage::GovernedPrompt { .. } => {
@@ -808,6 +809,7 @@ impl AgentState {
                 record_id,
                 lineage_id,
                 record_status,
+                ..
             } => Some(AgentEvent::ManagedGatewayReceipt {
                 request_id,
                 record_id,
@@ -1031,10 +1033,18 @@ impl AgentState {
                 })
             }
 
-            FromAgentMessage::TurnCompleted { response_id } => {
+            FromAgentMessage::TurnCompleted {
+                response_id,
+                coding_completion,
+                coding_child_records,
+            } => {
                 self.is_responding = false;
                 self.current_response = None;
-                Some(AgentEvent::TurnCompleted { response_id })
+                Some(AgentEvent::TurnCompleted {
+                    response_id,
+                    coding_completion,
+                    coding_child_records,
+                })
             }
 
             FromAgentMessage::TurnInterrupted {
@@ -1593,6 +1603,8 @@ pub enum AgentEvent {
     },
     TurnCompleted {
         response_id: String,
+        coding_completion: Option<maestro_runtime::coding_acceptance::CodingCompletionSubmission>,
+        coding_child_records: Vec<maestro_runtime::coding_acceptance::CodingAcceptanceChildRecord>,
     },
     TurnInterrupted {
         response_id: String,

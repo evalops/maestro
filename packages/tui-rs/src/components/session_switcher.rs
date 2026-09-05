@@ -2,12 +2,13 @@
 //!
 //! Provides a UI for listing and switching between sessions.
 
+use maestro_ui::{KeyHint, Modal, ModalSize, NoticeTone, Picker, key_hints};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::Rect,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{ListItem, ListState},
 };
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
@@ -234,142 +235,69 @@ impl SessionSwitcher {
             return;
         }
 
-        // Center the modal
-        let modal_width = area.width.clamp(50, 80);
-        let modal_height = area.height.clamp(12, 25);
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear background
-        frame.render_widget(Clear, modal_area);
-
-        // Draw modal block
-        let title = format!(
-            " Sessions ({}) ",
-            if self.filtered.len() == self.sessions.len() {
-                format!("{}", self.sessions.len())
-            } else {
-                format!("{}/{}", self.filtered.len(), self.sessions.len())
-            }
-        );
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // Layout: filter input at top, sessions below, help at bottom
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-        // Render filter input
-        self.render_filter(frame, chunks[0]);
-
-        // Render sessions or loading/error state
-        if self.loading {
-            let loading =
-                Paragraph::new("Loading sessions...").style(Style::default().fg(Color::Yellow));
-            frame.render_widget(loading, chunks[1]);
-        } else if let Some(error) = &self.error {
-            let error_widget =
-                Paragraph::new(error.as_str()).style(Style::default().fg(Color::Red));
-            frame.render_widget(error_widget, chunks[1]);
+        let theme = crate::themes::current_ui_theme();
+        let count = if self.filtered.len() == self.sessions.len() {
+            self.sessions.len().to_string()
         } else {
-            self.render_sessions(frame, chunks[1]);
-        }
-
-        // Render help
-        self.render_help(frame, chunks[2]);
-    }
-
-    fn render_filter(&self, frame: &mut Frame, area: Rect) {
-        let filter_text = if self.query.is_empty() {
-            "Type to filter...".to_string()
-        } else {
-            self.query.clone()
+            format!("{}/{}", self.filtered.len(), self.sessions.len())
         };
-
-        let style = if self.query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let filter = Paragraph::new(filter_text).style(style).block(block);
-
-        frame.render_widget(filter, area);
-    }
-
-    fn render_sessions(&mut self, frame: &mut Frame, area: Rect) {
-        if self.filtered.is_empty() {
-            let empty_msg = if self.query.is_empty() {
-                "No sessions found"
-            } else {
-                "No matching sessions"
-            };
-            let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(paragraph, area);
-            return;
-        }
-
-        // Collect items first to avoid borrowing self during iteration
-        let items: Vec<ListItem> = self
+        let title = format!("Sessions ({count})");
+        let inner = Modal::sized(title, ModalSize::Wide)
+            .theme(theme)
+            .render(frame, area);
+        let items = self
             .filtered
             .iter()
             .filter_map(|&idx| self.sessions.get(idx))
-            .map(|s| Self::render_session_item(s))
+            .map(Self::render_session_item)
             .collect();
-
-        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
-        frame.render_stateful_widget(list, area, &mut self.list_state);
+        let mut picker = Picker::new(&self.query, "Type to filter...", items, theme)
+            .empty(if self.query.is_empty() {
+                "No sessions found"
+            } else {
+                "No matching sessions"
+            })
+            .help(key_hints(
+                &[
+                    KeyHint::new("↑↓", "navigate"),
+                    KeyHint::new("Enter", "select"),
+                    KeyHint::new("Esc", "cancel"),
+                    KeyHint::new("Del", "delete"),
+                ],
+                theme,
+            ));
+        if self.loading {
+            picker = picker.notice("Loading sessions...", NoticeTone::Busy);
+        } else if let Some(error) = &self.error {
+            picker = picker.notice(error.as_str(), NoticeTone::Error);
+        }
+        picker.render(frame, inner, &mut self.list_state);
     }
 
     fn render_session_item(session: &SessionInfo) -> ListItem<'static> {
+        let theme = crate::themes::current_ui_theme();
         let mut spans = Vec::new();
 
         // Favorite indicator
         if session.is_favorite() {
-            spans.push(Span::styled("★ ", Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled("★ ", Style::default().fg(theme.attention)));
         }
 
         // Title
         let title: String = session.title().chars().take(30).collect();
         spans.push(Span::styled(
             title,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ));
 
         // Timestamp
         let time_str = format_relative_time(&session.timestamp);
-        spans.push(Span::styled(
-            format!("  {time_str}"),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(format!("  {time_str}"), theme.muted_style()));
 
         // Message count
         spans.push(Span::styled(
             format!("  {} msgs", session.stats.total_messages()),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme.focus),
         ));
 
         let cwd = session
@@ -379,28 +307,9 @@ impl SessionSwitcher {
             .next()
             .filter(|name| !name.is_empty())
             .unwrap_or("/");
-        spans.push(Span::styled(
-            format!("  [{cwd}]"),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(format!("  [{cwd}]"), theme.muted_style()));
 
         ListItem::new(Line::from(spans))
-    }
-
-    fn render_help(&self, frame: &mut Frame, area: Rect) {
-        let help = Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" select  "),
-            Span::styled("Del", Style::default().fg(Color::Cyan)),
-            Span::raw(" delete  "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" close"),
-        ]);
-
-        let paragraph = Paragraph::new(help);
-        frame.render_widget(paragraph, area);
     }
 }
 
@@ -470,6 +379,68 @@ fn format_relative_time(timestamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_switcher_notices_use_busy_and_error_colors() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = crate::themes::current_ui_theme();
+        let mut selector = SessionSwitcher::new(".");
+        selector.visible = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        for (loading, error, message, color) in [
+            (true, None, "Loading sessions...", theme.focus),
+            (
+                false,
+                Some("Session read failed".to_owned()),
+                "Session read failed",
+                theme.error,
+            ),
+        ] {
+            selector.loading = loading;
+            selector.error = error;
+            terminal
+                .draw(|frame| selector.render(frame, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = (0..buffer.area.height)
+                .find(|&y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(message)
+                })
+                .expect("notice visible");
+            let first = (0..buffer.area.width)
+                .find(|&x| buffer[(x, row)].symbol() == &message[..1])
+                .unwrap();
+            assert_eq!(buffer[(first, row)].fg, color);
+            assert_eq!(buffer[(first, row)].bg, theme.surface);
+        }
+    }
+
+    #[test]
+    fn session_switcher_shared_picker_renders_empty_query_result_and_help() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut selector = SessionSwitcher::new(".");
+        selector.visible = true;
+        selector.query = "no-such-result-zzz".into();
+        selector.filtered.clear();
+        selector.loading = false;
+        let before = selector.query.clone();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("No matching sessions"));
+        assert!(text.contains("Del delete"));
+        assert_eq!(selector.query, before);
+    }
 
     #[test]
     fn format_relative_time_works() {

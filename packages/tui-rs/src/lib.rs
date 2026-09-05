@@ -57,6 +57,7 @@ pub mod agent;
 
 pub mod acp_cli;
 pub mod agents_cli;
+pub mod model_dynamics;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
 /// Lives in the `maestro-ai` crate (packages/ai-rs); re-exported here under
@@ -76,6 +77,7 @@ pub mod local_models;
 pub mod managed_setup;
 pub mod model_catalog;
 pub mod model_monitor;
+mod native_credentials;
 pub mod orb_connection;
 pub mod palette_resource;
 pub mod platform_provider_refs;
@@ -175,6 +177,8 @@ pub mod rlm;
 /// Durable local messages for parent and delegated agent sessions.
 pub mod mailbox;
 
+mod dex_actions;
+pub mod dex_delight;
 /// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
 pub mod ui_prefs;
 
@@ -239,6 +243,7 @@ pub mod import_claude_cli;
 pub mod init_cli;
 pub mod memory_cli;
 pub mod mission_cli;
+pub mod mission_readiness;
 pub mod mode_cli;
 pub mod openai_cli;
 pub mod operating_plane_cli;
@@ -1438,3 +1443,5 @@ pub use swarm::{
     parse_simple_list, // Parse simple task list format
     validate_plan,     // Validate plan for consistency
 };
+
+pub mod code_authority;

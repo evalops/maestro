@@ -148,6 +148,7 @@ mod export;
 mod fork;
 mod index;
 mod manager;
+mod model_history;
 mod reader;
 mod wire_format_generated;
 mod writer;
@@ -158,8 +159,10 @@ pub use branching::{
 pub use entries::*;
 pub use export::{ExportFormat, ExportOptions, SessionExporter, export_session_file};
 pub use fork::{ForkedSession, fork_session_file};
+pub(crate) use fork::{fork_session_prefix, rewind_boundary};
 pub use index::{IndexedSession, SessionIndexEntry, collect_sessions, default_index_path};
 pub use manager::{SessionInfo, SessionManager};
+pub(crate) use model_history::model_history;
 pub use reader::{
     LifecycleAgentNoteEntry, LifecycleNotificationEntry, ParsedSession, SessionReadError,
     SessionReader,

@@ -123,6 +123,25 @@ fn hosted_runner_help_reaches_the_native_hosted_runner_dispatch() {
 }
 
 #[test]
+fn update_help_reaches_the_native_update_dispatch() {
+    let output = ProcessCommand::new(maestro_binary())
+        .args(["update", "--help"])
+        .output()
+        .expect("run maestro update --help");
+
+    assert!(
+        output.status.success(),
+        "update help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Usage: deixic-code update"),
+        "maestro compatibility binary did not reach the native update command: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn fork_invalid_flag_reaches_run_fork_with_forwarded_arguments() {
     let output = ProcessCommand::new(maestro_binary())
         .args(["fork", "--definitely-invalid"])

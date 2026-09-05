@@ -1,0 +1,17 @@
+{
+  "name": "streaming",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "Review the release checklist."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "remaining steps"
+    }
+  ]
+}

@@ -723,11 +723,27 @@ fn collect_hook_output(
     stream_name: &str,
     deadline: Instant,
 ) -> Result<CapturedHookOutput, String> {
+    collect_hook_output_with_wait(
+        reader,
+        stream_name,
+        deadline,
+        Instant::now(),
+        |reader, remaining| reader.finished.recv_timeout(remaining),
+    )
+}
+
+fn collect_hook_output_with_wait(
+    reader: Option<HookOutputReader>,
+    stream_name: &str,
+    deadline: Instant,
+    now: Instant,
+    wait: impl FnOnce(&HookOutputReader, Duration) -> Result<std::io::Result<()>, RecvTimeoutError>,
+) -> Result<CapturedHookOutput, String> {
     let Some(reader) = reader else {
         return Ok(CapturedHookOutput::default());
     };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    match reader.finished.recv_timeout(remaining) {
+    let remaining = deadline.saturating_duration_since(now);
+    match wait(&reader, remaining) {
         Ok(Ok(())) | Err(RecvTimeoutError::Timeout) => {}
         Ok(Err(error)) => return Err(error.to_string()),
         Err(RecvTimeoutError::Disconnected) => {
@@ -2715,46 +2731,36 @@ mod tests {
         }
     }
 
-    /// A stream that never reaches EOF, standing in for a pipe a backgrounded
-    /// descendant is holding open.
-    struct NeverEndingStream;
-
-    impl Read for NeverEndingStream {
-        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-            std::thread::sleep(Duration::from_secs(10));
-            Ok(0)
-        }
-    }
-
     #[test]
     fn one_deadline_bounds_every_stream_drained_under_it() {
-        // stdout and stderr were each given a full `HOOK_OUTPUT_DRAIN_GRACE`,
-        // so a hook leaking both pipes spent twice the grace here — more than
-        // the slack `ExternalHook::execute` allows past `timeout` before it
-        // abandons the worker and reports a timeout the hook did not incur.
-        let deadline = Instant::now() + HOOK_OUTPUT_DRAIN_GRACE;
+        // Drive elapsed time at the blocking boundary. A real wall-clock upper
+        // bound also counts unrelated OS scheduling delays on busy CI hosts.
         let started = Instant::now();
-
-        let stdout = collect_hook_output(
-            Some(spawn_hook_output_reader(NeverEndingStream)),
-            "stdout",
-            deadline,
-        )
-        .expect("stdout drain should not fail");
-        let stderr = collect_hook_output(
-            Some(spawn_hook_output_reader(NeverEndingStream)),
-            "stderr",
-            deadline,
-        )
-        .expect("stderr drain should not fail");
-
-        let elapsed = started.elapsed();
-        assert!(stdout.text.is_empty());
-        assert!(stderr.text.is_empty());
-        assert!(
-            elapsed < HOOK_OUTPUT_DRAIN_GRACE + HOOK_OUTPUT_DRAIN_GRACE / 2,
-            "draining two held-open streams took {elapsed:?}, which is more than one grace period"
-        );
+        let deadline = started + HOOK_OUTPUT_DRAIN_GRACE;
+        let now = std::cell::Cell::new(started);
+        let mut allowances = Vec::new();
+        for stream in ["stdout", "stderr"] {
+            let (_sender, finished) = mpsc::channel();
+            let reader = HookOutputReader {
+                buffer: Arc::new(Mutex::new(HookOutputBuffer::default())),
+                finished,
+            };
+            let output = collect_hook_output_with_wait(
+                Some(reader),
+                stream,
+                deadline,
+                now.get(),
+                |_, remaining| {
+                    allowances.push(remaining);
+                    now.set(now.get() + remaining);
+                    Err(RecvTimeoutError::Timeout)
+                },
+            )
+            .expect("stream drain should not fail");
+            assert!(output.text.is_empty());
+        }
+        assert_eq!(allowances, [HOOK_OUTPUT_DRAIN_GRACE, Duration::ZERO]);
+        assert_eq!(now.get(), deadline, "both streams share one drain budget");
     }
 
     #[derive(Clone, Default)]

@@ -1,0 +1,17 @@
+[package]
+name = "maestro-ui-preview"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Deterministic development-only scenes for native Dex Code widgets"
+
+[dependencies]
+maestro-presentation.workspace = true
+maestro-ui.workspace = true
+maestro-interaction.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-width.workspace = true

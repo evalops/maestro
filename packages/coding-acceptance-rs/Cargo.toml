@@ -1,0 +1,11 @@
+[package]
+name = "maestro-coding-acceptance"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Typed, transport-neutral coding completion contracts shared by the native runtime and the hosted work owner"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

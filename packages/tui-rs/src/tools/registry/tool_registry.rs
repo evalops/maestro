@@ -608,11 +608,29 @@ impl ToolRegistry {
         // session/transcript and can optionally work in an isolated git
         // worktree; lifecycle records are recoverable by id.
         tools.insert(
+            "coding_task".to_string(),
+            ToolDefinition {
+                tool: Tool::new("coding_task", "Run an evidence-gated coding workflow. begin admits a contract and initializes a mission when needed; readiness returns governed Bash calls to execute normally; validate launches a trusted independent review or behavior child; complete collects actual child outputs and checks current committed revision. Use handoff to preserve and explicitly disposition unfinished work. Never submit verification results or child IDs yourself.")
+                    .with_schema(serde_json::json!({
+                        "type":"object", "additionalProperties":false,
+                        "properties": {
+                            "action":{"type":"string","enum":["begin","readiness","validate","status","handoff","complete"]},
+                            "mission_id":{"type":"string"}, "work_id":{"type":"string"},
+                            "contract":{"type":"object","description":"CodingAcceptanceContract with taskId, repositoryId, generation, requiredAssertionIds, requireReview=true, requireBehavior=true, readinessRequirements, authorizedSkips and authorizedDispositions. Waivers must be owner-authorized."},
+                            "role":{"type":"string","enum":["review","behavior"]},
+                            "retry":{"type":"boolean","description":"Replace a terminal validator attempt with a fresh independent execution."},
+                            "item":{"type":"object","description":"Handoff item: id, disposition (open/resolved/deferred/dismissed), evidenceRefs."}
+                        }, "required":["action"]
+                    })),
+                requires_approval: true,
+            },
+        );
+        tools.insert(
             "spawn_subagent".to_string(),
             ToolDefinition {
                 tool: Tool::new(
                     "spawn_subagent",
-                    "Delegate a focused task to a child agent with its own session and optional worktree. When the user explicitly asks to work in, on, or with a Computer, use backend=computer so Maestro sends the task through the managed Computer MCP launch; the runtime fills the active workspace project and repository context when omitted. Do not silently fall back to native execution if Computer is unavailable.",
+                    "Delegate a focused task to a child agent with its own session and optional worktree. Use explore for bounded read-only repository questions, plan for implementation planning, review for actionable diff findings, and code for implementation. Collect each result with wait_subagent or get_subagent. Inspect its structured handoff, continue unfinished authorized work, and resolve or report blockers before declaring the parent task complete. Procedure feedback is a reviewable proposal and must not automatically change persistent instructions. When the user explicitly asks to work in, on, or with a Computer, use backend=computer so Maestro sends the task through the managed Computer MCP launch; the runtime fills the active workspace project and repository context when omitted. Do not silently fall back to native execution if Computer is unavailable.",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
@@ -620,8 +638,11 @@ impl ToolRegistry {
                         "task": {"type": "string", "description": "The focused task for the child agent."},
                         "role": {"type": "string", "enum": ["explore", "plan", "code", "review"]},
                         "backend": {"type": "string", "enum": ["native", "computer", "orb"], "description": "Use Maestro's local native child agent or the managed hosted Computer delegation backend. Set computer for explicit requests such as 'work on this in a Computer'; orb is a compatibility alias. Defaults to native."},
-                        "profile": {"type": "string", "description": "Optional specialist profile from .maestro/agent-profiles or the user profile directory."},
+                        "specialist": {"type": "string", "description": "Named specialist focus, such as security, product, or performance. Uses the same trusted profile registry as profile; supply only one selector. Does not grant tools or permissions."},
+                        "profile": {"type": "string", "description": "Optional specialist profile from a trusted .maestro/agent-profiles directory or the user profile directory. Native children use role-explore, role-plan, role-code, or role-review when that profile exists and no explicit profile is given; an explicit model overrides the profile model."},
                         "model": {"type": "string"},
+                        "difficulty": {"type": "string", "enum": ["light", "medium", "heavy"], "description": "Native task difficulty, independent of role. Routes through user preferences; explore defaults to light, other roles to medium."},
+                        "thinking": {"type": "string", "enum": ["off", "minimal", "low", "medium", "high", "max"], "description": "Explicit native worker thinking setting. Preserved on resume."},
                         "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 86_400_000, "description": "Maximum child execution time in milliseconds. Defaults to two hours."},
                         "max_tokens": {"type": "integer", "minimum": 1, "maximum": 131_072, "description": "Maximum output tokens for the child."},
                         "run_in_background": {"type": "boolean", "description": "Return immediately and let the child run asynchronously. Defaults to true."},
@@ -1468,7 +1489,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 65);  // includes durable subagent control alongside parity, goals, context, and perf tools
+    /// assert_eq!(count, 66);  // includes coding acceptance and durable subagent control
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

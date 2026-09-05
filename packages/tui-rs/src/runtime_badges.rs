@@ -397,10 +397,7 @@ fn is_musl_env() -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::{LazyLock, Mutex};
     use tempfile::tempdir;
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn restore_env_var(name: &str, previous: Option<String>) {
         if let Some(value) = previous {
@@ -449,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_runtime_badges_mark_scripted_replay_sessions() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous_mode = env::var("MAESTRO_MODE").ok();
         let previous_scenario_path = env::var("MAESTRO_SCENARIO_PATH").ok();
         env::set_var("MAESTRO_MODE", "replay");
@@ -496,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_enterprise_config_detection_checks_default_maestro_home() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let temp = tempdir().expect("tempdir");
         let maestro_home = temp.path().join(".maestro");
         fs::create_dir_all(maestro_home.join("enterprise")).expect("create maestro dirs");
@@ -527,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_enterprise_config_detection_checks_maestro_home_override() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let temp = tempdir().expect("tempdir");
         let maestro_home = temp.path().join("custom-maestro");
         fs::create_dir_all(maestro_home.join("enterprise")).expect("create maestro dirs");
@@ -549,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_enterprise_config_detection_checks_env_override_paths() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let temp = tempdir().expect("tempdir");
         let policy_path = temp.path().join("custom-policy.json");
         let fallback_policy_path = temp.path().join("fallback-policy.json");

@@ -6,6 +6,24 @@ gateway. Node.js and Bun are not required to run the product. Existing
 `maestro` protocols and machine coordinates remain supported compatibility
 identifiers.
 
+## Specialists
+
+Run a focused agent with `deixic-code exec --specialist product 'Review this journey'`.
+Security, product, and performance focuses share the existing custom agent-profile
+system. Use `deixic-code specialists list` to discover them. See
+[Specialists](docs/specialists.md) for custom definitions, native delegation,
+and explicit tool and sandbox limits.
+
+## Thinking levels
+
+Press **Shift+Tab** in the chat composer to cycle thinking effort. The cycle
+uses the current model's effective levels; models without reasoning remain
+Off. Draft text is preserved, and changes made during a response apply when
+the runtime processes the setting before a subsequent model request. The
+selected level appears in the footer and is recorded in the session.
+Use `/thinking high` to choose a level directly. Plan and approval modes remain
+available through their explicit commands (`/plan`, `/approvals`).
+
 ## Install
 
 ```sh
@@ -50,13 +68,20 @@ deixic-code web --port 3000         # browser UI and HTTP runtime gateway
 deixic-code hosted-runner
 ```
 
+Sign in with `deixic-code evalops login` before starting a model turn.
+The default model is GLM-5.3 through Deixic's LLM gateway. Your organization
+must have model access enabled; signing in alone does not grant paid inference.
+Provider credentials stay in the gateway. Explicit model settings and
+`--model` continue to select another model, and using your own provider key
+still requires Deixic login.
+
 ## Develop
 
 Rust owns every agent/runtime path:
 
-- `packages/maestro-rs` — compatibility-named executable and canonical command dispatch
-- `packages/tui-rs` — agent core, providers, tools, TUI, and headless runtime
-- `packages/runtime-gateway-rs` — HTTP/SSE/WebSocket runtime gateway
+- `packages/maestro-rs`: compatibility-named executable and canonical command dispatch
+- `packages/tui-rs`: agent core, providers, tools, TUI, and headless runtime
+- `packages/runtime-gateway-rs`: HTTP/SSE/WebSocket runtime gateway
 
 The repository contains no TypeScript source or TypeScript build toolchain. The browser UI is a versioned static asset snapshot served by the Rust runtime gateway; agent execution, protocols, adapters, CLI, and TUI are Rust.
 
@@ -66,3 +91,41 @@ npm run check:rust-only-runtime
 ```
 
 See [Architecture](docs/ARCHITECTURE.md), [Quickstart](docs/QUICKSTART.md), and [Web UI](docs/WEB_UI.md).
+
+Use the [terminal screenshot framework](docs/tui-screenshots.md) to capture the
+native UI with local fixtures, custom dimensions, and verifiable PNG bundles.
+
+The terminal is titled **Dex Code**; its little companion is Dex.
+
+### Make Dex yours
+
+Use `/dex appearance` to choose glasses, a beanie, an antenna, a sprout, cat ears,
+a tiny crown, a bow, or an accent color.
+Arrow keys select an option; Enter saves it across sessions. Click Dex or run
+`/dex pet` for a brief reaction and a small rotating greeting. `/dex quiet` hides
+the character, and `/dex motion-off` keeps it still. Cosmetic choices never change the model or
+its permissions.
+
+Dex's props follow recorded tool activity. Expressive mode adds a short phrase
+alongside the actual activity label. `/dex tips-off` hides the startup hints;
+choosing an appearance also marks that hint as learned.
+
+After a completed turn, a suggested next prompt may appear in the empty composer.
+Right arrow or Tab copies it into the editor; Enter is still required to send it.
+Typing or Escape dismisses it. `/dex next` also fills the suggestion, and
+`/dex suggestions-off` disables automatic suggestions.
+
+`/dex recap` summarizes the latest observed turn. After three minutes away, a
+short welcome-back recap appears if work finished or needed attention. Disable
+it with `/dex recap-off`. Recaps do not infer test or PR status from tool output.
+
+`/dex notifications-on` enables desktop attention notices while the terminal is
+unfocused; `/dex notifications-off` disables them. The terminal must report focus
+events. macOS uses `osascript`, Linux uses `notify-send`, and Windows uses native
+PowerShell toast notifications. Desktop notification permissions and a supported
+notification service are required. Command failures are logged without blocking
+work. Notices contain fixed event descriptions, never transcript or file contents.
+
+### Building native interactions
+
+Use [`maestro-interaction`](packages/interaction-rs/README.md) for reusable event-driven attention, typed actions, selection, bounded reactions, and draft suggestions. Compose its state with `maestro-ui` widgets; the application retains runtime authority, preference persistence, and notification delivery. Dex and the theme selector are working consumers, and `cargo run -p maestro-interaction --example task_monitor` shows deterministic event replay without a terminal.

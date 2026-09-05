@@ -866,6 +866,7 @@ mod tests {
 
     #[test]
     fn keybindings_path_follows_maestro_home() {
+        let _env_guard = crate::config::test_process_env_lock();
         let _guard = keybindings_test_env_lock().blocking_lock();
         let temp = tempdir().expect("tempdir");
         let previous_file = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");

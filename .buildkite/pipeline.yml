@@ -1,5 +1,5 @@
 agents:
-  queue: "${MAESTRO_CI_QUEUE:-linux-large}"
+  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
   image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
@@ -110,7 +110,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-linux-large}"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
           image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         env:
           CARGO_BUILD_JOBS: "4"
@@ -161,7 +161,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-linux-large}"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
           image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
@@ -333,7 +333,7 @@ steps:
         key: "jetbrains-plugin"
         priority: 50
         agents:
-          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-linux-large}"
+          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy}"
           image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6}"
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
@@ -343,8 +343,6 @@ steps:
           automatic:
             - exit_status: -1
               signal_reason: none
-              limit: 1
-            - exit_status: 1
               limit: 1
             - exit_status: 137
               limit: 1

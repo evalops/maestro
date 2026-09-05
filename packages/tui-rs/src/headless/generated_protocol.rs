@@ -49,6 +49,7 @@ pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "client_tool_result",
     "governed_client_tool_result",
     "apply_workspace_capability_set",
+    "configure_prompt_experiment",
     "server_request_response",
     "utility_command_start",
     "utility_command_terminate",

@@ -8,6 +8,7 @@ fn headless_receipt_event_contains_record_lineage_and_status_only() {
         record_id: "record-1".to_string(),
         lineage_id: "lineage-1".to_string(),
         record_status: "planned".to_string(),
+        prompt_experiment: None,
     };
 
     let encoded = serde_json::to_value(message).expect("serialize managed Gateway receipt");
@@ -21,6 +22,48 @@ fn headless_receipt_event_contains_record_lineage_and_status_only() {
             "record_status": "planned"
         })
     );
+}
+
+#[test]
+fn prompt_experiment_assignment_and_exposure_round_trip() {
+    let assignment = PromptExperimentAssignment {
+        experiment_id: "causal-debugging-v1".to_string(),
+        assignment_id: "assignment-1".to_string(),
+        arm: PromptExperimentArm::Candidate,
+        artifact_id: "skill-causal-debugging".to_string(),
+        artifact_version: "1".to_string(),
+        artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+        artifact_content: "State the causal path.".to_string(),
+    };
+    let configured = serde_json::to_value(ToAgentMessage::ConfigurePromptExperiment {
+        assignment: assignment.clone(),
+    })
+    .expect("serialize assignment");
+    assert_eq!(configured["type"], "configure_prompt_experiment");
+    assert_eq!(configured["assignment"]["arm"], "candidate");
+
+    let receipt = FromAgentMessage::ManagedGatewayReceipt {
+        request_id: "request-1".to_string(),
+        record_id: "record-1".to_string(),
+        lineage_id: "lineage-1".to_string(),
+        record_status: "planned".to_string(),
+        prompt_experiment: Some(PromptExperimentExposure {
+            experiment_id: assignment.experiment_id,
+            assignment_id: assignment.assignment_id,
+            arm: assignment.arm,
+            artifact_id: assignment.artifact_id,
+            artifact_version: assignment.artifact_version,
+            artifact_sha256: assignment.artifact_sha256,
+            provider_prompt_sha256: format!("sha256:{}", "b".repeat(64)),
+            applied: true,
+        }),
+    };
+    let encoded = serde_json::to_value(receipt).expect("serialize exposure");
+    assert_eq!(
+        encoded["prompt_experiment"]["assignment_id"],
+        "assignment-1"
+    );
+    assert_eq!(encoded["prompt_experiment"]["applied"], true);
 }
 
 #[test]
@@ -46,6 +89,7 @@ fn managed_gateway_receipt_survives_headless_state_conversion() {
         record_id: "record-1".to_string(),
         lineage_id: "lineage-1".to_string(),
         record_status: "planned".to_string(),
+        prompt_experiment: None,
     });
 
     assert!(matches!(
@@ -127,6 +171,7 @@ fn tool_end_serializes_typed_receipt_additively() {
         tool: Some("read".to_string()),
         details: None,
         receipt: Some(ExecutionReceipt {
+            code_authority: None,
             call_id: "call-1".to_string(),
             tool_name: "read".to_string(),
             source: ExecutionSource::Native,
@@ -151,6 +196,7 @@ fn indeterminate_receipt_survives_headless_wire_and_state() {
         tool: Some("gh_issue".to_string()),
         details: None,
         receipt: Some(ExecutionReceipt {
+            code_authority: None,
             call_id: "call-gh-write".to_string(),
             tool_name: "gh_issue".to_string(),
             source: ExecutionSource::Native,
@@ -171,6 +217,7 @@ fn indeterminate_receipt_survives_headless_wire_and_state() {
         Some(AgentEvent::ToolEnd {
             tool_execution_id: Some(tool_execution_id),
             receipt: Some(ExecutionReceipt {
+                code_authority: None,
                 status: ExecutionStatus::Indeterminate,
                 ..
             }),
@@ -947,6 +994,8 @@ fn state_handles_response_stream() {
 
     state.handle_message(FromAgentMessage::TurnCompleted {
         response_id: "done".to_string(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
     });
     assert!(!state.is_responding);
 }
@@ -1148,6 +1197,8 @@ fn explicit_turn_terminals_close_an_unfinished_headless_response() {
     for terminal in [
         FromAgentMessage::TurnCompleted {
             response_id: "done".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
         },
         FromAgentMessage::TurnInterrupted {
             response_id: "done".to_string(),
@@ -1984,4 +2035,43 @@ fn hello_rejects_protocol_versions_this_build_does_not_speak() {
         let message = unsupported_client_protocol_version_message(version);
         assert!(message.contains(HEADLESS_PROTOCOL_VERSION));
     }
+}
+
+#[test]
+fn coding_completion_survives_wire_and_headless_event_translation() {
+    let wire = serde_json::json!({
+        "type": "turn_completed", "response_id": "response-1",
+        "coding_completion": {
+            "taskId": "task-1", "workId": "work-1", "repositoryId": "repository-1",
+            "contractDigest": "digest-1", "generation": 1, "revision": "revision-1",
+            "implementationSessionId": "session-1", "commands": [], "readiness": [],
+            "review": null, "behavior": null, "handoffItems": []
+        },
+        "coding_child_records": [{
+            "organizationId": "org-1", "workspaceId": "workspace-1", "workId": "work-1",
+            "parentSessionId": "session-1", "childId": "child-1", "sessionId": "child-session",
+            "role": "review", "revision": "revision-1", "completedSuccessfully": true,
+            "reportDigest": "report-1"
+        }]
+    });
+    let message: FromAgentMessage = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+    let event = AgentState::default().handle_message(message).unwrap();
+    let AgentEvent::TurnCompleted {
+        coding_completion,
+        coding_child_records,
+        ..
+    } = event
+    else {
+        panic!("expected terminal event");
+    };
+    assert_eq!(coding_completion.unwrap().work_id, "work-1");
+    assert_eq!(coding_child_records[0].child_id, "child-1");
+    let legacy: FromAgentMessage = serde_json::from_value(serde_json::json!({
+        "type": "turn_completed", "response_id": "legacy"
+    }))
+    .unwrap();
+    assert!(matches!(legacy, FromAgentMessage::TurnCompleted {
+        coding_completion: None, coding_child_records, ..
+    } if coding_child_records.is_empty()));
 }

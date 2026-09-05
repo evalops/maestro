@@ -1546,6 +1546,8 @@ mod tests {
         state.apply_agent_message(
             &FromAgentMessage::TurnCompleted {
                 response_id: "turn-1".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
             4,
         );
@@ -1568,6 +1570,8 @@ mod tests {
         state.apply_agent_message(
             &FromAgentMessage::TurnCompleted {
                 response_id: "turn-1".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
             4,
         );
@@ -1664,6 +1668,8 @@ mod tests {
             "completed-thread",
             FromAgentMessage::TurnCompleted {
                 response_id: "turn-1".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             },
         );
         assert_eq!(completed.state.phase(), ThreadPhase::Completed);

@@ -1,0 +1,13 @@
+[package]
+name = "maestro-presentation"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Product-owned Dex Code widgets shared by the native TUI and component previews"
+
+[dependencies]
+ratatui.workspace = true
+maestro-ui.workspace = true
+maestro-interaction.workspace = true
+serde.workspace = true
+unicode-width.workspace = true

@@ -54,6 +54,7 @@ fn assert_signal_drains(signal: &str) {
         ])
         .stdout(Stdio::piped())
         .env("MAESTRO_WEB_REQUIRE_KEY", "0")
+        .env("MAESTRO_MODEL", "gpt-5.5")
         .spawn()
         .expect("spawn hosted runner");
     let stdout = child.stdout.take().expect("hosted runner stdout");

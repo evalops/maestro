@@ -4,6 +4,7 @@ exclude = ["examples/hooks/wasm-plugin"]
 members = [
     "packages/maestro-rs",
     "packages/runtime-rs",
+    "packages/coding-acceptance-rs",
     "packages/scenario-rs",
     "packages/session-history-rs",
     "packages/ai-rs",
@@ -11,6 +12,10 @@ members = [
     "packages/a2a-ledger-rs",
     "packages/execpolicy-rs",
     "packages/tui-rs",
+    "packages/ui-rs",
+    "packages/presentation-rs",
+    "packages/ui-preview-rs",
+    "packages/interaction-rs",
     "packages/ambient-agent-rs",
 ]
 
@@ -36,6 +41,7 @@ base64 = "0.22"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 ctor = "1.0.11"
+crossterm = "0.29"
 dirs = "6"
 dunce = "1"
 eventsource-stream = "0.2"
@@ -53,8 +59,14 @@ maestro-a2a-ledger = { path = "packages/a2a-ledger-rs" }
 maestro-runtime-gateway = { path = "packages/runtime-gateway-rs" }
 maestro-execpolicy = { path = "packages/execpolicy-rs" }
 maestro-runtime = { path = "packages/runtime-rs" }
+maestro-coding-acceptance = { path = "packages/coding-acceptance-rs" }
 maestro-session-history = { path = "packages/session-history-rs" }
 maestro-tui = { path = "packages/tui-rs" }
+maestro-ui = { path = "packages/ui-rs" }
+maestro-presentation = { path = "packages/presentation-rs" }
+unicode-width = "0.2"
+maestro-interaction = { path = "packages/interaction-rs" }
+ratatui = { version = "0.30.2", default-features = false }
 # Shared by maestro-tui and maestro-runtime-gateway; keep both crates on the
 # same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187
 # fix) can't land in one crate's Cargo.toml and silently miss the other.

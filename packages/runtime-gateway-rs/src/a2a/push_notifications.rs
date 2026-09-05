@@ -1,6 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Map, Value};
 use sha2::Sha256;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -39,7 +40,8 @@ use super::ledger::persist_a2a_tasks;
 use super::tasks::{
     A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY, A2ASendMessageRequest, a2a_agent_message,
     a2a_artifact_update_event, a2a_error_response, a2a_status_update_event, a2a_task_is_terminal,
-    a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id, publish_a2a_task_update,
+    a2a_task_tenant, a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id,
+    publish_a2a_task_update,
 };
 
 const A2A_PUSH_NOTIFICATION_CONFIG_LIMIT: usize = 16;
@@ -50,7 +52,9 @@ const PLATFORM_A2A_PUSH_PATH: &str = "/api/platform/a2a/push";
 /// is accepted only with a workspace-bound callback token (or a raw token
 /// pinned to the one workspace configured for this process) while the process
 /// is pinned to one configured organization. Every durable task it writes is
-/// rebound to that tenant.
+/// rebound to that tenant. Older agent-runtime senders bind the workspace in
+/// the token but omit the redundant organization header, so the configured
+/// organization is the fallback identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformA2APushServiceAuth {
     pub(crate) organization_id: String,
@@ -226,12 +230,13 @@ fn validate_platform_a2a_push_callback_auth(
     let Some(configured_organization) = platform_a2a_push_configured_organization() else {
         return Err(tenant_binding_required_response());
     };
-    let Some(organization_id) = platform_a2a_push_request_organization(head) else {
-        return Err(tenant_binding_required_response());
+    let organization_id = match platform_a2a_push_request_organization(head) {
+        Some(organization_id) if organization_id != configured_organization => {
+            return Err(tenant_binding_mismatch_response());
+        }
+        Some(organization_id) => organization_id,
+        None => configured_organization,
     };
-    if organization_id != configured_organization {
-        return Err(tenant_binding_mismatch_response());
-    }
     Ok(PlatformA2APushServiceAuth {
         organization_id,
         workspace_id,
@@ -695,15 +700,30 @@ pub(super) fn dispatch_a2a_push_notifications(task: &Value) {
     if configs.is_empty() {
         return;
     }
+    let tenant_headers = a2a_push_notification_tenant_headers(task);
     let payloads = a2a_push_notification_payloads(task);
     for config in configs {
         let payloads = payloads.clone();
+        let tenant_headers = tenant_headers.clone();
         std::mem::drop(tokio::task::spawn_blocking(move || {
             for payload in payloads {
-                send_a2a_push_notification(&payload, &config);
+                send_a2a_push_notification(&payload, &config, tenant_headers.as_ref());
             }
         }));
     }
+}
+
+/// Forward the task's independently persisted tenant scope to callback
+/// consumers. Do not infer an organization from a workspace: pre-tenant or
+/// partially bound tasks must not receive a synthesized callback identity.
+pub(crate) fn a2a_push_notification_tenant_headers(task: &Value) -> Option<HeaderMap> {
+    let (organization_id, workspace_id) = a2a_task_tenant(task);
+    let organization_id = HeaderValue::try_from(organization_id?).ok()?;
+    let workspace_id = HeaderValue::try_from(workspace_id?).ok()?;
+    let mut headers = HeaderMap::with_capacity(2);
+    headers.insert("X-Evalops-Organization-Id", organization_id);
+    headers.insert("X-Evalops-Workspace-Id", workspace_id);
+    Some(headers)
 }
 
 fn a2a_task_without_push_notification_configs(task: &Value) -> Value {
@@ -733,7 +753,7 @@ pub(crate) fn a2a_push_notification_payloads(task: &Value) -> Vec<Value> {
     payloads
 }
 
-fn send_a2a_push_notification(payload: &Value, config: &Value) {
+fn send_a2a_push_notification(payload: &Value, config: &Value, tenant_headers: Option<&HeaderMap>) {
     let Some(url) = config.get("url").and_then(Value::as_str) else {
         return;
     };
@@ -760,6 +780,9 @@ fn send_a2a_push_notification(payload: &Value, config: &Value) {
         .post(url)
         .header("Content-Type", "application/a2a+json")
         .body(body);
+    if let Some(tenant_headers) = tenant_headers {
+        request = request.headers(tenant_headers.clone());
+    }
     if let Some(token) = config.get("token").and_then(Value::as_str) {
         request = request.header("X-A2A-Notification-Token", token);
     }

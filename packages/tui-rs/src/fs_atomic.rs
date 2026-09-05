@@ -352,12 +352,12 @@ fn apply_existing_metadata(file: &File, metadata: fs::Metadata) -> io::Result<()
 /// propagated rather than silently ignored, since it means this function's
 /// entire reason for existing -- the power-loss guarantee -- was not met.
 #[cfg(unix)]
-fn sync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 

@@ -68,6 +68,7 @@ fn hosted_orb_snapshot_binds_server_and_owner_from_same_configuration() {
     let server_a = hosted_orb_server_for_snapshot("connection-a");
     let config_a = crate::mcp::McpConfig {
         servers: vec![server_a],
+        issues: Vec::new(),
     };
     let snapshot = hosted_orb_connection_snapshot_with(&config_a, |server| {
         let connection_ref = server
@@ -85,6 +86,7 @@ fn hosted_orb_snapshot_binds_server_and_owner_from_same_configuration() {
 
     let config_b = crate::mcp::McpConfig {
         servers: vec![hosted_orb_server_for_snapshot("connection-b")],
+        issues: Vec::new(),
     };
     assert_eq!(
         config_b.servers[0].connection_ref.as_deref(),
@@ -899,7 +901,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 65); // includes durable subagent control alongside parity, goals, context, and perf tools
+    assert_eq!(count, 66); // includes coding acceptance and durable subagent control
 }
 
 #[test]
@@ -3027,10 +3029,10 @@ async fn network_disabled_policy_blocks_mcp_initialization() {
         },
     );
 
-    let error = executor
-        .mcp_status()
-        .await
-        .expect_err("MCP initialization must fail before starting any transport");
+    let error = match executor.ensure_mcp_client().await {
+        Ok(_) => panic!("MCP initialization must fail before starting any transport"),
+        Err(error) => error,
+    };
     assert!(error.contains("disables network access"), "{error}");
 }
 
@@ -4237,4 +4239,160 @@ async fn in_process_executor_matches_direct_dispatch() {
     assert!(direct.success);
     assert!(seam_result.success);
     assert_eq!(direct.output, seam_result.output);
+}
+
+#[tokio::test]
+async fn directory_skills_follow_real_reads_and_revoked_trust_even_on_cache_hits() {
+    let dir = isolated_tempdir();
+    let _trust = trust_workspace_for_test(dir.path()).await;
+    let skill = dir.path().join("ui/.maestro/skills/forms");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: forms\ndescription: Build accessible forms\n---\nPRIVATE_BODY",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("ui/app.rs"), "fn main() {}").unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().into_owned());
+    let args = serde_json::json!({"path":"ui/app.rs"});
+    let result = executor.execute("read", &args, None, "read-skill").await;
+    assert!(result.success, "{:?}", result.error);
+    assert!(result.output.contains("Build accessible forms"));
+    assert!(!result.output.contains("PRIVATE_BODY"));
+    crate::config::set_workspace_trust_in_global_config(dir.path(), false).unwrap();
+    let replay = executor.execute("read", &args, None, "read-revoked").await;
+    assert!(replay.success);
+    assert!(!replay.output.contains("Build accessible forms"));
+    let missing = executor
+        .execute(
+            "read",
+            &serde_json::json!({"path":"ui/missing.rs"}),
+            None,
+            "read-missing",
+        )
+        .await;
+    assert!(!missing.success);
+    assert!(!missing.output.contains("available_skills"));
+}
+
+fn code_test_allow() -> crate::code_authority::CodeAuthorityDecision {
+    crate::code_authority::CodeAuthorityDecision {
+        allowed: true,
+        device_id: "verified-device".into(),
+        decision_id: "one-call".into(),
+        policy_id: "identity-code-hardware-authority".into(),
+        policy_version: "1".into(),
+        request_digest: "bound-request".into(),
+        expires_at_unix_seconds: i64::MAX,
+    }
+}
+
+#[tokio::test]
+async fn code_authority_denial_prevents_effect_and_cache_return() {
+    use crate::code_authority::CodeToolAuthority;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("protected.txt");
+    std::fs::write(&file, "original").unwrap();
+    let mut executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    executor.code_authority = Some(CodeToolAuthority::for_test(vec![
+        Err("revoked device".into()),
+        Ok(code_test_allow()),
+        Err("session revoked".into()),
+    ]));
+    let denied = executor
+        .execute(
+            "write",
+            &serde_json::json!({"file_path":file,"content":"changed"}),
+            None,
+            "write",
+        )
+        .await;
+    assert!(!denied.success);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    let args = serde_json::json!({"file_path":file});
+    assert!(
+        executor
+            .execute("read", &args, None, "read-first")
+            .await
+            .success
+    );
+    let denied = executor.execute("read", &args, None, "read-cached").await;
+    assert!(!denied.success);
+    assert!(!denied.output.contains("original"));
+    assert_eq!(executor.cache_stats().hits, 0);
+}
+
+#[tokio::test]
+async fn code_authority_expiry_prevents_dispatch_and_receipts_carry_evidence() {
+    use crate::code_authority::CodeToolAuthority;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("protected.txt");
+    std::fs::write(&file, "original").unwrap();
+    let mut executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let mut expired = code_test_allow();
+    expired.expires_at_unix_seconds = 0;
+    executor.code_authority = Some(CodeToolAuthority::for_test(vec![
+        Ok(expired),
+        Ok(code_test_allow()),
+    ]));
+    let denied = executor
+        .execute_with_receipt(
+            "write",
+            &serde_json::json!({"file_path":file,"content":"changed"}),
+            None,
+            "write",
+        )
+        .await;
+    assert!(!denied.to_legacy().success);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    let read = executor
+        .execute_with_receipt("read", &serde_json::json!({"file_path":file}), None, "read")
+        .await;
+    assert!(read.to_legacy().success);
+    assert_eq!(
+        read.receipt.code_authority.unwrap().device_id,
+        "verified-device"
+    );
+}
+
+#[tokio::test]
+async fn code_authority_direct_execution_rejects_expired_decisions_before_effects_and_cache() {
+    use crate::code_authority::CodeToolAuthority;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("protected.txt");
+    std::fs::write(&file, "original").unwrap();
+    let mut executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let mut expired = code_test_allow();
+    expired.expires_at_unix_seconds = 0;
+    executor.code_authority = Some(CodeToolAuthority::for_test(vec![
+        Ok(code_test_allow()),
+        Ok(expired.clone()),
+        Ok(expired),
+    ]));
+    let read_args = serde_json::json!({"file_path":file});
+    assert!(
+        executor
+            .execute("read", &read_args, None, "warm-cache")
+            .await
+            .success
+    );
+    let denied = executor
+        .execute(
+            "write",
+            &serde_json::json!({"file_path":file,"content":"changed"}),
+            None,
+            "expired-write",
+        )
+        .await;
+    assert!(
+        !denied.success,
+        "direct execution must retain and check its decision"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    let denied = executor
+        .execute("read", &read_args, None, "expired-cache")
+        .await;
+    assert!(!denied.success);
+    assert!(!denied.output.contains("original"));
+    assert_eq!(executor.cache_stats().hits, 0);
 }

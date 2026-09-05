@@ -559,6 +559,7 @@ pub async fn execute_scripted_scenario_with_options(
                     message,
                     fatal,
                     terminal,
+                    ..
                 } if fatal || terminal => bail!("scripted scenario execution failed: {message}"),
                 _ => {}
             }

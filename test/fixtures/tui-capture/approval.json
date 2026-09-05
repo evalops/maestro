@@ -1,0 +1,17 @@
+{
+  "name": "approval",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "Run printf release-ready."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Action Approval Required.*approve.*deny.*needs input"
+    }
+  ]
+}

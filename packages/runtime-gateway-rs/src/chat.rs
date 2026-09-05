@@ -712,6 +712,7 @@ pub(crate) async fn handle_chat_endpoint(
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
+            | FromAgent::BoostChanged { .. }
             | FromAgent::ModelChangeFailed { .. }
             // Output accounting for Codex-native operations; carries no
             // content for a chat client to render.
@@ -724,6 +725,7 @@ pub(crate) async fn handle_chat_endpoint(
                 record_id,
                 lineage_id,
                 record_status,
+                ..
             } => {
                 send_sse(
                     &mut stream,
@@ -1145,6 +1147,7 @@ pub(crate) async fn handle_chat_endpoint(
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 let request_ended = fatal || terminal;
                 if request_ended {
@@ -1631,6 +1634,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
+            | FromAgent::BoostChanged { .. }
             | FromAgent::ModelChangeFailed { .. }
             // Output accounting for Codex-native operations; carries no
             // content for a chat client to render.
@@ -1643,6 +1647,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 record_id,
                 lineage_id,
                 record_status,
+                ..
             } => {
                 send_ws_json(
                     &mut stream,
@@ -2053,6 +2058,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 let request_ended = fatal || terminal;
                 if request_ended {
@@ -2833,6 +2839,8 @@ mod chat_stream_tests {
         assert!(matches!(
             native_chat_terminal_status(&FromAgent::TurnCompleted {
                 response_id: "done".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             }),
             Some(Ok(()))
         ));
@@ -2872,6 +2880,8 @@ mod chat_stream_tests {
         assert!(native_chat_acknowledges_peer_messages(
             &FromAgent::TurnCompleted {
                 response_id: "completed".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
             }
         ));
     }

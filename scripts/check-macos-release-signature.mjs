@@ -34,10 +34,13 @@ export function validateDeveloperIdSignature(details, { expectedTeamIdentifier =
 	if (expectedAuthority && authority !== expectedAuthority) {
 		throw new Error("macOS release binary Developer ID authority does not match the release identity");
 	}
+	if (details?.Identifier !== "maestro") {
+		throw new Error("macOS release binary identifier must remain maestro to preserve Keychain access");
+	}
 	return {
 		authority,
 		teamIdentifier,
-		identifier: details?.Identifier || null,
+		identifier: details.Identifier,
 		codeDirectoryHash: details?.CDHash || null,
 	};
 }

@@ -335,30 +335,92 @@ fn state_classification_does_not_confuse_working_with_terminal() {
     assert!(!is_action_required_state("WORKING"));
 }
 
-/// KNOWN BUG (do not fix here; tests-only scope): `matches_state`'s
-/// bidirectional suffix check (`candidate.ends_with("_" + normalized)`)
-/// means any status string ending in `_COMPLETED`/`_FAILED`/`_REJECTED`/
-/// `_AUTH_REQUIRED` is treated as a match for that terminal state,
-/// regardless of a negating prefix. A peer (malicious or merely using a
-/// richer status vocabulary) that reports a state like `NOT_COMPLETED` is
-/// classified by `is_completed_state` as COMPLETED, and `wait_for_task`
-/// would stop polling and report success. This test pins the *intended*
-/// (negative) behavior and is `#[ignore]`d because it currently fails
-/// against the real implementation; see the task report for the
-/// standalone bug writeup.
+/// Negated and partial peer states must not end a wait or report success.
 #[test]
-#[ignore = "BUG: matches_state suffix check false-positives on negated states like NOT_COMPLETED (see task report)"]
 fn is_completed_state_does_not_false_positive_on_negated_state() {
-    assert!(
-        !is_completed_state("NOT_COMPLETED"),
-        "a state literally named NOT_COMPLETED must not be classified as completed"
-    );
-    assert!(
-        !is_failed_state("NOT_FAILED"),
-        "a state literally named NOT_FAILED must not be classified as failed"
-    );
-    assert!(
-        !is_action_required_state("NO_AUTH_REQUIRED"),
-        "a state literally named NO_AUTH_REQUIRED must not be classified as action-required"
-    );
+    for state in [
+        "NOT_COMPLETED",
+        "NOT_FAILED",
+        "NO_AUTH_REQUIRED",
+        "NOT_REJECTED",
+        "TASK_STATE_NOT_COMPLETED",
+        "TASK_STATE_NO_AUTH_REQUIRED",
+        "UNKNOWN_COMPLETED",
+        "TASK_STATE_TASK_STATE_COMPLETED",
+        "STATE_COMPLETED",
+        "REQUIRED",
+        "COMPLETED_EXTRA",
+        "",
+    ] {
+        assert!(!is_completed_state(state), "unexpected completion: {state}");
+        assert!(!is_failed_state(state), "unexpected failure: {state}");
+        assert!(
+            !is_action_required_state(state),
+            "unexpected action: {state}"
+        );
+        assert!(!is_final_state(state), "unexpected final state: {state}");
+        assert!(
+            !is_terminal_state(state),
+            "unexpected terminal state: {state}"
+        );
+    }
+}
+
+#[test]
+fn state_classification_preserves_aliases_and_wire_enum_prefix() {
+    type StateClassifier = fn(&str) -> bool;
+    let groups: &[(StateClassifier, &[&str])] = &[
+        (is_completed_state, &["COMPLETED", "SUCCEEDED", "SUCCESS"]),
+        (
+            is_failed_state,
+            &["FAILED", "CANCELED", "CANCELLED", "REJECTED"],
+        ),
+        (
+            is_action_required_state,
+            &["INPUT_REQUIRED", "AUTH_REQUIRED"],
+        ),
+    ];
+    for (classify, states) in groups {
+        for state in *states {
+            for variant in [
+                state.to_string(),
+                format!("TASK_STATE_{state}"),
+                format!("  {}  ", state.to_ascii_lowercase()),
+                state.to_ascii_lowercase().replace('_', "-"),
+                format!(
+                    "task state {}",
+                    state.to_ascii_lowercase().replace('_', " ")
+                ),
+            ] {
+                assert!(classify(&variant), "unrecognized state: {variant}");
+                assert!(is_terminal_state(&variant), "nonterminal state: {variant}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn wait_for_task_keeps_polling_after_negated_states() {
+    for state in ["NOT_COMPLETED", "NOT_FAILED", "NO_AUTH_REQUIRED"] {
+        let pending = json!({"id": "task-1", "status": {"state": state}}).to_string();
+        let unsupported = vec![
+            b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        ];
+        let (base_url, requests) = scripted_server(vec![
+            json_response(pending.clone()),
+            unsupported,
+            json_response(pending),
+            json_response(completed_task()),
+        ])
+        .await;
+        let task = wait_for_task(&test_config(base_url), "task-1", 10_000, 1)
+            .await
+            .expect("wait for actual completion");
+        assert_eq!(
+            task.status.state, "TASK_STATE_COMPLETED",
+            "premature return for {state}"
+        );
+        assert_eq!(requests.lock().expect("requests").len(), 4);
+    }
 }

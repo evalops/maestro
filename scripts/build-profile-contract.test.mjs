@@ -134,7 +134,15 @@ test("release and container entrypoints select optimized release", () => {
 	}
 	assert.match(ghcr, /docker\/build-push-action/);
 	if (mirror) assert.match(mirror, /npm run build:release/);
-	assert.match(release, /build-release-binary\.mjs --platform/);
+	if (isPublicProjection && release.includes("verify-staged-release.mjs")) {
+		assert.match(release, /node scripts\/verify-staged-release\.mjs release-binaries/);
+		assert.ok(release.indexOf("Authenticate artifacts and release receipts") < release.indexOf("Materialize native npm package"));
+		const verifier = readFileSync(new URL("./verify-staged-release.mjs", import.meta.url), "utf8");
+		assert.match(verifier, /cosign/);
+		assert.match(verifier, /maestro-release\.yml@refs\/heads\/main/);
+	} else {
+		assert.match(release, /build-release-binary\.mjs --platform/);
+	}
 });
 
 test("internal release artifacts are proven by exact-runtime conformance and passports", {

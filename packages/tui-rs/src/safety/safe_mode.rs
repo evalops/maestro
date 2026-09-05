@@ -156,7 +156,7 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
     }
 
     Err(format!(
-        "Plan mode requires a plan before executing {tool_name}. Create or update a todo checklist first (or leave plan mode with Shift+Tab / /plan off)."
+        "Plan mode requires a plan before executing {tool_name}. Create or update a todo checklist first (or leave plan mode with /plan off)."
     ))
 }
 

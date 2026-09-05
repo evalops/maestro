@@ -141,6 +141,9 @@ pub struct ManagedGatewayReceipt {
     pub record_id: String,
     pub lineage_id: String,
     pub record_status: String,
+    /// Exact request system prompt; absent on unsuccessful HTTP responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_prompt_sha256: Option<String>,
 }
 
 /// Streaming event from the AI
@@ -171,6 +174,8 @@ pub enum StreamEvent {
         /// Stop reason from the API (`MaxTokens` indicates overflow)
         stop_reason: Option<StopReason>,
     },
+    /// Provider-reported USD cost; absent pricing is never inferred as zero.
+    ProviderCost { cost_usd: f64 },
     /// Usage stats
     Usage {
         input_tokens: u64,

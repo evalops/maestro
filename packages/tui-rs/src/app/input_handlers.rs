@@ -24,17 +24,41 @@ impl App {
         code: KeyCode,
         modifiers: CrosstermModifiers,
     ) -> Result<()> {
+        if self.active_modal != ActiveModal::ThemeSelector {
+            self.cancel_theme_preview();
+        }
         let ctrl = modifiers.contains(CrosstermModifiers::CONTROL);
         let alt = modifiers.contains(CrosstermModifiers::ALT);
         let shift = modifiers.contains(CrosstermModifiers::SHIFT);
 
+        // Suggestions only fill an empty composer; a separate Enter still submits.
+        if self.active_modal == ActiveModal::None
+            && self.state.input().is_empty()
+            && matches!(code, KeyCode::Right | KeyCode::Tab)
+            && !ctrl
+            && !alt
+        {
+            let candidate = self.dex_next_prompt();
+            if let Some(prompt) = self.dex_delight.suggestion.take(candidate) {
+                self.state.set_input(prompt);
+                self.update_slash_state();
+                return Ok(());
+            }
+        }
+        if self.active_modal == ActiveModal::None && matches!(code, KeyCode::Char(_) | KeyCode::Esc)
+        {
+            self.dex_delight.suggestion.dismiss();
+            self.dex_delight.notice = None;
+        }
         // Handle modal-specific input first
         match self.active_modal {
+            ActiveModal::DexAppearance => return self.handle_dex_appearance_key(code),
             ActiveModal::FileSearch => return self.handle_file_search_key(code, ctrl).await,
             ActiveModal::SessionSwitcher => {
                 return self.handle_session_switcher_key(code, ctrl).await;
             }
             ActiveModal::Operations => return self.handle_operations_key(code),
+            ActiveModal::McpManager => return self.handle_mcp_manager_key(code).await,
             ActiveModal::CommandPalette => {
                 return self.handle_command_palette_key(code, ctrl).await;
             }
@@ -55,10 +79,25 @@ impl App {
             return Ok(());
         }
 
-        // Grok-style Shift+Tab: cycle Normal → Plan → Always-approve
-        // (only when not typing a slash command and input is empty)
-        if matches!(code, KeyCode::BackTab) && self.state.input().is_empty() && !self.state.busy {
-            self.cycle_interaction_mode();
+        if code == KeyCode::Char('b') && ctrl && !alt {
+            self.handle_command_action(CommandAction::Boost).await;
+            return Ok(());
+        }
+
+        // Apply through the same runtime/session path as /thinking. Modal focus
+        // navigation is handled above; drafts and in-flight turns stay intact.
+        if (code == KeyCode::BackTab
+            && (modifiers.is_empty() || modifiers == CrosstermModifiers::SHIFT))
+            || (code == KeyCode::Tab && modifiers == CrosstermModifiers::SHIFT)
+        {
+            let level = crate::model_dynamics::next_thinking_level(
+                &self.current_model,
+                self.current_thinking_level,
+            );
+            self.handle_command_action(CommandAction::SetThinkingLevel(
+                level.label().to_ascii_lowercase(),
+            ))
+            .await;
             return Ok(());
         }
 
@@ -155,6 +194,11 @@ impl App {
                 // Keyboard shortcuts help
                 self.shortcuts_help.show();
                 self.active_modal = ActiveModal::ShortcutsHelp;
+            }
+            KeyCode::Char('?') if self.state.input().is_empty() && !ctrl && !alt => {
+                // Match the discoverable command entry point used by other
+                // agent CLIs while preserving '?' as ordinary prompt text.
+                self.show_command_palette();
             }
 
             // @ trigger for file search
@@ -465,9 +509,14 @@ impl App {
             ActiveModal::SessionSwitcher => self.session_switcher.insert_str(&text),
             ActiveModal::CommandPalette => self.command_palette.insert_str(&text),
             ActiveModal::ModelSelector => self.model_selector.insert_str(&text),
-            ActiveModal::ThemeSelector => self.theme_selector.insert_str(&text),
+            ActiveModal::ThemeSelector => {
+                let outcome = self.theme_selector.insert_str(&text);
+                self.apply_theme_picker_outcome(outcome);
+            }
             ActiveModal::Setup => self.setup_modal.insert_str(&text),
             ActiveModal::None => {
+                self.dex_delight.suggestion.dismiss();
+                self.dex_delight.notice = None;
                 self.state.insert_paste(raw);
                 self.update_slash_state();
             }
@@ -616,6 +665,153 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) async fn handle_mcp_manager_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc if self.mcp_manager.in_catalog() => self.mcp_manager.leave_catalog(),
+            KeyCode::Esc => self.active_modal = ActiveModal::None,
+            KeyCode::Up => self.mcp_manager.move_up(),
+            KeyCode::Down => self.mcp_manager.move_down(),
+            KeyCode::Enter if self.mcp_manager.in_catalog() => {
+                if let Some(entry) = self.mcp_manager.selected_catalog() {
+                    self.apply_mcp_manager_config(vec![
+                        "registry".to_string(),
+                        "add".to_string(),
+                        entry.id.to_string(),
+                    ])
+                    .await;
+                    self.mcp_manager.leave_catalog();
+                }
+            }
+            KeyCode::Enter => self.mcp_manager.toggle_tools(),
+            KeyCode::Char('r' | 'R') => {
+                if let Some(name) = self
+                    .mcp_manager
+                    .selected()
+                    .map(|status| status.name.clone())
+                {
+                    self.tool_executor.retry_mcp_server(&name).await;
+                    self.last_mcp_status_refresh = None;
+                    self.refresh_mcp_badges_with_force(true).await;
+                    self.state.status = Some(format!("Retrying MCP server {name}"));
+                }
+            }
+            KeyCode::Char(' ') => {
+                let selected = self.mcp_manager.selected().cloned();
+                if let Some(status) = selected {
+                    if !mcp_manager_entry_is_mutable(&status) {
+                        self.state.status = Some(format!(
+                            "MCP server {} is controlled by {} configuration and is read-only here",
+                            status.name,
+                            mcp_scope_arg(status.scope)
+                        ));
+                        return Ok(());
+                    }
+                    if let Some((tool, enabled)) = self
+                        .mcp_manager
+                        .selected_tool()
+                        .map(|(tool, enabled)| (tool.to_string(), enabled))
+                    {
+                        self.apply_mcp_manager_config(vec![
+                            "tool".to_string(),
+                            status.name,
+                            tool,
+                            if enabled { "off" } else { "on" }.to_string(),
+                            "--scope".to_string(),
+                            mcp_scope_arg(status.scope).to_string(),
+                        ])
+                        .await;
+                    } else {
+                        self.apply_mcp_manager_config(vec![
+                            if status.state == crate::tools::McpLifecycleState::Disabled {
+                                "enable"
+                            } else {
+                                "disable"
+                            }
+                            .to_string(),
+                            status.name,
+                            "--scope".to_string(),
+                            mcp_scope_arg(status.scope).to_string(),
+                        ])
+                        .await;
+                    }
+                }
+            }
+            KeyCode::Char('a' | 'A') => {
+                self.active_modal = ActiveModal::None;
+                self.state.set_input("/mcp config add ");
+                self.update_slash_state();
+            }
+            KeyCode::Char('c' | 'C') => self.mcp_manager.enter_catalog(),
+            KeyCode::Char('o' | 'O') => {
+                if let Some(status) = self.mcp_manager.selected().cloned() {
+                    if !mcp_manager_entry_is_mutable(&status) {
+                        self.state.status = Some(format!(
+                            "MCP server {} is controlled by {} configuration and is read-only here",
+                            status.name,
+                            mcp_scope_arg(status.scope)
+                        ));
+                        return Ok(());
+                    }
+                    self.active_modal = ActiveModal::None;
+                    self.state
+                        .set_input(&format!("/mcp config auth {}", status.name));
+                    self.update_slash_state();
+                }
+            }
+            KeyCode::Char('x' | 'X') => {
+                if let Some(status) = self.mcp_manager.selected().cloned() {
+                    if !mcp_manager_entry_is_mutable(&status) {
+                        self.state.status = Some(format!(
+                            "MCP server {} is controlled by {} configuration and is read-only here",
+                            status.name,
+                            mcp_scope_arg(status.scope)
+                        ));
+                        return Ok(());
+                    }
+                    self.apply_mcp_manager_config(vec!["clear-auth".to_string(), status.name])
+                        .await;
+                }
+            }
+            KeyCode::Char('d' | 'D') => {
+                if let Some(status) = self.mcp_manager.selected().cloned() {
+                    if !mcp_manager_entry_is_mutable(&status) {
+                        self.state.status = Some(format!(
+                            "MCP server {} is controlled by {} configuration and is read-only here",
+                            status.name,
+                            mcp_scope_arg(status.scope)
+                        ));
+                        return Ok(());
+                    }
+                    self.apply_mcp_manager_config(vec![
+                        "remove".to_string(),
+                        status.name,
+                        "--scope".to_string(),
+                        mcp_scope_arg(status.scope).to_string(),
+                    ])
+                    .await;
+                }
+            }
+            KeyCode::Char('p' | 'P') => {
+                self.active_modal = ActiveModal::None;
+                self.state.set_input("/mcp config permissions list");
+                self.update_slash_state();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn apply_mcp_manager_config(&mut self, args: Vec<String>) {
+        match crate::mcp_config_cli::apply_mcp_config(&args) {
+            Ok(message) => {
+                self.state.status = Some(message);
+                self.last_mcp_status_refresh = None;
+                self.refresh_mcp_badges_with_force(true).await;
+            }
+            Err(error) => self.state.status = Some(format!("MCP configuration failed: {error}")),
+        }
     }
 
     /// Handle keys in command palette modal
@@ -772,6 +968,24 @@ impl App {
                 }
                 self.active_modal = ActiveModal::None;
             }
+            KeyCode::Char(mode @ ('c' | 'b')) => {
+                if let Some(checkpoint) = self.rewind_picker.confirm() {
+                    let total = self
+                        .session_manager
+                        .flush()
+                        .ok()
+                        .and_then(|()| self.session_manager.current_session_path())
+                        .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
+                        .map(|session| session.stats.user_messages);
+                    match (checkpoint.user_turn_index, total) {
+                        (Some(index), Some(total)) if index < total =>
+                            self.rewind_saved_turns(total - index, false, mode == 'b'),
+                        _ => self.state.error = Some(
+                            "This checkpoint has no saved conversation turn. Use Enter to restore files.".into()),
+                    }
+                }
+                self.active_modal = ActiveModal::None;
+            }
             KeyCode::Up => {
                 self.rewind_picker.move_up();
             }
@@ -811,7 +1025,24 @@ impl App {
     /// falling back to the current error surface when the transcript is empty.
     pub(super) fn open_detail_view(&mut self) {
         match self.latest_detail_target() {
-            Some((title, content)) => {
+            Some((title, content, include_evidence)) => {
+                let content = if !self.state.busy && include_evidence {
+                    let changed_files = self.state.session_id.as_deref().and_then(|id| {
+                        crate::checkpoints::CheckpointStore::new(
+                            self.session_manager.sessions_dir(),
+                            id,
+                        )
+                        .latest()
+                        .map(|checkpoint| checkpoint.entries.len())
+                    });
+                    let evidence = crate::components::activity::evidence_summary(
+                        &self.state.messages,
+                        changed_files,
+                    );
+                    format!("Session evidence:\n{evidence}\n\n{content}")
+                } else {
+                    content
+                };
                 self.detail_view = Some(DetailView::new(title, content));
                 self.detail_return_modal = ActiveModal::None;
                 self.active_modal = ActiveModal::DetailView;
@@ -823,8 +1054,10 @@ impl App {
     }
 
     /// Pick the most recent expandable item and build its full-content view.
-    fn latest_detail_target(&self) -> Option<(String, String)> {
+    fn latest_detail_target(&self) -> Option<(String, String, bool)> {
         for message in self.state.messages.iter().rev() {
+            let include_evidence =
+                message.role == MessageRole::Assistant && message.kind != MessageKind::System;
             if let Some(call) = message
                 .tool_calls
                 .iter()
@@ -834,10 +1067,14 @@ impl App {
                 let args = serde_json::to_string_pretty(&call.args)
                     .unwrap_or_else(|_| call.args.to_string());
                 let content = format!("Args:\n{args}\n\nOutput:\n{}", call.output);
-                return Some((format!("Tool: {}", call.tool), content));
+                return Some((format!("Tool: {}", call.tool), content, include_evidence));
             }
             if !message.thinking.trim().is_empty() {
-                return Some(("Thinking".to_string(), message.thinking.clone()));
+                return Some((
+                    "Thinking".to_string(),
+                    message.thinking.clone(),
+                    include_evidence,
+                ));
             }
             if !message.content.trim().is_empty() {
                 let title = match message.kind {
@@ -845,13 +1082,13 @@ impl App {
                     _ if message.role == MessageRole::User => "User message",
                     _ => "Assistant message",
                 };
-                return Some((title.to_string(), message.content.clone()));
+                return Some((title.to_string(), message.content.clone(), include_evidence));
             }
         }
         self.state
             .error
             .as_ref()
-            .map(|error| ("Error".to_string(), error.clone()))
+            .map(|error| ("Error".to_string(), error.clone(), false))
     }
 
     /// Handle keys in approval modal
@@ -881,6 +1118,31 @@ impl App {
             return self.handle_batched_approval_key(code).await;
         }
         match code {
+            KeyCode::Char('s' | 'S' | 'w' | 'W')
+                if self
+                    .approval_controller
+                    .current()
+                    .is_some_and(|request| crate::mcp::McpClient::is_mcp_tool(&request.tool)) =>
+            {
+                let persistent = matches!(code, KeyCode::Char('w' | 'W'));
+                if let Some((request, _decision)) =
+                    self.approval_controller.decide(ApprovalDecision::Approve)
+                {
+                    if let Err(error) = self
+                        .tool_executor
+                        .remember_mcp_permission(&request.tool, persistent)
+                    {
+                        self.state.status = Some(format!(
+                            "Approved once; could not remember MCP permission: {error}"
+                        ));
+                    }
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
+                }
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 if let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Approve)
@@ -932,6 +1194,32 @@ impl App {
         match code {
             KeyCode::Up => self.approval_controller.select_prev(),
             KeyCode::Down => self.approval_controller.select_next(),
+            KeyCode::Char('s' | 'S' | 'w' | 'W')
+                if self
+                    .approval_controller
+                    .selected_request()
+                    .is_some_and(|request| crate::mcp::McpClient::is_mcp_tool(&request.tool)) =>
+            {
+                let persistent = matches!(code, KeyCode::Char('w' | 'W'));
+                if let Some((request, _decision)) = self
+                    .approval_controller
+                    .decide_selected(ApprovalDecision::Approve)
+                {
+                    if let Err(error) = self
+                        .tool_executor
+                        .remember_mcp_permission(&request.tool, persistent)
+                    {
+                        self.state.status = Some(format!(
+                            "Approved once; could not remember MCP permission: {error}"
+                        ));
+                    }
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
+                }
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 if let Some((request, _decision)) = self
                     .approval_controller
@@ -1045,43 +1333,44 @@ impl App {
         code: KeyCode,
         ctrl: bool,
     ) -> Result<()> {
-        match code {
-            KeyCode::Esc => {
-                self.theme_selector.hide();
-                self.active_modal = ActiveModal::None;
-            }
-            KeyCode::Enter => {
-                if let Some(theme_name) = self.theme_selector.confirm() {
-                    // Set the new theme
-                    if crate::themes::set_theme_by_name(&theme_name).is_ok() {
-                        self.state.status = Some(format!("Theme: {theme_name}"));
-                    } else {
-                        self.state.error = Some(format!("Unknown theme: {theme_name}"));
-                    }
-                }
-                self.active_modal = ActiveModal::None;
-            }
-            KeyCode::Up => {
-                self.theme_selector.move_up();
-            }
-            KeyCode::Down => {
-                self.theme_selector.move_down();
-            }
-            KeyCode::Char(c) if !ctrl => {
-                self.theme_selector.insert_char(c);
-            }
-            KeyCode::Backspace => {
-                self.theme_selector.backspace();
-            }
-            KeyCode::Left => {
-                self.theme_selector.move_left();
-            }
-            KeyCode::Right => {
-                self.theme_selector.move_right();
-            }
-            _ => {}
-        }
+        let outcome = self.theme_selector.handle_key(code, ctrl);
+        self.apply_theme_picker_outcome(outcome);
         Ok(())
+    }
+
+    /// A forced modal replacement cancels an unconfirmed theme transaction.
+    pub(super) fn cancel_theme_preview(&mut self) {
+        if self.theme_selector.is_visible() {
+            if let Some(original) = self.theme_selector.original_theme() {
+                crate::themes::set_theme(original.clone());
+            }
+            self.theme_selector.hide();
+        }
+    }
+
+    fn apply_theme_picker_outcome(&mut self, outcome: maestro_ui::PickerOutcome<String>) {
+        use maestro_ui::PickerOutcome;
+        match self.theme_selector.theme_for(&outcome) {
+            Ok(Some(theme)) => {
+                crate::themes::set_theme(theme);
+                if let PickerOutcome::Selected(name) = &outcome {
+                    self.state.status = Some(format!("Theme: {name}"));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if let Some(original) = self.theme_selector.original_theme() {
+                    crate::themes::set_theme(original.clone());
+                }
+                self.state.error = Some(format!("Could not apply theme: {error}"));
+            }
+        }
+        if matches!(
+            outcome,
+            PickerOutcome::Selected(_) | PickerOutcome::Cancelled
+        ) {
+            self.active_modal = ActiveModal::None;
+        }
     }
 
     pub(super) async fn handle_setup_modal_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
@@ -1207,6 +1496,23 @@ impl App {
         }
         Ok(())
     }
+}
+
+fn mcp_scope_arg(scope: crate::mcp::McpConfigScope) -> &'static str {
+    match scope {
+        crate::mcp::McpConfigScope::User => "user",
+        crate::mcp::McpConfigScope::Local => "local",
+        crate::mcp::McpConfigScope::Project => "project",
+        crate::mcp::McpConfigScope::Managed => "managed",
+        crate::mcp::McpConfigScope::Enterprise => "enterprise",
+    }
+}
+
+fn mcp_manager_entry_is_mutable(status: &crate::tools::McpServerStatus) -> bool {
+    !matches!(
+        status.scope,
+        crate::mcp::McpConfigScope::Managed | crate::mcp::McpConfigScope::Enterprise
+    ) && status.state != crate::tools::McpLifecycleState::ConfigError
 }
 
 fn is_focus_view_binding(code: KeyCode, modifiers: CrosstermModifiers) -> bool {

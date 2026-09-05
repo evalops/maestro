@@ -8,7 +8,7 @@ const REQUIRED_TEXT = new Map([
 	["README.md", ["# Deixic Code", "deixic-code --version", "@evalops/maestro"]],
 	["docs/DEIXIC_CODE_MIGRATION.md", ["## Compatibility matrix", "@evalops/deixic-code", "`maestro`"]],
 	["packages/maestro-rs/src/main.rs", ["Deixic Code\\n\\nUsage:", "deixic-code setup", "maestro remains available as an alias"]],
-	["packages/tui-rs/src/components/deixic_logo.rs", ["shimmer_spans(\"Deixic Code\")"]],
+	["packages/presentation-rs/src/components/deixic_logo.rs", ["pub const PRODUCT_TITLE: &str = \"Dex Code\";", "shimmer_spans(PRODUCT_TITLE)"]],
 	["CONTRIBUTING.md", ["# Contributing to Deixic Code"]],
 	["docs/THREAT_MODEL.md", ["# Deixic Code Threat Model"]],
 	["docs/ENTERPRISE.md", ["# Deixic Code Enterprise"]],
@@ -82,7 +82,7 @@ const FORBIDDEN_DISPLAY_TEXT = new Map([
 	["examples/hooks/wasm-plugin/Cargo.toml", ["hook plugin for Maestro"]],
 	["packages/web/dist/index.html", ["<title>Maestro", "Loading Maestro"]],
 	["packages/maestro-rs/src/main.rs", ["const HELP: &str = \"Maestro", "Usage:\\n  maestro setup"]],
-	["packages/tui-rs/src/components/deixic_logo.rs", ["shimmer_spans(\"Maestro\")"]],
+	["packages/presentation-rs/src/components/deixic_logo.rs", ["shimmer_spans(\"Maestro\")"]],
 	["packages/jetbrains-plugin/src/main/resources/META-INF/plugin.xml", ["<name>Maestro</name>", "text=\"Focus Maestro\""]],
 ]);
 

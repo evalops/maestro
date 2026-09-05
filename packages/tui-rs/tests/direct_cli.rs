@@ -26,6 +26,7 @@ fn direct_binary_supported_noninteractive_commands_exit_successfully() {
         (&["init", "--help"], "init"),
         (&["remote", "--help"], "remote"),
         (&["skill", "--help"], "skill"),
+        (&["specialists", "--help"], "specialists"),
         (&["update", "--help"], "update"),
     ];
 
@@ -40,4 +41,34 @@ fn direct_binary_supported_noninteractive_commands_exit_successfully() {
             "{args:?}: expected help output to contain {marker:?}"
         );
     }
+}
+
+#[test]
+fn specialists_are_discoverable_and_unknown_selection_fails_before_inference() {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(maestro_tui_binary())
+        .args(["specialists", "list", "--json"])
+        .env("MAESTRO_HOME", home.path())
+        .current_dir(home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let profiles: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for name in ["security", "product", "performance"] {
+        assert!(
+            profiles
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == name)
+        );
+    }
+    let output = Command::new(maestro_tui_binary())
+        .args(["exec", "--specialist", "does-not-exist", "review"])
+        .env("MAESTRO_HOME", home.path())
+        .current_dir(home.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("authorized scope"));
 }

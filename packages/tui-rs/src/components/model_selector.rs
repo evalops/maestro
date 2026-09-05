@@ -2,12 +2,15 @@
 //!
 //! Provides a UI for selecting AI models.
 
+use crossterm::event::KeyCode;
+use maestro_ui::{ActionPicker, KeyHint, Modal, ModalSize, PickerOptions, PickerStatus};
+
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::Rect,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::ListItem,
 };
 
 pub use crate::model_catalog::{ModelInfo, ModelVerification, available_models};
@@ -80,6 +83,13 @@ fn model_matches_current(
         || (canonical_current.is_none() && raw_current == model.id && model.provider != "vertex-ai")
 }
 
+#[derive(Clone)]
+struct ModelRow {
+    // Provider-qualified catalog identity is distinct from the execution route.
+    id: String,
+    model_index: Option<usize>,
+}
+
 /// Model selector modal state
 pub struct ModelSelector {
     /// Stable catalog snapshot used as the base for replacing discovery batches.
@@ -88,24 +98,16 @@ pub struct ModelSelector {
     models: Vec<ModelInfo>,
     /// Latest applied local discovery generation.
     discovery_generation: u64,
-    /// Current search query
-    query: String,
-    /// Cursor position in query
-    cursor: usize,
-    /// Filtered models
+    /// Shared transient query, selection, and scrolling over ordered result rows.
+    picker: ActionPicker<ModelRow>,
+    /// Product-owned focused/search result ordering.
     filtered: Vec<usize>,
-    /// Selected index (in filtered list; may point at the show-all affordance row)
-    selected: usize,
-    /// Whether the modal is visible
-    visible: bool,
     /// Current model ID (for highlighting)
     current_model: Option<String>,
     /// Whether the full catalog is shown instead of the focused slice
     show_all: bool,
     /// Whether a "show all N models" affordance row follows the filtered rows
     show_all_affordance: bool,
-    /// List state for scrolling
-    list_state: ListState,
     /// When false, `show` keeps an injected fixture catalog (tests).
     reload_live_catalog: bool,
 }
@@ -126,15 +128,15 @@ impl ModelSelector {
             catalog_models: models.clone(),
             models,
             discovery_generation: 0,
-            query: String::new(),
-            cursor: 0,
+            picker: ActionPicker::new(Vec::new())
+                .identified_by(|row: &ModelRow| row.id.as_str())
+                .expect("empty model rows are unique")
+                // Product filtering orders the focused slice and special row below.
+                .matching(|_, _| true),
             filtered,
-            selected: 0,
-            visible: false,
             current_model: None,
             show_all: false,
             show_all_affordance: false,
-            list_state: ListState::default(),
             reload_live_catalog: true,
         }
     }
@@ -152,7 +154,7 @@ impl ModelSelector {
     /// Set the current model (for highlighting)
     pub fn set_current_model(&mut self, model_id: Option<String>) {
         self.current_model = model_id;
-        if self.visible {
+        if self.picker.is_open() {
             self.filter();
         }
     }
@@ -213,8 +215,6 @@ impl ModelSelector {
         if generation <= self.discovery_generation {
             return false;
         }
-        let selected_show_all = self.selected_show_all();
-        let selected_route = self.selected_model_id();
         let active_discovered_model = self.current_model.as_deref().and_then(|current| {
             let current_route = canonical_current_route(current, &self.models)?;
             self.models
@@ -266,40 +266,22 @@ impl ModelSelector {
             }
         }
         self.filter();
-        if selected_show_all {
-            self.selected = if self.show_all_affordance {
-                self.filtered.len()
-            } else {
-                0
-            };
-            self.list_state
-                .select((!self.filtered.is_empty()).then_some(self.selected));
-        } else if let Some(route) = selected_route {
-            if let Some(position) = self.filtered.iter().position(|&idx| {
-                self.models
-                    .get(idx)
-                    .is_some_and(|model| selection_model_id(model) == route)
-            }) {
-                self.selected = position;
-                self.list_state.select(Some(position));
-            } else {
-                self.selected = 0;
-                self.list_state
-                    .select((!self.filtered.is_empty()).then_some(0));
-            }
-        }
         true
     }
 
     /// Show the modal
     pub fn show(&mut self) {
         self.reload_catalog_from_cache();
-        self.visible = true;
-        self.query.clear();
-        self.cursor = 0;
-        self.selected = 0;
+        self.picker.open();
         self.show_all = false;
         self.filter();
+        // Opening chooses the freshly ordered focused row (the active model),
+        // while later refreshes preserve the highlighted identity.
+        if let Some(&index) = self.filtered.first() {
+            let model = &self.models[index];
+            self.picker
+                .select_id(&format!("{}/{}", model.provider, model.id));
+        }
     }
 
     /// Pick up a completed background catalog refresh without dropping local
@@ -333,85 +315,47 @@ impl ModelSelector {
 
     /// Hide the modal
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.picker.close();
     }
 
     /// Check if visible
     #[must_use]
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.picker.is_open()
     }
 
-    /// Insert a character
+    /// Edit through the shared Unicode cursor path, then apply product ordering.
     pub fn insert_char(&mut self, c: char) {
-        self.query.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
+        self.picker.handle_key(KeyCode::Char(c), false);
         self.filter();
     }
-
-    /// Insert a string at the cursor position (e.g. pasted text).
-    pub fn insert_str(&mut self, s: &str) {
-        self.query.insert_str(self.cursor, s);
-        self.cursor += s.len();
+    pub fn insert_str(&mut self, text: &str) {
+        self.picker.insert_str(text);
         self.filter();
     }
-
-    /// Delete character before cursor
     pub fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.query[..self.cursor]
-                .chars()
-                .last()
-                .map_or(0, char::len_utf8);
-            self.query.remove(self.cursor - prev);
-            self.cursor -= prev;
-            self.filter();
-        }
+        self.picker.handle_key(KeyCode::Backspace, false);
+        self.filter();
     }
-
-    /// Move cursor left
     pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.query[..self.cursor]
-                .chars()
-                .last()
-                .map_or(0, char::len_utf8);
-            self.cursor -= prev;
-        }
+        self.picker.handle_key(KeyCode::Left, false);
     }
-
-    /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.query.len() {
-            let next = self.query[self.cursor..]
-                .chars()
-                .next()
-                .map_or(0, char::len_utf8);
-            self.cursor += next;
-        }
+        self.picker.handle_key(KeyCode::Right, false);
     }
-
-    /// Move selection up
     pub fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-            self.list_state.select(Some(self.selected));
-        }
+        self.picker.handle_key(KeyCode::Up, false);
     }
-
-    /// Move selection down
     pub fn move_down(&mut self) {
-        let rows = self.filtered.len() + usize::from(self.show_all_affordance);
-        if self.selected + 1 < rows {
-            self.selected += 1;
-            self.list_state.select(Some(self.selected));
-        }
+        self.picker.handle_key(KeyCode::Down, false);
     }
 
     /// Whether the selection is on the "show all models" affordance row.
     #[must_use]
     pub fn selected_show_all(&self) -> bool {
-        self.show_all_affordance && self.selected == self.filtered.len()
+        self.picker
+            .selected()
+            .is_some_and(|row| row.model_index.is_none())
     }
 
     /// Toggle between the focused slice and the full catalog.
@@ -423,9 +367,10 @@ impl ModelSelector {
     /// Get the selected model
     #[must_use]
     pub fn selected_model(&self) -> Option<&ModelInfo> {
-        self.filtered
-            .get(self.selected)
-            .and_then(|&idx| self.models.get(idx))
+        self.picker
+            .selected()
+            .and_then(|row| row.model_index)
+            .and_then(|idx| self.models.get(idx))
     }
 
     /// Get the selected model route, preserving provider identity for shared
@@ -449,7 +394,7 @@ impl ModelSelector {
 
     /// Filter models based on query
     fn filter(&mut self) {
-        let query = self.query.to_lowercase();
+        let query = self.picker.query().to_lowercase();
         let full: Vec<usize> = self
             .models
             .iter()
@@ -477,16 +422,25 @@ impl ModelSelector {
             self.show_all_affordance = false;
         }
 
-        // Reset selection if out of bounds (the affordance row counts)
-        let rows = self.filtered.len() + usize::from(self.show_all_affordance);
-        if self.selected >= rows {
-            self.selected = 0;
+        let mut rows: Vec<_> = self
+            .filtered
+            .iter()
+            .map(|&index| ModelRow {
+                id: format!("{}/{}", self.models[index].provider, self.models[index].id),
+                model_index: Some(index),
+            })
+            .collect();
+        if self.show_all_affordance {
+            rows.push(ModelRow {
+                id: "show-all".into(),
+                model_index: None,
+            });
         }
-        // Sync list state
-        if rows == 0 {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(self.selected));
+        self.picker.set_status(PickerStatus::Ready);
+        if let Err(error) = self.picker.replace_items(rows) {
+            self.picker.set_status(PickerStatus::Error(format!(
+                "Could not update models: {error}"
+            )));
         }
     }
 
@@ -540,116 +494,71 @@ impl ModelSelector {
 
     /// Render the modal
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        if !self.visible {
+        if !self.picker.is_open() {
             return;
         }
 
-        // Calculate modal size
-        let modal_width = 60.min(area.width.saturating_sub(4));
-        let modal_height = 22.min(area.height.saturating_sub(4));
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear the area
-        frame.render_widget(Clear, modal_area);
-
-        // Create the outer block
-        let block = Block::default()
-            .title(" Select Model ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // Layout: search box + list + key hints
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-        // Search input
-        let search_block = Block::default()
-            .title(" Search ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let search_text = if self.query.is_empty() {
-            Paragraph::new("Type to filter models...")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(search_block)
-        } else {
-            Paragraph::new(self.query.as_str())
-                .style(Style::default().fg(Color::White))
-                .block(search_block)
-        };
-
-        frame.render_widget(search_text, chunks[0]);
+        let theme = crate::themes::current_ui_theme();
+        let inner = Modal::sized("Select Model", ModalSize::Standard)
+            .theme(theme)
+            .render(frame, area);
 
         // Model list
         let canonical_current = self
             .current_model
             .as_deref()
             .and_then(|current| canonical_current_route(current, &self.models));
-        let mut items: Vec<ListItem> = self
-            .filtered
-            .iter()
-            .map(|&model_idx| {
-                let model = &self.models[model_idx];
-                let is_current = self.current_model.as_deref().is_some_and(|current| {
+        let models = &self.models;
+        let current_model = &self.current_model;
+        self.picker.render(
+            frame,
+            inner,
+            theme,
+            PickerOptions {
+                placeholder: "Type to filter models...",
+                empty: "No matching models",
+                hints: Some(&[
+                    KeyHint::new("Enter", "select"),
+                    KeyHint::new("Esc", "cancel"),
+                    KeyHint::new("Tab", "all"),
+                    KeyHint::new("Ctrl+D", "default"),
+                ]),
+                ..PickerOptions::default()
+            },
+            |row| {
+                let Some(index) = row.model_index else {
+                    return ListItem::new(Line::from(Span::styled(
+                        format!("… show all {} models (Tab)", models.len()),
+                        Style::default().fg(theme.focus),
+                    )));
+                };
+                let model = &models[index];
+                let is_current = current_model.as_deref().is_some_and(|current| {
                     model_matches_current(model, current, canonical_current.as_deref())
                 });
 
                 let mut spans = vec![
                     Span::styled(&model.name, Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        format!(" ({}) ", model.provider),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!(" ({}) ", model.provider), theme.muted_style()),
                 ];
 
                 if is_current {
-                    spans.push(Span::styled("*", Style::default().fg(Color::Green)));
+                    spans.push(Span::styled("*", Style::default().fg(theme.success)));
                 }
 
                 spans.push(Span::styled(
                     format!(" {}", model_status_summary(model)),
-                    Style::default().fg(Color::DarkGray),
+                    theme.muted_style(),
                 ));
 
                 let detail = Line::from(Span::styled(
                     format!("  {}", description_summary(model)),
-                    Style::default().fg(Color::DarkGray),
+                    theme.muted_style(),
                 ));
 
                 ListItem::new(vec![Line::from(spans), detail])
-            })
-            .collect();
-
-        if self.show_all_affordance {
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("… show all {} models (Tab)", self.models.len()),
-                Style::default().fg(Color::Cyan),
-            ))));
-        }
-
-        let list =
-            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
-        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
-
-        let hints = Paragraph::new("Enter: select · Tab: all · Ctrl+D: default · Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(hints, chunks[2]);
+            },
+        );
     }
 }
 
@@ -717,6 +626,28 @@ fn model_status_summary(model: &ModelInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_selector_shared_picker_renders_empty_query_result_and_help() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut selector = ModelSelector::new();
+        selector.show();
+        selector.insert_str("no-such-result-zzz");
+        let before = selector.picker.query().to_owned();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("No matching models"));
+        assert!(text.contains("Ctrl+D default"));
+        assert_eq!(selector.picker.query(), before);
+    }
 
     #[test]
     fn test_model_selector_creation() {
@@ -739,11 +670,10 @@ mod tests {
         let mut selector = ModelSelector::new();
         selector.show();
         selector.insert_str("claude");
-        assert_eq!(selector.query, "claude");
-        assert_eq!(selector.cursor, 6);
+        assert_eq!(selector.picker.query(), "claude");
         selector.move_left();
         selector.insert_str("-");
-        assert_eq!(selector.query, "claud-e");
+        assert_eq!(selector.picker.query(), "claud-e");
     }
 
     #[test]
@@ -788,11 +718,20 @@ mod tests {
         let mut selector = ModelSelector::new();
         selector.show();
 
-        assert_eq!(selector.selected, 0);
+        assert_eq!(
+            selector.selected_model_id(),
+            Some(selection_model_id(&selector.models[selector.filtered[0]]))
+        );
         selector.move_down();
-        assert_eq!(selector.selected, 1);
+        assert_eq!(
+            selector.selected_model_id(),
+            Some(selection_model_id(&selector.models[selector.filtered[1]]))
+        );
         selector.move_up();
-        assert_eq!(selector.selected, 0);
+        assert_eq!(
+            selector.selected_model_id(),
+            Some(selection_model_id(&selector.models[selector.filtered[0]]))
+        );
     }
 
     #[test]
@@ -1255,7 +1194,10 @@ mod tests {
             selector.selected_model_id().as_deref(),
             Some("llamacpp/first-local")
         );
-        assert_eq!(selector.list_state.selected(), Some(0));
+        assert_eq!(
+            selector.selected_model_id(),
+            Some(selection_model_id(&selector.models[selector.filtered[0]]))
+        );
     }
 
     #[test]
@@ -1265,14 +1207,14 @@ mod tests {
         while !selector.selected_show_all() {
             selector.move_down();
         }
-        let previous_index = selector.selected;
+        let previous_count = selector.filtered.len();
 
         let mut discovered = test_model("new-local", "ollama");
         discovered.verification.source = "local-runtime".to_owned();
         assert!(selector.replace_discovered_models(1, vec![discovered]));
 
         assert!(selector.selected_show_all());
-        assert_ne!(selector.selected, previous_index);
+        assert_ne!(selector.filtered.len(), previous_count);
         assert!(selector.selected_model_id().is_none());
     }
 
@@ -1361,5 +1303,26 @@ mod tests {
 
         model.description = "short".to_owned();
         assert!(description_summary(&model).starts_with("short · "));
+    }
+
+    #[test]
+    fn filtering_keeps_the_selected_route_when_earlier_rows_disappear() {
+        let mut selector = ModelSelector::with_models(vec![
+            test_model("alpha", "ollama"),
+            test_model("beta-common", "ollama"),
+            test_model("gamma-common", "ollama"),
+        ]);
+        selector.show();
+        selector.toggle_show_all();
+        selector.move_down();
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("ollama/beta-common")
+        );
+        selector.insert_str("common");
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("ollama/beta-common")
+        );
     }
 }

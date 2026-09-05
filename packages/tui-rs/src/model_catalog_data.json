@@ -1,5 +1,5 @@
 {
-  "generated_at": 1788315813,
+  "generated_at": 1788597522,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -572,6 +572,25 @@
       }
     },
     {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "provider": "google",
+      "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and…",
+      "capabilities": {
+        "protocol": "google",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 65536
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "models.dev"
+      }
+    },
+    {
       "id": "gemini-flash-latest",
       "name": "Gemini Flash Latest",
       "provider": "google",
@@ -876,25 +895,6 @@
       }
     },
     {
-      "id": "gpt-5.2-chat-latest",
-      "name": "GPT-5.2 Chat",
-      "provider": "openai",
-      "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-      "capabilities": {
-        "protocol": "openai-responses",
-        "tools": true,
-        "vision": true,
-        "reasoning": true,
-        "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 16384
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "models.dev"
-      }
-    },
-    {
       "id": "gpt-5.2-pro",
       "name": "GPT-5.2 Pro",
       "provider": "openai",
@@ -907,25 +907,6 @@
         "streaming": true,
         "context_tokens": 400000,
         "output_tokens": 128000
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "models.dev"
-      }
-    },
-    {
-      "id": "gpt-5.3-chat-latest",
-      "name": "GPT-5.3 Chat (latest)",
-      "provider": "openai",
-      "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-      "capabilities": {
-        "protocol": "openai-responses",
-        "tools": true,
-        "vision": true,
-        "reasoning": false,
-        "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -1161,6 +1142,25 @@
       }
     },
     {
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "provider": "openai",
+      "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+      "capabilities": {
+        "protocol": "openai-responses",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "models.dev"
+      }
+    },
+    {
       "id": "gpt-realtime-2.1",
       "name": "GPT-Realtime-2.1",
       "provider": "openai",
@@ -1305,7 +1305,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 393216
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -1438,7 +1438,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 131072
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -1457,7 +1457,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 943718
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -2236,7 +2236,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 163840,
-        "output_tokens": 16000
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -2274,7 +2274,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 163840,
-        "output_tokens": 32768
+        "output_tokens": 144900
       },
       "verification": {
         "state": "catalog",
@@ -2890,6 +2890,25 @@
       }
     },
     {
+      "id": "google/gemini-3.8-flash",
+      "name": "Google: Gemini 3.8 Flash",
+      "provider": "openrouter",
+      "description": "Gemini 3.8 Flash is Google's most intelligent Flash model with significant gains from 3.7 Flash across software…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 65536
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
       "id": "google/gemma-2-27b-it",
       "name": "Google: Gemma 2 27B",
       "provider": "openrouter",
@@ -3118,25 +3137,6 @@
       }
     },
     {
-      "id": "ibm-granite/granite-4.1-8b",
-      "name": "IBM: Granite 4.1 8B",
-      "provider": "openrouter",
-      "description": "Granite 4.1 8B is a dense, decoder-only 8-billion-parameter language model from IBM, part of the Granite 4.1 family.…",
-      "capabilities": {
-        "protocol": "openai-chat",
-        "tools": true,
-        "vision": false,
-        "reasoning": false,
-        "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 117964
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "openrouter"
-      }
-    },
-    {
       "id": "ibm-granite/granite-4.2-8b",
       "name": "IBM: Granite 4.2 8B",
       "provider": "openrouter",
@@ -3195,7 +3195,7 @@
     },
     {
       "id": "inclusionai/ling-3.0-flash",
-      "name": "Ling-3.0-flash",
+      "name": "inclusionAI: Ling 3.0 Flash",
       "provider": "openrouter",
       "description": "*Ling-3.0-flash* is a *124B-parameter Mixture-of-Experts (MoE) model*, with approximately *5.1B parameters activated…",
       "capabilities": {
@@ -3213,10 +3213,48 @@
       }
     },
     {
-      "id": "inclusionai/ling-3.0-flash-fin:free",
-      "name": "Ling 3.0 Flash Fin (free)",
+      "id": "inclusionai/ling-3.0-flash-fin",
+      "name": "inclusionAI: Ling 3.0 Flash Fin",
       "provider": "openrouter",
       "description": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": false,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 262144,
+        "output_tokens": 235929
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-fin:free",
+      "name": "inclusionAI: Ling 3.0 Flash Fin (free)",
+      "provider": "openrouter",
+      "description": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": false,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 262144,
+        "output_tokens": 32768
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-sante:free",
+      "name": "inclusionAI: Ling 3.0 Flash Sante (free)",
+      "provider": "openrouter",
+      "description": "Ling 3.0 Flash Sante is a health and medicine-focused mixture-of-experts model from InclusionAI, built on Ling 3.0…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -3414,7 +3452,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 131072,
-        "output_tokens": 115200
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -3490,7 +3528,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 131072,
-        "output_tokens": 16384
+        "output_tokens": 117964
       },
       "verification": {
         "state": "catalog",
@@ -3540,6 +3578,44 @@
       "name": "Meta: Muse Spark 1.2 Contributor",
       "provider": "openrouter",
       "description": "Muse Spark 1.2 contributor tier is a reasoning model from Meta designed for developers who want to start building at…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 943718
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.3",
+      "name": "Meta: Muse Spark 1.3",
+      "provider": "openrouter",
+      "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows.…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 943718
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.3-contributor",
+      "name": "Meta: Muse Spark 1.3 Contributor",
+      "provider": "openrouter",
+      "description": "Muse Spark 1.3 Contributor is the cost-efficient contributor tier of Meta’s multimodal reasoning model for…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -4440,7 +4516,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 228000
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -4536,6 +4612,25 @@
         "streaming": true,
         "context_tokens": 1000000,
         "output_tokens": 65536
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "nvidia/nemotron-3.5-content-safety",
+      "name": "NVIDIA: Nemotron 3.5 Content Safety",
+      "provider": "openrouter",
+      "description": "NVIDIA Nemotron 3.5 Content Safety is a compact 4B-parameter multimodal guardrail model from NVIDIA, fine-tuned from…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": false,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 131072,
+        "output_tokens": 117964
       },
       "verification": {
         "state": "catalog",
@@ -5436,6 +5531,44 @@
       }
     },
     {
+      "id": "openai/gpt-6-astra",
+      "name": "OpenAI: GPT-6 Astra",
+      "provider": "openrouter",
+      "description": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "openai/gpt-6-astra-pro",
+      "name": "OpenAI: GPT-6 Astra Pro",
+      "provider": "openrouter",
+      "description": "GPT-6 Astra Pro is the same underlying model as [GPT-6 Astra](https://openrouter.ai/openai/gpt-6-astra), served with…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
       "id": "openai/gpt-audio",
       "name": "OpenAI: GPT Audio",
       "provider": "openrouter",
@@ -6109,7 +6242,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 128000,
-        "output_tokens": 28800
+        "output_tokens": 115200
       },
       "verification": {
         "state": "catalog",
@@ -6166,7 +6299,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 235929
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -6641,7 +6774,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 235929
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -6660,7 +6793,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 65536
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -6755,7 +6888,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 235929
+        "output_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -6907,7 +7040,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 131072
+        "output_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6953,10 +7086,10 @@
       }
     },
     {
-      "id": "qwen/qwen3.8-max",
-      "name": "Qwen: Qwen3.8 Max",
+      "id": "qwen/qwen3.8-max-0902",
+      "name": "Qwen: Qwen3.8 Max (0902)",
       "provider": "openrouter",
-      "description": "Qwen3.8 Max is the flagship model in Alibaba's Qwen3.8 series, the general-availability successor to the Qwen3.8 Max…",
+      "description": "Qwen3.8 Max 0902 is an updated snapshot of Qwen3.8 Max from Alibaba's Qwen team. It is a 2.4-trillion-parameter…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -7458,7 +7591,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 6144,
-        "output_tokens": 4096
+        "output_tokens": 5529
       },
       "verification": {
         "state": "catalog",
@@ -7743,7 +7876,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 204800,
-        "output_tokens": 16384
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7914,7 +8047,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 131072
+        "output_tokens": 262144
       },
       "verification": {
         "state": "catalog",

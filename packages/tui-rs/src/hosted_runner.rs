@@ -1482,6 +1482,7 @@ fn hosted_message_kind(message: &ToAgentMessage) -> &'static str {
         ToAgentMessage::ClientToolResult { .. } => "client_tool_result",
         ToAgentMessage::GovernedClientToolResult { .. } => "governed_client_tool_result",
         ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => "apply_workspace_capability_set",
+        ToAgentMessage::ConfigurePromptExperiment { .. } => "configure_prompt_experiment",
         ToAgentMessage::ServerRequestResponse { .. } => "server_request_response",
         ToAgentMessage::UtilityCommandStart { .. } => "utility_command_start",
         ToAgentMessage::UtilityCommandTerminate { .. } => "utility_command_terminate",
@@ -4330,7 +4331,8 @@ async fn handle_message_inner(
                     )?,
                 ));
             }
-            ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => {
+            ToAgentMessage::ApplyWorkspaceCapabilitySet { .. }
+            | ToAgentMessage::ConfigurePromptExperiment { .. } => {
                 executor_request = Some((
                     Arc::clone(&shared.message_executor),
                     message_context(

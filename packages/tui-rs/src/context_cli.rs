@@ -946,6 +946,16 @@ fn parse_mcp_server_value(
         .get("supportsParallelToolCalls")
         .and_then(|v| v.as_bool());
     let requires_project_approval = obj.get("requiresProjectApproval").and_then(|v| v.as_bool());
+    let disabled_tools = obj
+        .get("disabledTools")
+        .and_then(|value| value.as_array())
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     let disabled = obj
         .get("disabled")
@@ -968,6 +978,7 @@ fn parse_mcp_server_value(
         managed_generation: None,
         supports_parallel_tool_calls,
         requires_project_approval,
+        disabled_tools,
         timeout,
         enabled,
         disabled,
@@ -1726,6 +1737,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: Some(true),
             requires_project_approval: Some(true),
+            disabled_tools: Vec::new(),
             timeout: Some(5_000),
             enabled: true,
             disabled: false,

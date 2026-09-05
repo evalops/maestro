@@ -1,0 +1,4 @@
+# The crate itself builds with Cargo in the Maestro workspace. Bazel only
+# needs its source file, which rust/crates/platform-core-types compiles as a
+# `#[path]` module.
+exports_files(["src/lib.rs"])

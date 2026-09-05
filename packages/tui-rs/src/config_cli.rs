@@ -2158,6 +2158,9 @@ mod tests {
 
     #[test]
     fn effective_settings_summary_uses_maestro_home_not_builtin_defaults() {
+        if crate::config::test_reexec_for_cwd_isolation() {
+            return;
+        }
         let _guard = env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
@@ -2253,6 +2256,9 @@ mod tests {
 
     #[test]
     fn init_preset_writes_project_config() {
+        if crate::config::test_reexec_for_cwd_isolation() {
+            return;
+        }
         let _guard = env_lock();
         let temp = TempDir::new().unwrap();
         let previous_cwd = env::current_dir().unwrap();

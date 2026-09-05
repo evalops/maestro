@@ -1,0 +1,47 @@
+{
+  "name": "dex-preview-save",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/dex accessory-crown"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Accessory: crown"
+    },
+    {
+      "text": "/dex appearance"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "\u203a Accessory: crown"
+    },
+    {
+      "key": "Down"
+    },
+    {
+      "wait": "\u203a Accessory: bow"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Accessory: bow"
+    },
+    {
+      "text": "/dex appearance"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "\u203a Accessory: bow"
+    }
+  ]
+}

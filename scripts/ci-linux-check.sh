@@ -74,6 +74,8 @@ npm run check:session-transfer
 npm run check:hosted-orb-delegation
 npm run check:macos-signature
 npm run check:release-channels
+python3 scripts/check-ui-consistency.py
+python3 scripts/test-check-ui-consistency.py
 if [[ "${mode}" == "--contracts" ]]; then
   exit 0
 fi

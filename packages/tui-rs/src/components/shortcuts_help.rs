@@ -390,6 +390,14 @@ impl ShortcutsHelp {
             "Toggle last tool call expand",
         ));
         self.add(
+            Shortcut::new(
+                ShortcutCategory::Commands,
+                "Shift+Tab",
+                "Cycle thinking level",
+            )
+            .with_context("Next model request; preserves draft"),
+        );
+        self.add(
             Shortcut::new(ShortcutCategory::Tools, "Tab", "Toggle last thinking block")
                 .with_context("when input empty"),
         );

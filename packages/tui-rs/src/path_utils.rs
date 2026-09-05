@@ -82,9 +82,6 @@ pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn restore_env_var(name: &str, value: Option<String>) {
         match value {
@@ -95,7 +92,7 @@ mod tests {
 
     #[test]
     fn env_path_expands_tilde() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous = env::var("MAESTRO_TEST_ENV_PATH").ok();
         let home = dirs::home_dir().expect("home dir");
 
@@ -111,7 +108,7 @@ mod tests {
 
     #[test]
     fn maestro_home_dir_uses_env_override() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous = env::var("MAESTRO_HOME").ok();
 
         env::set_var("MAESTRO_HOME", "/tmp/custom-maestro-home");
@@ -126,7 +123,7 @@ mod tests {
 
     #[test]
     fn maestro_home_dir_falls_back_to_default_home() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous = env::var("MAESTRO_HOME").ok();
         let home = dirs::home_dir().expect("home dir");
 

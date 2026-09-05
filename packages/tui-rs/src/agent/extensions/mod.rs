@@ -46,6 +46,7 @@
 //! no registry-level guard can catch it.
 
 pub mod doom_loop;
+pub(crate) mod model_dynamics;
 
 use std::time::Instant;
 
@@ -98,6 +99,14 @@ pub struct ToolResultContext {
     pub is_error: bool,
     /// Wall-clock duration the runner measured for this call.
     pub duration_ms: u64,
+}
+
+/// Immutable completion of a tool executed inside the provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeToolResultContext {
+    pub turn_id: String,
+    pub call_id: String,
+    pub success: bool,
 }
 
 /// State handed to [`AgentExtension::on_tool_batch_end`].
@@ -196,6 +205,11 @@ pub trait AgentExtension: Send + Sync {
     /// A tool call produced the result the model is about to see.
     fn on_tool_result(&mut self, cx: &ToolResultContext, result: &mut ToolResultPayload) {
         let _ = (cx, result);
+    }
+
+    /// Observe a provider-owned tool result; its effects and output are already complete.
+    fn on_native_tool_result(&mut self, cx: &NativeToolResultContext) {
+        let _ = cx;
     }
 
     /// A whole batch of tool results is assembled and about to enter history.
@@ -367,6 +381,15 @@ impl ExtensionRegistry {
         for tenant in &mut self.tenants {
             let started = Instant::now();
             tenant.extension.on_tool_result(cx, result);
+            record_timing(&mut tenant.stats, started);
+        }
+    }
+
+    /// Announce a provider-owned completion without offering to rewrite its output.
+    pub fn on_native_tool_result(&mut self, cx: &NativeToolResultContext) {
+        for tenant in &mut self.tenants {
+            let started = Instant::now();
+            tenant.extension.on_native_tool_result(cx);
             record_timing(&mut tenant.stats, started);
         }
     }

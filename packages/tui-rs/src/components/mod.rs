@@ -116,16 +116,20 @@
 //! the changes. This separation of input handling and rendering is a core principle
 //! of immediate-mode UI architectures.
 
+pub mod activity;
 mod approval;
 mod command_palette;
 mod config_selector;
 mod context_indicator;
 mod deixic_logo;
 mod detail_view;
+pub mod dex_companion;
 mod file_search;
 mod input;
 mod layout;
+mod mcp_manager;
 mod message;
+pub(crate) use message::should_render_message;
 pub(crate) mod message_layout;
 pub(crate) mod model_selector;
 mod operations;
@@ -158,6 +162,7 @@ pub use detail_view::DetailView;
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{BoxWidget, column_layout, row_layout};
+pub use mcp_manager::McpManager;
 pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,

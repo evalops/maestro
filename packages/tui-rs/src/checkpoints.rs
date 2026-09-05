@@ -204,6 +204,9 @@ pub struct Checkpoint {
     /// HEAD commit at turn start (used to recover clean files' content).
     pub head: Option<String>,
     pub entries: Vec<FileEntry>,
+    /// Number of saved user turns before this checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_turn_index: Option<usize>,
 }
 
 impl Checkpoint {
@@ -216,6 +219,7 @@ impl Checkpoint {
 
 /// Pre-turn snapshot awaiting turn completion.
 pub struct PendingTurn {
+    pub(crate) user_turn_index: Option<usize>,
     store: CheckpointStore,
     id: String,
     prompt: String,
@@ -284,6 +288,7 @@ pub fn begin_turn(
     }
 
     Some(PendingTurn {
+        user_turn_index: None,
         store,
         id,
         prompt: prompt_excerpt(prompt),
@@ -393,6 +398,7 @@ pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let checkpoint = Checkpoint {
+        user_turn_index: pending.user_turn_index,
         id: pending.id,
         created_at: pending.created_at,
         prompt: pending.prompt,
@@ -418,6 +424,8 @@ pub struct RestoreReport {
     pub skipped: Vec<String>,
     /// Agent-created files already gone; nothing to do.
     pub gone: Vec<String>,
+    /// Per-file failures; other files may already have been restored.
+    pub failed: Vec<String>,
 }
 
 /// Restore the most recent checkpoint, consuming it. Returns `None` when the
@@ -446,15 +454,30 @@ pub fn restore_checkpoint(
 
     for entry in &checkpoint.entries {
         let abs = checkpoint.repo_root.join(&entry.path);
-        let Ok(current_hash) = file_hash(&abs) else {
-            report.skipped.push(entry.path.clone());
-            continue;
+        let current_hash = match file_hash(&abs) {
+            Ok(hash) => hash,
+            Err(error) => {
+                report.failed.push(format!("{}: {error}", entry.path));
+                continue;
+            }
         };
         if current_hash == entry.post_hash {
             // Post-turn state intact: safe to revert.
             match &entry.pre_blob {
                 Some(hash) => {
-                    let bytes = read_blob(&cp_dir, hash)?;
+                    let bytes = match read_blob(&cp_dir, hash) {
+                        Ok(bytes) if sha256(&bytes) == *hash => bytes,
+                        Ok(_) => {
+                            report
+                                .failed
+                                .push(format!("{}: checkpoint content is corrupt", entry.path));
+                            continue;
+                        }
+                        Err(error) => {
+                            report.failed.push(format!("{}: {error}", entry.path));
+                            continue;
+                        }
+                    };
                     // Atomic: this overwrites a file in the user's working
                     // tree, so a torn write here would corrupt their source
                     // file, not just internal checkpoint state. `write_atomic`
@@ -464,13 +487,19 @@ pub fn restore_checkpoint(
                     // `set_permissions` step here that could itself be lost
                     // to a crash between the write succeeding and the mode
                     // change landing.
-                    crate::fs_atomic::write_atomic(&abs, &bytes)?;
+                    if let Err(error) = crate::fs_atomic::write_atomic(&abs, &bytes) {
+                        report.failed.push(format!("{}: {error}", entry.path));
+                        continue;
+                    }
                     report.restored.push(entry.path.clone());
                 }
                 None => {
                     // File created during the turn: remove it and prune any
                     // directories the turn created with it.
-                    fs::remove_file(&abs)?;
+                    if let Err(error) = fs::remove_file(&abs) {
+                        report.failed.push(format!("{}: {error}", entry.path));
+                        continue;
+                    }
                     prune_empty_dirs(abs.parent(), &checkpoint.repo_root);
                     report.deleted.push(entry.path.clone());
                 }
@@ -482,8 +511,127 @@ pub fn restore_checkpoint(
         }
     }
 
-    store.remove(&checkpoint.id)?;
+    if report.failed.is_empty() {
+        if let Err(error) = store.remove(&checkpoint.id) {
+            report.failed.push(format!("checkpoint cleanup: {error}"));
+        }
+    }
     Ok(report)
+}
+
+/// Copy retained checkpoint history into a new conversation branch.
+/// Turn coordinates do not depend on the rewritten JSONL header length.
+pub(crate) fn fork_before_turn(
+    source: &CheckpointStore,
+    target: &CheckpointStore,
+    first_turn: usize,
+) -> io::Result<()> {
+    for checkpoint in source.list().into_iter().filter(|checkpoint| {
+        checkpoint
+            .user_turn_index
+            .is_some_and(|index| index < first_turn)
+    }) {
+        let source_dir = source.checkpoint_dir_for_restore(&checkpoint.id);
+        let target_dir = target.new_checkpoint_dir(&checkpoint.id);
+        for hash in checkpoint
+            .entries
+            .iter()
+            .filter_map(|entry| entry.pre_blob.as_ref())
+        {
+            let bytes = read_blob(&source_dir, hash)?;
+            if sha256(&bytes) != *hash {
+                return Err(io::Error::other("Retained checkpoint content is corrupt."));
+            }
+            crate::fs_atomic::create_dir_all_synced(target_dir.join("blobs"))?;
+            store_blob(&target_dir, &bytes)?;
+        }
+        target.save(&checkpoint)?;
+    }
+    Ok(())
+}
+
+/// Simulate the hash guards newest-first without modifying files.
+pub(crate) fn preview_turns(
+    store: &CheckpointStore,
+    first_turn: usize,
+) -> io::Result<(Vec<String>, Vec<String>)> {
+    let mut simulated: HashMap<String, Option<String>> = HashMap::new();
+    let mut protected = HashSet::new();
+    let mut candidates = std::collections::BTreeSet::new();
+    for checkpoint in checkpoints_for_turns(store, first_turn)?.into_iter().rev() {
+        for entry in checkpoint.entries {
+            if protected.contains(&entry.path) {
+                continue;
+            }
+            let current = match simulated.get(&entry.path) {
+                Some(hash) => hash.clone(),
+                None => match file_hash(&checkpoint.repo_root.join(&entry.path)) {
+                    Ok(hash) => hash,
+                    Err(_) => {
+                        protected.insert(entry.path);
+                        continue;
+                    }
+                },
+            };
+            if current == entry.post_hash {
+                simulated.insert(entry.path.clone(), entry.pre_blob.clone());
+                candidates.insert(entry.path);
+            } else {
+                protected.insert(entry.path);
+            }
+        }
+    }
+    Ok((
+        candidates.into_iter().collect(),
+        protected.into_iter().collect(),
+    ))
+}
+
+/// Restore a suffix of recorded turns, retaining manual changes across the chain.
+pub(crate) fn restore_turns(
+    store: &CheckpointStore,
+    first_turn: usize,
+) -> io::Result<Vec<RestoreReport>> {
+    let checkpoints = checkpoints_for_turns(store, first_turn)?;
+    let mut reports = Vec::new();
+    let mut protected = HashSet::new();
+    for mut checkpoint in checkpoints.into_iter().rev() {
+        checkpoint
+            .entries
+            .retain(|entry| !protected.contains(&entry.path));
+        let report = restore_checkpoint(store, &checkpoint)?;
+        protected.extend(report.skipped.iter().cloned());
+        // A failed newer write cannot authorize an older write to the same path.
+        if !report.failed.is_empty() {
+            reports.push(report);
+            break;
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+pub(crate) fn checkpoints_for_turns(
+    store: &CheckpointStore,
+    first_turn: usize,
+) -> io::Result<Vec<Checkpoint>> {
+    let checkpoints = store.list();
+    if checkpoints
+        .iter()
+        .any(|checkpoint| checkpoint.user_turn_index.is_none())
+    {
+        return Err(io::Error::other(
+            "These checkpoints predate saved turn links. Use /rewind files to restore them separately.",
+        ));
+    }
+    Ok(checkpoints
+        .into_iter()
+        .filter(|checkpoint| {
+            checkpoint
+                .user_turn_index
+                .is_some_and(|index| index >= first_turn)
+        })
+        .collect())
 }
 
 // --- git helpers ---------------------------------------------------------
@@ -740,6 +888,63 @@ mod tests {
     }
 
     #[test]
+    fn rewind_turns_unwinds_repeated_edits_and_preserves_manual_changes() {
+        let fx = git_fixture();
+        fs::write(fx.repo.join("manual.rs"), "original").unwrap();
+        run_git(&fx.repo, &["add", "manual.rs"]);
+        run_git(&fx.repo, &["commit", "--quiet", "-m", "manual fixture"]);
+        for index in 0..2 {
+            let mut pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
+            pending.user_turn_index = Some(index);
+            fs::write(fx.repo.join("a.rs"), format!("agent {index}")).unwrap();
+            fs::write(fx.repo.join("manual.rs"), format!("agent {index}")).unwrap();
+            finalize_turn(pending).unwrap().unwrap();
+        }
+        fs::write(fx.repo.join("manual.rs"), "later manual edit").unwrap();
+        let reports = restore_turns(&store(&fx), 0).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().all(|report| report.failed.is_empty()));
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("a.rs")).unwrap(),
+            "original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("manual.rs")).unwrap(),
+            "later manual edit"
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|report| report.skipped.contains(&"manual.rs".into()))
+        );
+    }
+
+    #[test]
+    fn rewind_turns_reports_missing_blob_without_claiming_complete_restore() {
+        let fx = git_fixture();
+        let mut pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
+        pending.user_turn_index = Some(0);
+        fs::write(fx.repo.join("a.rs"), "agent edit").unwrap();
+        let checkpoint = finalize_turn(pending).unwrap().unwrap();
+        let blob = checkpoint.entries[0].pre_blob.as_ref().unwrap();
+        fs::remove_file(
+            store(&fx)
+                .new_checkpoint_dir(&checkpoint.id)
+                .join("blobs")
+                .join(blob),
+        )
+        .unwrap();
+        let reports = restore_turns(&store(&fx), 0).unwrap();
+        assert_eq!(reports[0].failed.len(), 1);
+        assert!(reports[0].restored.is_empty());
+        assert_eq!(
+            fs::read_to_string(fx.repo.join("a.rs")).unwrap(),
+            "agent edit"
+        );
+        assert_eq!(store(&fx).list().len(), 1);
+    }
+
+    #[test]
     fn dot_only_and_empty_ids_sanitize_to_safe_components() {
         // ".." joined onto the checkpoints dir resolves to the sessions dir
         // itself, and "" joins as a no-op; `remove_dir_all` on either would
@@ -796,6 +1001,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = CheckpointStore::new(tmp.path(), "legacy/session");
         let checkpoint = Checkpoint {
+            user_turn_index: None,
             id: "cp-legacy".to_string(),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             prompt: "legacy".to_string(),

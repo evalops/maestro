@@ -63,6 +63,7 @@ pub(super) fn build_runner_tool_executor(
     mailbox_identity: Option<String>,
 ) -> ToolExecutor {
     let executor = ToolExecutor::with_credential_vault(cwd, credential_vault)
+        .with_code_authority()
         .with_managed_mcp_policy(managed_mcp_policy);
     let executor = match sandbox_policy {
         Some(policy) => executor.with_sandbox_policy(policy),
@@ -125,8 +126,10 @@ pub(super) fn repeat_refusal_message(tool_name: &str) -> String {
 /// prevents the two from disagreeing again -- see issues #3149 and #3156.
 ///
 /// - `is_external_tool`: the caller owns execution and its own approval
-///   policy for this tool (see [`NativeAgentRunner`]'s external-tools doc);
-///   always requires approval regardless of mode.
+///   policy for this tool (see [`NativeAgentRunner`]'s external-tools doc).
+///   It requires approval regardless of mode unless the exact local MCP
+///   transport and schema identity has a remembered grant. Managed and
+///   enterprise MCP tools cannot receive such a grant.
 /// - [`ApprovalMode::Yolo`]: never require approval for ordinary calls
 ///   (including firewall soft holds; a hard [`FirewallVerdict::Block`] is
 ///   handled separately and always denies regardless of mode). The one
@@ -145,6 +148,23 @@ pub(super) fn tool_requires_approval(
     args: &serde_json::Value,
     denials: &DenialMemory,
 ) -> ApprovalDecision {
+    if tool_executor.has_code_authority()
+        && approval_mode != ApprovalMode::Safe
+        && !is_external_tool
+        && !tool_executor.requires_sandbox_bypass_approval(tool_name, args)
+        && !matches!(firewall_verdict, FirewallVerdict::Block { .. })
+    {
+        return if denials.was_refused(tool_name, args) {
+            ApprovalDecision::RefusedEarlierThisTurn
+        } else {
+            // The executor obtains a fresh, exact-bound Identity decision
+            // before dispatch; this only suppresses the redundant UI prompt.
+            ApprovalDecision::NotRequired
+        };
+    }
+    if is_external_tool && tool_executor.mcp_permission_allows(tool_name) {
+        return ApprovalDecision::NotRequired;
+    }
     let mode_requires_approval = match approval_mode {
         ApprovalMode::Yolo => tool_executor.requires_sandbox_bypass_approval(tool_name, args),
         ApprovalMode::Safe => true,

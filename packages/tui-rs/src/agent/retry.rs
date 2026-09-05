@@ -73,6 +73,22 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
+    /// Create a bounded retry window for unattended hosted turns.
+    ///
+    /// The interactive default stays short, while hosted work can ride out a
+    /// brief provider or network interruption without replaying the turn.
+    #[must_use]
+    pub fn hosted_outage() -> Self {
+        Self {
+            max_retries: 8,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            jitter_factor: 0.25,
+            respect_retry_after: true,
+        }
+    }
+
     /// Create a config for aggressive retrying (more attempts, shorter delays)
     #[must_use]
     pub fn aggressive() -> Self {
@@ -846,6 +862,11 @@ mod tests {
 
     #[test]
     fn test_retry_config_presets() {
+        let hosted_outage = RetryConfig::hosted_outage();
+        assert_eq!(hosted_outage.max_retries, 8);
+        assert_eq!(hosted_outage.initial_delay, Duration::from_secs(1));
+        assert_eq!(hosted_outage.max_delay, Duration::from_secs(30));
+
         let aggressive = RetryConfig::aggressive();
         assert_eq!(aggressive.max_retries, 5);
         assert!(aggressive.initial_delay < Duration::from_secs(1));
@@ -856,6 +877,21 @@ mod tests {
 
         let no_retry = RetryConfig::no_retry();
         assert_eq!(no_retry.max_retries, 0);
+    }
+
+    #[test]
+    fn hosted_outage_retry_budget_is_bounded() {
+        let mut policy = RetryPolicy::new(RetryConfig::hosted_outage());
+        for expected_attempt in 1..=8 {
+            assert!(matches!(
+                policy.should_retry(ErrorKind::Transient),
+                RetryDecision::Retry { attempt, .. } if attempt == expected_attempt
+            ));
+        }
+        assert!(matches!(
+            policy.should_retry(ErrorKind::Transient),
+            RetryDecision::GiveUp { .. }
+        ));
     }
 
     #[test]
