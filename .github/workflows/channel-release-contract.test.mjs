@@ -5,25 +5,25 @@ import { test } from "node:test";
 const workflow = await readFile(new URL("./channel-release.yml", import.meta.url), "utf8");
 const releaseWorkflow = await readFile(new URL("./release.yml", import.meta.url), "utf8");
 
-test("preview schedules keep beta behind alpha", () => {
-	assert.match(workflow, /"0 5 \* \* \*" # alpha/);
-	assert.match(workflow, /"30 5 \* \* \*" # beta/);
-	assert.match(workflow, /source_ref=origin\/main\^/);
-	assert.match(workflow, /source_ref=origin\/main\n/);
-});
-
-test("preview publication uses immutable tags and the protected release workflow", () => {
-	assert.match(workflow, /git push origin "refs\/tags\/\$\{tag\}"/);
-	assert.match(workflow, /gh workflow run release\.yml --ref "\$tag"/);
-	assert.match(workflow, /cp scripts\/sync-package-metadata\.js "\$RUNNER_TEMP\/sync-package-metadata\.js"/);
-	assert.match(workflow, /cp "\$RUNNER_TEMP\/sync-package-metadata\.js" scripts\/sync-package-metadata\.js/);
-	assert.doesNotMatch(workflow, /--force/);
-	assert.doesNotMatch(workflow, /cancel-in-progress: true/);
+test("preview schedules finalize only staged signed candidates", () => {
+ assert.match(workflow, /"0 5 \* \* \*" # alpha/);
+ assert.match(workflow, /"30 5 \* \* \*" # beta/);
+ assert.match(workflow, /MONO_SHA256SUMS\.cosign\.bundle/);
+ assert.match(workflow, /select\(\.draft/);
+ assert.match(workflow, /contents: read/);
+ assert.doesNotMatch(workflow, /contents: write/);
+ assert.match(workflow, /gh workflow run release\.yml --ref main/);
+ assert.match(workflow, /No staged signed/);
+ assert.doesNotMatch(workflow, /git (?:push|tag|commit)/);
+ assert.doesNotMatch(workflow, /scripts\/version\.js/);
+ assert.doesNotMatch(workflow, /cancel-in-progress: true/);
 });
 
 test("channel pointers carry the signed native release contract", () => {
 	assert.match(releaseWorkflow, /id-token: write/);
-	assert.match(releaseWorkflow, /create-release-metadata\.mjs/);
+	assert.match(releaseWorkflow, /verify-staged-release\.mjs/);
+ assert.match(releaseWorkflow, /\.receipt\.sourceSha/);
+ assert.doesNotMatch(releaseWorkflow, /create-release-metadata\.mjs/);
 	assert.match(releaseWorkflow, /create-release-channel-manifest\.mjs/);
 	assert.match(releaseWorkflow, /softprops\/action-gh-release@[0-9a-f]{40}/);
 	assert.match(releaseWorkflow, /release-assets\/channel-manifest\.json/);
@@ -31,7 +31,7 @@ test("channel pointers carry the signed native release contract", () => {
 	assert.match(releaseWorkflow, /release-assets\/version\.json/);
 	assert.match(releaseWorkflow, /cosign sign-blob --yes --bundle SHA256SUMS\.cosign\.bundle/);
 	assert.match(releaseWorkflow, /cosign sign-blob --yes --bundle "\$\{binary\}\.cosign\.bundle"/);
-	assert.match(releaseWorkflow, /files: release-assets\/\*/);
+	assert.match(releaseWorkflow, /files: \|\n\s+release-assets\/\*\.json/);
 	assert.doesNotMatch(releaseWorkflow, /\.\/\.github\/actions\/gcs-artifacts/);
 	assert.doesNotMatch(releaseWorkflow, /MAESTRO_RELEASES_PREFIX/);
 	assert.doesNotMatch(releaseWorkflow, /gcloud storage/);

@@ -12,9 +12,10 @@ const completeWorkflow = `
 permissions:
   contents: read
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}
+  group: \${{ github.workflow }}-\${{ startsWith(github.event.client_payload.version || inputs.version, 'v') && (github.event.client_payload.version || inputs.version) || format('v{0}', github.event.client_payload.version || inputs.version) }}
 jobs:
   prepare:
+    if: github.repository == 'evalops/maestro' && github.ref == 'refs/heads/main'
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -28,16 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@sha
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - id: release
         name: Resolve immutable release tag
         env:
           EVENT_NAME: \${{ github.event_name }}
-          REQUESTED: \${{ github.event.inputs.version || github.ref_name }}
+          REQUESTED: \${{ github.event.client_payload.version || github.event.inputs.version || github.ref_name }}
           TRIGGER_SHA: \${{ github.sha }}
         run: |
           release_sha="$TRIGGER_SHA"
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "repository_dispatch" ]]; then
           for attempt in 1 2 3; do
             if timeout 60s git \\
               -c http.lowSpeedLimit=1000 \\
@@ -54,6 +55,8 @@ jobs:
           elif [[ "$EVENT_NAME" != "push" ]]; then
             exit 1
           fi
+          timeout 60s git fetch --no-tags origin main
+          git merge-base --is-ancestor "$release_sha" FETCH_HEAD
           git checkout --detach "$release_sha"
           {
             echo "package_name=$package_name"
@@ -71,6 +74,11 @@ jobs:
       - uses: actions/checkout@sha
         with:
           ref: ${releaseSha}
+      - name: Authenticate artifacts and release receipts
+        env:
+          RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
+        run: |
+          node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"
   publish:
     needs: [prepare, binaries]
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
@@ -242,7 +250,15 @@ jobs:
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
-          files: release-assets/*
+          files: |
+            release-assets/*.json
+            release-assets/*.tgz
+            release-assets/*.tar.gz
+            release-assets/*.txt
+            release-assets/*SUMS
+            release-assets/*.bundle
+            release-assets/maestro-linux-*
+            release-assets/maestro-darwin-*
   post-publish-canary:
     needs:
       - prepare
@@ -329,7 +345,7 @@ test("rejects broad build permissions and non-serialized releases", () => {
 	const broadened = completeWorkflow
 		.replace("permissions:\n  contents: read\n", "permissions:\n  contents: write\n")
 		.replace(
-			"  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}\n",
+			"  group: ${{ github.workflow }}-${{ startsWith(github.event.client_payload.version || inputs.version, 'v') && (github.event.client_payload.version || inputs.version) || format('v{0}', github.event.client_payload.version || inputs.version) }}\n",
 			"  group: ${{ github.workflow }}\n",
 		)
 		.replace(
@@ -378,14 +394,14 @@ test("rejects workflow_dispatch work from an unbound ref", () => {
 	);
 });
 
-test("rejects a full-history prepare checkout before bounded tag resolution", () => {
+test("rejects shallow history that cannot prove protected main ancestry", () => {
 	const fullHistory = completeWorkflow.replace(
-		"          fetch-depth: 1\n",
 		"          fetch-depth: 0\n",
+		"          fetch-depth: 1\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(fullHistory).some((failure) =>
-			failure.includes("prepare checkout must be shallow"),
+			failure.includes("prepare checkout must include history"),
 		),
 	);
 });
@@ -394,7 +410,7 @@ test("rejects tag-push source replacement with a freshly resolved tag", () => {
 	const movedTag = completeWorkflow
 		.replace('          release_sha="$TRIGGER_SHA"\n', "")
 		.replace(
-			'          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then\n',
+			'          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "repository_dispatch" ]]; then\n',
 			"",
 		)
 		.replace(
@@ -823,7 +839,15 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
-          files: release-assets/*
+          files: |
+            release-assets/*.json
+            release-assets/*.tgz
+            release-assets/*.tar.gz
+            release-assets/*.txt
+            release-assets/*SUMS
+            release-assets/*.bundle
+            release-assets/maestro-linux-*
+            release-assets/maestro-darwin-*
 `,
 			"",
 		)
@@ -833,7 +857,15 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
-          files: release-assets/*
+          files: |
+            release-assets/*.json
+            release-assets/*.tgz
+            release-assets/*.tar.gz
+            release-assets/*.txt
+            release-assets/*SUMS
+            release-assets/*.bundle
+            release-assets/maestro-linux-*
+            release-assets/maestro-darwin-*
       - name: Publish to npm
 `,
 		);
@@ -905,14 +937,30 @@ test("rejects GitHub release retargeting of a detached commit", () => {
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
-          files: release-assets/*
+          files: |
+            release-assets/*.json
+            release-assets/*.tgz
+            release-assets/*.tar.gz
+            release-assets/*.txt
+            release-assets/*SUMS
+            release-assets/*.bundle
+            release-assets/maestro-linux-*
+            release-assets/maestro-darwin-*
 `,
 		`      - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
-          files: release-assets/*
+          files: |
+            release-assets/*.json
+            release-assets/*.tgz
+            release-assets/*.tar.gz
+            release-assets/*.txt
+            release-assets/*SUMS
+            release-assets/*.bundle
+            release-assets/maestro-linux-*
+            release-assets/maestro-darwin-*
 `,
 	);
 	assert.ok(
@@ -977,3 +1025,14 @@ test("versioned browser asset is present in the release source tree", async () =
 	);
 	assert.match(html, /<!doctype html>/iu);
 });
+
+for (const line of ['          git merge-base --is-ancestor "$release_sha" FETCH_HEAD', '          timeout 60s git fetch --no-tags origin main']) {
+ test(`rejects missing ancestry guard: ${line.trim()}`, () => {
+  assert.ok(validateReleaseWorkflow(completeWorkflow.replace(line, "")).some(f => f.includes("ancestry verification")));
+ });
+}
+for (const replacement of ["echo skipped", 'if false; then node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"; fi']) {
+ test(`rejects bypassed authentication: ${replacement}`, () => {
+  assert.ok(validateReleaseWorkflow(completeWorkflow.replace('node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"', replacement)).some(f => f.includes("must be authenticated")));
+ });
+}
