@@ -401,7 +401,8 @@ pub fn model_uses_openai_codex(model: &str) -> bool {
 ///
 /// Precedence: explicit `MAESTRO_MODEL`, then `model` / `model_provider` from
 /// Maestro config files (`~/.maestro/config.toml` and project overlays), then
-/// the Codex default when ChatGPT auth is present, then the platform default.
+/// the shipped managed model. Discovering another client's credentials does
+/// not opt the user into that client's model; explicit Codex routes still work.
 #[must_use]
 pub fn resolve_default_model() -> String {
     if let Ok(model) = std::env::var("MAESTRO_MODEL") {
@@ -421,10 +422,7 @@ pub fn resolve_default_model() -> String {
     ) {
         return route;
     }
-    read_codex_auth()
-        .and_then(|snapshot| snapshot.preferred_default_model())
-        .unwrap_or(DEFAULT_PLATFORM_MODEL)
-        .to_string()
+    crate::credential_mode::DEFAULT_MANAGED_MODEL.to_string()
 }
 
 #[cfg(test)]
@@ -652,6 +650,9 @@ mod tests {
 
     #[test]
     fn resolve_default_model_respects_maestro_model() {
+        if crate::config::test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("MAESTRO_MODEL", "anthropic/claude-sonnet-4-6");
@@ -664,7 +665,19 @@ mod tests {
 
     #[test]
     fn resolve_default_model_does_not_export_chatgpt_token() {
+        if crate::config::test_reexec_for_process_isolation() {
+            return;
+        }
         let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        crate::config::clear_config_cache();
+        unsafe {
+            std::env::set_var("MAESTRO_HOME", home.path());
+            std::env::remove_var("MAESTRO_PROFILE");
+            std::env::remove_var("MAESTRO_MODEL_PROVIDER");
+            std::env::set_current_dir(workspace.path()).unwrap();
+        }
         let dir = tempfile::tempdir().unwrap();
         write_auth(
             dir.path(),
@@ -680,7 +693,10 @@ mod tests {
             std::env::remove_var("OPENAI_CODEX_ACCOUNT_ID");
         }
 
-        assert_eq!(resolve_default_model(), DEFAULT_CODEX_MODEL);
+        assert_eq!(
+            resolve_default_model(),
+            "evalops/accounts/fireworks/models/glm-5p3"
+        );
         assert!(std::env::var_os("OPENAI_CODEX_TOKEN").is_none());
         assert!(std::env::var_os("OPENAI_CODEX_ACCOUNT_ID").is_none());
 
@@ -691,6 +707,10 @@ mod tests {
 
     #[test]
     fn resolve_default_model_prefers_maestro_config_over_codex_auth() {
+        if crate::config::test_reexec_for_cwd_isolation() {
+            return;
+        }
+        let _env_guard = crate::config::test_process_env_lock();
         let _guard = ENV_LOCK.lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();

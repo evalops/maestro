@@ -1472,3 +1472,5 @@ mod tests {
         assert_eq!(registry.active_skill_tools().len(), 100);
     }
 }
+
+pub(crate) mod directory;

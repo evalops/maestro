@@ -1243,6 +1243,7 @@ fn install_release(
     version: &str,
     release_url: Option<&str>,
     channel: UpdateChannel,
+    show_progress: bool,
 ) -> Result<()> {
     let temporary = tempfile::tempdir().context("Failed to create updater directory")?;
     let installer = temporary.path().join("install.sh");
@@ -1257,6 +1258,9 @@ fn install_release(
         .env("MAESTRO_DATA_DIR", data_dir)
         .env("MAESTRO_REQUIRE_SIGNED_INSTALL", "1")
         .env("MAESTRO_SKIP_STARTUP_UPDATE", "1");
+    if show_progress {
+        command.env("MAESTRO_UPDATE_PROGRESS", "1");
+    }
     if let Some(release_url) = release_url {
         command.env("MAESTRO_RELEASE_BASE_URL", release_url);
     }
@@ -1268,6 +1272,7 @@ fn install(
     version: &str,
     release_url: Option<&str>,
     channel: UpdateChannel,
+    show_progress: bool,
 ) -> Result<()> {
     match context {
         InstallContext::Package {
@@ -1280,7 +1285,14 @@ fn install(
             install_dir,
             data_dir,
             ..
-        } => install_release(install_dir, data_dir, version, release_url, channel),
+        } => install_release(
+            install_dir,
+            data_dir,
+            version,
+            release_url,
+            channel,
+            show_progress,
+        ),
     }
 }
 
@@ -1311,6 +1323,7 @@ fn sanitize_release_installer_env(command: &mut Command) {
         "MAESTRO_INSTALL_VERSION",
         "MAESTRO_INSTALL_CHANNEL",
         "MAESTRO_UPDATE_CHANNEL",
+        "MAESTRO_UPDATE_PROGRESS",
         "MAESTRO_VERSION",
         "MAESTRO_UPDATE_HISTORY",
     ] {
@@ -2145,7 +2158,13 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         return None;
     }
     eprintln!("Updating Deixic Code from {current} to {latest}...");
-    if let Err(error) = install(&context, latest, check.release_url.as_deref(), channel) {
+    if let Err(error) = install(
+        &context,
+        latest,
+        check.release_url.as_deref(),
+        channel,
+        false,
+    ) {
         let mut failed = attempted;
         failed.last_error = Some(format!("{error:#}"));
         let _ = write_startup_state(&state_path, &failed);
@@ -2571,6 +2590,22 @@ fn print_help() {
     );
 }
 
+fn write_update_header(output: &mut impl Write, current: &str) -> io::Result<()> {
+    writeln!(output, "Deixic Code Update")?;
+    writeln!(output)?;
+    writeln!(output, "Current version: {current}")?;
+    writeln!(output, "Checking for updates...")
+}
+
+fn write_update_target(output: &mut impl Write, current: &str, latest: &str) -> io::Result<()> {
+    writeln!(output)?;
+    writeln!(output, "Updating: {current} → {latest}")
+}
+
+fn write_update_success(output: &mut impl Write, latest: &str) -> io::Result<()> {
+    writeln!(output, "✓ Successfully updated to version {latest}!")
+}
+
 pub async fn run_update(args: &[String]) -> Result<i32> {
     let parsed = match parse_args(args) {
         Ok(parsed) => parsed,
@@ -2596,6 +2631,12 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         "deixic-code update is available for signed release and global npm/Bun installations",
     )?;
     let _update_lock = acquire_update_lock(&context)?;
+    let show_progress = !parsed.json && !parsed.check_only;
+    if show_progress {
+        let mut output = io::stdout().lock();
+        write_update_header(&mut output, &current)?;
+        output.flush()?;
+    }
     let check = check_for_update(&current, &context, parsed.channel).await;
     if parsed.check_only {
         if parsed.json {
@@ -2660,6 +2701,11 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         .latest_version
         .as_deref()
         .context("Update metadata missing latest version")?;
+    if show_progress {
+        let mut output = io::stdout().lock();
+        write_update_target(&mut output, &current, latest)?;
+        output.flush()?;
+    }
     clear_rollback_suppression(startup_state_path_for(Some(&context)).as_deref())?;
     let history_path = update_history_path(Some(&context));
     let attempt = new_update_attempt(
@@ -2677,6 +2723,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         latest,
         check.release_url.as_deref(),
         parsed.channel,
+        show_progress,
     ) {
         Ok(()) => {
             let verification = match &context {
@@ -2704,7 +2751,8 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
                 });
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
-                println!("Updated Deixic Code to {latest}.");
+                let mut output = io::stdout().lock();
+                write_update_success(&mut output, latest)?;
                 if let Some(error) = history_error {
                     eprintln!(
                         "Deixic Code updated successfully, but update history persistence failed: {error}"
@@ -2755,6 +2803,19 @@ mod tests {
         assert!(parsed.check_only);
         assert!(parsed.json);
         assert_eq!(parsed.channel, UpdateChannel::Beta);
+    }
+
+    #[test]
+    fn renders_the_manual_update_progress_contract() {
+        let mut output = Vec::new();
+        write_update_header(&mut output, "0.197.0").expect("write update header");
+        write_update_target(&mut output, "0.197.0", "0.212.0").expect("write update target");
+        write_update_success(&mut output, "0.212.0").expect("write update success");
+
+        assert_eq!(
+            String::from_utf8(output).expect("progress output is utf-8"),
+            "Deixic Code Update\n\nCurrent version: 0.197.0\nChecking for updates...\n\nUpdating: 0.197.0 → 0.212.0\n✓ Successfully updated to version 0.212.0!\n"
+        );
     }
 
     #[test]

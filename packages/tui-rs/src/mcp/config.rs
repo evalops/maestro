@@ -103,6 +103,11 @@ pub struct McpServerConfig {
     #[serde(default, rename = "requiresProjectApproval")]
     pub requires_project_approval: Option<bool>,
 
+    /// Tool names withheld from the model-facing catalog for this server.
+    /// Filtering happens after protocol admission and before tool publication.
+    #[serde(default, rename = "disabledTools")]
+    pub disabled_tools: Vec<String>,
+
     /// Connection timeout in milliseconds
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -225,6 +230,24 @@ struct RawServerEntry {
     supports_parallel_tool_calls: Option<bool>,
     #[serde(default, rename = "requiresProjectApproval")]
     requires_project_approval: Option<bool>,
+    #[serde(default, rename = "disabledTools")]
+    disabled_tools: Vec<String>,
+    #[serde(default)]
+    timeout: Option<u64>,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    disabled: bool,
+}
+
+/// One configuration problem retained for the MCP manager instead of being
+/// reduced to stderr and silently disappearing from the effective catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpConfigIssue {
+    pub path: PathBuf,
+    pub scope: McpConfigScope,
+    pub server: Option<String>,
+    pub message: String,
 }
 
 /// Merged MCP configuration from all sources
@@ -232,6 +255,8 @@ struct RawServerEntry {
 pub struct McpConfig {
     /// All configured servers (deduplicated by name)
     pub servers: Vec<McpServerConfig>,
+    /// Read, parse, or validation errors from participating config files.
+    pub issues: Vec<McpConfigIssue>,
 }
 
 impl McpConfig {
@@ -312,11 +337,18 @@ fn load_mcp_config_with_plugin_paths(
     plugin_paths: &[PathBuf],
 ) -> McpConfig {
     let mut merged: HashMap<String, McpServerConfig> = HashMap::new();
+    let mut issues = Vec::new();
 
     // Load in precedence order (lowest first, highest last)
     // User config (lowest precedence)
     if let Some(user_path) = effective_user_config_path() {
-        load_config_file(&user_path, McpConfigScope::User, None, &mut merged);
+        load_config_file(
+            &user_path,
+            McpConfigScope::User,
+            None,
+            &mut merged,
+            &mut issues,
+        );
     }
 
     // Plugin discovery already enforces workspace trust, install trust, the
@@ -328,6 +360,7 @@ fn load_mcp_config_with_plugin_paths(
             McpConfigScope::Project,
             plugin_path.parent(),
             &mut merged,
+            &mut issues,
         );
     }
 
@@ -336,9 +369,21 @@ fn load_mcp_config_with_plugin_paths(
         // Legacy Composer paths are loaded first; native Maestro paths win.
         for directory in [".composer", ".maestro"] {
             let project_path = root.join(directory).join("mcp.json");
-            load_config_file(&project_path, McpConfigScope::Project, None, &mut merged);
+            load_config_file(
+                &project_path,
+                McpConfigScope::Project,
+                None,
+                &mut merged,
+                &mut issues,
+            );
             let local_path = root.join(directory).join("mcp.local.json");
-            load_config_file(&local_path, McpConfigScope::Local, None, &mut merged);
+            load_config_file(
+                &local_path,
+                McpConfigScope::Local,
+                None,
+                &mut merged,
+                &mut issues,
+            );
         }
     }
 
@@ -349,11 +394,13 @@ fn load_mcp_config_with_plugin_paths(
             McpConfigScope::Enterprise,
             None,
             &mut merged,
+            &mut issues,
         );
     }
 
     McpConfig {
         servers: merged.into_values().collect(),
+        issues,
     }
 }
 
@@ -407,6 +454,7 @@ fn load_config_file(
     scope: McpConfigScope,
     plugin_base: Option<&Path>,
     merged: &mut HashMap<String, McpServerConfig>,
+    issues: &mut Vec<McpConfigIssue>,
 ) {
     if !path.exists() {
         return;
@@ -416,6 +464,12 @@ fn load_config_file(
         Ok(c) => c,
         Err(e) => {
             eprintln!("[mcp] Failed to read config {}: {}", path.display(), e);
+            issues.push(McpConfigIssue {
+                path: path.to_path_buf(),
+                scope,
+                server: None,
+                message: format!("failed to read config: {e}"),
+            });
             return;
         }
     };
@@ -424,6 +478,12 @@ fn load_config_file(
         Ok(c) => c,
         Err(e) => {
             eprintln!("[mcp] Failed to parse config {}: {}", path.display(), e);
+            issues.push(McpConfigIssue {
+                path: path.to_path_buf(),
+                scope,
+                server: None,
+                message: format!("invalid JSON: {e}"),
+            });
             return;
         }
     };
@@ -432,10 +492,21 @@ fn load_config_file(
     for mut server in raw.servers {
         server.scope = scope;
         anchor_plugin_stdio_paths(&mut server, plugin_base);
-        if server.disabled || !server.enabled {
-            merged.remove(&server.name);
-        } else if server.validate().is_ok() {
-            merged.insert(server.name.clone(), server);
+        match server.validate() {
+            Ok(()) => {
+                // A higher-precedence disabled record must stay visible and
+                // shadow a lower-precedence enabled definition.
+                merged.insert(server.name.clone(), server);
+            }
+            Err(message) => {
+                merged.remove(&server.name);
+                issues.push(McpConfigIssue {
+                    path: path.to_path_buf(),
+                    scope,
+                    server: Some(server.name),
+                    message,
+                });
+            }
         }
     }
 
@@ -463,15 +534,27 @@ fn load_config_file(
             managed_generation: None,
             supports_parallel_tool_calls: entry.supports_parallel_tool_calls,
             requires_project_approval: entry.requires_project_approval,
-            timeout: None,
-            enabled: true,
-            disabled: false,
+            disabled_tools: entry.disabled_tools,
+            timeout: entry.timeout,
+            enabled: entry.enabled,
+            disabled: entry.disabled,
             scope,
         };
         anchor_plugin_stdio_paths(&mut server, plugin_base);
 
-        if server.validate().is_ok() {
-            merged.insert(name, server);
+        match server.validate() {
+            Ok(()) => {
+                merged.insert(name, server);
+            }
+            Err(message) => {
+                merged.remove(&name);
+                issues.push(McpConfigIssue {
+                    path: path.to_path_buf(),
+                    scope,
+                    server: Some(name),
+                    message,
+                });
+            }
         }
     }
 }
@@ -585,9 +668,6 @@ fn expand_env_vars_internal(s: &str, allow_secrets: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn native_project_config_is_loaded() {
@@ -625,6 +705,82 @@ mod tests {
         let server = config.get_server("server").unwrap();
         assert_eq!(server.scope, McpConfigScope::Local);
         assert_eq!(server.command.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn disabled_server_remains_visible_and_shadows_lower_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(".maestro");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("mcp.json"),
+            r#"{"mcpServers":{"server":{"command":"shared"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("mcp.local.json"),
+            r#"{"mcpServers":{"server":{"command":"local","disabled":true}}}"#,
+        )
+        .unwrap();
+
+        let config = load_mcp_config(Some(temp.path()));
+        let server = config.get_server("server").expect("disabled server");
+        assert_eq!(server.scope, McpConfigScope::Local);
+        assert!(!server.is_enabled());
+    }
+
+    #[test]
+    fn invalid_config_is_reported_to_the_manager() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mcp.json");
+        std::fs::write(&path, "{not-json").unwrap();
+        let mut merged = HashMap::new();
+        let mut issues = Vec::new();
+
+        load_config_file(&path, McpConfigScope::User, None, &mut merged, &mut issues);
+
+        assert!(merged.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].path, path);
+        assert!(issues[0].message.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn invalid_higher_scope_server_does_not_fall_back_to_lower_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let user_path = temp.path().join("user.json");
+        let project_path = temp.path().join("project.json");
+        std::fs::write(
+            &user_path,
+            r#"{"mcpServers":{"server":{"command":"trusted-user-command"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &project_path,
+            r#"{"mcpServers":{"server":{"transport":"stdio"}}}"#,
+        )
+        .unwrap();
+        let mut merged = HashMap::new();
+        let mut issues = Vec::new();
+
+        load_config_file(
+            &user_path,
+            McpConfigScope::User,
+            None,
+            &mut merged,
+            &mut issues,
+        );
+        load_config_file(
+            &project_path,
+            McpConfigScope::Project,
+            None,
+            &mut merged,
+            &mut issues,
+        );
+
+        assert!(!merged.contains_key("server"));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].server.as_deref(), Some("server"));
     }
 
     #[test]
@@ -677,6 +833,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -703,6 +860,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -729,6 +887,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -755,6 +914,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -782,11 +942,13 @@ mod tests {
                 managed_generation: None,
                 supports_parallel_tool_calls: None,
                 requires_project_approval: None,
+                disabled_tools: Vec::new(),
                 timeout: None,
                 enabled: true,
                 disabled: false,
                 scope: McpConfigScope::Project,
             }],
+            issues: Vec::new(),
         };
         let managed = McpServerConfig {
             name: "orb".to_string(),
@@ -806,6 +968,7 @@ mod tests {
             managed_generation: Some(1),
             supports_parallel_tool_calls: None,
             requires_project_approval: Some(false),
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -841,11 +1004,13 @@ mod tests {
                 managed_generation: None,
                 supports_parallel_tool_calls: None,
                 requires_project_approval: None,
+                disabled_tools: Vec::new(),
                 timeout: None,
                 enabled: true,
                 disabled: false,
                 scope: McpConfigScope::Project,
             }],
+            issues: Vec::new(),
         };
 
         append_managed_servers(
@@ -875,6 +1040,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -901,6 +1067,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,
@@ -927,16 +1094,24 @@ mod tests {
         .expect("write mcp config");
 
         let mut merged = HashMap::new();
-        load_config_file(&path, McpConfigScope::Project, None, &mut merged);
+        let mut issues = Vec::new();
+        load_config_file(
+            &path,
+            McpConfigScope::Project,
+            None,
+            &mut merged,
+            &mut issues,
+        );
 
         let server = merged.get("scope-test").expect("server");
+        assert!(issues.is_empty());
         assert_eq!(server.scope, McpConfigScope::Project);
         assert_eq!(server.transport, McpTransport::Stdio);
     }
 
     #[test]
     fn test_user_config_paths_do_not_fall_back_when_env_override_is_set() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous_override = std::env::var("MAESTRO_USER_MCP_PATH").ok();
         let previous_home = std::env::var("MAESTRO_HOME").ok();
 
@@ -968,7 +1143,7 @@ mod tests {
 
     #[test]
     fn test_enterprise_config_paths_do_not_fall_back_when_env_override_is_set() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous_override = std::env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
         let previous_home = std::env::var("MAESTRO_HOME").ok();
 
@@ -989,7 +1164,7 @@ mod tests {
 
     #[test]
     fn test_user_config_paths_use_custom_maestro_home_without_default_maestro_fallback() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous_override = std::env::var("MAESTRO_USER_MCP_PATH").ok();
         let previous_home = std::env::var("MAESTRO_HOME").ok();
         let home = dirs::home_dir().expect("home dir");
@@ -1014,7 +1189,7 @@ mod tests {
 
     #[test]
     fn test_enterprise_config_paths_use_custom_maestro_home_without_default_maestro_fallback() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = crate::config::test_process_env_lock();
         let previous_override = std::env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
         let previous_home = std::env::var("MAESTRO_HOME").ok();
         let home = dirs::home_dir().expect("home dir");
@@ -1138,6 +1313,7 @@ mod tests {
             managed_generation: None,
             supports_parallel_tool_calls: None,
             requires_project_approval: approval,
+            disabled_tools: Vec::new(),
             timeout: None,
             enabled: true,
             disabled: false,

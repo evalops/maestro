@@ -1961,6 +1961,7 @@ mod tests {
 
     #[test]
     fn test_policy_path_candidates_use_custom_maestro_home_without_default_maestro_fallback() {
+        let _env_guard = crate::config::test_process_env_lock();
         let _lock = test_env_guard();
         let previous_enterprise = std::env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
         let previous_policy = std::env::var("MAESTRO_POLICY_PATH").ok();

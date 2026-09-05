@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 40] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 41] = [
     "acp",
     "sessions",
     "search",
@@ -74,6 +74,7 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 40] = [
     "update",
     "modes",
     "agents",
+    "specialists",
     "painter",
     "anthropic",
     "memory",
@@ -101,9 +102,10 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 40] = [
     "setup",
 ];
 
-const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
+const GLOBAL_FLAGS_WITH_VALUES: [&str; 27] = [
     "--mode",
     "--provider",
+    "--specialist",
     "--model",
     "-m",
     "--task-budget",
@@ -415,6 +417,7 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 Interactive: deixic-code --provider openai -m gpt-4.1-mini\n\
 Print mode:  deixic-code -p --provider openai -m gpt-4.1-mini \"question\"\n\
 Trust cwd:   deixic-code trust\n\
+MCP manager: deixic-code mcp --help\n\
 Sandbox:     use /sandbox in-session or MAESTRO_SANDBOX_MODE")]
 struct Args {
     /// Provider to use (for example, openai). When omitted, inferred from the model.
@@ -424,6 +427,10 @@ struct Args {
     /// Model to use (for example, gpt-5.5).
     #[arg(short, long)]
     model: Option<String>,
+
+    /// Named focus for a non-interactive print run.
+    #[arg(long, requires = "print", conflicts_with_all = ["headless", "rpc", "resume", "continue"])]
+    specialist: Option<String>,
 
     /// API key for authentication (defaults to env / op:// references).
     #[arg(long)]
@@ -476,6 +483,7 @@ struct Args {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct NativeExecOptions {
+    specialist: Option<String>,
     json: bool,
     model: Option<String>,
     output_last: Option<std::path::PathBuf>,
@@ -506,6 +514,16 @@ fn parse_native_exec_options(raw_args: &[std::ffi::OsString]) -> NativeExecOptio
             if i < raw_args.len() && raw_args[i] == "json" {
                 options.json = true;
             }
+        } else if arg == "--specialist" {
+            i += 1;
+            options.specialist = Some(
+                raw_args
+                    .get(i)
+                    .map(|v| v.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
+        } else if let Some(value) = arg.strip_prefix("--specialist=") {
+            options.specialist = Some(value.to_string());
         } else if arg == "--model" || arg == "-m" {
             i += 1;
             if i < raw_args.len() {
@@ -729,7 +747,11 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
             );
         };
     }
-    if let Some(tokens) = native_utility_tokens(&raw_args[1..]) {
+    if let Some(mut tokens) = native_utility_tokens(&raw_args[1..]) {
+        if tokens.first().is_some_and(|token| token == "specialists") {
+            tokens[0] = "agents".into();
+            tokens.insert(1, "profile".into());
+        }
         if tokens.first().is_some_and(|token| token == "agents") {
             configure_agents_api_key(&raw_args[1..]);
             let outcome = match crate::agents_cli::run(&tokens[1..]) {
@@ -751,6 +773,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
                     let model = raw_option_value(&raw_args[1..], &["--model", "-m"]);
                     let code =
                         crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
+                            specialist: None,
                             prompt,
                             json: false,
                             model,
@@ -813,9 +836,14 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         None => None,
     };
 
+    let keep_worktree = keep_session_worktree(&raw_args);
     let result = run_agent(raw_args).await;
     if let Some(session) = worktree {
-        session.finish();
+        if keep_worktree {
+            session.keep();
+        } else {
+            session.finish();
+        }
     }
     let exit_code = result?;
     std::process::exit(exit_code);
@@ -911,6 +939,16 @@ pub fn classify_clap_dispatch(raw_args: &[std::ffi::OsString]) -> ClapDispatch {
     }
 }
 
+// Only one-shot execution opts into automatic directory cleanup. Interactive,
+// forked, and protocol sessions can reconnect and need a stable working directory.
+fn keep_session_worktree(raw_args: &[std::ffi::OsString]) -> bool {
+    match classify_agent_entry(raw_args) {
+        AgentEntry::ExecOrPrintSubcommand(_) => false,
+        AgentEntry::ClapParsed => classify_clap_dispatch(raw_args) != ClapDispatch::Print,
+        _ => true,
+    }
+}
+
 /// Agent dispatch shared by the interactive TUI, fork/resume, exec, print,
 /// and headless modes. Returns the process exit code instead of exiting
 /// directly so the caller can run worktree teardown first.
@@ -957,7 +995,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             }
             if options.prompt.is_empty() {
                 eprintln!(
-                    "Usage: deixic-code {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
+                    "Usage: deixic-code {cmd} [--json] [--model <id>] [--specialist <name>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
                 );
                 return Ok(2);
             }
@@ -970,6 +1008,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
                     }
                 };
             let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
+                specialist: options.specialist,
                 prompt: options.prompt,
                 json: options.json,
                 model,
@@ -1080,6 +1119,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             return Ok(2);
         }
         let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
+            specialist: args.specialist,
             prompt,
             json: args.json,
             model: selected_model,
@@ -1380,6 +1420,48 @@ fn configure_agents_api_key_env(provider: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn specialist_exec_selector_is_not_part_of_the_task() {
+        for args in [
+            vec!["--specialist", "product", "inspect", "journey"],
+            vec!["--specialist=product", "inspect", "journey"],
+        ] {
+            let args = args
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let options = parse_native_exec_options(&args);
+            assert_eq!(options.specialist.as_deref(), Some("product"));
+            assert_eq!(options.prompt, "inspect journey");
+        }
+        let args = ["--", "--specialist", "product"].map(std::ffi::OsString::from);
+        assert!(parse_native_exec_options(&args).specialist.is_none());
+        assert!(Args::try_parse_from(["maestro", "--specialist", "product", "hello"]).is_err());
+        assert!(
+            Args::try_parse_from(["maestro", "--print", "--specialist", "product", "hello"])
+                .is_ok()
+        );
+        assert_eq!(
+            native_utility_tokens(&["specialists".into(), "list".into()]).unwrap(),
+            vec!["specialists", "list"]
+        );
+    }
+
+    #[test]
+    fn worktree_cleanup_follows_the_actual_session_mode() {
+        for (args, keep) in [
+            (vec!["maestro", "-w", "task"], true),
+            (vec!["maestro", "fork", "session", "-w", "task"], true),
+            (vec!["maestro", "--headless", "-w", "task"], true),
+            (vec!["maestro", "exec", "-w", "task", "hello"], false),
+            (vec!["maestro", "print", "-w", "task", "hello"], false),
+            (vec!["maestro", "-p", "-w", "task", "hello"], false),
+        ] {
+            let raw: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+            assert_eq!(super::keep_session_worktree(&raw), keep, "{args:?}");
+        }
+    }
+
     use super::*;
     use clap::CommandFactory;
 

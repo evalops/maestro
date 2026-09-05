@@ -1,0 +1,38 @@
+{
+  "name": "session-picker-light",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "light"
+    },
+    {
+      "wait": "(?s)Select Theme.*light.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/sessions"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Sessions \\(.*Enter select.*Esc cancel.*Del delete"
+    }
+  ]
+}

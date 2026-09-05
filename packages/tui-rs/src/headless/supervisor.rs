@@ -1821,6 +1821,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             record_id: record_id.clone(),
             lineage_id: lineage_id.clone(),
             record_status: record_status.clone(),
+            prompt_experiment: None,
         },
         AgentEvent::WorkspaceCapabilitySetApplied { receipt } => {
             FromAgentMessage::WorkspaceCapabilitySetApplied {
@@ -1876,8 +1877,14 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             duration_ms: *duration_ms,
             ttft_ms: *ttft_ms,
         },
-        AgentEvent::TurnCompleted { response_id } => FromAgentMessage::TurnCompleted {
+        AgentEvent::TurnCompleted {
+            response_id,
+            coding_completion,
+            coding_child_records,
+        } => FromAgentMessage::TurnCompleted {
             response_id: response_id.clone(),
+            coding_completion: coding_completion.clone(),
+            coding_child_records: coding_child_records.clone(),
         },
         AgentEvent::TurnInterrupted {
             response_id,

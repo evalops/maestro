@@ -18,6 +18,10 @@ use crate::ai::{
 use crate::init_cli::EvalOpsCredentialSnapshot;
 use crate::service_connections::ConnectionStore;
 
+/// Shipped model route. Credentials remain in the gateway, never in the client.
+pub const DEFAULT_MANAGED_MODEL: &str = "evalops/accounts/fireworks/models/glm-5p3";
+pub const DEFAULT_MANAGED_CREDENTIAL_NAME: &str = "deixic-llm-gateway-glm53";
+
 pub const ACCESS_TOKEN_ENV: &str = "MAESTRO_EVALOPS_ACCESS_TOKEN";
 pub const ACCESS_TOKEN_FILE_ENV: &str = "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE";
 pub const BASE_URL_ENV: &str = "MAESTRO_EVALOPS_BASE_URL";
@@ -527,7 +531,16 @@ impl PlatformSession {
         }
         env.insert(ORG_ID_ENV.to_owned(), self.organization_id.clone());
         env.insert(WORKSPACE_ID_ENV.to_owned(), workspace_id.to_owned());
-        let provider = vendor_provider_id(model, &self.provider_ref)?;
+        // Existing Identity snapshots may carry the previous OpenAI default.
+        // Selecting the shipped GLM route selects Fireworks explicitly, while
+        // preserving the authenticated tenant, environment, and team scope.
+        let select_fireworks = model == DEFAULT_MANAGED_MODEL
+            && provider_ref_string(&self.provider_ref, "provider").as_deref() != Some("fireworks");
+        let provider = if select_fireworks {
+            "fireworks".to_owned()
+        } else {
+            vendor_provider_id(model, &self.provider_ref)?
+        };
         env.insert(PROVIDER_ENV.to_owned(), provider);
         env.insert(
             ENVIRONMENT_ENV.to_owned(),
@@ -536,8 +549,12 @@ impl PlatformSession {
         );
         env.insert(
             CREDENTIAL_NAME_ENV.to_owned(),
-            provider_ref_string(&self.provider_ref, "credential_name")
-                .unwrap_or_else(|| canonical_managed_credential_name(None)),
+            if select_fireworks {
+                DEFAULT_MANAGED_CREDENTIAL_NAME.to_owned()
+            } else {
+                provider_ref_string(&self.provider_ref, "credential_name")
+                    .unwrap_or_else(|| canonical_managed_credential_name(None))
+            },
         );
         if let Some(team_id) = provider_ref_string(&self.provider_ref, "team_id") {
             env.insert(TEAM_ID_ENV.to_owned(), team_id);
@@ -664,6 +681,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shipped_glm_route_uses_fireworks_with_verified_tenant_scope() {
+        let session = PlatformSession {
+            access_token: "access".to_owned(),
+            organization_id: "org-1".to_owned(),
+            workspace_id: Some("workspace-2".to_owned()),
+            user_id: None,
+            email: None,
+            provider_ref: serde_json::json!({
+                "provider": "openai",
+                "environment": "production",
+                "credential_name": "default"
+            }),
+        };
+        let model = "evalops/accounts/fireworks/models/glm-5p3";
+        let env = session.managed_env(model, &HashMap::new()).unwrap();
+        assert_eq!(env[PROVIDER_ENV], "fireworks");
+        assert_eq!(env[ORG_ID_ENV], "org-1");
+        assert_eq!(env[WORKSPACE_ID_ENV], "workspace-2");
+        assert_eq!(env[ENVIRONMENT_ENV], "production");
+        assert_eq!(env[CREDENTIAL_NAME_ENV], "deixic-llm-gateway-glm53");
+        assert_eq!(session.managed_model_route(model), model);
+        assert!(!env.contains_key("FIREWORKS_API_KEY"));
     }
 
     fn snapshot(org: &str, token: &str) -> EvalOpsCredentialSnapshot {

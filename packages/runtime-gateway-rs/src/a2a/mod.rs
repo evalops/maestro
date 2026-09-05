@@ -22,9 +22,9 @@ pub(crate) use native_turn::{
 #[allow(unused_imports)]
 pub(crate) use push_notifications::{
     PlatformA2APushServiceAuth, a2a_push_authorization_header, a2a_push_ip_is_private,
-    a2a_push_notification_payloads, a2a_push_select_pinned_addr, handle_platform_a2a_push_endpoint,
-    is_platform_a2a_push_endpoint, normalize_a2a_push_notification_config,
-    record_platform_a2a_push_payload,
+    a2a_push_notification_payloads, a2a_push_notification_tenant_headers,
+    a2a_push_select_pinned_addr, handle_platform_a2a_push_endpoint, is_platform_a2a_push_endpoint,
+    normalize_a2a_push_notification_config, record_platform_a2a_push_payload,
 };
 #[cfg(test)]
 pub(crate) use push_notifications::{

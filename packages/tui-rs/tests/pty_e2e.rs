@@ -672,6 +672,46 @@ fn pty_prompt_streams_answer() {
     session.shutdown();
 }
 
+/// `/mcp` opens the native manager and returning to chat remains responsive.
+/// The disabled fixture proves the manager lists configured servers without
+/// dialing an external process during the scenario.
+#[test]
+fn pty_mcp_manager_opens_and_returns_to_chat() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![
+        text_turn("PTY_MCP_READY"),
+        text_turn("PTY_MCP_CHAT_STILL_RESPONSIVE"),
+    ]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let config_dir = workdir.path().join(".composer");
+    std::fs::create_dir_all(&config_dir).expect("create MCP config directory");
+    std::fs::write(
+        config_dir.join("mcp.json"),
+        r#"{"mcpServers":{"demo":{"command":"demo-mcp","disabled":true}}}"#,
+    )
+    .expect("write MCP fixture");
+    let mut session = PtySession::spawn(&mock, workdir.path(), "start MCP scenario");
+
+    session.wait_for_text("PTY_MCP_READY", READY_TIMEOUT);
+    session.submit_prompt("/mcp");
+    session.wait_for_text("MCP servers", TURN_TIMEOUT);
+    session.wait_for_text("demo", TURN_TIMEOUT);
+
+    // Use the manager's explicit custom-add exit as a visible synchronization
+    // point. A lone Escape can be consumed by the terminal DSR probe.
+    session.send_bytes_until(b"a", "/mcp config add ", TURN_TIMEOUT);
+    session.send_bytes(b"\x15");
+    session.submit_prompt("confirm chat still works");
+    session.wait_for_text("PTY_MCP_CHAT_STILL_RESPONSIVE", TURN_TIMEOUT);
+    assert_eq!(
+        mock.request_count(),
+        2,
+        "slash command must not call the model"
+    );
+
+    session.shutdown();
+}
+
 /// Regression for forked interactive sessions bypassing the registered
 /// shutdown lifecycle: a real fork is resumed in the PTY, accepts a new
 /// turn, and must handle SIGTERM through orderly teardown rather than the
@@ -842,4 +882,81 @@ fn pty_ctrl_c_interrupts_long_tool_and_stays_responsive() {
             session.wait_for_text("PTY_E2E_RECOVERED_OK", Duration::ZERO);
         }
     }
+}
+
+/// The shortcut must change the next provider request, not only footer text.
+#[test]
+fn pty_shift_tab_changes_request_effort() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![
+        text_turn("THINKING_READY"),
+        text_turn("THINKING_MEDIUM_DONE"),
+        text_turn("THINKING_HIGH_DONE"),
+    ]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let mut session = PtySession::spawn_with_args(
+        &mock,
+        workdir.path(),
+        &["--model", "o1", "--api-key", "pty-e2e-key", "say ready"],
+    );
+    session.wait_for_text("THINKING_READY", READY_TIMEOUT);
+    session.submit_prompt("/thinking low");
+    session.wait_for_text("(low)", TURN_TIMEOUT);
+    session.send_bytes(b"\x1b[Z");
+    session.submit_prompt("say medium done");
+    session.wait_for_text("THINKING_MEDIUM_DONE", TURN_TIMEOUT);
+    session.send_bytes(b"\x1b[Z");
+    session.submit_prompt("say high done");
+    session.wait_for_text("THINKING_HIGH_DONE", TURN_TIMEOUT);
+    let requests = mock.state.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(requests.requests.len(), 3);
+    for (body, effort) in requests.requests[1..].iter().zip(["medium", "high"]) {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["reasoning_effort"], effort);
+    }
+    drop(requests);
+    session.shutdown();
+}
+
+#[test]
+fn specialist_exec_applies_focus_model_and_tool_ceiling_to_the_request() {
+    let mock = MockOpenAiServer::start(vec![text_turn("SPECIALIST_DONE")]);
+    let workdir = tempfile::tempdir().unwrap();
+    let profiles = workdir.path().join("maestro-home/agent-profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("billing.md"),
+        "---\nname: billing\nmodel: gpt-4o\ntools: [read]\n---\nBILLING_FOCUS_CONTRACT",
+    )
+    .unwrap();
+    let mut session = PtySession::spawn_with_args(
+        &mock,
+        workdir.path(),
+        &[
+            "exec",
+            "--specialist",
+            "billing",
+            "Inspect the invoice journey",
+        ],
+    );
+    session.wait_for_text("SPECIALIST_DONE", TURN_TIMEOUT);
+    let state = mock.state.lock().unwrap_or_else(|error| error.into_inner());
+    let request: serde_json::Value = serde_json::from_str(&state.requests[0]).unwrap();
+    assert_eq!(request["model"], "gpt-4o");
+    let messages = request["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|m| {
+        m["role"] == "system"
+            && m["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("BILLING_FOCUS_CONTRACT"))
+    }));
+    assert!(messages.iter().any(|m| {
+        m["role"] == "user"
+            && m["content"]
+                .to_string()
+                .contains("Inspect the invoice journey")
+    }));
+    let tools = request["tools"].as_array().unwrap();
+    assert!(!tools.is_empty());
+    assert!(tools.iter().all(|tool| tool["function"]["name"] == "read"));
 }

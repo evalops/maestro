@@ -120,8 +120,7 @@ async fn run_command_output_with_policy(
         .kill_on_drop(true);
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt as _;
-        command.as_std_mut().process_group(0);
+        super::process_utils::set_new_process_group(&mut command);
     }
     #[cfg(windows)]
     {
@@ -134,7 +133,7 @@ async fn run_command_output_with_policy(
     #[cfg(test)]
     TEST_COMMAND_SPAWNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     #[cfg(unix)]
-    let mut process_group = ProcessGroupGuard(child.id());
+    let mut process_group = ProcessGroupGuard::new(child.id());
     #[cfg(windows)]
     let mut job = JobObjectGuard::assign(&child)
         .map_err(|error| GhCommandError::Failed(error.to_string()))?;
@@ -218,27 +217,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[cfg(unix)]
-struct ProcessGroupGuard(Option<u32>);
-
-#[cfg(unix)]
-impl ProcessGroupGuard {
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        if let Some(pid) = self.0 {
-            // SAFETY: a negative pid targets only the process group created
-            // for this child; SIGKILL requires no borrowed memory.
-            unsafe {
-                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-            }
-        }
-    }
-}
+use super::process_utils::ProcessGroupGuard;
 
 #[cfg(windows)]
 struct OwnedWindowsHandle(HANDLE);

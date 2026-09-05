@@ -1443,11 +1443,18 @@ impl ToolExecutor {
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolResult {
         let ToolExecutionContext {
+            code_decision,
             cancel,
             approved_inline_env,
             hooks,
             emit_tool_events,
         } = execution_context;
+        if code_decision
+            .as_ref()
+            .is_some_and(|decision| !decision.is_current())
+        {
+            return ToolResult::failure("Code tool authority expired before execution");
+        }
         let lifecycle_event_tx = emit_tool_events.then_some(event_tx).flatten();
         if super::is_reserved_orb_tool(tool_name) {
             return ToolResult::failure(
@@ -1563,6 +1570,11 @@ impl ToolExecutor {
         // registered under that name would silently never execute despite
         // passing the collision check.
         match tool_name {
+            "coding_task" => {
+                // Keep the workflow future out of every tool dispatch frame,
+                // including ordinary Bash calls that do not use acceptance.
+                Box::pin(self.execute_coding_task(args, call_id, cancel.as_ref())).await
+            }
             "explore" | "Explore" => {
                 if hooks.is_some() {
                     return Box::pin(
@@ -1671,6 +1683,9 @@ impl ToolExecutor {
 
                 if let Err(err) = crate::plan_mode::gate_mutation("bash", None, &self.cwd) {
                     return ToolResult::failure(err);
+                }
+                if let Err(error) = self.check_coding_bash_revision(&bash_args.command) {
+                    return ToolResult::failure(error);
                 }
 
                 let result = if let Some(tx) = event_tx {
@@ -1797,6 +1812,9 @@ impl ToolExecutor {
                     )
                 };
 
+                if let Err(error) = self.observe_coding_bash(call_id, &result) {
+                    return ToolResult::failure(format!("Coding evidence capture failed: {error}"));
+                }
                 result
             }
             "read" | "Read" => {

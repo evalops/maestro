@@ -6,6 +6,8 @@
 //! durable record and can therefore observe or resume a child from another
 //! `ToolExecutor` in the same process.
 
+use crate::model_dynamics::{ModelChoice, TaskDifficulty};
+use crate::session::ThinkingLevel;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -552,6 +554,10 @@ pub(crate) struct SubagentRecord {
     #[serde(default)]
     pub profile_tools: Option<Vec<String>>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub thinking: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub difficulty: TaskDifficulty,
     #[serde(default = "default_child_timeout_ms")]
     pub timeout_ms: u64,
     #[serde(default = "default_child_max_tokens")]
@@ -631,6 +637,8 @@ struct SpawnRequest {
     profile_prompt: Option<String>,
     profile_tools: Option<Vec<String>>,
     model: Option<String>,
+    thinking: Option<ThinkingLevel>,
+    difficulty: TaskDifficulty,
     timeout_ms: u64,
     max_tokens: u32,
     run_in_background: bool,
@@ -886,12 +894,15 @@ pub(crate) struct SubagentManager {
     /// does not: a new or resumed session rotates the scope in place so a child
     /// started by an earlier conversation cannot report into a later one.
     parent_scope_id: Arc<Mutex<String>>,
+    parent_model: Arc<Mutex<Option<ModelChoice>>>,
     runtime: Arc<RuntimeRegistry>,
     mailbox_path: PathBuf,
     last_lifecycle_poll: Arc<Mutex<Instant>>,
     last_lifecycle_reconciliation: Arc<Mutex<Instant>>,
     observed_lifecycle_records: Arc<Mutex<HashMap<String, LifecycleRecordObservation>>>,
     pending_lifecycle: Arc<Mutex<HashSet<String>>>,
+    /// Acceptance reads actual execution output, never agent-writable record files.
+    coding_validator_receipts: Arc<Mutex<HashMap<String, Option<SubagentRecord>>>>,
     orb_adapter: Arc<RwLock<Option<OrbDelegationAdapter>>>,
     /// The runner's "a steering message is queued" signal, when this manager
     /// belongs to a runner that owns a message queue.
@@ -923,6 +934,10 @@ fn lifecycle_file_id(_metadata: &std::fs::Metadata) -> Option<u64> {
 }
 
 impl SubagentManager {
+    pub(crate) fn set_parent_model(&self, choice: ModelChoice) {
+        *self.parent_model.lock().expect("parent model mutex") = Some(choice);
+    }
+
     pub(crate) fn new(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
         let root = default_root(&cwd);
@@ -981,6 +996,7 @@ impl SubagentManager {
             cwd,
             root,
             parent_scope_id: Arc::new(Mutex::new(parent_scope_id)),
+            parent_model: Arc::new(Mutex::new(None)),
             runtime: runtime_registry(),
             mailbox_path,
             last_lifecycle_poll: Arc::new(Mutex::new(
@@ -995,6 +1011,7 @@ impl SubagentManager {
             )),
             observed_lifecycle_records: Arc::new(Mutex::new(HashMap::new())),
             pending_lifecycle: Arc::new(Mutex::new(HashSet::new())),
+            coding_validator_receipts: Arc::new(Mutex::new(HashMap::new())),
             orb_adapter: Arc::new(RwLock::new(None)),
             steer_signal: Arc::new(Mutex::new(None)),
         }
@@ -1474,6 +1491,47 @@ impl SubagentManager {
         credential_vault: CredentialVault,
         cancel: Option<&CancellationToken>,
     ) -> ToolResult {
+        self.spawn_internal(
+            args,
+            parent_call_id,
+            sandbox_policy,
+            credential_vault,
+            cancel,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn spawn_coding_validator(
+        &self,
+        args: &serde_json::Value,
+        parent_call_id: &str,
+        sandbox_policy: Option<SandboxPolicy>,
+        credential_vault: CredentialVault,
+        cancel: Option<&CancellationToken>,
+        role: crate::agents_cli::BuiltinValidatorRole,
+    ) -> ToolResult {
+        self.spawn_internal(
+            args,
+            parent_call_id,
+            sandbox_policy,
+            credential_vault,
+            cancel,
+            Some(role),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_internal(
+        &self,
+        args: &serde_json::Value,
+        parent_call_id: &str,
+        sandbox_policy: Option<SandboxPolicy>,
+        credential_vault: CredentialVault,
+        cancel: Option<&CancellationToken>,
+        validator: Option<crate::agents_cli::BuiltinValidatorRole>,
+    ) -> ToolResult {
         let mut request = match parse_spawn_request(args) {
             Ok(request) => request,
             Err(error) => return ToolResult::failure(error),
@@ -1490,8 +1548,46 @@ impl SubagentManager {
         if let Err(error) = apply_subagent_start_hook(&mut request, &self.cwd, &parent_scope_id) {
             return ToolResult::failure(error);
         }
-        if let Err(error) = resolve_spawn_profile(&mut request, &self.cwd) {
+        if let Some(role) = validator {
+            let profile = crate::agents_cli::trusted_builtin_validator_profile(role);
+            request.profile = Some(profile.name);
+            request.profile_prompt = Some(profile.prompt);
+            request.profile_tools = profile.tools;
+            request.backend = SubagentBackend::Native;
+            request.role = match role {
+                crate::agents_cli::BuiltinValidatorRole::CodingReviewer => SubagentRole::Review,
+                crate::agents_cli::BuiltinValidatorRole::CodingFlowValidator => SubagentRole::Code,
+            };
+            request.isolation = SubagentIsolation::Worktree;
+            request.task = args
+                .get("task")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+        } else if let Err(error) = resolve_spawn_profile(&mut request, &self.cwd) {
             return ToolResult::failure(error);
+        }
+        if request.backend == SubagentBackend::Native {
+            let parent = self
+                .parent_model
+                .lock()
+                .expect("parent model mutex")
+                .clone()
+                .unwrap_or_else(|| ModelChoice {
+                    model: crate::codex_auth::resolve_default_model(),
+                    thinking: ThinkingLevel::Off,
+                });
+            let resolved = crate::config::model_dynamics_config().resolve_child(
+                request.difficulty,
+                request.model.as_deref(),
+                request.thinking,
+                &parent,
+            );
+            request.model = Some(resolved.model.clone());
+            request.thinking = Some(crate::model_dynamics::normalize_thinking(
+                &resolved.model,
+                resolved.thinking,
+            ));
         }
         if request.backend == SubagentBackend::Orb {
             if let Err(error) = infer_hosted_computer_context(&mut request.orb, &self.cwd) {
@@ -1611,6 +1707,8 @@ impl SubagentManager {
             profile_prompt: request.profile_prompt.clone(),
             profile_tools: request.profile_tools.clone(),
             model: request.model.clone(),
+            thinking: request.thinking,
+            difficulty: request.difficulty,
             timeout_ms: request.timeout_ms,
             max_tokens: request.max_tokens,
             isolation: request.isolation,
@@ -1676,6 +1774,12 @@ impl SubagentManager {
         }
 
         let token = CancellationToken::new();
+        if validator.is_some() {
+            self.coding_validator_receipts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.clone(), None);
+        }
         let (control_tx, control_rx) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
         self.runtime
             .set_credential_scope(&id, child_credential_vault.clone());
@@ -2017,6 +2121,64 @@ impl SubagentManager {
             lines.join("\n")
         })
         .with_details(details)
+    }
+
+    pub(crate) fn coding_validator_record(&self, id: &str) -> Result<SubagentRecord, String> {
+        self.coding_validator_receipts
+            .lock()
+            .map_err(|_| "Coding validator receipt storage is unavailable".to_owned())?
+            .get(id)
+            .and_then(Clone::clone)
+            .ok_or_else(|| "Coding validator has no terminal receipt from this runtime; wait or launch fresh validation".into())
+    }
+
+    /// Drive the real terminal producer without contacting a model in dispatcher tests.
+    #[cfg(test)]
+    pub(crate) fn finish_coding_validator_for_test(
+        &self,
+        record: SubagentRecord,
+        output: String,
+    ) -> Result<SubagentRecord, String> {
+        self.coding_validator_receipts
+            .lock()
+            .unwrap()
+            .insert(record.id.clone(), None);
+        let vault = CredentialVault::new();
+        let scope = ParentCredentialScope {
+            vault: &vault,
+            generation: vault.generation(),
+        };
+        self.finish_record(
+            record,
+            SubagentStatus::Completed,
+            Some(SubagentResult {
+                output,
+                files_modified: vec![],
+            }),
+            None,
+            &CredentialVault::new(),
+            &scope,
+        )
+    }
+
+    pub(crate) fn clear_coding_validator_records(&self) {
+        self.coding_validator_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    fn seal_coding_validator_record(&self, record: &SubagentRecord) {
+        if let Some(receipt) = self
+            .coding_validator_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&record.id)
+        {
+            if receipt.is_none() {
+                *receipt = Some(record.clone());
+            }
+        }
     }
 
     pub(crate) fn get(&self, args: &serde_json::Value) -> ToolResult {
@@ -2897,6 +3059,8 @@ impl SubagentManager {
             profile_prompt: initial.profile_prompt.clone(),
             profile_tools: initial.profile_tools.clone(),
             model: initial.model.clone(),
+            thinking: initial.thinking,
+            difficulty: initial.difficulty,
             timeout_ms: initial.timeout_ms,
             max_tokens: initial.max_tokens,
             run_in_background: args
@@ -2947,6 +3111,8 @@ impl SubagentManager {
         record.profile_prompt = request.profile_prompt.clone();
         record.profile_tools = request.profile_tools.clone();
         record.model = request.model.clone();
+        record.thinking = request.thinking;
+        record.difficulty = request.difficulty;
         record.timeout_ms = request.timeout_ms;
         record.max_tokens = request.max_tokens;
 
@@ -4094,13 +4260,19 @@ impl SubagentManager {
                 .map(|prompt| format!("Specialist profile instructions:\n{prompt}\n"))
                 .unwrap_or_default()
         );
+        let system_prompt = format!(
+            "{system_prompt}\n{}\n{}",
+            role_instructions(record.role),
+            super::subagent_handoff::INSTRUCTIONS
+        );
         let config = NativeAgentConfig {
+            model_dynamics: crate::config::model_dynamics_config(),
             model,
             max_tokens: record.max_tokens,
             max_tokens_source: crate::agent::MaxTokensSource::Explicit,
             system_prompt: Some(system_prompt),
-            thinking_enabled: false,
-            thinking_budget: 0,
+            thinking_enabled: record.thinking.unwrap_or(ThinkingLevel::Off).to_config().0,
+            thinking_budget: record.thinking.unwrap_or(ThinkingLevel::Off).to_config().1,
             cwd: child_cwd.to_string_lossy().into_owned(),
             approval_mode: ApprovalMode::Yolo,
             context_window: None,
@@ -4108,6 +4280,7 @@ impl SubagentManager {
             managed_mcp_policy,
             max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
             allow_unbounded_turn: false,
+            retry_config: crate::agent::retry::RetryConfig::default(),
         };
         let allowed_tools =
             child_allowed_tools_for_role(record.role, record.profile_tools.as_deref());
@@ -4289,6 +4462,15 @@ impl SubagentManager {
             }
 
             match event {
+                FromAgent::ModelChanged { model, .. } => {
+                    record.model = Some(model);
+                }
+                FromAgent::BoostChanged {
+                    thinking: Some(thinking),
+                    ..
+                } => {
+                    record.thinking = Some(thinking);
+                }
                 // Current runtimes checkpoint before publishing a terminal.
                 // Retain the legacy terminal-first wait so older runtimes can
                 // still deliver their checkpoint after the terminal.
@@ -4441,6 +4623,7 @@ impl SubagentManager {
                     message,
                     fatal,
                     terminal,
+                    ..
                 } if fatal || terminal => {
                     run_error = Some(message);
                     break;
@@ -4573,6 +4756,7 @@ impl SubagentManager {
         // and the current parent never learns the child finished.
         match self.write_record(&record) {
             Ok(()) => {
+                self.seal_coding_validator_record(&record);
                 if let Err(error) = self.publish_lifecycle_notification(&mut record) {
                     self.pending_lifecycle
                         .lock()
@@ -4600,10 +4784,13 @@ impl SubagentManager {
             ));
         }
         let finished_at_ms = record.finished_at_ms.unwrap_or_else(now_millis);
-        let summary = record
-            .result
-            .as_ref()
-            .map(|result| result.output.trim().chars().take(500).collect::<String>());
+        let summary = record.result.as_ref().map(|result| {
+            if record.backend == SubagentBackend::Native {
+                super::subagent_handoff::notification(&result.output)
+            } else {
+                result.output.trim().chars().take(500).collect::<String>()
+            }
+        });
         let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
         mailbox
             .send_typed(
@@ -4756,8 +4943,22 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         );
     }
     let orb = parse_orb_delegation_config(computer.or(orb_alias))?;
+    if args.get("specialist").is_some()
+        && (args.get("profile").is_some() || args.get("agent_profile").is_some())
+    {
+        return Err("provide only one of specialist or profile".into());
+    }
+    if args.get("specialist").is_some() && backend != SubagentBackend::Native {
+        return Err("specialist selection is supported for native child agents; use computer.profile for hosted placement".into());
+    }
+    if let Some(value) = args.get("specialist") {
+        if value.as_str().is_none_or(|name| name.trim().is_empty()) {
+            return Err("specialist must be a non-empty string".into());
+        }
+    }
     let profile = args
-        .get("profile")
+        .get("specialist")
+        .or_else(|| args.get("profile"))
         .or_else(|| args.get("agent_profile"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -4771,6 +4972,27 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
+    let difficulty = match args.get("difficulty") {
+        Some(value) => TaskDifficulty::parse(value.as_str().ok_or("difficulty must be a string")?)?,
+        None if role == SubagentRole::Explore => TaskDifficulty::Light,
+        None => TaskDifficulty::Medium,
+    };
+    let thinking = args
+        .get("thinking")
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(ThinkingLevel::parse)
+                .ok_or_else(|| {
+                    "thinking must be off, minimal, low, medium, high, or max".to_string()
+                })
+        })
+        .transpose()?;
+    if backend != SubagentBackend::Native
+        && (thinking.is_some() || args.get("difficulty").is_some())
+    {
+        return Err("thinking and difficulty currently apply to native workers only; hosted model selection belongs to Platform".into());
+    }
     let timeout_ms = parse_child_timeout(args)?;
     let max_tokens = parse_child_max_tokens(args)?;
     let run_in_background = args
@@ -4795,6 +5017,8 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         profile_prompt: None,
         profile_tools: None,
         model,
+        thinking,
+        difficulty,
         timeout_ms,
         max_tokens,
         run_in_background,
@@ -5101,20 +5325,68 @@ fn parse_child_max_tokens(args: &serde_json::Value) -> Result<u32, String> {
     Ok(max_tokens.min(u64::from(MAX_CHILD_MAX_TOKENS)) as u32)
 }
 
+fn role_instructions(role: SubagentRole) -> &'static str {
+    match role {
+        SubagentRole::Explore => {
+            "Explore only the assigned question. Return precise file and symbol locations, relevant relationships, and uncertainties. Avoid broad tours and repeated searches. Do not implement changes."
+        }
+        SubagentRole::Plan => {
+            "Return a bounded implementation plan grounded in existing code, with dependencies and unresolved decisions. Do not implement changes."
+        }
+        SubagentRole::Review => {
+            "Inspect the assigned diff and causal behavior. Return actionable findings with file locations and evidence; distinguish proven defects from hypotheses. Do not implement changes."
+        }
+        SubagentRole::Code => {
+            "Implement the assigned change and run relevant checks. Carry every unfinished requirement into the handoff; a partial implementation is not complete."
+        }
+    }
+}
+
 fn resolve_spawn_profile(request: &mut SpawnRequest, cwd: &Path) -> Result<(), String> {
-    let Some(profile_name) = request.profile.as_deref() else {
+    resolve_spawn_profile_with_trust(
+        request,
+        cwd,
+        crate::config::workspace_trusted_in_global_config(cwd),
+    )
+}
+
+fn resolve_spawn_profile_with_trust(
+    request: &mut SpawnRequest,
+    cwd: &Path,
+    trusted: bool,
+) -> Result<(), String> {
+    // Role defaults are local preferences, not hosted placement/model authority.
+    if request.profile.is_none() && request.backend != SubagentBackend::Native {
         return Ok(());
-    };
+    }
+    let explicit = request.profile.is_some();
+    let profile_name = request
+        .profile
+        .clone()
+        .unwrap_or_else(|| format!("role-{}", request.role.label()));
     let plugin_registry = crate::plugins::PluginRegistry::discover_for_workspace(cwd);
     let agent_dirs = plugin_registry.agent_dirs();
-    let profiles = crate::agents_cli::profiles_for_workspace_with_agent_dirs(cwd, &agent_dirs)
+    let profiles = crate::agents_cli::profiles_for_delegation(cwd, &agent_dirs, trusted)
         .map_err(|error| format!("load agent profiles: {error}"))?;
-    let Some(profile) = profiles
-        .into_iter()
-        .find(|profile| profile.name == profile_name)
-    else {
-        return Err(format!("agent profile `{profile_name}` was not found"));
+    let Some(profile) = profiles.into_iter().find(|profile| {
+        profile.name == profile_name
+            && (trusted
+                || matches!(
+                    profile.scope,
+                    crate::agents_cli::Scope::User | crate::agents_cli::Scope::Builtin
+                ))
+    }) else {
+        return if explicit {
+            Err(format!(
+                "agent profile `{profile_name}` was not found in an authorized scope"
+            ))
+        } else {
+            Ok(())
+        };
     };
+    if request.backend == SubagentBackend::Native && request.thinking.is_none() {
+        request.thinking = profile.thinking;
+    }
     request.profile = Some(profile.name);
     request.profile_prompt = Some(profile.prompt);
     request.profile_tools = profile.tools;
@@ -5229,7 +5501,7 @@ fn child_allowed_tools_for_role(
             let globally_allowed = !SUBAGENT_TOOL_NAMES.contains(&name.as_str())
                 && !matches!(
                     name.as_str(),
-                    "get_goal" | "update_goal" | "todo" | "background_tasks"
+                    "get_goal" | "update_goal" | "todo" | "background_tasks" | "coding_task"
                 );
             let role_allowed = matches!(role, SubagentRole::Code)
                 || READ_ONLY_CHILD_TOOLS.contains(&name.as_str());
@@ -5802,7 +6074,7 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
         .map(|path| display_repository_path(&path));
     let session_dir = SubagentManager::session_dir(record);
     let timeline_path = SubagentManager::timeline_path(record);
-    serde_json::json!({
+    let mut details = serde_json::json!({
         "subagentId": record.id,
         "agentRef": agent_ref(record),
         "childSessionId": record.id,
@@ -5842,7 +6114,24 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
                 | SubagentStatus::TimedOut
                 | SubagentStatus::Interrupted
         )
-    })
+    });
+    if record.backend == SubagentBackend::Native {
+        let handoff = record
+            .result
+            .as_ref()
+            .map(|result| super::subagent_handoff::parse(&result.output));
+        details["handoff"] =
+            serde_json::json!(handoff.as_ref().and_then(|value| value.as_ref().ok()));
+        details["handoffError"] =
+            serde_json::json!(handoff.as_ref().and_then(|value| value.as_ref().err()));
+        details["completionVerified"] = serde_json::json!(false);
+        details["nextAction"] = serde_json::json!(if record.status.is_terminal() {
+            "inspect_handoff_and_continue_original_task"
+        } else {
+            "wait"
+        });
+    }
+    details
 }
 
 fn is_orb_owner_binding_error(error: &str) -> bool {
@@ -5924,6 +6213,15 @@ fn tool_result_for_record(record: SubagentRecord) -> ToolResult {
         .map(|result| result.output.trim().to_string())
         .filter(|output| !output.is_empty())
         .unwrap_or_else(|| format!("Subagent {} is {status}", record.id));
+    let output = if record.backend == SubagentBackend::Native && record.status.is_terminal() {
+        format!(
+            "{}\n\nSaved child output:\n{}",
+            super::subagent_handoff::notification(&output),
+            output
+        )
+    } else {
+        output
+    };
     if matches!(
         record.status,
         SubagentStatus::Failed
@@ -6038,11 +6336,13 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             record_id,
             lineage_id,
             record_status,
+            ..
         } => Some(FromAgentMessage::ManagedGatewayReceipt {
             request_id: request_id.clone(),
             record_id: record_id.clone(),
             lineage_id: lineage_id.clone(),
             record_status: record_status.clone(),
+            prompt_experiment: None,
         }),
         FromAgent::Ready { model, provider } => Some(FromAgentMessage::Ready {
             protocol_version: Some(crate::headless::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -6069,8 +6369,14 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             duration_ms: None,
             ttft_ms: None,
         }),
-        FromAgent::TurnCompleted { response_id } => Some(FromAgentMessage::TurnCompleted {
+        FromAgent::TurnCompleted {
+            response_id,
+            coding_completion,
+            coding_child_records,
+        } => Some(FromAgentMessage::TurnCompleted {
             response_id: response_id.clone(),
+            coding_completion: coding_completion.clone(),
+            coding_child_records: coding_child_records.clone(),
         }),
         FromAgent::TurnInterrupted {
             response_id,
@@ -6147,12 +6453,15 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             message,
             fatal,
             terminal,
+            retryable,
         } => Some(FromAgentMessage::Error {
             request_id: None,
             message: message.clone(),
             fatal: *fatal,
             terminal: *terminal,
-            error_type: None,
+            error_type: Some(crate::headless_server::headless_error_type(
+                *fatal, *terminal, *retryable,
+            )),
         }),
         FromAgent::ProviderError { kind, message } => Some(FromAgentMessage::ProviderError {
             kind: *kind,
@@ -6380,6 +6689,21 @@ mod tests {
     }
 
     #[test]
+    fn specialist_selects_the_existing_profile_and_rejects_ambiguity() {
+        let request =
+            parse_spawn_request(&serde_json::json!({"task":"inspect", "specialist":"product"}))
+                .unwrap();
+        assert_eq!(request.profile.as_deref(), Some("product"));
+        for extra in [
+            serde_json::json!({"task":"inspect", "specialist":"product", "profile":"security"}),
+            serde_json::json!({"task":"inspect", "specialist":false}),
+            serde_json::json!({"task":"inspect", "specialist":"product", "backend":"computer"}),
+        ] {
+            assert!(parse_spawn_request(&extra).is_err());
+        }
+    }
+
+    #[test]
     fn orb_admitting_record_binds_owner_before_remote_thread_exists() {
         let binding = owner_binding("org-a", "workspace-a", "connection-a", 7);
         let orb = admitting_orb_subagent_ref(
@@ -6486,6 +6810,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_worker_difficulty_and_effort_are_strict_and_durable() {
+        let request = parse_spawn_request(&serde_json::json!({
+            "task": "inspect", "backend": "native", "role": "explore",
+            "difficulty": "heavy", "thinking": "max"
+        }))
+        .unwrap();
+        assert_eq!(request.role, SubagentRole::Explore);
+        assert_eq!(request.difficulty, TaskDifficulty::Heavy);
+        assert_eq!(request.thinking, Some(ThinkingLevel::Max));
+        for extra in [
+            serde_json::json!({"difficulty": 4}),
+            serde_json::json!({"difficulty": "impossible"}),
+            serde_json::json!({"thinking": "impossible"}),
+            serde_json::json!({"backend": "orb", "thinking": "high"}),
+        ] {
+            let mut args = serde_json::json!({"task": "inspect", "backend": "native"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(parse_spawn_request(&args).is_err());
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut record = control_receipt_record(root.path());
+        record.model = Some("openai/gpt-5.5".into());
+        record.thinking = request.thinking;
+        record.difficulty = request.difficulty;
+        let mut json = serde_json::to_value(&record).unwrap();
+        let restored: SubagentRecord = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.model, record.model);
+        assert_eq!(restored.thinking, Some(ThinkingLevel::Max));
+        assert_eq!(restored.difficulty, TaskDifficulty::Heavy);
+        json.as_object_mut().unwrap().remove("thinking");
+        json.as_object_mut().unwrap().remove("difficulty");
+        let legacy: SubagentRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            legacy.thinking.unwrap_or(ThinkingLevel::Off),
+            ThinkingLevel::Off
+        );
+        assert_eq!(legacy.difficulty, TaskDifficulty::Medium);
+    }
+
     fn control_receipt_record(root: &Path) -> SubagentRecord {
         SubagentRecord {
             id: uuid::Uuid::new_v4().to_string(),
@@ -6502,6 +6868,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -6522,6 +6890,62 @@ mod tests {
             error: None,
             lifecycle_notification_published: false,
         }
+    }
+
+    #[test]
+    fn coding_acceptance_uses_sealed_execution_output_despite_record_file_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = SubagentManager::with_root(root.path().into(), root.path().join("records"));
+        let record = control_receipt_record(root.path());
+        let id = record.id.clone();
+        manager.write_record(&record).unwrap();
+        assert!(manager.coding_validator_record(&id).is_err());
+        manager
+            .coding_validator_receipts
+            .lock()
+            .unwrap()
+            .insert(id.clone(), None);
+        let vault = CredentialVault::new();
+        let scope = ParentCredentialScope {
+            vault: &vault,
+            generation: vault.generation(),
+        };
+        let mut terminal = manager
+            .finish_record(
+                record,
+                SubagentStatus::Completed,
+                Some(SubagentResult {
+                    output: "actual failed assertions".into(),
+                    files_modified: vec![],
+                }),
+                None,
+                &CredentialVault::new(),
+                &scope,
+            )
+            .unwrap();
+        terminal.result.as_mut().unwrap().output = "fabricated passing assertions".into();
+        manager.write_record(&terminal).unwrap();
+        assert_eq!(
+            manager
+                .coding_validator_record(&id)
+                .unwrap()
+                .result
+                .unwrap()
+                .output,
+            "actual failed assertions"
+        );
+        manager.seal_coding_validator_record(&terminal);
+        assert_eq!(
+            manager
+                .coding_validator_record(&id)
+                .unwrap()
+                .result
+                .unwrap()
+                .output,
+            "actual failed assertions"
+        );
+        manager.clear_coding_validator_records();
+        assert!(manager.coding_validator_record(&id).is_err());
     }
 
     fn orb_resume_record(root: &Path, binding: &HostedOrbOwnerBinding) -> SubagentRecord {
@@ -7603,6 +8027,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -7718,6 +8144,73 @@ mod tests {
     }
 
     #[test]
+    fn partial_handoff_and_procedure_suggestion_survive_reload_and_parent_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let mut record = running_wait_record(root.path());
+        record.last_parent_scope_id = manager.parent_scope_id();
+        let skill = root.path().join("SKILL.md");
+        std::fs::write(&skill, "Original procedure").unwrap();
+        let output = serde_json::json!({
+            "outcome":"partial","summary":"Parser implementation finished",
+            "completed":["Parser"],"remaining":["Connect the UI"],
+            "blockers":[],"references":["src/parser.rs:12"],
+            "procedure_feedback":[{"skill_path":skill.to_string_lossy(),
+                "observation":"Documented test command was missing",
+                "suggested_change":"Use npm run test:ui"}]
+        })
+        .to_string();
+        let child = CredentialVault::new();
+        let parent = CredentialVault::new();
+        let parent_scope = ParentCredentialScope {
+            vault: &parent,
+            generation: parent.generation(),
+        };
+        let finished = manager
+            .finish_record(
+                record,
+                SubagentStatus::Completed,
+                Some(SubagentResult {
+                    output,
+                    files_modified: vec!["src/parser.rs".into()],
+                }),
+                None,
+                &child,
+                &parent_scope,
+            )
+            .unwrap();
+        let reloaded = manager.load_record(&finished.id).unwrap();
+        let details = record_details(&reloaded);
+        assert_eq!(details["handoff"]["remaining"][0], "Connect the UI");
+        assert_eq!(
+            details["handoff"]["procedure_feedback"][0]["suggested_change"],
+            "Use npm run test:ui"
+        );
+        assert_eq!(details["completionVerified"], false);
+        let result = manager.get(&serde_json::json!({"subagent_id":finished.id}));
+        assert!(result.output.starts_with("Unfinished work: Connect the UI"));
+        let events = manager.poll_lifecycle_events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0]
+                .summary
+                .as_deref()
+                .unwrap()
+                .starts_with("Unfinished work: Connect the UI")
+        );
+        manager.acknowledge_lifecycle_event(&events[0]).unwrap();
+        assert!(
+            manager.poll_lifecycle_events().is_empty(),
+            "completion must not repeat after acknowledgment"
+        );
+        assert_eq!(
+            std::fs::read_to_string(skill).unwrap(),
+            "Original procedure"
+        );
+    }
+
+    #[test]
     fn resumed_child_completion_is_routed_to_the_current_parent_scope() {
         let root = tempfile::tempdir().expect("records root should exist");
         let manager =
@@ -7739,6 +8232,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -7818,6 +8313,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -7869,7 +8366,12 @@ mod tests {
         let events = manager.poll_lifecycle_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].attempt, 1);
-        assert_eq!(events[0].summary.as_deref(), Some("durable result"));
+        assert_eq!(
+            events[0].summary.as_deref(),
+            Some(
+                "Completion is unverified: child did not return a valid structured handoff. Retrieve the saved result and clarify remaining work before declaring the parent task complete. durable result"
+            )
+        );
         let persisted = manager
             .load_record(&finished.id)
             .expect("reload terminal record");
@@ -7928,6 +8430,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -7958,7 +8462,12 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].subagent_id, record.id);
-        assert_eq!(events[0].summary.as_deref(), Some("late completion"));
+        assert_eq!(
+            events[0].summary.as_deref(),
+            Some(
+                "Completion is unverified: child did not return a valid structured handoff. Retrieve the saved result and clarify remaining work before declaring the parent task complete. late completion"
+            )
+        );
         manager
             .acknowledge_lifecycle_event(&events[0])
             .expect("acknowledge first attempt");
@@ -7983,7 +8492,9 @@ mod tests {
         assert_eq!(resumed_events[0].attempt, 2);
         assert_eq!(
             resumed_events[0].summary.as_deref(),
-            Some("resumed completion")
+            Some(
+                "Completion is unverified: child did not return a valid structured handoff. Retrieve the saved result and clarify remaining work before declaring the parent task complete. resumed completion"
+            )
         );
     }
 
@@ -8010,6 +8521,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8123,6 +8636,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8684,6 +9199,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8816,6 +9333,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8883,6 +9402,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8944,6 +9465,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -8999,6 +9522,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -9097,6 +9622,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -9205,6 +9732,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -9268,6 +9797,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -9322,6 +9853,8 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
@@ -9389,6 +9922,36 @@ mod tests {
     }
 
     #[test]
+    fn role_default_profile_routes_model_without_widening_tools() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(".maestro/agent-profiles");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("role-explore.md"),
+            "---\nname: role-explore\nmodel: small-model\ntools: [read, write]\n---\nReturn exact locations.").unwrap();
+        let mut request = parse_spawn_request(&serde_json::json!({
+            "task":"Find the parser","role":"explore"
+        }))
+        .unwrap();
+        resolve_spawn_profile_with_trust(&mut request, root.path(), false).unwrap();
+        assert!(
+            request.profile.is_none(),
+            "untrusted project cannot select a model"
+        );
+        resolve_spawn_profile_with_trust(&mut request, root.path(), true).unwrap();
+        assert_eq!(request.model.as_deref(), Some("small-model"));
+        assert_eq!(
+            child_allowed_tools_for_role(request.role, request.profile_tools.as_deref()),
+            HashSet::from(["read".to_string()])
+        );
+        let mut explicit = parse_spawn_request(&serde_json::json!({
+            "task":"Find the parser","role":"explore","model":"chosen-model"
+        }))
+        .unwrap();
+        resolve_spawn_profile_with_trust(&mut explicit, root.path(), true).unwrap();
+        assert_eq!(explicit.model.as_deref(), Some("chosen-model"));
+    }
+
+    #[test]
     fn profile_tools_only_narrow_a_role_policy() {
         let requested = ["read".to_string(), "write".to_string(), "bash".to_string()];
         let explore_tools = child_allowed_tools_for_role(SubagentRole::Explore, Some(&requested));
@@ -9421,13 +9984,16 @@ mod tests {
             profile_prompt: None,
             profile_tools: None,
             model: None,
+            thinking: None,
+            difficulty: TaskDifficulty::Medium,
             timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
             max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             run_in_background: true,
             isolation: SubagentIsolation::Shared,
             worktree_name: None,
         };
-        resolve_spawn_profile(&mut request, root.path()).expect("profile should resolve");
+        resolve_spawn_profile_with_trust(&mut request, root.path(), true)
+            .expect("profile should resolve");
 
         assert_eq!(request.profile.as_deref(), Some("rust-reviewer"));
         assert_eq!(
@@ -9904,6 +10470,7 @@ mod tests {
                 record_id: "record-child".to_string(),
                 lineage_id: "lineage-child".to_string(),
                 record_status: "planned".to_string(),
+                provider_prompt_sha256: None,
             },
             "child-session",
         )
@@ -9916,6 +10483,7 @@ mod tests {
                 record_id,
                 lineage_id,
                 record_status,
+                ..
             } if request_id == "request-child"
                 && record_id == "record-child"
                 && lineage_id == "lineage-child"

@@ -130,5 +130,7 @@ pub use process_registry::{
     cleanup_all as cleanup_background_processes, count as background_process_count,
 };
 pub(crate) use registry::ToolExecutionOptions;
-pub use registry::{McpServerStatus, ToolExecutor, ToolRegistry};
+pub use registry::{McpLifecycleState, McpServerStatus, ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;
+
+mod subagent_handoff;

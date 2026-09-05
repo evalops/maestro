@@ -1428,13 +1428,10 @@ fn goal_footer_attach_commands_parse() {
 
     match registry
         .execute("/mcp-config", "/tmp", None, None)
-        .expect("/mcp-config wizard")
+        .expect("/mcp-config manager")
     {
-        CommandOutput::Message(msg) => {
-            assert!(msg.contains("MCP config wizard"));
-            assert!(msg.contains("add-stdio"));
-        }
-        other => panic!("expected wizard message, got {other:?}"),
+        CommandOutput::Action(CommandAction::Mcp(McpAction::Status)) => {}
+        other => panic!("expected MCP manager action, got {other:?}"),
     }
 }
 
@@ -1866,6 +1863,73 @@ fn handoff_command_rejects_missing_prompt_and_partial_computer_packages() {
                 None,
                 None
             )
+            .is_err()
+    );
+}
+
+#[test]
+fn rewind_both_and_context_exclusion_parse() {
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry.execute("/rewind 2 --files --dry-run", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::Session(
+            SessionAction::RewindBoth {
+                turns: 2,
+                dry_run: true
+            }
+        )))
+    ));
+    assert!(
+        matches!(registry.execute("/context exclude fixture_integration", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::SetContextTool { name, excluded: true })) if name == "fixture_integration")
+    );
+    assert!(
+        registry
+            .execute("/context exclude", "/tmp", None, None)
+            .is_err()
+    );
+    assert!(
+        registry
+            .execute("/context include a b", "/tmp", None, None)
+            .is_err()
+    );
+}
+
+#[test]
+fn dex_presentation_command_routes_to_ui_preferences() {
+    let registry = build_command_registry();
+    for setting in [
+        "quiet",
+        "standard",
+        "expressive",
+        "motion-on",
+        "motion-off",
+        "pet",
+        "appearance",
+        "recap",
+        "next",
+        "tips-off",
+        "tips-on",
+        "notifications-on",
+        "notifications-off",
+        "suggestions-on",
+        "suggestions-off",
+        "recap-on",
+        "recap-off",
+    ] {
+        match registry
+            .execute(&format!("/dex {setting}"), "/tmp", None, None)
+            .unwrap()
+        {
+            CommandOutput::Action(CommandAction::SetDexPresentation(actual)) => {
+                assert_eq!(actual, setting);
+            }
+            other => panic!("expected Dex presentation action, got {other:?}"),
+        }
+    }
+    assert!(
+        registry
+            .execute("/dex unknown", "/tmp", None, None)
             .is_err()
     );
 }

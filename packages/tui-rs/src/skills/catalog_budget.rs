@@ -351,7 +351,7 @@ fn render_omitted_notice(omitted_count: usize, directories: &[String]) -> String
         format!(" They are installed under: {directories}.")
     };
     format!(
-        "<omitted_skills count=\"{omitted_count}\">\n  {omitted_count} skill(s) were left out of this catalog to fit the prompt budget.{where_clause} Read a SKILL.md there directly if you need one that is not listed above.\n</omitted_skills>"
+        "<omitted_skills count=\"{omitted_count}\">\n  {omitted_count} skill(s) were left out of this catalog to fit the prompt budget.{where_clause} For local skills, use `deixic-code skill search QUERY --json` to find omitted entries, then read the returned SKILL.md. Hosted sessions must use their admitted capability catalog.\n</omitted_skills>"
     )
 }
 

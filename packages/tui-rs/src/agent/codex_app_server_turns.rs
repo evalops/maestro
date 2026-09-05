@@ -105,6 +105,68 @@ impl CodexCompatibilityReport {
     }
 }
 
+// Wire contract reviewed against openai/codex commit
+// 459a79eb85400af759e9220c7bafb4429ae07516, protocol/v2/{model,turn}.rs.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexReasoningModels {
+    data: Vec<CodexReasoningModel>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexReasoningModel {
+    id: String,
+    model: String,
+    default_reasoning_effort: String,
+    supported_reasoning_efforts: Vec<CodexReasoningOption>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexReasoningOption {
+    reasoning_effort: String,
+}
+
+impl CodexReasoningModel {
+    fn select_effort(&self, enabled: bool, budget: u32) -> Result<String> {
+        // These boundaries match ThinkingLevel::to_config. Arbitrary budgets
+        // round up to the next exposed level; Max uses advertised capabilities.
+        let requested = if !enabled {
+            self.default_reasoning_effort.as_str()
+        } else if budget <= 1_024 {
+            "minimal"
+        } else if budget <= 4_096 {
+            "low"
+        } else if budget <= 10_000 {
+            "medium"
+        } else if budget <= 20_000 {
+            "high"
+        } else {
+            [
+                "ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none",
+            ]
+            .into_iter()
+            .find(|effort| self.supports(effort))
+            .context("Codex model has no supported bounded reasoning effort")?
+        };
+        if requested.is_empty() || !self.supports(requested) {
+            bail!(
+                "Codex model {} does not support reasoning effort {requested}",
+                self.model
+            );
+        }
+        Ok(requested.to_owned())
+    }
+
+    fn supports(&self, effort: &str) -> bool {
+        self.supported_reasoning_efforts
+            .iter()
+            .any(|option| option.reasoning_effort == effort)
+    }
+}
+
 impl CodexAppServerTurnSession {
     /// Spawn app-server, initialize, and start a thread for `model`.
     ///
@@ -359,6 +421,84 @@ impl CodexAppServerTurnSession {
             .await
             .context("turn/start")?;
         Ok(turn.turn_id)
+    }
+
+    /// Start a turn with Maestro's current thinking setting. Codex persists
+    /// effort overrides across turns, so even Off explicitly restores the
+    /// model default instead of inheriting a previous turn's override.
+    pub async fn start_text_turn_with_thinking(
+        &self,
+        text: impl Into<String>,
+        enabled: bool,
+        budget: u32,
+        timeout_ms: Option<u64>,
+    ) -> Result<String> {
+        let effort = self
+            .reasoning_model(timeout_ms)
+            .await?
+            .select_effort(enabled, budget)?;
+        let mut params = TurnStartParams::text(&self.thread_id, text);
+        params.extra = Some(json!({"effort": effort}));
+        let turn = self
+            .client
+            .start_turn(params, timeout_ms)
+            .await
+            .context("turn/start")?;
+        Ok(turn.turn_id)
+    }
+
+    async fn reasoning_model(&self, timeout_ms: Option<u64>) -> Result<CodexReasoningModel> {
+        let mut cursor: Option<String> = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page: CodexReasoningModels = serde_json::from_value(
+                self.client
+                    .request(
+                        "model/list",
+                        Some(json!({"includeHidden": true, "cursor": cursor})),
+                        timeout_ms,
+                    )
+                    .await
+                    .context("read Codex reasoning capabilities")?,
+            )
+            .context("invalid Codex reasoning capabilities")?;
+            if let Some(model) = page
+                .data
+                .iter()
+                .find(|m| m.model == self.model || m.id == self.model)
+            {
+                return Ok(model.clone());
+            }
+            let Some(next) = page.next_cursor else {
+                bail!(
+                    "Codex model {} is absent from model/list; cannot apply thinking setting",
+                    self.model
+                );
+            };
+            if !seen.insert(next.clone()) || seen.len() > 100 {
+                bail!("Codex model/list pagination did not converge");
+            }
+            cursor = Some(next);
+        }
+    }
+
+    /// Compare the actual advertised values, including the provider default for Off.
+    pub async fn is_reasoning_boost(
+        &self,
+        original: (bool, u32),
+        proposed: (bool, u32),
+    ) -> Result<bool> {
+        let model = self.reasoning_model(None).await?;
+        let old = model.select_effort(original.0, original.1)?;
+        let new = model.select_effort(proposed.0, proposed.1)?;
+        let rank = |effort: &str| {
+            [
+                "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+            ]
+            .iter()
+            .position(|value| *value == effort)
+        };
+        Ok(matches!((rank(&old), rank(&new)), (Some(old), Some(new)) if new > old))
     }
 
     /// Interrupt an in-flight turn (`turn/interrupt`).
@@ -1611,6 +1751,194 @@ mod tests {
                 case.method
             );
         }
+    }
+
+    fn reasoning_model_fixture() -> Value {
+        json!({
+            "id": "gpt-6-astra", "model": "gpt-6-astra",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low"}, {"reasoningEffort": "medium"},
+                {"reasoningEffort": "high"}, {"reasoningEffort": "xhigh"},
+                {"reasoningEffort": "max"}, {"reasoningEffort": "ultra"}
+            ]
+        })
+    }
+
+    #[test]
+    fn codex_thinking_levels_use_model_capabilities() {
+        let mut model: CodexReasoningModel =
+            serde_json::from_value(reasoning_model_fixture()).unwrap();
+        use crate::session::ThinkingLevel;
+        for (level, expected) in [
+            (ThinkingLevel::Off, "medium"),
+            (ThinkingLevel::Low, "low"),
+            (ThinkingLevel::Medium, "medium"),
+            (ThinkingLevel::High, "high"),
+            (ThinkingLevel::Max, "ultra"),
+        ] {
+            let (enabled, budget) = level.to_config();
+            assert_eq!(model.select_effort(enabled, budget).unwrap(), expected);
+        }
+        assert!(
+            model
+                .select_effort(true, 1_024)
+                .unwrap_err()
+                .to_string()
+                .contains("minimal")
+        );
+        model
+            .supported_reasoning_efforts
+            .retain(|option| !["ultra", "max"].contains(&option.reasoning_effort.as_str()));
+        assert_eq!(model.select_effort(true, 50_000).unwrap(), "xhigh");
+        model
+            .supported_reasoning_efforts
+            .push(CodexReasoningOption {
+                reasoning_effort: "minimal".into(),
+            });
+        assert_eq!(model.select_effort(true, 1_024).unwrap(), "minimal");
+        model.supported_reasoning_efforts.clear();
+        assert!(model.select_effort(true, 50_000).is_err());
+        assert!(model.select_effort(false, 0).is_err());
+    }
+
+    #[tokio::test]
+    async fn codex_boost_compares_advertised_default_before_claiming_an_increase() {
+        for (default, expected) in [("medium", true), ("ultra", false)] {
+            let (client, mock) = CodexAppServerClient::mock();
+            let session = CodexAppServerTurnSession::from_started_thread(
+                client,
+                "boost-check".into(),
+                "gpt-6-astra".into(),
+                &[],
+            )
+            .await
+            .unwrap();
+            let task = tokio::spawn(async move {
+                session
+                    .is_reasoning_boost((false, 0), (true, 50_000))
+                    .await
+                    .unwrap()
+            });
+            let request = mock.next_request().await.unwrap();
+            assert_eq!(request["method"], "model/list");
+            let mut model = reasoning_model_fixture();
+            model["defaultReasoningEffort"] = json!(default);
+            mock.respond(
+                request["id"].as_u64().unwrap(),
+                json!({"data": [model], "nextCursor": null}),
+            );
+            assert_eq!(task.await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_turns_apply_thinking_changes_and_reset_previous_effort() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let session = CodexAppServerTurnSession::from_started_thread(
+            client,
+            "thread-effort".into(),
+            "gpt-6-astra".into(),
+            &[],
+        )
+        .await
+        .unwrap();
+        let turns = tokio::spawn(async move {
+            for (enabled, budget) in [(true, 20_000), (false, 0), (true, 50_000), (true, 4_096)] {
+                session
+                    .start_text_turn_with_thinking("continue", enabled, budget, Some(1_000))
+                    .await
+                    .unwrap();
+            }
+        });
+        for expected in ["high", "medium", "ultra", "low"] {
+            let list = mock.next_request().await.unwrap();
+            assert_eq!(list["method"], "model/list");
+            assert_eq!(list["params"]["includeHidden"], true);
+            mock.respond(
+                list["id"].as_u64().unwrap(),
+                json!({"data": [reasoning_model_fixture()], "nextCursor": null}),
+            );
+            let turn = mock.next_request().await.unwrap();
+            assert_eq!(turn["method"], "turn/start");
+            assert_eq!(turn["params"]["effort"], expected);
+            assert_eq!(turn["params"]["threadId"], "thread-effort");
+            assert_eq!(turn["params"]["input"][0]["text"], "continue");
+            mock.respond(
+                turn["id"].as_u64().unwrap(),
+                json!({"turn": {"id": expected}}),
+            );
+        }
+        turns.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn codex_thinking_lookup_follows_pages_and_rejects_unsupported_effort() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let session = CodexAppServerTurnSession::from_started_thread(
+            client,
+            "thread-effort".into(),
+            "gpt-6-astra".into(),
+            &[],
+        )
+        .await
+        .unwrap();
+        let task = tokio::spawn(async move {
+            session
+                .start_text_turn_with_thinking("continue", true, 1_024, Some(1_000))
+                .await
+        });
+        let first = mock.next_request().await.unwrap();
+        mock.respond(
+            first["id"].as_u64().unwrap(),
+            json!({"data": [], "nextCursor": "page-2"}),
+        );
+        let second = mock.next_request().await.unwrap();
+        assert_eq!(second["method"], "model/list");
+        assert_eq!(second["params"]["cursor"], "page-2");
+        mock.respond(
+            second["id"].as_u64().unwrap(),
+            json!({"data": [reasoning_model_fixture()], "nextCursor": null}),
+        );
+        assert!(
+            task.await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("does not support reasoning effort minimal")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_thinking_lookup_rejects_repeated_cursors() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let session = CodexAppServerTurnSession::from_started_thread(
+            client,
+            "thread-effort".into(),
+            "gpt-6-astra".into(),
+            &[],
+        )
+        .await
+        .unwrap();
+        let task = tokio::spawn(async move {
+            session
+                .start_text_turn_with_thinking("continue", true, 20_000, Some(1_000))
+                .await
+        });
+        for _ in 0..2 {
+            let request = mock.next_request().await.unwrap();
+            mock.respond(
+                request["id"].as_u64().unwrap(),
+                json!({"data": [], "nextCursor": "same-page"}),
+            );
+        }
+        assert!(
+            task.await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("pagination did not converge")
+        );
     }
 
     #[tokio::test]

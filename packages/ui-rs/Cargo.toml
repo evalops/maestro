@@ -1,0 +1,11 @@
+[package]
+name = "maestro-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Composable terminal UI primitives for Deixic Code"
+
+[dependencies]
+ratatui.workspace = true
+maestro-interaction.workspace = true
+crossterm.workspace = true

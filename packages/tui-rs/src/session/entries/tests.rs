@@ -987,6 +987,7 @@ fn compaction_continuation_round_trips_in_session_jsonl_shape() {
         custom_instructions: None,
         continuation: Some(ContinuationRecord {
             objective: Some("Ship the workflow".to_string()),
+            user_requests: vec![],
             constraints: vec!["Do not deploy".to_string()],
             decisions: vec![],
             open_questions: vec!["Which region?".to_string()],

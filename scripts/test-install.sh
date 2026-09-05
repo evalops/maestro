@@ -374,6 +374,29 @@ run_install > "$fixture/first-install.log" 2>&1 ||
 grep -q 'Installed Deixic Code 0.0.1' "$fixture/first-install.log" ||
   fail "installer did not report the canonical product name"
 
+progress_install_dir="$fixture/progress-bin"
+progress_data_dir="$fixture/progress-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$progress_install_dir" \
+MAESTRO_DATA_DIR="$progress_data_dir" \
+MAESTRO_INSTALL_VERSION="0.0.1" \
+MAESTRO_INSTALL_CHANNEL="stable" \
+MAESTRO_RELEASE_BASE_URL="$release_url" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+MAESTRO_UPDATE_PROGRESS=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/progress-install.log" 2>&1 ||
+  fail "progress install failed: $(cat "$fixture/progress-install.log")"
+progress_steps="$(grep -E '^\[[123]/3\]' "$fixture/progress-install.log")"
+expected_progress_steps="$(printf '%s\n' \
+  '[1/3] Downloading version 0.0.1...' \
+  '[2/3] Verifying checksum...' \
+  '[3/3] Installing update...')"
+[[ "$progress_steps" == "$expected_progress_steps" ]] ||
+  fail "installer progress stages were missing or out of order: $(cat "$fixture/progress-install.log")"
+if grep -q 'Installed Deixic Code' "$fixture/progress-install.log"; then
+  fail "embedded update progress included the standalone installer summary"
+fi
+
 no_python_path="$fixture/no-python-bin"
 mkdir "$no_python_path"
 # Keep both Python and OpenSSL out of this PATH: the standalone installer must

@@ -387,10 +387,10 @@ impl ApprovalMode {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INTERACTION MODE (Grok-style Shift+Tab cycle)
+// INTERACTION MODE
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// High-level interaction mode cycled with Shift+Tab.
+/// High-level interaction mode selected with explicit commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InteractionMode {
     /// Normal agenting with selective approvals
@@ -611,6 +611,7 @@ pub struct AppState {
 
     /// Current thinking level for runtime badges and UI hints.
     pub thinking_level: ThinkingLevel,
+    pub boost_status: crate::model_dynamics::BoostStatus,
 
     /// Full thinking buffer for the current response.
     /// Private because it's only used internally for header extraction.
@@ -742,9 +743,10 @@ impl AppState {
             unseen_alerts: 0,
             thinking_header: None, // No thinking in progress
             thinking_level: ThinkingLevel::Off,
+            boost_status: crate::model_dynamics::BoostStatus::Idle,
             thinking_buffer: String::new(),
             zen_mode: false,                        // Full UI by default
-            compact_tool_outputs: false,            // Expanded tool output by default
+            compact_tool_outputs: true, // Short previews; expand individual results on demand
             approval_mode: ApprovalMode::default(), // Selective mode
             interaction_mode: InteractionMode::default(),
             steering_mode: QueueMode::default(), // Queue steering by default
@@ -904,6 +906,12 @@ impl AppState {
                 self.busy_since = None;
             }
 
+            FromAgent::BoostChanged { status, thinking } => {
+                self.boost_status = status;
+                if let Some(thinking) = thinking {
+                    self.thinking_level = thinking;
+                }
+            }
             FromAgent::ModelChanged { model, provider } => {
                 self.status = Some(format!("Model: {model}"));
                 self.model = Some(model);
@@ -1082,6 +1090,7 @@ impl AppState {
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 self.record_alert(message.clone());
                 self.error = Some(message);

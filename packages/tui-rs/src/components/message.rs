@@ -120,14 +120,14 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{RuntimeBadgeParams, build_runtime_badges};
 use crate::session::ThinkingLevel;
-use crate::shimmer::{DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT, DEIXIC_VIOLET};
+use crate::shimmer::{DEIXIC_ACCENT, DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT};
 use crate::state::{
     ApprovalMode, InteractionMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus,
 };
@@ -145,7 +145,7 @@ fn brand_color(rgb: (u8, u8, u8)) -> Color {
 }
 
 fn brand_violet() -> Color {
-    brand_color(DEIXIC_VIOLET)
+    brand_color(DEIXIC_ACCENT)
 }
 
 fn brand_border() -> Color {
@@ -353,6 +353,21 @@ fn format_tool_status_summary(status: ToolCallStatus, summary: &str) -> String {
     }
 }
 
+// Keep all expanded output lines; focus compact previews on content.
+fn tool_preview_lines(text: &str, expanded: bool) -> Vec<String> {
+    text.lines()
+        .filter(|line| {
+            expanded
+                || (!line.trim().starts_with("```")
+                    && !line.trim().is_empty()
+                    && !line.split_once('\t').is_some_and(|(number, content)| {
+                        number.trim().parse::<usize>().is_ok() && content.trim().is_empty()
+                    }))
+        })
+        .map(|line| line.replace('\t', "  "))
+        .collect()
+}
+
 fn should_show_tool_args_preview(summary: &str, args_preview: &str) -> bool {
     !args_preview.is_empty() && !summary.contains(args_preview)
 }
@@ -515,21 +530,14 @@ pub fn calculate_message_height(
     // Header line with role and timestamp
     height += 1;
 
-    // Thinking content
+    // Thinking previews occupy one terminal row per source line.
     if !message.thinking.is_empty() {
-        if message.thinking_expanded {
-            // Expanded: show full thinking with wrapping
-            let thinking_lines = message
-                .thinking
-                .lines()
-                .map(|line| (line.len() / content_width + 1) as u16)
-                .sum::<u16>()
-                .max(1);
-            height += thinking_lines + 1; // +1 for header
+        let count = message.thinking.lines().count();
+        height += 1 + if message.thinking_expanded {
+            count
         } else {
-            // Collapsed: just header + 2 preview lines
-            height += 3;
-        }
+            count.min(2)
+        } as u16;
     }
 
     // Content lines (with word wrapping)
@@ -547,7 +555,7 @@ pub fn calculate_message_height(
     }
 
     // Tool calls
-    for tc in &message.tool_calls {
+    for (tool_index, tc) in message.tool_calls.iter().enumerate() {
         let expanded = if compact_tool_outputs {
             expanded_tools.contains(&tc.call_id)
         } else {
@@ -567,20 +575,15 @@ pub fn calculate_message_height(
 
         if !tc.output.is_empty() {
             let clamp = clamp_tool_output(&tc.output, tool_output_limits());
-            let output_lines: Vec<&str> = clamp.text.lines().collect();
+            let output_lines = tool_preview_lines(&clamp.text, expanded);
             let max_output_lines = if expanded { 50 } else { 5 };
             let total_lines = output_lines.len();
             let truncated = total_lines > max_output_lines;
 
             if !output_lines.is_empty() {
-                let out_lines = output_lines
-                    .iter()
-                    .take(max_output_lines)
-                    .map(|l| (l.len() / content_width + 1) as u16)
-                    .sum::<u16>()
-                    .max(1);
-
-                height += out_lines;
+                // The renderer clips each preview line horizontally; it does
+                // not wrap tool output into additional rows.
+                height += output_lines.len().min(max_output_lines) as u16;
 
                 if truncated {
                     height += 1;
@@ -593,8 +596,10 @@ pub fn calculate_message_height(
             }
         }
 
-        // Spacer after each tool call
-        height += 1;
+        // Separate tools, but let the next message supply the turn spacing.
+        if tool_index + 1 < message.tool_calls.len() {
+            height += 1;
+        }
     }
 
     height
@@ -630,6 +635,8 @@ pub struct MessageWidget<'a> {
     focus_view: bool,
     expanded_focus_turns: Option<&'a HashSet<String>>,
     selected_focus_turn: Option<&'a str>,
+    continuation: bool,
+    timestamps: bool,
 }
 
 impl<'a> MessageWidget<'a> {
@@ -642,7 +649,21 @@ impl<'a> MessageWidget<'a> {
             focus_view: false,
             expanded_focus_turns: None,
             selected_focus_turn: None,
+            continuation: false,
+            timestamps: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_continuation(mut self, continuation: bool) -> Self {
+        self.continuation = continuation;
+        self
+    }
+
+    #[must_use]
+    pub fn with_timestamps(mut self, timestamps: bool) -> Self {
+        self.timestamps = timestamps;
+        self
     }
 
     #[must_use]
@@ -748,8 +769,8 @@ impl Widget for MessageWidget<'_> {
             return;
         }
 
-        // Role header with prefix and timestamp (Codex style)
-        if y < max_y {
+        // Continuations share the turn heading.
+        if y < max_y && !self.continuation {
             let mut header_spans: Vec<Span<'static>> = Vec::new();
 
             match self.message.role {
@@ -773,8 +794,8 @@ impl Widget for MessageWidget<'_> {
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
                         MessageKind::System => ("• ", "System", Color::Yellow),
-                        MessageKind::SideAnswer => ("• ", "Deixic Code (side)", brand_muted()),
-                        _ => ("• ", "Deixic Code", brand_violet()),
+                        MessageKind::SideAnswer => ("• ", "Dex (side)", brand_muted()),
+                        _ => ("• ", "Dex", brand_violet()),
                     };
                     header_spans.push(Span::styled(
                         prefix,
@@ -787,14 +808,12 @@ impl Widget for MessageWidget<'_> {
                 }
             }
 
-            // Add timestamp (right-aligned feel)
-            let timestamp = format_timestamp(self.message.timestamp);
-            header_spans.push(Span::styled(
-                format!("  {timestamp}"),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            ));
+            if self.timestamps {
+                header_spans.push(Span::styled(
+                    format!("  {}", format_timestamp(self.message.timestamp)),
+                    Style::default().fg(brand_muted()),
+                ));
+            }
 
             let header = Line::from(header_spans);
             let header_para = Paragraph::new(header);
@@ -848,11 +867,7 @@ impl Widget for MessageWidget<'_> {
                         break;
                     }
                     let max_len = area.width.saturating_sub(6) as usize;
-                    let truncated = if line.len() > max_len {
-                        format!("{}...", &line[..max_len.saturating_sub(3)])
-                    } else {
-                        line.to_string()
-                    };
+                    let truncated = truncate_location(line, max_len);
                     let content = Line::from(vec![
                         Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
                         Span::styled(
@@ -881,11 +896,7 @@ impl Widget for MessageWidget<'_> {
                         break;
                     }
                     let max_len = area.width.saturating_sub(6) as usize;
-                    let truncated = if line.len() > max_len {
-                        format!("{}...", &line[..max_len.saturating_sub(3)])
-                    } else {
-                        line.to_string()
-                    };
+                    let truncated = truncate_location(line, max_len);
                     let preview = Line::from(vec![
                         Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
                         Span::styled(
@@ -911,7 +922,7 @@ impl Widget for MessageWidget<'_> {
 
         // Render content with markdown styling and proper word wrapping
         if y < max_y && !self.message.content.is_empty() {
-            let content_width = area.width.saturating_sub(2) as usize;
+            let content_width = area.width.saturating_sub(4).max(1) as usize;
 
             // Parse markdown into styled lines
             let md_lines = parse_markdown_lines(&self.message.content);
@@ -962,7 +973,7 @@ impl Widget for MessageWidget<'_> {
         }
 
         // Render tool calls in Codex style
-        for tool_call in &self.message.tool_calls {
+        for (tool_index, tool_call) in self.message.tool_calls.iter().enumerate() {
             if y >= max_y {
                 break;
             }
@@ -985,7 +996,11 @@ impl Widget for MessageWidget<'_> {
                 ToolCallStatus::Cancelled => ("⊘", Style::default().fg(Color::Yellow)),
                 ToolCallStatus::Blocked => ("●", Style::default().fg(brand_violet())),
             };
-            let summary_label = summarize_tool_use(&tool_call.tool, &tool_call.args);
+            let summary_label = if tool_call.status == ToolCallStatus::Completed {
+                summarize_tool_use(&tool_call.tool, &tool_call.args)
+            } else {
+                crate::tool_summary::summarize_tool_intent(&tool_call.tool, &tool_call.args)
+            };
             let header_label = format_tool_status_summary(tool_call.status, &summary_label);
 
             // Get tool args preview for inline display
@@ -996,33 +1011,25 @@ impl Widget for MessageWidget<'_> {
             );
             let show_args_preview = should_show_tool_args_preview(&summary_label, &args_preview);
 
-            // Get tool-specific icon
-            let tool_icon = get_tool_icon(&tool_call.tool);
-
-            // Header line: λ Read package.json · read #12345678  [+]
-            let header_line = Line::from(vec![
-                Span::styled(bullet, bullet_style.add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(tool_icon, Style::default().fg(brand_violet())),
-                Span::raw(" "),
+            let mut header_spans = vec![
+                Span::styled(format!("  {bullet} "), bullet_style),
+                Span::styled(header_label, Style::default().fg(brand_text())),
                 Span::styled(
-                    header_label,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                    if expanded {
+                        "  [−] collapse"
+                    } else {
+                        "  [+] expand"
+                    },
+                    Style::default().fg(brand_muted()),
                 ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("· {}", tool_call.tool),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("#{}", tool_call.call_id.chars().take(8).collect::<String>()),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw(if expanded { "  [-]" } else { "  [+]" }),
-            ]);
+            ];
+            if expanded {
+                header_spans.push(Span::styled(
+                    format!("  · {} #{}", tool_call.tool, tool_call.call_id),
+                    Style::default().fg(brand_muted()),
+                ));
+            }
+            let header_line = Line::from(header_spans);
             Paragraph::new(header_line).render(
                 Rect {
                     x: area.x,
@@ -1056,7 +1063,7 @@ impl Widget for MessageWidget<'_> {
             if y < max_y && !tool_call.output.is_empty() {
                 let clamp = clamp_tool_output(&tool_call.output, tool_output_limits());
                 let banner = format_tool_output_truncation(&clamp);
-                let output_lines: Vec<&str> = clamp.text.lines().collect();
+                let output_lines = tool_preview_lines(&clamp.text, expanded);
                 let max_output_lines = if expanded { 50 } else { 5 };
                 let total_lines = output_lines.len();
                 let truncated = total_lines > max_output_lines;
@@ -1073,12 +1080,7 @@ impl Widget for MessageWidget<'_> {
                     };
                     let output_line = Line::from(vec![
                         Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            (*line).to_string(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM),
-                        ),
+                        Span::styled(line.as_str(), Style::default().fg(brand_muted())),
                     ]);
                     Paragraph::new(output_line).render(
                         Rect {
@@ -1099,9 +1101,7 @@ impl Widget for MessageWidget<'_> {
                         Span::styled("    ", Style::default()),
                         Span::styled(
                             format!("… +{omitted} lines"),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM),
+                            Style::default().fg(brand_muted()),
                         ),
                     ]);
                     Paragraph::new(ellipsis_line).render(
@@ -1141,8 +1141,8 @@ impl Widget for MessageWidget<'_> {
                 }
             }
 
-            // Spacer
-            if y < max_y {
+            // Only separate tools within this message.
+            if y < max_y && tool_index + 1 < self.message.tool_calls.len() {
                 y += 1;
             }
         }
@@ -1610,7 +1610,7 @@ impl<'a> ChatInputWidget<'a> {
     ) -> Self {
         let mut context = model
             .map(chrome_model_label)
-            .unwrap_or_else(|| "Deixic Code".to_string());
+            .unwrap_or_else(|| super::deixic_logo::PRODUCT_TITLE.to_owned());
         if thinking_level != ThinkingLevel::Off {
             context.push_str(&format!(
                 " ({})",
@@ -1692,8 +1692,7 @@ impl Widget for ChatInputWidget<'_> {
         };
 
         let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(border_style)
             .style(Style::default().bg(brand_surface()));
         if let Some(runtime_footer) = self.runtime_footer {
@@ -1704,7 +1703,10 @@ impl Widget for ChatInputWidget<'_> {
             );
         }
 
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
+        // Keep editor/cursor geometry while dropping the enclosing side rails.
+        inner.x = inner.x.saturating_add(1).min(area.right());
+        inner.width = inner.width.saturating_sub(2);
         block.render(area, buf);
 
         let preview_height = self
@@ -1839,6 +1841,7 @@ pub struct TurnStatusWidget<'a> {
     queue: QueueSummary,
     tokens: Option<u64>,
     can_queue_follow_up: bool,
+    animations: bool,
 }
 
 impl<'a> TurnStatusWidget<'a> {
@@ -1856,7 +1859,14 @@ impl<'a> TurnStatusWidget<'a> {
             queue,
             tokens,
             can_queue_follow_up,
+            animations: true,
         }
+    }
+
+    #[must_use]
+    pub fn animations(mut self, animations: bool) -> Self {
+        self.animations = animations;
+        self
     }
 }
 
@@ -1881,7 +1891,14 @@ impl Widget for TurnStatusWidget<'_> {
                 crate::shimmer::DEIXIC_VIOLET.2,
             )),
         )];
-        spans.extend(shimmer_spans(&activity));
+        if self.animations {
+            spans.extend(shimmer_spans(&activity));
+        } else {
+            spans.push(Span::styled(
+                activity,
+                Style::default().fg(crate::themes::current_ui_theme().text),
+            ));
+        }
         spans.push(Span::styled(
             format!("  ·  {}", fmt_elapsed_compact(self.elapsed_secs)),
             dim,
@@ -1904,166 +1921,18 @@ impl Widget for TurnStatusWidget<'_> {
         if area.width >= 84 && self.can_queue_follow_up {
             spans.push(Span::styled("  ·  Tab queue", dim));
         }
-        spans.push(Span::styled("  ·  Esc interrupt", dim));
+        // Cancellation hints live in the contextual footer.
 
         Paragraph::new(Line::from(spans)).render(area, buf);
     }
 }
 
-/// Grok-inspired one-line session header.
-///
-/// Keeps location on the left and context pressure on the right so the
-/// conversation itself can remain visually quiet.
-pub struct SessionHeaderWidget<'a> {
-    cwd: Option<&'a str>,
-    git_branch: Option<&'a str>,
-    context_used: Option<u64>,
-    context_window: Option<u64>,
-}
-
-impl<'a> SessionHeaderWidget<'a> {
-    #[must_use]
-    pub fn new(cwd: Option<&'a str>, git_branch: Option<&'a str>) -> Self {
-        Self {
-            cwd,
-            git_branch,
-            context_used: None,
-            context_window: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_context(mut self, used: Option<u64>, window: Option<u64>) -> Self {
-        self.context_used = used;
-        self.context_window = window.filter(|value| *value > 0);
-        self
-    }
-}
-
-impl Widget for SessionHeaderWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 {
-            return;
-        }
-
-        buf.set_style(area, Style::default().bg(brand_surface()));
-        let location = format_session_location(self.cwd, self.git_branch);
-        let context = format_context_usage(self.context_used, self.context_window);
-        let context_width = context.as_ref().map_or(0, |text| text.width() as u16);
-        let context_gap = u16::from(context_width > 0) * 2;
-        let brand_label = "MAESTRO";
-        let brand_width = brand_label.width() as u16;
-        let divider = "  │  ";
-        let divider_width = divider.width() as u16;
-        let location_width = area
-            .width
-            .saturating_sub(context_width)
-            .saturating_sub(context_gap)
-            .saturating_sub(brand_width)
-            .saturating_sub(u16::from(!location.is_empty()) * divider_width);
-        let location = truncate_location(&location, location_width as usize);
-        let mut header_spans = vec![Span::styled(
-            brand_label,
-            Style::default()
-                .fg(brand_violet())
-                .add_modifier(Modifier::BOLD),
-        )];
-        if !location.is_empty() {
-            header_spans.push(Span::styled(divider, Style::default().fg(brand_border())));
-            header_spans.push(Span::styled(location, Style::default().fg(brand_muted())));
-        }
-        Paragraph::new(Line::from(header_spans)).render(area, buf);
-
-        if let Some(context) = context {
-            let color = match (self.context_used, self.context_window) {
-                (Some(used), Some(window))
-                    if used.saturating_mul(100) >= window.saturating_mul(90) =>
-                {
-                    Color::Red
-                }
-                (Some(used), Some(window))
-                    if used.saturating_mul(100) >= window.saturating_mul(75) =>
-                {
-                    Color::Yellow
-                }
-                _ => brand_muted(),
-            };
-            let x = area.right().saturating_sub(context_width);
-            buf.set_string(
-                x,
-                area.y,
-                context,
-                Style::default().fg(color).bg(brand_surface()),
-            );
-        }
-    }
-}
-
-fn format_session_location(cwd: Option<&str>, git_branch: Option<&str>) -> String {
-    let Some(cwd) = cwd else {
-        return String::new();
-    };
-    let path = std::path::Path::new(cwd);
-    let compact = dirs::home_dir()
-        .and_then(|home| path.strip_prefix(home).ok())
-        .map_or_else(
-            || cwd.to_string(),
-            |relative| {
-                if relative.as_os_str().is_empty() {
-                    "~".to_string()
-                } else {
-                    format!("~/{}", relative.display())
-                }
-            },
-        );
-    match git_branch {
-        Some(branch) if !branch.is_empty() => format!("{compact}  ·  {branch}"),
-        _ => compact,
-    }
-}
-
-fn format_context_usage(used: Option<u64>, window: Option<u64>) -> Option<String> {
-    match (used, window) {
-        (Some(used), Some(window)) => Some(format!(
-            "{} / {}",
-            format_context_tokens(used),
-            format_context_tokens(window)
-        )),
-        (Some(used), None) if used > 0 => Some(format!("{} context", format_context_tokens(used))),
-        _ => None,
-    }
-}
-
-fn format_context_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        let value = tokens as f64 / 1_000_000.0;
-        if value < 10.0 {
-            format!("{value:.1}M")
-        } else {
-            format!("{}M", tokens / 1_000_000)
-        }
-    } else if tokens >= 10_000 {
-        format!("{}K", tokens / 1_000)
-    } else if tokens >= 1_000 {
-        format!("{:.1}K", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
-fn truncate_location(value: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if value.width() <= max_width {
-        return value.to_string();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-    let tail: String = value.chars().rev().take(max_width - 1).collect();
-    format!("…{}", tail.chars().rev().collect::<String>())
-}
+pub use maestro_presentation::components::session_header::SessionHeaderWidget;
+#[cfg(test)]
+use maestro_presentation::components::session_header::format_context_usage;
+use maestro_presentation::components::session_header::{
+    format_session_location, truncate_location,
+};
 
 /// A stateless widget for rendering the bottom status bar.
 ///
@@ -2095,6 +1964,7 @@ pub struct StatusBarWidget<'a> {
     queue_badge: Option<&'a str>,
     approval_mode: Option<ApprovalMode>,
     thinking_level: Option<ThinkingLevel>,
+    boost_status: crate::model_dynamics::BoostStatus,
     mcp_connected: usize,
     mcp_tool_count: usize,
     mcp_failed: usize,
@@ -2103,6 +1973,8 @@ pub struct StatusBarWidget<'a> {
     workspace_trusted: bool,
     pending_approvals: usize,
     shortcut_hints: bool,
+    input_busy: bool,
+    input_has_text: bool,
     paste_note: Option<&'a str>,
     goal_badge: Option<&'a str>,
     footer_style: crate::commands::FooterStyle,
@@ -2128,6 +2000,7 @@ impl<'a> StatusBarWidget<'a> {
             queue_badge: None,
             approval_mode: None,
             thinking_level: None,
+            boost_status: crate::model_dynamics::BoostStatus::Idle,
             mcp_connected: 0,
             mcp_tool_count: 0,
             mcp_failed: 0,
@@ -2136,11 +2009,19 @@ impl<'a> StatusBarWidget<'a> {
             workspace_trusted: false,
             pending_approvals: 0,
             shortcut_hints: false,
+            input_busy: false,
+            input_has_text: false,
             paste_note: None,
             goal_badge: None,
             footer_style: crate::commands::FooterStyle::default(),
             attach_count: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_boost_status(mut self, status: crate::model_dynamics::BoostStatus) -> Self {
+        self.boost_status = status;
+        self
     }
 
     #[must_use]
@@ -2167,7 +2048,7 @@ impl<'a> StatusBarWidget<'a> {
         self
     }
 
-    /// Set hook count (None = hooks disabled, Some(0) = enabled but none loaded)
+    /// Set hook count. The status bar shows it only when at least one hook is loaded.
     #[must_use]
     pub fn with_hooks(mut self, count: Option<usize>) -> Self {
         self.hook_count = count;
@@ -2230,6 +2111,13 @@ impl<'a> StatusBarWidget<'a> {
         self
     }
 
+    #[must_use]
+    pub fn with_input_context(mut self, busy: bool, has_text: bool) -> Self {
+        self.input_busy = busy;
+        self.input_has_text = has_text;
+        self
+    }
+
     /// Note about folded pasted content, e.g. "pasted 42 lines (folded)".
     #[must_use]
     pub fn with_paste_note(mut self, note: Option<&'a str>) -> Self {
@@ -2252,7 +2140,7 @@ impl Widget for StatusBarWidget<'_> {
         }
 
         let show_chrome = matches!(self.footer_style, FooterStyle::Rich);
-        let show_location = matches!(self.footer_style, FooterStyle::Rich);
+        let show_location = matches!(self.footer_style, FooterStyle::Rich) && !self.shortcut_hints;
         let show_shortcuts = self.shortcut_hints && matches!(self.footer_style, FooterStyle::Rich);
         // History: only alerts / pending approvals. Solo: model + goal + key badges.
         let history_only = matches!(self.footer_style, FooterStyle::History);
@@ -2260,11 +2148,35 @@ impl Widget for StatusBarWidget<'_> {
 
         let mut spans = Vec::new();
 
+        let boost_label = match self.boost_status {
+            crate::model_dynamics::BoostStatus::Idle => None,
+            crate::model_dynamics::BoostStatus::Suggested => Some("✦ /boost"),
+            crate::model_dynamics::BoostStatus::Pending => Some("✦ queued"),
+            crate::model_dynamics::BoostStatus::Active => Some("✦"),
+        };
+        if let Some(label) = boost_label {
+            spans.push(Span::styled(label, Style::default().fg(brand_violet())));
+        }
         if show_shortcuts {
-            let hints = if area.width >= 72 {
-                "Enter send  ·  @ files  ·  / commands"
+            if boost_label.is_some() {
+                spans.push(Span::styled(" · ", Style::default().fg(brand_muted())));
+            }
+            let hints = if self.pending_approvals > 0 {
+                "Respond to the approval above"
+            } else if self.input_busy {
+                if self.input_has_text {
+                    "Enter steer · Alt+Enter queue · Ctrl+C cancel"
+                } else {
+                    "Ctrl+C cancel"
+                }
+            } else if self.input_has_text {
+                if area.width >= 60 {
+                    "Enter send · Shift+Enter newline"
+                } else {
+                    "Enter send"
+                }
             } else {
-                "Enter send  ·  F1 help"
+                "? search · / commands"
             };
             spans.push(Span::styled(hints, Style::default().fg(brand_muted())));
         }
@@ -2277,7 +2189,7 @@ impl Widget for StatusBarWidget<'_> {
                 }
                 spans.push(Span::styled(
                     chrome_model_label(model),
-                    Style::default().fg(brand_violet()),
+                    Style::default().fg(brand_muted()),
                 ));
                 if let Some(provider) = self.provider {
                     if show_chrome {
@@ -2330,21 +2242,14 @@ impl Widget for StatusBarWidget<'_> {
 
         // Hook status (rich only)
         if show_chrome {
-            if let Some(count) = self.hook_count {
+            if let Some(count) = self.hook_count.filter(|count| *count > 0) {
                 if !spans.is_empty() {
                     spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
-                if count > 0 {
-                    spans.push(Span::styled(
-                        format!("hooks:{count}"),
-                        Style::default().fg(brand_muted()),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        "hooks:0",
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
+                spans.push(Span::styled(
+                    format!("hooks:{count}"),
+                    Style::default().fg(brand_muted()),
+                ));
             }
         }
 
@@ -2398,7 +2303,7 @@ impl Widget for StatusBarWidget<'_> {
             ));
         }
 
-        let badges = if history_only {
+        let badges = if history_only || self.shortcut_hints {
             None
         } else {
             self.approval_mode.map(|mode| {
@@ -2415,9 +2320,28 @@ impl Widget for StatusBarWidget<'_> {
                 })
             })
         };
-        let core_badges = badges
-            .as_ref()
-            .and_then(|b| (!b.core.is_empty()).then(|| b.core.join(" ")));
+        let core_badges = if self.shortcut_hints {
+            // Keep actionable conditions visible; environment diagnostics remain
+            // available through /about and the detailed footer surfaces.
+            let mut notices = Vec::new();
+            if self.approval_mode == Some(ApprovalMode::Yolo) {
+                notices.push("Always approve".to_string());
+            }
+            if self.pending_approvals > 0 {
+                notices.push(format!("{} pending", self.pending_approvals));
+            }
+            if self.alert_count > 0 {
+                notices.push(format!("{} alerts", self.alert_count));
+            }
+            if self.mcp_failed > 0 {
+                notices.push(format!("{} connections failed", self.mcp_failed));
+            }
+            (!notices.is_empty()).then(|| notices.join(" · "))
+        } else {
+            badges
+                .as_ref()
+                .and_then(|b| (!b.core.is_empty()).then(|| b.core.join(" ")))
+        };
         // Solo: core badges only. Rich: core + env.
         let env_badges = if solo {
             None
@@ -2433,7 +2357,7 @@ impl Widget for StatusBarWidget<'_> {
             None
         };
 
-        let term_text = if show_chrome && area.width >= 120 {
+        let term_text = if show_chrome && !self.shortcut_hints && area.width >= 120 {
             crate::terminal::size()
                 .ok()
                 .map(|(cols, rows)| format!("{cols}x{rows}"))
@@ -2577,6 +2501,8 @@ impl RightStatusParts<'_> {
 /// frame.render_widget(view, frame.area());
 /// ```
 pub struct ChatView<'a> {
+    tool_toggle_binding: Option<crate::key_hints::KeyBinding>,
+    timestamps: bool,
     state: &'a crate::state::AppState,
     sandbox_policy: Option<&'a str>,
     workspace_trusted: bool,
@@ -2584,11 +2510,21 @@ pub struct ChatView<'a> {
     footer_style: crate::commands::FooterStyle,
     goal_badge: Option<&'a str>,
     attach_count: usize,
+    dex_state: Option<super::dex_companion::DexCompanionState>,
+    dex_frame: u64,
+    dex_look: crate::dex_delight::DexLook,
+    dex_notice: Option<&'a str>,
+    dex_suggestion: Option<&'a str>,
+    dex_tip: Option<&'a str>,
+    dex_personality: super::dex_companion::DexPersonality,
+    animations: bool,
 }
 
 impl<'a> ChatView<'a> {
     pub fn new(state: &'a crate::state::AppState) -> Self {
         Self {
+            tool_toggle_binding: None,
+            timestamps: false,
             state,
             sandbox_policy: None,
             workspace_trusted: false,
@@ -2596,7 +2532,96 @@ impl<'a> ChatView<'a> {
             footer_style: crate::commands::FooterStyle::default(),
             goal_badge: None,
             attach_count: 0,
+            dex_state: None,
+            dex_frame: 0,
+            dex_look: Default::default(),
+            dex_notice: None,
+            dex_suggestion: None,
+            dex_tip: None,
+            dex_personality: super::dex_companion::DexPersonality::Standard,
+            animations: false,
         }
+    }
+
+    pub fn with_dex_delight(
+        mut self,
+        look: crate::dex_delight::DexLook,
+        notice: Option<&'a str>,
+        suggestion: Option<&'a str>,
+        tip: Option<&'a str>,
+    ) -> Self {
+        self.dex_look = look;
+        self.dex_notice = notice;
+        self.dex_suggestion = suggestion;
+        self.dex_tip = tip;
+        self
+    }
+
+    /// Presentation preferences do not affect execution or activity classification.
+    #[must_use]
+    pub fn with_timestamps(mut self, timestamps: bool) -> Self {
+        self.timestamps = timestamps;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dex_presentation(
+        mut self,
+        personality: super::dex_companion::DexPersonality,
+        animations: bool,
+    ) -> Self {
+        self.dex_personality = personality;
+        self.animations = animations;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dex_frame(mut self, frame: u64) -> Self {
+        self.dex_frame = frame;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_toggle_binding(mut self, binding: crate::key_hints::KeyBinding) -> Self {
+        self.tool_toggle_binding = Some(binding);
+        self
+    }
+
+    fn tool_shortcut_hint(&self, width: usize) -> Option<String> {
+        if self.state.busy
+            || !self.state.input().is_empty()
+            || self.pending_approvals > 0
+            || self.state.focus_view
+            || self.dex_personality == super::dex_companion::DexPersonality::Quiet
+        {
+            return None;
+        }
+        let binding = self.tool_toggle_binding?;
+        // Match the existing toggle action, which targets the latest tool call.
+        let call = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| message.tool_calls.last())?;
+        let action = if self.state.is_tool_call_expanded(&call.call_id) {
+            "collapse"
+        } else {
+            "expand"
+        };
+        let toggle = format!("{} {action}", binding.display());
+        let details = crate::key_hints::ctrl(crossterm::event::KeyCode::Char('e')).display();
+        let detailed = format!("{toggle} · {details} details");
+        [detailed, toggle]
+            .into_iter()
+            .find(|hint| hint.width() <= width)
+    }
+
+    /// Use the application's observed lifecycle; never infer completion from prose.
+    #[must_use]
+    pub fn with_dex_state(mut self, state: super::dex_companion::DexCompanionState) -> Self {
+        self.dex_state = Some(state);
+        self
     }
 
     #[must_use]
@@ -2638,8 +2663,20 @@ impl Widget for ChatView<'_> {
         }
 
         let status_height = u16::from(!self.state.zen_mode);
-        let header_height = u16::from(!self.state.zen_mode);
-        let turn_status_height = u16::from(self.state.busy);
+        let header_height = 2 * u16::from(
+            !self.state.zen_mode && self.state.messages.iter().any(should_render_message),
+        );
+        let show_face = self.dex_state.is_some()
+            && self.dex_personality != super::dex_companion::DexPersonality::Quiet
+            && area.width >= 48
+            && area.height >= 16;
+        let turn_status_height = u16::from(
+            self.state.busy || (self.dex_state.is_some() && !self.state.messages.is_empty()),
+        ) * if show_face || self.dex_notice.is_some() {
+            2
+        } else {
+            1
+        };
         let input_height = calculate_input_height(self.state, area);
         let chunks = Layout::vertical([
             Constraint::Length(header_height), // Session location + context
@@ -2663,7 +2700,7 @@ impl Widget for ChatView<'_> {
                     .saturating_add(usage.cache_read_tokens)
             });
 
-        if !self.state.zen_mode {
+        if header_height > 0 {
             SessionHeaderWidget::new(self.state.cwd.as_deref(), self.state.git_branch.as_deref())
                 .with_context(context_used, self.state.context_window)
                 .render(chunks[0], buf);
@@ -2672,35 +2709,112 @@ impl Widget for ChatView<'_> {
         // Render messages
         self.render_messages(chunks[1], buf);
 
-        if self.state.busy {
+        let mut activity_area = chunks[2];
+        if show_face && activity_area.height > 0 {
+            if let Some(state) = self.dex_state {
+                super::dex_companion::DexCompanion::new(state)
+                    .personality(self.dex_personality)
+                    .animations(self.animations)
+                    .frame(self.dex_frame)
+                    .look(self.dex_look)
+                    .render_face(
+                        Rect::new(activity_area.x, activity_area.y, 6, activity_area.height),
+                        buf,
+                    );
+                activity_area = Rect::new(
+                    activity_area.x + 7,
+                    activity_area.bottom() - 1,
+                    activity_area.width.saturating_sub(7),
+                    1,
+                );
+            }
+        }
+        let suggestion_tip = if self.dex_tip.is_some() && self.dex_suggestion.is_some() {
+            Some("→ accept suggestion · /dex suggestions-off")
+        } else {
+            None
+        };
+        if let Some(notice) = self.dex_notice.or(suggestion_tip) {
+            if chunks[2].height >= 2 {
+                Paragraph::new(notice)
+                    .style(Style::default().fg(crate::themes::current_ui_theme().muted))
+                    .render(
+                        Rect::new(
+                            chunks[2].x + 7,
+                            chunks[2].y,
+                            chunks[2].width.saturating_sub(7),
+                            1,
+                        ),
+                        buf,
+                    );
+            }
+        }
+        if self.state.busy && self.pending_approvals == 0 {
+            let activity = super::activity::active_tool_label(self.state);
+            let activity = match (self.dex_state, activity.as_deref()) {
+                (Some(state), Some(tool)) => format!("Dex {} · {tool}", state.label()),
+                (Some(state), None) => format!("Dex {}", state.label()),
+                (None, tool) => tool.unwrap_or("Working").to_owned(),
+            };
+            let activity =
+                if self.dex_personality == super::dex_companion::DexPersonality::Expressive {
+                    format!("{activity} · {}", self.dex_look.activity.phrase())
+                } else {
+                    activity
+                };
             TurnStatusWidget::new(
-                self.state.thinking_header.as_deref(),
+                Some(&activity),
                 self.state.elapsed_busy_secs(),
                 QueueSummary::new(self.state.queued_prompt_count),
                 context_used,
                 self.state.can_queue_follow_up_shortcut(),
             )
-            .render(chunks[2], buf);
+            .animations(
+                self.animations
+                    && self.dex_personality != super::dex_companion::DexPersonality::Quiet,
+            )
+            .render(activity_area, buf);
+        } else if let Some(state) = self.dex_state {
+            let mut line = super::dex_companion::DexCompanion::new(state)
+                .personality(self.dex_personality)
+                .status_line();
+            let available = usize::from(activity_area.width).saturating_sub(line.width() + 3);
+            if let Some(hint) = self.tool_shortcut_hint(available) {
+                line.spans.push(Span::styled(
+                    format!(" · {hint}"),
+                    Style::default().fg(crate::themes::current_ui_theme().muted),
+                ));
+            }
+            Paragraph::new(line).render(activity_area, buf);
         }
 
         // Render input
-        let input_widget = ChatInputWidget::new(
+        let mut input_widget = ChatInputWidget::new(
             &self.state.textarea,
             ChatInputWidgetOptions {
                 busy: self.state.busy,
                 pending_input_preview: PendingInputPreview::from_state(self.state),
                 ghost_text: if self.state.cursor() == self.state.input().len() {
-                    self.state.ghost_completion.clone()
+                    self.state
+                        .ghost_completion
+                        .clone()
+                        .or_else(|| self.dex_suggestion.map(str::to_owned))
                 } else {
                     None
                 },
             },
-        )
-        .with_runtime_footer(
-            self.state.model.as_deref(),
-            self.state.thinking_level,
-            self.state.interaction_mode,
         );
+        let startup_summary_visible = chunks[1].width >= 44
+            && chunks[1].height >= 5
+            && !self.state.messages.iter().any(should_render_message);
+        if !startup_summary_visible {
+            input_widget = input_widget.with_runtime_footer(
+                self.state.model.as_deref(),
+                self.state.thinking_level,
+                self.state.interaction_mode,
+            );
+        }
+
         input_widget.render(chunks[3], buf);
 
         // Render status bar (unless zen mode)
@@ -2737,6 +2851,7 @@ impl Widget for ChatView<'_> {
             .with_queue_badge(queue_badge.as_deref())
             .with_approval_mode(self.state.approval_mode)
             .with_thinking_level(self.state.thinking_level)
+            .with_boost_status(self.state.boost_status)
             .with_mcp_status(
                 self.state.mcp_connected,
                 self.state.mcp_tool_count,
@@ -2750,10 +2865,20 @@ impl Widget for ChatView<'_> {
             .with_goal_badge(self.goal_badge)
             .with_footer_style(self.footer_style)
             .with_attach_count(self.attach_count)
-            .with_shortcut_hints();
+            .with_shortcut_hints()
+            .with_input_context(self.state.busy, !self.state.input().is_empty());
             status_widget.render(chunks[4], buf);
         }
     }
+}
+
+fn continues_turn(previous: Option<&&Message>, message: &Message) -> bool {
+    previous.is_some_and(|previous| {
+        previous.role == MessageRole::Assistant
+            && message.role == MessageRole::Assistant
+            && previous.kind == MessageKind::Regular
+            && message.kind == MessageKind::Regular
+    })
 }
 
 impl ChatView<'_> {
@@ -2784,16 +2909,67 @@ impl ChatView<'_> {
             .collect();
 
         if area.height == 0 || renderable_messages.is_empty() {
-            // Deixic ghost logo + wordmark with diagonal/linear sheen; product
-            // title stays "Maestro". Animation uses wall-clock phase so idle
-            // welcome paints (app loop keys off shimmer_frame) advance the sheen.
-            crate::components::deixic_logo::render_welcome_with_metadata(
-                area,
-                buf,
-                true,
-                self.state.session_id.as_deref(),
-                !self.state.busy,
+            let runtime = self
+                .state
+                .model
+                .as_deref()
+                .map(chrome_model_label)
+                .map(|model| format!("{model} · {}", self.state.interaction_mode.label()))
+                .unwrap_or_else(|| "Sign in to choose a model".to_string());
+            let location = format_session_location(
+                self.state.cwd.as_deref(),
+                self.state.git_branch.as_deref(),
             );
+            if self.dex_personality == super::dex_companion::DexPersonality::Quiet {
+                if !self.state.busy {
+                    super::welcome::WelcomeScreen::new()
+                        .personality(self.dex_personality)
+                        .animations(false)
+                        .with_session(self.state.session_id.clone())
+                        .with_summary(runtime, location)
+                        .render(area, buf);
+                }
+            } else {
+                crate::components::deixic_logo::render_welcome_with_summary(
+                    area,
+                    buf,
+                    self.animations,
+                    self.state.session_id.as_deref(),
+                    !self.state.busy,
+                    Some((&runtime, &location)),
+                );
+            }
+            if self.dex_personality != super::dex_companion::DexPersonality::Quiet {
+                maestro_presentation::components::dex_companion::render_welcome_portrait(
+                    area,
+                    buf,
+                    self.dex_look,
+                    self.dex_state
+                        .unwrap_or(super::dex_companion::DexCompanionState::Ready),
+                    self.animations,
+                );
+            }
+            if area.height >= 7 {
+                if let Some(text) = self.dex_notice.or(self.dex_tip) {
+                    maestro_ui::Notice::new(text)
+                        .style(Style::default().fg(crate::themes::current_ui_theme().muted))
+                        .render(
+                            Rect::new(
+                                area.x + 3,
+                                if self.dex_personality
+                                    == super::dex_companion::DexPersonality::Quiet
+                                {
+                                    area.bottom().saturating_sub(1)
+                                } else {
+                                    area.y + 6
+                                },
+                                area.width.saturating_sub(3),
+                                1,
+                            ),
+                            buf,
+                        );
+                }
+            }
             return;
         }
 
@@ -2810,6 +2986,12 @@ impl ChatView<'_> {
                     self.state.focus_view,
                     &self.state.expanded_focus_turns,
                 ))
+                .saturating_sub(usize::from(continues_turn(
+                    index
+                        .checked_sub(1)
+                        .and_then(|i| renderable_messages.get(i)),
+                    renderable_messages[index],
+                )))
             },
         );
         let total_height = layout.total_height();
@@ -2829,27 +3011,42 @@ impl ChatView<'_> {
         let mut y = area.y;
         let max_y = area.y + area.height;
 
+        let mut message_top = layout.heights()[..start_idx].iter().sum::<usize>();
         for (i, message) in renderable_messages.iter().enumerate().skip(start_idx) {
             if y >= max_y {
                 break;
             }
 
-            let msg_height = layout.heights()[i].min(usize::from(max_y.saturating_sub(y))) as u16;
-
-            let msg_area = Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: msg_height,
-            };
+            let skip = window_top.saturating_sub(message_top);
+            message_top += layout.heights()[i];
+            let full_height = layout.heights()[i].min(usize::from(u16::MAX)) as u16;
+            let msg_height = usize::from(full_height)
+                .saturating_sub(skip)
+                .min(usize::from(max_y.saturating_sub(y))) as u16;
+            let msg_area = Rect::new(0, 0, area.width, full_height);
+            let mut message_buffer = Buffer::empty(msg_area);
 
             let widget = MessageWidget::new(message)
+                .with_continuation(continues_turn(
+                    i.checked_sub(1).and_then(|i| renderable_messages.get(i)),
+                    message,
+                ))
+                .with_timestamps(self.timestamps)
                 .with_expanded_tools(&self.state.expanded_tool_calls)
                 .with_compact_tool_outputs(self.state.compact_tool_outputs)
                 .with_focus_view(self.state.focus_view, &self.state.expanded_focus_turns)
                 .with_selected_focus_turn(self.state.focus_selected_turn.as_deref());
-            widget.render(msg_area, buf);
-
+            widget.render(msg_area, &mut message_buffer);
+            for row in 0..msg_height {
+                for col in 0..area.width {
+                    if let (Some(source), Some(target)) = (
+                        message_buffer.cell((col, skip as u16 + row)),
+                        buf.cell_mut((area.x + col, y + row)),
+                    ) {
+                        *target = source.clone();
+                    }
+                }
+            }
             y += msg_height;
         }
 
@@ -2857,33 +3054,21 @@ impl ChatView<'_> {
         if total_height > usize::from(area.height) {
             let bar_x = area.x + area.width.saturating_sub(1);
             let view_ratio = f32::from(area.height) / total_height as f32;
-            let thumb_height =
-                (f32::from(area.height) * view_ratio).clamp(1.0, f32::from(area.height));
-            let scroll_ratio = window_top as f32 / total_height as f32;
-            let thumb_start =
-                (scroll_ratio * (f32::from(area.height) - thumb_height)).round() as u16;
+            let thumb_height = (f32::from(area.height) * view_ratio)
+                .round()
+                .clamp(1.0, f32::from(area.height)) as u16;
+            let scroll_ratio = window_top as f32 / max_offset.max(1) as f32;
+            let thumb_start = (scroll_ratio * f32::from(area.height - thumb_height)).round() as u16;
             for i in 0..area.height {
-                let ch = if i >= thumb_start && i < thumb_start + thumb_height as u16 {
-                    '█'
-                } else {
-                    '░'
-                };
+                let in_thumb = i >= thumb_start && i < thumb_start + thumb_height;
                 if let Some(cell) = buf.cell_mut((bar_x, area.y + i)) {
-                    cell.set_symbol(ch.to_string().as_str());
-                    cell.set_style(Style::default().fg(Color::DarkGray));
+                    cell.set_symbol("│");
+                    cell.set_style(Style::default().fg(if in_thumb {
+                        brand_muted()
+                    } else {
+                        brand_border()
+                    }));
                 }
-            }
-
-            // Scroll percentage indicator
-            let percent = if total_height == 0 {
-                0
-            } else {
-                ((window_bottom as f32 / total_height as f32) * 100.0).round() as i32
-            };
-            let pct_str = format!("{:>3}%", percent.clamp(0, 100));
-            let pct_x = bar_x.saturating_sub(pct_str.len() as u16);
-            if pct_x >= area.x {
-                buf.set_string(pct_x, area.y, pct_str, Style::default().fg(Color::DarkGray));
             }
         }
 
@@ -2908,6 +3093,270 @@ impl ChatView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn polish_message(id: &str, content: &str) -> Message {
+        Message {
+            id: id.into(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: content.into(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        }
+    }
+
+    #[test]
+    fn tool_shortcut_uses_resolved_binding_and_current_expansion_state() {
+        let mut state = crate::state::AppState::new();
+        let binding = crate::key_hints::shift(crossterm::event::KeyCode::Left);
+        assert!(
+            ChatView::new(&state)
+                .with_tool_toggle_binding(binding)
+                .tool_shortcut_hint(100)
+                .is_none()
+        );
+        let mut message = polish_message("tool", "Done.");
+        message.tool_calls.push(crate::state::ToolCallState {
+            call_id: "read-1".into(),
+            tool: "read".into(),
+            args: serde_json::json!({"path":"README.md"}),
+            status: ToolCallStatus::Completed,
+            output: "Release checklist".into(),
+        });
+        state.messages.push(message);
+        let hint = |state: &crate::state::AppState, width| {
+            ChatView::new(state)
+                .with_tool_toggle_binding(binding)
+                .tool_shortcut_hint(width)
+        };
+        assert_eq!(
+            hint(&state, 100),
+            Some(format!(
+                "{} expand · {} details",
+                binding.display(),
+                crate::key_hints::ctrl(crossterm::event::KeyCode::Char('e')).display()
+            ))
+        );
+        let compact = format!("{} expand", binding.display());
+        assert_eq!(hint(&state, compact.width()), Some(compact));
+        assert!(hint(&state, 3).is_none());
+        state.toggle_tool_call("read-1");
+        assert!(hint(&state, 100).unwrap().contains("collapse"));
+        state.compact_tool_outputs = false;
+        assert!(hint(&state, 100).unwrap().contains("expand"));
+        state.busy = true;
+        assert!(hint(&state, 100).is_none());
+        state.busy = false;
+        state.focus_view = true;
+        assert!(hint(&state, 100).is_none());
+        state.focus_view = false;
+        assert!(
+            ChatView::new(&state)
+                .with_tool_toggle_binding(binding)
+                .with_runtime_status(None, true, 1)
+                .tool_shortcut_hint(100)
+                .is_none()
+        );
+        assert!(
+            ChatView::new(&state)
+                .with_tool_toggle_binding(binding)
+                .with_dex_presentation(super::super::dex_companion::DexPersonality::Quiet, false)
+                .tool_shortcut_hint(100)
+                .is_none()
+        );
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&state)
+            .with_tool_toggle_binding(binding)
+            .with_dex_state(super::super::dex_companion::DexCompanionState::Finished)
+            .render(area, &mut buf);
+        assert!(
+            buffer_lines(&buf, 100, 30)
+                .join("\n")
+                .contains(&format!("{} expand", binding.display()))
+        );
+        state.set_input("draft");
+        assert!(hint(&state, 100).is_none());
+    }
+
+    #[test]
+    fn compact_session_header_keeps_a_gap_above_scrolled_transcript() {
+        let mut state = crate::state::AppState::new();
+        state.cwd = Some("/tmp/release-planner".into());
+        state.messages = vec![polish_message(
+            "long",
+            &"A line of conversation.\n".repeat(40),
+        )];
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&state).render(area, &mut buf);
+        let lines = buffer_lines(&buf, 60, 20);
+        assert!(lines[0].contains("release-planner"));
+        assert!(lines[1].trim().is_empty());
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("100%") || line.contains('░'))
+        );
+    }
+
+    #[test]
+    fn measured_height_matches_wrapped_content_and_clipped_unicode_previews() {
+        for expanded in [false, true] {
+            let mut message = polish_message(
+                "unicode",
+                "A long answer repeated across narrow terminal columns without losing the last line.",
+            );
+            message.thinking = "界".repeat(60);
+            message.thinking_expanded = expanded;
+            message.tool_calls.push(crate::state::ToolCallState {
+                call_id: "read-1".into(),
+                tool: "read".into(),
+                args: serde_json::json!({"path":"README.md"}),
+                status: ToolCallStatus::Completed,
+                output: "x".repeat(180),
+            });
+            let height = calculate_message_height(
+                &message,
+                40,
+                &HashSet::new(),
+                true,
+                false,
+                &HashSet::new(),
+            );
+            let area = Rect::new(0, 0, 40, height + 3);
+            let mut buf = Buffer::empty(area);
+            MessageWidget::new(&message)
+                .with_compact_tool_outputs(true)
+                .render(area, &mut buf);
+            let lines = buffer_lines(&buf, 40, height + 3);
+            let occupied = lines
+                .iter()
+                .rposition(|line| !line.trim().is_empty())
+                .unwrap()
+                + 1;
+            assert_eq!(occupied, usize::from(height), "{}", lines.join("\n"));
+        }
+    }
+
+    #[test]
+    fn adjacent_dex_messages_share_heading_but_not_system_or_side_turns() {
+        let mut state = crate::state::AppState::new();
+        state.messages = vec![
+            polish_message("a", "Read complete."),
+            polish_message("b", "Here is the answer."),
+        ];
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&state).render_messages(area, &mut buf);
+        let text = buffer_lines(&buf, 80, 20).join("\n");
+        assert_eq!(text.matches("Dex").count(), 1);
+        assert!(text.contains("Read complete."));
+        assert!(text.contains("Here is the answer."));
+        // Changing the predecessor must invalidate the following cached height.
+        state.messages[0].kind = MessageKind::System;
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&state).render_messages(area, &mut buf);
+        let text = buffer_lines(&buf, 80, 20).join("\n");
+        assert!(text.contains("System"));
+        assert!(text.contains("Dex"));
+        state.messages[0].kind = MessageKind::SideAnswer;
+        assert!(!continues_turn(
+            Some(&&state.messages[0]),
+            &state.messages[1]
+        ));
+    }
+
+    #[test]
+    fn long_message_scrolls_to_its_tail_and_back_after_resize() {
+        let mut state = crate::state::AppState::new();
+        use std::fmt::Write as _;
+        let mut content = String::new();
+        for i in 1..=40 {
+            writeln!(content, "Line {i:02}").unwrap();
+        }
+        state.messages = vec![polish_message("long", &content)];
+        for (width, height) in [(80, 10), (40, 11), (100, 13)] {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            ChatView::new(&state).render_messages(area, &mut buf);
+            let text = buffer_lines(&buf, width, height).join("\n");
+            assert!(text.contains("Line 40"), "{text}");
+            assert!(!text.contains("Line 01"));
+            assert_eq!(buf[(width - 1, height - 1)].fg, brand_muted());
+        }
+        state.scroll_offset = 20;
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        ChatView::new(&state).render_messages(area, &mut buf);
+        let text = buffer_lines(&buf, 80, 10).join("\n");
+        assert!(text.contains("Line 20"), "{text}");
+        assert!(!text.contains("Line 40"));
+    }
+
+    #[test]
+    fn tool_identifiers_and_timestamps_are_details_only() {
+        let mut message = polish_message("tool", "");
+        message.tool_calls.push(crate::state::ToolCallState {
+            call_id: "read-private-id".into(),
+            tool: "read".into(),
+            args: serde_json::json!({"path":"README.md"}),
+            status: ToolCallStatus::Completed,
+            output: "Useful preview".into(),
+        });
+        let area = Rect::new(0, 0, 100, 10);
+        for expanded in [false, true] {
+            let mut buf = Buffer::empty(area);
+            MessageWidget::new(&message)
+                .with_compact_tool_outputs(!expanded)
+                .with_timestamps(expanded)
+                .render(area, &mut buf);
+            let text = buffer_lines(&buf, 100, 10).join("\n");
+            assert!(text.contains("Read README.md"));
+            assert!(text.contains("Useful preview"));
+            assert_eq!(text.contains("read-private-id"), expanded);
+            assert_eq!(
+                text.contains(&format_timestamp(message.timestamp)),
+                expanded
+            );
+        }
+    }
+
+    #[test]
+    fn footer_hints_follow_input_and_execution_state() {
+        for (busy, typing, approvals, expected) in [
+            (false, false, 0, "? search"),
+            (false, true, 0, "Shift+Enter newline"),
+            (true, false, 0, "Ctrl+C cancel"),
+            (true, true, 0, "Enter steer"),
+            (true, false, 1, "Respond to the approval"),
+        ] {
+            let area = Rect::new(0, 0, 80, 1);
+            let mut buf = Buffer::empty(area);
+            StatusBarWidget::new(None, None, None, None)
+                .with_shortcut_hints()
+                .with_input_context(busy, typing)
+                .with_pending_approvals(approvals)
+                .render(area, &mut buf);
+            let text = buffer_lines(&buf, 80, 1).join("\n");
+            assert!(text.contains(expected), "{text}");
+            assert_eq!(text.contains("Enter send"), typing && !busy);
+        }
+    }
+
+    #[test]
+    fn compact_tool_preview_keeps_content_and_number_spacing() {
+        let output = "```text\n1\t# Release checklist\n2\t\n3\tRun checks\n```";
+        assert_eq!(
+            tool_preview_lines(output, false),
+            vec!["1  # Release checklist", "3  Run checks"]
+        );
+        assert_eq!(tool_preview_lines(output, true).len(), 5);
+    }
 
     fn buffer_lines(buf: &Buffer, width: u16, height: u16) -> Vec<String> {
         (0..height)
@@ -2993,7 +3442,7 @@ mod tests {
         assert!(rendered.contains("2 queued"));
         assert!(rendered.contains("1.2k tok"));
         assert!(rendered.contains("Tab queue"));
-        assert!(rendered.contains("Esc interrupt"));
+        assert!(!rendered.contains("Esc interrupt"));
     }
 
     #[test]
@@ -3008,7 +3457,7 @@ mod tests {
         let rendered = buffer_lines(&buf, width, 1).join("\n");
         assert!(rendered.contains("Working"));
         assert!(rendered.contains("12s"));
-        assert!(rendered.contains("Esc interrupt"));
+        assert!(!rendered.contains("Esc interrupt"));
         assert!(!rendered.contains("queued"));
         assert!(!rendered.contains("tok"));
         assert!(!rendered.contains("Tab queue"));
@@ -3068,7 +3517,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_view_shows_model_once_on_the_composer() {
+    fn chat_view_shows_model_once_in_startup_summary() {
         let mut state = crate::state::AppState::default();
         state.model = Some("openai-codex/gpt-5.5".to_string());
         state.provider = Some("openai-codex".to_string());
@@ -3102,7 +3551,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_prompt_is_inside_the_box_with_no_placeholder() {
+    fn composer_prompt_sits_between_rules_with_no_placeholder() {
         let textarea = TextArea::new();
         let widget = ChatInputWidget::new(
             &textarea,
@@ -3119,18 +3568,18 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.starts_with("╭"));
-        assert!(rendered.contains("╰"));
+        assert!(rendered.starts_with("──"));
+        assert!(!rendered.contains("│"));
         assert!(!rendered.contains("Describe what you want to build..."));
         let lines = buffer_lines(&buf, width, height);
         assert!(
-            lines[0].starts_with("╭─"),
+            lines[0].starts_with("──"),
             "prompt must not sit on the top border: {}",
             lines[0]
         );
         assert!(
             lines[1].contains("> "),
-            "in-box prompt must sit on the inner row: {}",
+            "prompt must sit below the separator: {}",
             lines[1]
         );
     }
@@ -3199,6 +3648,23 @@ mod tests {
     }
 
     #[test]
+    fn dex_code_header_stays_readable_in_narrow_terminals() {
+        for width in [8, 16, 19, 20, 21, 24, 26, 27, 60, 100] {
+            let area = Rect::new(0, 0, width, 1);
+            let mut buf = Buffer::empty(area);
+            SessionHeaderWidget::new(Some("/workspace/release-planner"), Some("main"))
+                .with_context(Some(9_500), Some(500_000))
+                .render(area, &mut buf);
+            let row = &buffer_lines(&buf, width, 1)[0];
+            assert!(row.starts_with("Dex Code"));
+            assert_eq!(row.contains("9.5K / 500K"), width >= 21);
+            if (21..27).contains(&width) {
+                assert!(!row.contains("│"));
+            }
+        }
+    }
+
+    #[test]
     fn session_header_pairs_location_with_context_pressure() {
         let width = 80;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
@@ -3208,8 +3674,9 @@ mod tests {
             .render(Rect::new(0, 0, width, 1), &mut buf);
 
         let rendered = buffer_lines(&buf, width, 1).join("\n");
-        assert!(rendered.contains("MAESTRO"));
-        assert!(rendered.contains("/workspace/maestro  ·  main"));
+        assert!(rendered.contains("Dex"));
+        assert!(rendered.contains("maestro  ·  main"));
+        assert!(!rendered.contains("/workspace/"));
         assert!(rendered.contains("9.5K / 500K"));
     }
 
@@ -3356,7 +3823,7 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(rendered.contains("Ran cargo test"));
         assert!(rendered.contains("finished"));
-        assert!(rendered.contains("Failed · Searched for \"needle\""));
+        assert!(rendered.contains("Failed · Search for \"needle\""));
     }
 
     #[test]
@@ -3388,12 +3855,13 @@ mod tests {
         MessageWidget::new(&message).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("• Deixic Code"));
+        assert!(rendered.contains("• Dex"));
+        assert!(!rendered.contains("Deixic Code"));
         assert!(!rendered.contains("• Composer"));
     }
 
     #[test]
-    fn empty_chat_view_uses_plain_deixic_code_welcome_copy() {
+    fn empty_chat_view_uses_deixic_code_welcome_copy() {
         let state = crate::state::AppState::default();
         let width = 100;
         let height = 20;
@@ -3402,17 +3870,19 @@ mod tests {
         ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("Deixic Code"));
-        assert!(rendered.contains("Type a message or /help."));
+        assert!(rendered.contains(crate::components::deixic_logo::PRODUCT_TITLE));
+        assert!(rendered.contains("Sign in to choose a model"));
         assert!(!rendered.contains("session 01"));
         assert!(!rendered.contains("Welcome to Deixic Code!"));
         assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
     }
 
     #[test]
-    fn empty_chat_view_uses_live_session_metadata() {
+    fn empty_chat_view_uses_live_runtime_summary() {
         let mut state = crate::state::AppState::default();
         state.session_id = Some("restored-42".to_string());
+        state.model = Some("openai-codex/gpt-5.5".to_string());
+        state.cwd = Some("/projects/release-checklist".to_string());
         let width = 100;
         let height = 20;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -3420,8 +3890,9 @@ mod tests {
         ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("session restored-42"));
-        assert!(!rendered.contains("session 01"));
+        assert!(rendered.contains("GPT-5.5"));
+        assert!(rendered.contains("release-checklist"));
+        assert!(!rendered.contains("session restored-42"));
     }
 
     fn transcript_layout_message(id: &str, content: &str) -> Message {
@@ -3505,5 +3976,71 @@ mod tests {
             state.transcript_layout_measurements(),
             initial_measurements + 2
         );
+    }
+}
+
+#[cfg(test)]
+mod boost_footer_tests {
+    use super::*;
+    use crate::model_dynamics::BoostStatus;
+    #[test]
+    fn boost_footer_stays_compact_at_narrow_widths() {
+        for width in [12, 40, 100] {
+            for (status, expected) in [
+                (BoostStatus::Suggested, "✦ /boost"),
+                (BoostStatus::Pending, "✦ queued"),
+                (BoostStatus::Active, "✦"),
+                (BoostStatus::Idle, ""),
+            ] {
+                let area = Rect::new(0, 0, width, 1);
+                let mut buffer = Buffer::empty(area);
+                StatusBarWidget::new(None, None, None, None)
+                    .with_boost_status(status)
+                    .render(area, &mut buffer);
+                let rendered = (0..width)
+                    .map(|x| buffer[(x, 0)].symbol())
+                    .collect::<String>();
+                assert!(rendered.starts_with(expected), "{rendered:?}");
+                if status == BoostStatus::Idle {
+                    assert!(!rendered.contains('✦'));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dex_notice_layout_tests {
+    use super::*;
+
+    #[test]
+    fn quiet_notice_does_not_overwrite_centered_welcome_status() {
+        let state = crate::state::AppState::new();
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buffer = Buffer::empty(area);
+        ChatView::new(&state)
+            .with_dex_presentation(
+                crate::components::dex_companion::DexPersonality::Quiet,
+                false,
+            )
+            .with_dex_delight(
+                Default::default(),
+                Some("Welcome back. Your answer is needed"),
+                None,
+                None,
+            )
+            .render(area, &mut buffer);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let notice = lines
+            .iter()
+            .position(|line| line.contains("Welcome back. Your answer is needed"))
+            .unwrap();
+        let status = lines
+            .iter()
+            .position(|line| line.contains("Dex · ready"))
+            .unwrap();
+        assert_ne!(notice, status);
     }
 }

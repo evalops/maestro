@@ -278,6 +278,7 @@ pub fn mcp_server_config_for_connection(connection: &ServiceConnection) -> Resul
         managed_generation: Some(connection.generation),
         supports_parallel_tool_calls: None,
         requires_project_approval: Some(false),
+        disabled_tools: Vec::new(),
         timeout: None,
         enabled: true,
         disabled: false,

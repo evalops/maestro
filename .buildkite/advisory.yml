@@ -6,7 +6,7 @@
 # pipeline.yml. Repeat those blocks here.
 
 agents:
-  queue: "${MAESTRO_CI_QUEUE:-linux-large}"
+  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
   image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:

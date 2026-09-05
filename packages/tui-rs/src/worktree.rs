@@ -4,8 +4,8 @@
 //! repository at `../<repo-name>-wt-<name>` on a new branch derived from
 //! `<name>`, then runs the whole session (TUI, `exec`, or print mode) with the
 //! worktree as the working directory. On exit a clean worktree (no uncommitted
-//! changes, no untracked files) is removed together with its branch; a dirty
-//! worktree is kept and its path and branch are reported.
+//! changes, no untracked files, no new commits) can be removed. Interactive
+//! sessions keep their worktree. Successful sessions always preserve the branch.
 //!
 //! Like the rest of the crate's git integration (see [`crate::git`]), this
 //! module shells out to the `git` CLI instead of linking libgit2.
@@ -96,6 +96,7 @@ pub struct WorktreeSession {
     repo_root: PathBuf,
     path: PathBuf,
     branch: String,
+    initial_head: String,
 }
 
 impl WorktreeSession {
@@ -157,10 +158,20 @@ impl WorktreeSession {
             );
         }
 
+        let initial_head = Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&repo_root)
+            .output()
+            .context("failed to read initial worktree commit")?;
+        if !initial_head.status.success() {
+            bail!("cannot create a session worktree without a committed HEAD");
+        }
+        let initial_head = String::from_utf8(initial_head.stdout)?.trim().to_owned();
+
         let add_out = Command::new("git")
             .args(["worktree", "add", "-b", &branch])
             .arg(&worktree_path)
-            .arg("HEAD")
+            .arg(&initial_head)
             .current_dir(&repo_root)
             .output()
             .context("failed to run git worktree add")?;
@@ -173,6 +184,7 @@ impl WorktreeSession {
             repo_root,
             path: worktree_path,
             branch,
+            initial_head,
         })
     }
 
@@ -314,52 +326,43 @@ impl WorktreeSession {
             .unwrap_or(false)
     }
 
-    /// Apply exit semantics: clean worktrees are removed with their branch,
-    /// dirty worktrees are kept and reported.
+    /// Keep an interactive session's working directory available for resume.
+    pub fn keep(self) {
+        eprintln!(
+            "Worktree kept: {}\n  branch: {}\n  Resume from this directory with deixic-code --continue",
+            self.path.display(),
+            self.branch
+        );
+    }
+
+    /// Remove only an unchanged, clean non-interactive worktree; keep its branch.
     pub fn finish(self) {
-        if self.is_clean() {
-            let removed = Command::new("git")
-                .args(["worktree", "remove"])
-                .arg(&self.path)
-                .current_dir(&self.repo_root)
-                .output()
-                .map(|output| output.status.success())
-                .unwrap_or(false);
-            if !removed {
-                eprintln!(
-                    "Worktree kept (could not remove): {}\n  branch: {}",
-                    self.path.display(),
-                    self.branch
-                );
-                return;
-            }
-            let branch_deleted = Command::new("git")
-                .args(["branch", "-d", &self.branch])
-                .current_dir(&self.repo_root)
-                .output()
-                .map(|output| output.status.success())
-                .unwrap_or(false);
-            if branch_deleted {
-                eprintln!(
-                    "Removed clean worktree {} (branch {} deleted)",
-                    self.path.display(),
-                    self.branch
-                );
-            } else {
-                // `git branch -d` refuses to delete branches with commits that
-                // are not merged into the current HEAD; keep the user's work.
-                eprintln!(
-                    "Removed worktree {} but kept branch {} (it contains commits)",
-                    self.path.display(),
-                    self.branch
-                );
-            }
-        } else {
+        let unchanged = Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&self.path)
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == self.initial_head
+            });
+        if !self.is_clean() || !unchanged {
+            self.keep();
+            return;
+        }
+        let removed = Command::new("git")
+            .args(["worktree", "remove"])
+            .arg(&self.path)
+            .current_dir(&self.repo_root)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if removed {
             eprintln!(
-                "Worktree kept (uncommitted changes): {}\n  branch: {}",
+                "Removed unchanged worktree {}\n  branch kept: {}",
                 self.path.display(),
                 self.branch
             );
+        } else {
+            self.keep();
         }
     }
 }
@@ -643,12 +646,47 @@ mod tests {
 
         session.finish();
         assert!(!expected.exists(), "clean worktree should be removed");
-        assert!(
-            listed_branch(&repo, "My-Feature").is_empty(),
-            "clean worktree branch should be deleted"
-        );
+        assert_eq!(listed_branch(&repo, "My-Feature"), "My-Feature");
         fs::remove_dir_all(repo.parent().expect("repo has a parent"))
             .expect("test directory should be removed");
+    }
+
+    #[test]
+    fn interactive_clean_worktree_is_kept_for_resume() {
+        let repo = temp_repo("interactive-keep");
+        let session = WorktreeSession::create_in(&repo, "interactive").unwrap();
+        let path = session.path().to_path_buf();
+        session.keep();
+        assert!(path.join("README.md").is_file());
+        assert_eq!(listed_branch(&repo, "interactive"), "interactive");
+        fs::remove_dir_all(repo.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn committed_worktree_is_kept_even_when_commit_is_merged() {
+        let repo = temp_repo("committed-keep");
+        let session = WorktreeSession::create_in(&repo, "committed").unwrap();
+        let path = session.path().to_path_buf();
+        let output = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "session work"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["merge", "--ff-only", "committed"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(session.is_clean());
+        session.finish();
+        assert!(
+            path.exists(),
+            "committed work must retain its resume directory"
+        );
+        assert_eq!(listed_branch(&repo, "committed"), "committed");
+        fs::remove_dir_all(repo.parent().unwrap()).unwrap();
     }
 
     #[test]

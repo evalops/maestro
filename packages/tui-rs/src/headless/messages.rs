@@ -288,6 +288,10 @@ pub enum ToAgentMessage {
     ApplyWorkspaceCapabilitySet {
         request: ApplyWorkspaceCapabilitySet,
     },
+    /// Bind one controller-owned prompt experiment before the first turn.
+    ConfigurePromptExperiment {
+        assignment: PromptExperimentAssignment,
+    },
     /// Interrupt the current operation
     Interrupt,
     /// Respond to a tool approval request
@@ -455,6 +459,42 @@ pub enum HistoryRole {
 pub struct HistoryMessage {
     pub role: HistoryRole,
     pub content: String,
+}
+
+/// Stable A/B arm selected by the controller for a prompt experiment.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptExperimentArm {
+    Control,
+    Candidate,
+}
+
+/// Typed, controller-owned prompt artifact assignment.
+///
+/// The artifact body is included for both arms so the runtime can verify its
+/// digest. Only the candidate arm renders it into the model's system prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptExperimentAssignment {
+    pub experiment_id: String,
+    pub assignment_id: String,
+    pub arm: PromptExperimentArm,
+    pub artifact_id: String,
+    pub artifact_version: String,
+    pub artifact_sha256: String,
+    pub artifact_content: String,
+}
+
+/// Evidence attached only after the managed Gateway accepts the request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptExperimentExposure {
+    pub experiment_id: String,
+    pub assignment_id: String,
+    pub arm: PromptExperimentArm,
+    pub artifact_id: String,
+    pub artifact_version: String,
+    pub artifact_sha256: String,
+    pub provider_prompt_sha256: String,
+    pub applied: bool,
 }
 
 impl HistoryMessage {
@@ -920,6 +960,8 @@ pub enum FromAgentMessage {
         record_id: String,
         lineage_id: String,
         record_status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_experiment: Option<PromptExperimentExposure>,
     },
     /// Receipt for an accepted, non-executable workspace prompt capability set.
     WorkspaceCapabilitySetApplied {
@@ -955,7 +997,13 @@ pub enum FromAgentMessage {
         ttft_ms: Option<u64>,
     },
     /// Positive terminal for the full native agent turn.
-    TurnCompleted { response_id: String },
+    TurnCompleted {
+        response_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coding_completion: Option<maestro_runtime::coding_acceptance::CodingCompletionSubmission>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        coding_child_records: Vec<maestro_runtime::coding_acceptance::CodingAcceptanceChildRecord>,
+    },
     /// Durable terminal for a cancelled or interrupted turn.
     TurnInterrupted { response_id: String, reason: String },
     /// Privacy-safe Codex app-server session lifecycle metadata.
@@ -1241,7 +1289,7 @@ impl FromAgentMessage {
                     response_id: response_id.clone(),
                 })
             }
-            Self::TurnCompleted { response_id } => {
+            Self::TurnCompleted { response_id, .. } => {
                 Some(maestro_runtime::TerminalEvent::TurnCompleted {
                     response_id: response_id.clone(),
                 })

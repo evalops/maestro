@@ -30,6 +30,7 @@ chmodSync(binary, 0o755);
 const env = {
 	HOME: sandbox,
 	MAESTRO_HOME: join(sandbox, ".maestro"),
+	MAESTRO_DISABLE_KEYCHAIN: "1",
 	MAESTRO_MODEL: "gpt-5.5",
 	MAESTRO_WEB_REQUIRE_KEY: "0",
 	MAESTRO_WEB_REQUIRE_REDIS: "0",

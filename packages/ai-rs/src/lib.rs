@@ -83,6 +83,11 @@ mod client;
 mod error;
 mod google;
 mod kimi;
+mod model_capabilities;
+pub use model_capabilities::{
+    ASTRA_CONTEXT_TOKENS, ASTRA_OUTPUT_TOKENS, OpenAiRequestCapabilities, OpenAiWireProtocol,
+    openai_request_capabilities,
+};
 pub mod op_secret;
 #[path = "openai_wrapper.rs"]
 mod openai;

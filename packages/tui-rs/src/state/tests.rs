@@ -121,6 +121,10 @@ fn test_app_state_new() {
 fn test_app_state_default() {
     let state = AppState::default();
     assert!(state.messages.is_empty());
+    assert!(
+        state.compact_tool_outputs,
+        "new sessions should show short tool previews"
+    );
 }
 
 // ============================================================
@@ -547,6 +551,7 @@ fn test_scroll_down_saturating() {
 #[test]
 fn test_toggle_tool_call() {
     let mut state = AppState::new();
+    state.compact_tool_outputs = false;
     let call_id = "call-123";
 
     // Default: expanded when compact mode is off
@@ -802,6 +807,8 @@ fn test_handle_response_end() {
 
     state.handle_agent_message(FromAgent::TurnCompleted {
         response_id: "done".to_string(),
+        coding_completion: None,
+        coding_child_records: Vec::new(),
     });
     assert!(!state.busy);
 }
@@ -933,6 +940,7 @@ fn test_handle_error_respects_terminal_flag() {
         message: "Connection failed".to_string(),
         fatal: false,
         terminal: false,
+        retryable: false,
     });
 
     assert_eq!(state.error, Some("Connection failed".to_string()));
@@ -945,6 +953,7 @@ fn test_handle_error_respects_terminal_flag() {
         message: "Turn failed".to_string(),
         fatal: false,
         terminal: true,
+        retryable: false,
     });
     assert!(!state.busy);
 }

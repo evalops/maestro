@@ -37,6 +37,7 @@ impl Default for CacheConfig {
                 "explore".to_string(),
                 "extract_document".to_string(),
                 "spawn_subagent".to_string(),
+                "coding_task".to_string(),
                 "list_subagents".to_string(),
                 "get_subagent".to_string(),
                 "wait_subagent".to_string(),

@@ -108,6 +108,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider, CancellableStream, provider_model_name};
@@ -260,6 +261,7 @@ fn managed_gateway_receipt(
         }
     }
     Ok(ManagedGatewayReceipt {
+        provider_prompt_sha256: None,
         request_id: required_managed_receipt_header(
             headers,
             "x-request-id",
@@ -836,15 +838,6 @@ fn strip_managed_model_prefix(model: &str) -> &str {
     model
 }
 
-fn has_managed_model_prefix(model: &str) -> bool {
-    let model = model.trim();
-    ["evalops/", "maestro-managed/"].iter().any(|prefix| {
-        model
-            .get(..prefix.len())
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
-    })
-}
-
 fn strip_provider_model_prefix<'a>(model: &'a str, provider: &str) -> &'a str {
     let Some((prefix, model_id)) = model.split_once('/') else {
         return model;
@@ -856,47 +849,9 @@ fn strip_provider_model_prefix<'a>(model: &'a str, provider: &str) -> &'a str {
     }
 }
 
-/// Returns true if the model uses the Responses API (vs Chat Completions).
-///
-/// OpenRouter exposes one OpenAI-compatible Chat Completions surface for its
-/// broad model catalog. Its model ids are opaque, often nested
-/// (`openrouter/anthropic/claude-...`), and must not inherit OpenAI's model-name
-/// heuristic. OpenRouter's stable Chat Completions surface owns routed models;
-/// only the explicitly mapped plain gpt-5.6 alias remains on its beta Responses
-/// surface. In particular, Terra must use Chat Completions: production proved
-/// that the beta Responses route can accept the request without opening a
-/// response, exhausting the bounded stream retry budget without an answer.
 fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
-    let managed_namespace = has_managed_model_prefix(model);
-    let model = strip_managed_model_prefix(model).trim();
-    let inferred_provider = model.split_once('/').map(|(provider, _)| provider.trim());
-    let provider = provider.or(inferred_provider);
-    let is_native_local = provider.is_some_and(|provider| {
-        ["llamacpp", "lmstudio", "ollama"]
-            .iter()
-            .any(|local| provider.eq_ignore_ascii_case(local))
-    });
-    if is_native_local {
-        return false;
-    }
-    let is_openrouter =
-        provider.is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"));
-    let normalized = provider_model_name(model);
-    let normalized = if is_openrouter && !managed_namespace {
-        let routed_model = strip_provider_model_prefix(&normalized, "openrouter");
-        provider_model_name(routed_model)
-    } else {
-        normalized
-    };
-    let normalized = normalized.to_ascii_lowercase();
-
-    if is_openrouter {
-        return normalized == "gpt-5.6";
-    }
-
-    // Direct OpenAI and managed OpenAI routes use the Responses families
-    // already supported by the native client.
-    normalized.contains("codex") || normalized.starts_with("gpt-5") || normalized.starts_with("o3")
+    crate::openai_request_capabilities(provider, model).protocol
+        == crate::OpenAiWireProtocol::OpenAiResponses
 }
 
 /// Check if this is a Mistral model (requires special tool ID handling)
@@ -1589,7 +1544,7 @@ impl OpenAiClient {
 
         let mut body = serde_json::json!({
             "model": model,
-            "max_tokens": config.max_tokens,
+            "max_tokens": crate::openai_request_capabilities(self.route_provider.as_deref(), &config.model).output_tokens.map_or(config.max_tokens, |limit| config.max_tokens.min(limit)),
             "messages": openai_messages,
             "stream": true,
             "stream_options": {
@@ -1619,7 +1574,10 @@ impl OpenAiClient {
             }
         }
 
-        if let Some(temp) = config.temperature {
+        if let Some(temp) = config.temperature.filter(|_| {
+            crate::openai_request_capabilities(self.route_provider.as_deref(), &config.model)
+                .temperature
+        }) {
             body["temperature"] = serde_json::json!(temp);
         }
 
@@ -1636,22 +1594,9 @@ impl OpenAiClient {
         // GPT-5.1 supports reasoning_effort for adaptive thinking
         if let Some(thinking) = &config.thinking {
             // Map thinking budget to reasoning effort
-            let effort = if thinking.budget_tokens > 10000 {
-                if self.route_provider.as_deref() == Some("llamacpp")
-                    && model
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|name| name.to_ascii_lowercase().starts_with("qwen3.8"))
-                {
-                    "xhigh"
-                } else {
-                    "high"
-                }
-            } else if thinking.budget_tokens > 3000 {
-                "medium"
-            } else {
-                "low"
-            };
+            let capabilities =
+                crate::openai_request_capabilities(self.route_provider.as_deref(), &config.model);
+            let effort = capabilities.reasoning_effort(thinking.budget_tokens);
             body["reasoning_effort"] = serde_json::json!(effort);
         }
 
@@ -1790,7 +1735,7 @@ impl OpenAiClient {
         let mut body = serde_json::json!({
             "model": model,
             "input": input,
-            "max_output_tokens": config.max_tokens,
+            "max_output_tokens": crate::openai_request_capabilities(self.route_provider.as_deref(), &config.model).output_tokens.map_or(config.max_tokens, |limit| config.max_tokens.min(limit)),
             "stream": true,
             "parallel_tool_calls": true,
             // Tell the model tools are available and should be used when appropriate
@@ -1825,13 +1770,9 @@ impl OpenAiClient {
         // Add reasoning configuration
         // Codex models do reasoning by default, we need to include the content to see it
         if let Some(thinking) = &config.thinking {
-            let effort = if thinking.budget_tokens > 10000 {
-                "high"
-            } else if thinking.budget_tokens > 3000 {
-                "medium"
-            } else {
-                "low"
-            };
+            let capabilities =
+                crate::openai_request_capabilities(self.route_provider.as_deref(), &config.model);
+            let effort = capabilities.reasoning_effort(thinking.budget_tokens);
             body["reasoning"] = serde_json::json!({
                 "effort": effort,
                 "summary": "auto"  // Request reasoning summaries
@@ -1856,6 +1797,13 @@ impl OpenAiClient {
         } else {
             self.build_chat_request_body(messages, config)
         };
+        apply_prompt_cache_key(
+            &mut body,
+            self.route_provider.as_deref(),
+            std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY")
+                .ok()
+                .as_deref(),
+        );
         if let Some(object) = body.as_object_mut() {
             object.extend(self.request_extensions.clone());
         }
@@ -1946,7 +1894,20 @@ impl OpenAiClient {
         if self.managed_gateway {
             let expected_lineage = body.get("lineage_id").and_then(serde_json::Value::as_str);
             match managed_gateway_receipt(response.headers(), expected_lineage) {
-                Ok(receipt) => {
+                Ok(mut receipt) => {
+                    let prompt_digest = format!(
+                        "sha256:{:x}",
+                        Sha256::digest(config.system.as_deref().unwrap_or_default().as_bytes())
+                    );
+                    // Gateway attests its final serialized provider instruction.
+                    // Legacy gateways and transformed prompts cannot prove this
+                    // experiment's delivery; ordinary inference still works.
+                    receipt.provider_prompt_sha256 = response
+                        .headers()
+                        .get("x-evalops-provider-prompt-sha256")
+                        .and_then(|value| value.to_str().ok())
+                        .filter(|value| *value == prompt_digest)
+                        .map(str::to_owned);
                     let _ = tx.send(StreamEvent::ManagedGatewayReceipt(receipt));
                 }
                 Err(error) => {
@@ -2270,11 +2231,24 @@ impl OpenAiClient {
                                                 .get("output_tokens_details")
                                                 .and_then(|d| d.get("reasoning_tokens"))
                                                 .and_then(serde_json::Value::as_u64);
+                                            if let Some(cost_usd) = usage
+                                                .get("cost")
+                                                .and_then(serde_json::Value::as_f64)
+                                                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                                            {
+                                                let _ =
+                                                    tx.send(StreamEvent::ProviderCost { cost_usd });
+                                            }
                                             let _ = tx.send(StreamEvent::Usage {
                                                 input_tokens: input,
                                                 output_tokens: output,
                                                 cache_read_tokens: cache_read,
-                                                cache_creation_tokens: None,
+                                                cache_creation_tokens: usage
+                                                    .get("input_tokens_details")
+                                                    .and_then(|details| {
+                                                        details.get("cache_write_tokens")
+                                                    })
+                                                    .and_then(serde_json::Value::as_u64),
                                             });
                                         }
                                     }
@@ -2490,6 +2464,13 @@ impl OpenAiClient {
                                         }
 
                                         if let Some(usage) = &chunk.usage {
+                                            if let Some(cost_usd) = usage
+                                                .cost
+                                                .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                                            {
+                                                let _ =
+                                                    tx.send(StreamEvent::ProviderCost { cost_usd });
+                                            }
                                             let _ = tx.send(StreamEvent::Usage {
                                                 input_tokens: usage.prompt_tokens.unwrap_or(0),
                                                 output_tokens: usage.completion_tokens.unwrap_or(0),
@@ -2497,7 +2478,10 @@ impl OpenAiClient {
                                                     .prompt_tokens_details
                                                     .as_ref()
                                                     .and_then(|d| d.cached_tokens),
-                                                cache_creation_tokens: None,
+                                                cache_creation_tokens: usage
+                                                    .prompt_tokens_details
+                                                    .as_ref()
+                                                    .and_then(|d| d.cache_write_tokens),
                                             });
                                         }
                                     }
@@ -2696,6 +2680,7 @@ struct OpenAiDelta {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiUsage {
+    cost: Option<f64>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     #[serde(default)]
@@ -2705,6 +2690,16 @@ struct OpenAiUsage {
 #[derive(Debug, Deserialize)]
 struct PromptTokensDetails {
     cached_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+}
+
+fn apply_prompt_cache_key(body: &mut serde_json::Value, provider: Option<&str>, key: Option<&str>) {
+    if let (Some("openrouter"), Some(key)) = (
+        provider,
+        key.filter(|key| !key.is_empty() && key.len() <= 256),
+    ) {
+        body["prompt_cache_key"] = serde_json::json!(key);
+    }
 }
 
 /// Accumulator for building tool calls from streaming deltas
@@ -2737,6 +2732,34 @@ struct ToolCallAccumulator {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prompt_cache_affinity_is_opt_in_and_openrouter_only() {
+        let mut body = serde_json::json!({});
+        super::apply_prompt_cache_key(&mut body, Some("openai"), Some("review-v1"));
+        assert!(body.get("prompt_cache_key").is_none());
+        super::apply_prompt_cache_key(&mut body, Some("openrouter"), None);
+        assert!(body.get("prompt_cache_key").is_none());
+        super::apply_prompt_cache_key(&mut body, Some("openrouter"), Some(&"x".repeat(257)));
+        assert!(body.get("prompt_cache_key").is_none());
+        super::apply_prompt_cache_key(&mut body, Some("openrouter"), Some("review-v1"));
+        assert_eq!(body["prompt_cache_key"], "review-v1");
+    }
+
+    #[test]
+    fn openrouter_usage_preserves_cache_writes_and_actual_cost() {
+        let usage: super::OpenAiUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100, "completion_tokens": 5, "cost": 0.012,
+            "prompt_tokens_details": {"cached_tokens": 70, "cache_write_tokens": 30}
+        }))
+        .unwrap();
+        assert_eq!(usage.cost, Some(0.012));
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(70));
+        assert_eq!(details.cache_write_tokens, Some(30));
+        let absent: super::OpenAiUsage = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(absent.cost, None);
+    }
+
     use super::*;
     use crate::client::UnifiedClient;
 
@@ -2787,6 +2810,51 @@ mod tests {
         })
         .await
         .expect("Responses stream should terminate")
+    }
+
+    #[tokio::test]
+    async fn openrouter_tool_only_stream_reports_cost_and_cache_writes() {
+        let client = client_with_responses_sse(concat!(
+            "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-6-astra\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-6-astra\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"cost\":0.012,\"prompt_tokens_details\":{\"cached_tokens\":70,\"cache_write_tokens\":30}}}\n\n",
+            "data: [DONE]\n\n"
+        )).with_route_provider("openrouter");
+        let mut stream = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "openai/gpt-6-astra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut saw_cost = false;
+        let mut saw_usage = false;
+        while let Some(event) = stream.recv().await {
+            match event {
+                StreamEvent::ProviderCost { cost_usd } => {
+                    assert_eq!(cost_usd, 0.012);
+                    saw_cost = true;
+                }
+                StreamEvent::Usage {
+                    input_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    ..
+                } => {
+                    assert_eq!(input_tokens, 100);
+                    assert_eq!(cache_read_tokens, Some(70));
+                    assert_eq!(cache_creation_tokens, Some(30));
+                    saw_usage = true;
+                }
+                StreamEvent::MessageStop { .. } => {
+                    assert!(saw_cost && saw_usage);
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_cost && saw_usage);
     }
 
     fn managed_authorization_fixture(lineage_id: &str) -> String {
@@ -3083,6 +3151,18 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
     }
 
     #[test]
+    fn astra_request_output_limit_matches_advertised_capability() {
+        let config = RequestConfig {
+            model: "gpt-6-astra".into(),
+            max_tokens: 200_000,
+            ..Default::default()
+        };
+        let client = OpenAiClient::new("test-key").unwrap();
+        let body = client.build_responses_request_body(&[], &config);
+        assert_eq!(body["max_output_tokens"], 128_000);
+    }
+
+    #[test]
     fn managed_provider_candidate_projection_preserves_signed_values() {
         let projected = project_managed_provider_candidates(&serde_json::json!([{
             "provider": "OpenAI",
@@ -3285,6 +3365,53 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                     .contains("managed inference authorization is missing lineage_id")
             );
             assert!(!error.to_string().contains("signature-marker"));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_prompt_exposure_requires_gateway_attestation_of_exact_request() {
+        for prompt in [
+            "base",
+            "base\n\nverified completion",
+            "base\n\ndynamic context",
+        ] {
+            for matches in [true, false] {
+                let digest = format!(
+                    "sha256:{:x}",
+                    Sha256::digest(if matches { prompt } else { "stale" }.as_bytes())
+                );
+                let mut headers = managed_receipt_headers().to_vec();
+                headers.push(("x-evalops-provider-prompt-sha256", digest.as_str()));
+                let (mut client, captured) =
+                    managed_gateway_test_client(MANAGED_COMPLETED_SSE, &headers);
+                client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+                    "lineage-receipt",
+                )));
+                let mut events = client
+                    .stream(
+                        &[],
+                        &RequestConfig {
+                            model: "evalops/openai/gpt-5.6-terra".into(),
+                            system: Some(prompt.into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .expect("stream");
+                let Some(StreamEvent::ManagedGatewayReceipt(receipt)) = events.recv().await else {
+                    panic!("receipt must precede content");
+                };
+                assert_eq!(
+                    receipt.provider_prompt_sha256.as_deref(),
+                    matches.then_some(digest.as_str())
+                );
+                let captured = captured
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("captured wire request");
+                let (_, body) = captured.split_once("\r\n\r\n").expect("HTTP body");
+                let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+                assert_eq!(body["instructions"], prompt);
+            }
         }
     }
 
@@ -3589,6 +3716,76 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
             AiProvider::from_model("claude-sonnet-4-5"),
             AiProvider::Anthropic
         );
+    }
+
+    #[test]
+    fn astra_uses_responses_with_tools_and_preserves_provider_routes() {
+        let client = OpenAiClient::new("test-key").unwrap();
+        for model in ["gpt-6-astra", "openai/gpt-6-astra", "evalops/gpt-6-astra"] {
+            let config = RequestConfig {
+                model: model.to_string(),
+                temperature: Some(0.5),
+                tools: vec![
+                    Tool::new("read", "Read a file")
+                        .with_schema(serde_json::json!({"type": "object"})),
+                ]
+                .into(),
+                ..Default::default()
+            };
+            assert!(client.request_url(model).ends_with("/responses"), "{model}");
+            let body = client.build_request_body(&[], &config);
+            assert_eq!(body["model"], "gpt-6-astra");
+            assert_eq!(body["tools"][0]["type"], "function");
+            assert_eq!(body["tools"][0]["name"], "read");
+            assert!(body.get("temperature").is_none());
+            assert!(body.get("messages").is_none());
+            assert_eq!(
+                body["include"],
+                serde_json::json!(["reasoning.encrypted_content"])
+            );
+        }
+        assert_eq!(AiProvider::from_model("gpt-6-astra"), AiProvider::OpenAI);
+        for provider in ["llamacpp", "lmstudio", "ollama", "openrouter"] {
+            assert!(!uses_responses_api(Some(provider), "gpt-6-astra"));
+            if provider != "openrouter" {
+                let local = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+                    .unwrap()
+                    .with_route_provider(provider);
+                let body = local.build_request_body(
+                    &[],
+                    &RequestConfig {
+                        model: "gpt-6-astra".to_string(),
+                        temperature: Some(0.5),
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(body["temperature"], serde_json::json!(0.5));
+            }
+        }
+        assert!(!uses_responses_api(
+            Some("openrouter"),
+            "openai/gpt-6-astra"
+        ));
+        let routed = OpenAiClient::with_base_url("test-key", "https://openrouter.ai/api/v1")
+            .unwrap()
+            .with_route_provider("openrouter");
+        let body = routed.build_request_body(
+            &[],
+            &RequestConfig {
+                model: "openai/gpt-6-astra".to_string(),
+                temperature: Some(0.5),
+                tools: vec![Tool::new("read", "Read a file")].into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(body["model"], "openai/gpt-6-astra");
+        assert!(body.get("messages").is_some());
+        assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(
+            routed.request_url("openai/gpt-6-astra"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert!(body.get("temperature").is_none());
     }
 
     #[test]
@@ -4349,6 +4546,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                 record_id,
                 lineage_id,
                 record_status,
+                ..
             })) if request_id == "request-timeout"
                 && record_id == "record-timeout"
                 && lineage_id == "lineage-timeout"

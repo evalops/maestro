@@ -101,6 +101,8 @@ pub struct ResolvedModelInspection {
     pub base_url: Option<String>,
     pub auth_configured: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_capabilities: Option<crate::ai::OpenAiRequestCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ModelCapabilities>,
 }
 
@@ -202,6 +204,25 @@ pub fn available_models() -> Vec<ModelInfo> {
     maybe_spawn_background_refresh();
     let cache = catalog_cache_path().and_then(|path| load_cache(&path));
     let mut models = select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec();
+    ensure_astra_model(&mut models);
+    for model in &mut models {
+        if matches!(
+            model.capabilities.protocol,
+            ModelProtocol::OpenAiChat | ModelProtocol::OpenAiResponses
+        ) {
+            let request = crate::ai::openai_request_capabilities(Some(&model.provider), &model.id);
+            model.capabilities.protocol = match request.protocol {
+                crate::ai::OpenAiWireProtocol::OpenAiChat => ModelProtocol::OpenAiChat,
+                crate::ai::OpenAiWireProtocol::OpenAiResponses => ModelProtocol::OpenAiResponses,
+            };
+            if let Some(context) = request.context_tokens {
+                model.capabilities.context_tokens = context;
+            }
+            if let Some(output) = request.output_tokens {
+                model.capabilities.output_tokens = Some(output);
+            }
+        }
+    }
     append_builtin_local_models(&mut models);
     mirror_vertex_models(&mut models);
     models
@@ -215,6 +236,27 @@ pub fn model_route(model: &ModelInfo) -> String {
             format!("{}/{}", model.provider, model.id)
         }
         _ => model.id.clone(),
+    }
+}
+
+// models.dev can lag native OpenAI launches. Keep the documented model
+// available across bundled installs and successful community-catalog refreshes.
+fn ensure_astra_model(models: &mut Vec<ModelInfo>) {
+    if let Some(model) = models
+        .iter_mut()
+        .find(|model| model.provider == "openai" && model.id == "gpt-6-astra")
+    {
+        // A cache written before Astra support used the generic chat protocol.
+        model.capabilities.protocol = ModelProtocol::OpenAiResponses;
+        return;
+    }
+    // The bundled snapshot is the fallback authority, including provenance and
+    // display metadata. A second hard-coded row drifts when the catalog refreshes.
+    if let Some(model) = bundled_models()
+        .iter()
+        .find(|model| model.provider == "openai" && model.id == "gpt-6-astra")
+    {
+        models.push(model.clone());
     }
 }
 
@@ -350,6 +392,11 @@ fn inspect_model_with_env(
             protocol: protocol_name(resolved.provider.protocol).to_string(),
             base_url: resolved.base_url.as_deref().map(redact_endpoint),
             auth_configured: resolved.credential.is_some(),
+            request_capabilities: matches!(
+                resolved.provider.protocol,
+                ProviderProtocol::OpenAi | ProviderProtocol::OpenAiCompatible
+            )
+            .then(|| crate::ai::openai_request_capabilities(Some(resolved.provider.id), id)),
             capabilities: catalog.as_ref().map(|catalog| catalog.capabilities.clone()),
         },
         catalog,
@@ -745,14 +792,10 @@ fn catalog_protocol(provider: &str, model_id: &str) -> ModelProtocol {
     match provider {
         "anthropic" => ModelProtocol::Anthropic,
         "google" => ModelProtocol::Google,
-        // OpenRouter's stable surface is Chat Completions. Nested vendor ids
-        // such as `openai/gpt-5.4` must not inherit OpenAI's Responses
-        // heuristic.
-        "openrouter" => ModelProtocol::OpenAiChat,
-        // Mirror of `uses_responses_api` in `ai::openai`: Codex and gpt-5.x/o3
-        // models use the Responses API, everything else chat completions.
-        "openai" if uses_responses_api(model_id) => ModelProtocol::OpenAiResponses,
-        _ => ModelProtocol::OpenAiChat,
+        _ => match crate::ai::openai_request_capabilities(Some(provider), model_id).protocol {
+            crate::ai::OpenAiWireProtocol::OpenAiChat => ModelProtocol::OpenAiChat,
+            crate::ai::OpenAiWireProtocol::OpenAiResponses => ModelProtocol::OpenAiResponses,
+        },
     }
 }
 
@@ -870,10 +913,6 @@ fn find_openrouter_model<'a>(models: &'a [ModelInfo], id: &str) -> Option<&'a Mo
     models
         .iter()
         .find(|model| model.provider == "openrouter" && model.id == id)
-}
-
-fn uses_responses_api(model_id: &str) -> bool {
-    model_id.contains("codex") || model_id.starts_with("gpt-5") || model_id.starts_with("o3")
 }
 
 #[must_use]
@@ -1204,6 +1243,59 @@ mod tests {
     }
 
     #[test]
+    fn astra_catalog_and_refresh_preserve_capabilities() {
+        let model = bundled_models()
+            .iter()
+            .find(|model| model.provider == "openai" && model.id == "gpt-6-astra")
+            .expect("bundled Astra");
+        assert_eq!(model.capabilities.protocol, ModelProtocol::OpenAiResponses);
+        assert_eq!(model.capabilities.context_tokens, 1_050_000);
+        assert_eq!(model.capabilities.output_tokens, Some(128_000));
+        assert!(
+            model.capabilities.tools && model.capabilities.reasoning && model.capabilities.vision
+        );
+        let payload = serde_json::json!({
+            "openai": {"models": {}}, "anthropic": {"models": {}},
+            "google": {"models": {}}, "xai": {"models": {}}
+        });
+        let mut refreshed = map_models_dev_catalog(&payload).unwrap();
+        ensure_astra_model(&mut refreshed);
+        assert_eq!(
+            serde_json::to_value(&refreshed[0]).unwrap(),
+            serde_json::to_value(model).unwrap()
+        );
+        refreshed[0].capabilities.protocol = ModelProtocol::OpenAiChat;
+        ensure_astra_model(&mut refreshed);
+        assert_eq!(
+            refreshed[0].capabilities.protocol,
+            ModelProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            refreshed
+                .iter()
+                .filter(|model| model.id == "gpt-6-astra")
+                .count(),
+            1
+        );
+        assert_eq!(
+            catalog_protocol("openai", "gpt-6-astra"),
+            ModelProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            catalog_protocol("openrouter", "openai/gpt-6-astra"),
+            ModelProtocol::OpenAiChat
+        );
+        let routed = bundled_models()
+            .iter()
+            .find(|model| model.provider == "openrouter" && model.id == "openai/gpt-6-astra")
+            .expect("OpenRouter Astra");
+        assert_eq!(model_route(routed), "openrouter/openai/gpt-6-astra");
+        assert!(find_model("openai-codex/gpt-6-astra").is_some());
+        assert!(!has_provider_mismatch("openai-codex/gpt-6-astra"));
+        assert_eq!(catalog_output_token_limit("gpt-6-astra"), Some(128_000));
+    }
+
+    #[test]
     fn bundled_catalog_splits_native_and_openrouter_rows() {
         let native = bundled_native_models();
         let openrouter = bundled_openrouter_models();
@@ -1397,6 +1489,32 @@ mod tests {
     }
 
     #[test]
+    fn inspected_routes_share_the_transport_contract() {
+        for (route, protocol, temperature) in [
+            (
+                "openai/gpt-6-astra",
+                crate::ai::OpenAiWireProtocol::OpenAiResponses,
+                false,
+            ),
+            (
+                "openrouter/openai/gpt-6-astra",
+                crate::ai::OpenAiWireProtocol::OpenAiChat,
+                false,
+            ),
+            (
+                "ollama/gpt-6-astra",
+                crate::ai::OpenAiWireProtocol::OpenAiChat,
+                true,
+            ),
+        ] {
+            let inspected = inspect_model_with_env(route, &HashMap::new()).unwrap();
+            let request = inspected.resolved.request_capabilities.unwrap();
+            assert_eq!(request.protocol, protocol, "{route}");
+            assert_eq!(request.temperature, temperature, "{route}");
+        }
+    }
+
+    #[test]
     fn mapping_filters_deprecated_and_tool_less_models() {
         let payload = serde_json::json!({
             "anthropic": {"models": {
@@ -1584,8 +1702,7 @@ mod tests {
 
     #[test]
     fn default_max_output_tokens_honors_user_config_json_max_tokens() {
-        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = crate::config::test_process_env_lock();
         let home = tempfile::tempdir().expect("maestro home");
         let previous = std::env::var_os("MAESTRO_HOME");
         std::env::set_var("MAESTRO_HOME", home.path());

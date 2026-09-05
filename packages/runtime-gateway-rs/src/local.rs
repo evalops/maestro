@@ -824,12 +824,17 @@ pub(super) fn restore_undo_response_for_store(store: &CheckpointStore) -> Value 
             let mut changed_files = report.restored;
             changed_files.extend(report.deleted);
             serde_json::json!({
-                "success": true,
-                "message": format!("Restored files from checkpoint {}.", report.checkpoint_id),
+                "success": report.failed.is_empty(),
+                "message": if report.failed.is_empty() {
+                    format!("Restored files from checkpoint {}.", report.checkpoint_id)
+                } else {
+                    format!("Some files could not be restored from checkpoint {}.", report.checkpoint_id)
+                },
                 "checkpointId": report.checkpoint_id,
                 "changedFiles": changed_files,
                 "skippedFiles": report.skipped,
-                "goneFiles": report.gone
+                "goneFiles": report.gone,
+                "failedFiles": report.failed
             })
         }
         Ok(None) => serde_json::json!({

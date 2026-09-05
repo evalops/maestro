@@ -1,0 +1,23 @@
+{
+  "name": "theme-picker-empty",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "no-such-theme-zzz"
+    },
+    {
+      "wait": "No matching themes"
+    }
+  ]
+}

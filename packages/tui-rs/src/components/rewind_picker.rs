@@ -134,7 +134,7 @@ impl RewindPicker {
 
         let block = Block::default()
             .title(" Rewind to checkpoint ")
-            .title_bottom(" ↑/↓ select · Enter restore · Esc dismiss ")
+            .title_bottom(" ↑/↓ · Enter files · c conversation · b both · Esc cancel ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta))
             .style(Style::default().bg(Color::Black));
@@ -183,6 +183,7 @@ mod tests {
             prompt: "do things".to_string(),
             repo_root: PathBuf::from("/tmp/repo"),
             head: None,
+            user_turn_index: None,
             entries: files
                 .iter()
                 .map(|path| FileEntry {

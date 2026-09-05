@@ -1,0 +1,14 @@
+{
+  "name": "typing",
+  "steps": [
+    {
+      "wait": "release-planner"
+    },
+    {
+      "text": "Help me prepare the release notes."
+    },
+    {
+      "wait": "(?s)Help me prepare the release notes.*Shift.Enter newline"
+    }
+  ]
+}

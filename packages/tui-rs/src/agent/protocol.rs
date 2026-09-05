@@ -269,6 +269,7 @@ impl ToolError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DenialReason {
+    IdentityAuthority { message: String },
     User,
     SandboxPolicy { message: String },
     ActionFirewall { message: String },
@@ -279,7 +280,9 @@ impl DenialReason {
     pub fn message(&self) -> &str {
         match self {
             Self::User => "Tool call was denied by user",
-            Self::SandboxPolicy { message } | Self::ActionFirewall { message } => message,
+            Self::SandboxPolicy { message }
+            | Self::ActionFirewall { message }
+            | Self::IdentityAuthority { message } => message,
         }
     }
 }
@@ -373,6 +376,8 @@ pub enum ToolReceiptDetails {
 /// Audit information that must not be sent as provider tool-result content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_authority: Option<Box<crate::code_authority::CodeAuthorityDecision>>,
     pub call_id: String,
     pub tool_name: String,
     pub source: ExecutionSource,
@@ -402,6 +407,7 @@ impl ToolExecution {
         Self {
             outcome: outcome.clone(),
             receipt: ExecutionReceipt {
+                code_authority: None,
                 call_id: call_id.into(),
                 tool_name: tool_name.into(),
                 source: ExecutionSource::Native,
@@ -466,6 +472,7 @@ impl ToolExecution {
         Self {
             outcome: outcome.clone(),
             receipt: ExecutionReceipt {
+                code_authority: None,
                 call_id,
                 tool_name,
                 source,
@@ -494,6 +501,7 @@ impl ToolExecution {
         Self {
             outcome: outcome.clone(),
             receipt: ExecutionReceipt {
+                code_authority: None,
                 call_id: call_id.into(),
                 tool_name: tool_name.into(),
                 source,
@@ -1141,6 +1149,8 @@ pub enum FromAgent {
         record_id: String,
         lineage_id: String,
         record_status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_prompt_sha256: Option<String>,
     },
     /// Agent is ready to receive prompts
     ///
@@ -1169,9 +1179,13 @@ pub enum FromAgent {
         provider: String,
     },
 
-    /// Agent failed to switch models
-    ///
-    /// Emitted when a model change is rejected by policy or fails to initialize.
+    /// Task-local boost state, emitted by the native runtime.
+    BoostChanged {
+        status: crate::model_dynamics::BoostStatus,
+        thinking: Option<crate::session::ThinkingLevel>,
+    },
+
+    /// Agent failed to switch models because policy rejected it or initialization failed.
     ModelChangeFailed {
         /// The requested model
         model: String,
@@ -1235,7 +1249,13 @@ pub enum FromAgent {
     ///
     /// Unlike [`Self::ResponseEnd`], which terminates one provider response,
     /// this is the positive terminal for the user-visible turn.
-    TurnCompleted { response_id: String },
+    TurnCompleted {
+        response_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coding_completion: Option<maestro_runtime::coding_acceptance::CodingCompletionSubmission>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        coding_child_records: Vec<maestro_runtime::coding_acceptance::CodingAcceptanceChildRecord>,
+    },
 
     /// The full native agent turn ended by cancellation or interruption.
     TurnInterrupted { response_id: String, reason: String },
@@ -1455,6 +1475,13 @@ pub enum FromAgent {
         /// adapters close only when the producer has ended the request.
         #[serde(default)]
         terminal: bool,
+
+        /// Whether retrying the same provider request may recover.
+        ///
+        /// This is producer-owned classification. Consumers must not infer it
+        /// from the human-readable message or use it to replay a whole turn.
+        #[serde(default)]
+        retryable: bool,
     },
 
     /// A terminal provider failure whose classification must survive every

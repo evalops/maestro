@@ -68,6 +68,7 @@ impl MessageLayoutKey {
 struct CachedEntry {
     key: MessageLayoutKey,
     height: usize,
+    previous_role_kind: Option<(MessageRole, MessageKind)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,11 +130,12 @@ impl MessageLayoutCache {
         }
 
         for (index, message) in messages.iter().enumerate() {
-            if self
-                .entries
-                .get(index)
-                .is_some_and(|entry| entry.key.matches_message(message))
-            {
+            let previous_role_kind = index
+                .checked_sub(1)
+                .map(|i| (messages[i].role, messages[i].kind));
+            if self.entries.get(index).is_some_and(|entry| {
+                entry.key.matches_message(message) && entry.previous_role_kind == previous_role_kind
+            }) {
                 continue;
             }
 
@@ -144,6 +146,7 @@ impl MessageLayoutCache {
             let entry = CachedEntry {
                 key: MessageLayoutKey::from_message(message),
                 height: measure(index),
+                previous_role_kind,
             };
             layout_dirty = true;
             if let Some(cached) = self.entries.get_mut(index) {

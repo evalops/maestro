@@ -3938,13 +3938,17 @@ mod tests {
 
     #[tokio::test]
     async fn streams_foreground_output_before_command_exit() {
-        let tool = BashTool::new(".");
+        let workspace = tempfile::tempdir().expect("streaming workspace");
+        let release = workspace.path().join("release");
+        let tool = BashTool::new(workspace.path().to_string_lossy().to_string());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
             tool.execute_with_cancellation_and_output(
                 BashArgs {
-                    command: "printf first; sleep 0.08; printf second".to_string(),
-                    timeout: None,
+                    command:
+                        "printf first; while [ ! -f release ]; do sleep 0.01; done; printf second"
+                            .to_string(),
+                    timeout: Some(10_000),
                     description: None,
                     run_in_background: false,
                     bypass_sandbox: false,
@@ -3955,14 +3959,19 @@ mod tests {
             .await
         });
 
-        let first_chunk = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        let first_chunk = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("streaming output should arrive before the command exits")
             .expect("output channel should remain open until completion");
-        let result = task.await.expect("bash task should join");
-
-        assert!(result.success);
         assert!(first_chunk.content.contains("first"));
+        assert!(
+            !task.is_finished(),
+            "output must arrive before command exit"
+        );
+        std::fs::write(release, "continue").expect("release streaming command");
+        let result = task.await.expect("bash task should join");
+        assert!(result.success);
+        assert!(result.output.contains("firstsecond"));
     }
 
     #[tokio::test]

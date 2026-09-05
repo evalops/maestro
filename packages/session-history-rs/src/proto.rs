@@ -49,6 +49,8 @@ pub(crate) struct AgentSessionDescriptor {
     pub ended_at: Option<prost_types::Timestamp>,
     #[prost(enumeration = "TranscriptCompleteness", tag = "12")]
     pub completeness: i32,
+    #[prost(string, tag = "13")]
+    pub pull_request_url: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

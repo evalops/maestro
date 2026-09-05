@@ -187,6 +187,7 @@ pub enum ToRuntimeMessageType {
     ClientToolResult,
     GovernedClientToolResult,
     ApplyWorkspaceCapabilitySet,
+    ConfigurePromptExperiment,
     ServerRequestResponse,
     UtilityCommandStart,
     UtilityCommandTerminate,
@@ -313,6 +314,7 @@ pub const HEADLESS_TO_RUNTIME_MESSAGE_NAMES: &[&str] = &[
     "client_tool_result",
     "governed_client_tool_result",
     "apply_workspace_capability_set",
+    "configure_prompt_experiment",
     "server_request_response",
     "utility_command_start",
     "utility_command_terminate",
@@ -474,6 +476,7 @@ const TO_RUNTIME_MESSAGES: &[ToRuntimeMessageType] = &[
     ToRuntimeMessageType::ClientToolResult,
     ToRuntimeMessageType::GovernedClientToolResult,
     ToRuntimeMessageType::ApplyWorkspaceCapabilitySet,
+    ToRuntimeMessageType::ConfigurePromptExperiment,
     ToRuntimeMessageType::ServerRequestResponse,
     ToRuntimeMessageType::UtilityCommandStart,
     ToRuntimeMessageType::UtilityCommandTerminate,
@@ -1183,7 +1186,7 @@ mod tests {
         assert_eq!(headless_protocol_capability_digest(), expected);
         assert_eq!(
             headless_protocol_capability_digest(),
-            "sha256:9880e7faab794e4f7c93c3ffc14f9692b0ad5745bca0174b873b5e97245419d8"
+            "sha256:191794d318091af702b473448e446be5ab26d409a2890f453ea92d6ae933f6c7"
         );
     }
 }

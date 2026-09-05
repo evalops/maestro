@@ -1136,6 +1136,7 @@ mod tests {
                 content: "ok".to_string(),
                 details: None,
                 receipt: Some(ExecutionReceipt {
+                    code_authority: None,
                     call_id: "shared-call".to_string(),
                     tool_name: "read".to_string(),
                     source: ExecutionSource::Native,
@@ -1170,6 +1171,7 @@ mod tests {
                 content: "cancelled".to_string(),
                 details: None,
                 receipt: Some(ExecutionReceipt {
+                    code_authority: None,
                     call_id: "call-1".to_string(),
                     tool_name: "remote_read".to_string(),
                     source: ExecutionSource::RemoteClient,
@@ -1257,6 +1259,7 @@ mod tests {
                     content: "ok".to_string(),
                     details: None,
                     receipt: Some(ExecutionReceipt {
+                        code_authority: None,
                         call_id: "call-1".to_string(),
                         tool_name: "remote_read".to_string(),
                         source: ExecutionSource::RemoteClient,

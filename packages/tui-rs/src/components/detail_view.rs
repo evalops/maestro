@@ -12,11 +12,11 @@
 //! shows through.
 
 use crossterm::event::KeyCode;
+use maestro_ui::{KeyHint, Modal, key_hints};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 /// A scrollable overlay showing full, untruncated content.
 ///
@@ -105,28 +105,13 @@ impl DetailView {
 
 impl Widget for &DetailView {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Centered panel with a small margin, like the other overlays.
-        let margin = 2u16;
-        let panel = Rect {
-            x: area.x + margin,
-            y: area.y + margin,
-            width: area.width.saturating_sub(margin * 2),
-            height: area.height.saturating_sub(margin * 2),
-        };
-        if panel.width == 0 || panel.height == 0 {
+        let theme = crate::themes::current_ui_theme();
+        let inner = Modal::new(self.title.as_str(), area.width, area.height)
+            .theme(theme)
+            .render_buffer(area, buf);
+        if inner.is_empty() {
             return;
         }
-
-        // Overlay convention: blank the covered cells first so no stale
-        // frame content mixes with the panel.
-        Clear.render(panel, buf);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(format!(" {} ", self.title));
-        let inner = block.inner(panel);
-        block.render(panel, buf);
 
         let footer_height = 1u16;
         let content_height = inner.height.saturating_sub(footer_height);
@@ -171,30 +156,19 @@ fn footer_line(scroll: usize, total_lines: usize, visible_lines: usize) -> Line<
         format!("{percent}%")
     };
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {position} "),
-            Style::default().fg(Color::Black).bg(Color::DarkGray),
-        ),
-        Span::raw(" "),
-    ];
-    for (i, (key, desc)) in [("↑↓", "scroll"), ("PgUp/Dn", "page"), ("Esc", "close")]
-        .iter()
-        .enumerate()
-    {
-        if i > 0 {
-            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-        }
-        spans.push(Span::styled(
-            (*key).to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            (*desc).to_string(),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+    let theme = crate::themes::current_ui_theme();
+    let mut spans = vec![Span::styled(format!("{position} · "), theme.muted_style())];
+    spans.extend(
+        key_hints(
+            &[
+                KeyHint::new("↑↓", "scroll"),
+                KeyHint::new("PgUp/Dn", "page"),
+                KeyHint::new("Esc", "close"),
+            ],
+            theme,
+        )
+        .spans,
+    );
     Line::from(spans)
 }
 

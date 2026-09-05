@@ -11,6 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
+use maestro_runtime::coding_acceptance::{
+    CODING_ACCEPTANCE_CHILD_RECORDS_KEY, CODING_ACCEPTANCE_METADATA_KEY,
+    CODING_ACCEPTANCE_RESULT_METADATA_KEY, CodingAcceptanceChildRecord, CodingAcceptanceContract,
+    CodingAcceptanceScope, CodingCompletionSubmission, evaluate_coding_acceptance,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -796,6 +801,170 @@ fn merge_snapshots(
 
 // ── Artifact features overlay ───────────────────────────────────────────────
 
+/// An admitted coding contract cannot be removed through the generic feature
+/// editing/overlay path, which would otherwise turn a governed task into a legacy
+/// feature immediately before completion. Replanning uses a new task admission.
+fn preserve_coding_contracts(
+    previous: &MissionStoreSnapshot,
+    next: &MissionStoreSnapshot,
+) -> Result<()> {
+    for feature in &previous.features {
+        let Some(contract) = feature.get(CODING_ACCEPTANCE_METADATA_KEY) else {
+            continue;
+        };
+        let id = feature.get("id");
+        let replacement = next
+            .features
+            .iter()
+            .find(|candidate| candidate.get("id") == id);
+        if replacement.and_then(|feature| feature.get(CODING_ACCEPTANCE_METADATA_KEY))
+            != Some(contract)
+        {
+            bail!(
+                "An admitted coding contract cannot be removed or replaced through mission features"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reuse the owner's acceptance evaluator at every local terminal write. Stored
+/// child records originate in the native executor; submissions alone never
+/// create them. This guards CLI/artifact shortcuts, not privileged file tampering.
+fn validate_coding_completion(
+    snapshot: &MissionStoreSnapshot,
+    check_live_head: bool,
+) -> Result<()> {
+    for feature in &snapshot.features {
+        let Some(contract_value) = feature.get(CODING_ACCEPTANCE_METADATA_KEY) else {
+            continue;
+        };
+        let contract: CodingAcceptanceContract = serde_json::from_value(contract_value.clone())
+            .context("Invalid admitted coding acceptance contract")?;
+        contract.validate().map_err(|error| anyhow!(error))?;
+        if feature.get("id").and_then(Value::as_str) != Some(contract.task_id.as_str()) {
+            bail!("Coding contract task does not match its mission feature");
+        }
+        if snapshot.state != MissionState::Completed
+            && feature.get("status").and_then(Value::as_str) != Some("passed")
+        {
+            continue;
+        }
+        let submission: CodingCompletionSubmission = serde_json::from_value(
+            feature
+                .get(CODING_ACCEPTANCE_RESULT_METADATA_KEY)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Coding task {} has no completion submission",
+                        contract.task_id
+                    )
+                })?,
+        )
+        .context("Invalid coding completion submission")?;
+        let workflow = feature
+            .get("codingWorkflow")
+            .ok_or_else(|| anyhow!("Coding completion requires native workflow identity"))?;
+        for (key, expected) in [
+            ("workId", submission.work_id.as_str()),
+            (
+                "implementationSessionId",
+                submission.implementation_session_id.as_str(),
+            ),
+            ("revision", submission.revision.as_str()),
+            ("contractDigest", submission.contract_digest.as_str()),
+        ] {
+            if workflow.get(key).and_then(Value::as_str) != Some(expected) {
+                bail!("Coding completion does not match workflow {key}");
+            }
+        }
+        let children: Vec<CodingAcceptanceChildRecord> = serde_json::from_value(
+            feature
+                .get(CODING_ACCEPTANCE_CHILD_RECORDS_KEY)
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .context("Invalid coding validation child records")?;
+        let scope = CodingAcceptanceScope {
+            organization_id: "",
+            workspace_id: "",
+            work_id: &submission.work_id,
+            implementation_session_id: &submission.implementation_session_id,
+        };
+        let decision = evaluate_coding_acceptance(&contract, Some(&submission), &scope, &children);
+        if !decision.accepted {
+            bail!(
+                "Coding task {} is not accepted: {}",
+                contract.task_id,
+                decision.reasons.join("; ")
+            );
+        }
+        if check_live_head {
+            let root = workflow
+                .get("repositoryRoot")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("Coding completion requires its repository root"))?;
+            let root = Path::new(root);
+            if !root.is_absolute() {
+                bail!("Coding repository root must be absolute");
+            }
+            let actual_root = crate::git::repo_root(root)
+                .ok_or_else(|| anyhow!("Cannot inspect coding repository root"))?;
+            if dunce::canonicalize(root)? != dunce::canonicalize(actual_root)? {
+                bail!("Coding repository root does not match the actual checkout");
+            }
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "--verify", "HEAD"])
+                .current_dir(root)
+                .output()
+                .context("Cannot inspect coding repository HEAD")?;
+            if !output.status.success()
+                || String::from_utf8_lossy(&output.stdout).trim() != submission.revision
+            {
+                bail!("Coding completion revision is stale; rerun validation at current HEAD");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_new_coding_completions(
+    previous: Option<&MissionStoreSnapshot>,
+    next: &MissionStoreSnapshot,
+) -> Result<()> {
+    validate_coding_completion(next, false)?;
+    let completing_mission = next.state == MissionState::Completed
+        && previous.is_none_or(|snapshot| snapshot.state != MissionState::Completed);
+    for feature in &next.features {
+        if feature.get(CODING_ACCEPTANCE_METADATA_KEY).is_none() {
+            continue;
+        }
+        let old = previous.and_then(|snapshot| {
+            snapshot
+                .features
+                .iter()
+                .find(|old| old.get("id") == feature.get("id"))
+        });
+        let terminal_feature = next.state == MissionState::Completed
+            || feature.get("status").and_then(Value::as_str) == Some("passed");
+        let changed_terminal_proof = terminal_feature
+            && old.is_none_or(|old| {
+                old.get("status") != feature.get("status")
+                    || old.get(CODING_ACCEPTANCE_RESULT_METADATA_KEY)
+                        != feature.get(CODING_ACCEPTANCE_RESULT_METADATA_KEY)
+                    || old.get("codingWorkflow") != feature.get("codingWorkflow")
+                    || old.get(CODING_ACCEPTANCE_CHILD_RECORDS_KEY)
+                        != feature.get(CODING_ACCEPTANCE_CHILD_RECORDS_KEY)
+            });
+        if completing_mission || changed_terminal_proof {
+            let mut candidate = next.clone();
+            candidate.features = vec![feature.clone()];
+            validate_coding_completion(&candidate, true)?;
+        }
+    }
+    Ok(())
+}
+
 fn get_valid_artifact_features(
     value: &Value,
     snapshot: &MissionStoreSnapshot,
@@ -851,11 +1020,14 @@ fn apply_artifact_features_to_snapshot(
                 .and_then(Value::as_str)
                 .unwrap_or(&snapshot.updated_at)
                 .to_string();
-            Ok(MissionStoreSnapshot {
+            let applied = MissionStoreSnapshot {
                 features,
                 updated_at,
-                ..snapshot
-            })
+                ..snapshot.clone()
+            };
+            preserve_coding_contracts(&snapshot, &applied)?;
+            validate_coding_completion(&applied, false)?;
+            Ok(applied)
         }
         None => Ok(snapshot),
     }
@@ -1022,6 +1194,7 @@ pub struct MissionStore {
 impl MissionStore {
     pub fn new(snapshot: MissionStoreSnapshot, config: MissionStoreConfig) -> Result<Self> {
         let snapshot = normalize_snapshot(snapshot)?;
+        validate_coding_completion(&snapshot, false)?;
         let now = config.now.unwrap_or(now_iso);
         Ok(Self {
             last_saved_snapshot: snapshot.clone(),
@@ -1066,7 +1239,9 @@ impl MissionStore {
     }
 
     pub fn get_snapshot(&self) -> Result<MissionStoreSnapshot> {
-        normalize_snapshot(self.snapshot.clone())
+        let snapshot = normalize_snapshot(self.snapshot.clone())?;
+        validate_coding_completion(&snapshot, false)?;
+        Ok(snapshot)
     }
 
     pub fn save(&mut self) -> Result<MissionStoreSnapshot> {
@@ -1082,21 +1257,29 @@ impl MissionStore {
 
         let merged = with_mission_state_lock(&path, || {
             assert_no_mission_id_collision(&path, &intended)?;
-            let existing = if path.exists() {
+            let persisted_existing = if path.exists() {
                 let value = read_json_value(&path)?;
-                let existing = snapshot_from_value(value)?;
-                Some(apply_artifact_features_to_snapshot(
-                    existing,
-                    root.as_deref(),
-                )?)
+                Some(snapshot_from_value(value)?)
             } else {
                 None
             };
+            let existing = persisted_existing
+                .clone()
+                .map(|snapshot| apply_artifact_features_to_snapshot(snapshot, root.as_deref()))
+                .transpose()?;
             let merged = if let Some(ref existing) = existing {
                 merge_snapshots(&last_saved, &intended, existing, state_touched)?
             } else {
                 intended.clone()
             };
+            preserve_coding_contracts(&last_saved, &merged)?;
+            if let Some(existing) = &existing {
+                preserve_coding_contracts(existing, &merged)?;
+            }
+            // Previously accepted features remain historical receipts while a
+            // later feature changes the checkout. Recheck HEAD on new terminal
+            // submissions and on the mission's transition to completed.
+            validate_new_coding_completions(persisted_existing.as_ref(), &merged)?;
             if let Err(error) = (|| -> Result<()> {
                 write_json_file(&path, &merged)?;
                 write_mission_manifest(&merged, root.as_deref())?;
@@ -1298,7 +1481,9 @@ pub fn list_mission_store_snapshots(root_dir: Option<&Path>) -> Result<Vec<Missi
                 if let Ok(snapshot) = snapshot_from_value(value) {
                     if let Ok(applied) = apply_artifact_features_to_snapshot(snapshot, root_dir) {
                         if let Ok(normalized) = normalize_snapshot(applied) {
-                            snapshots.push(normalized);
+                            if validate_coding_completion(&normalized, false).is_ok() {
+                                snapshots.push(normalized);
+                            }
                         }
                     }
                 }
@@ -2128,6 +2313,10 @@ fn handle_mission_validate(args: &[String], json: bool) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maestro_runtime::coding_acceptance::{
+        CodingCommandResult, CodingHandoffDisposition, CodingHandoffItem, CodingValidationReport,
+        CodingValidationRole, CodingVerificationStatus,
+    };
     use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
 
@@ -2160,6 +2349,260 @@ mod tests {
         assert!(mission_help().contains("init"));
         assert!(mission_help().contains("validate"));
         assert!(mission_help().contains("set-state"));
+    }
+
+    fn coding_completion_fixture() -> MissionStoreSnapshot {
+        let contract = CodingAcceptanceContract {
+            task_id: "coding-feature".into(),
+            repository_id: "repository".into(),
+            generation: 1,
+            required_assertion_ids: vec!["user-flow".into()],
+            require_review: true,
+            require_behavior: true,
+            readiness_requirements: vec!["test".into()],
+            authorized_skips: vec![],
+            authorized_dispositions: vec![],
+        };
+        let review = CodingValidationReport {
+            child_id: "review-child".into(),
+            session_id: "review-session".into(),
+            revision: "a".repeat(40),
+            status: CodingVerificationStatus::Passed,
+            assertions: vec![maestro_runtime::coding_acceptance::CodingAssertionResult {
+                assertion_id: "user-flow".into(),
+                status: CodingVerificationStatus::Passed,
+                evidence_refs: vec!["session/review/assertion".into()],
+            }],
+            evidence_refs: vec!["session/review/transcript".into()],
+        };
+        let child = CodingAcceptanceChildRecord {
+            organization_id: String::new(),
+            workspace_id: String::new(),
+            work_id: "coding-work".into(),
+            parent_session_id: "implementation-session".into(),
+            child_id: review.child_id.clone(),
+            session_id: review.session_id.clone(),
+            role: CodingValidationRole::Review,
+            revision: review.revision.clone(),
+            completed_successfully: true,
+            report_digest: review.digest(),
+        };
+        let behavior = CodingValidationReport {
+            child_id: "behavior-child".into(),
+            session_id: "behavior-session".into(),
+            evidence_refs: vec!["session/behavior/transcript".into()],
+            ..review.clone()
+        };
+        let behavior_child = CodingAcceptanceChildRecord {
+            child_id: behavior.child_id.clone(),
+            session_id: behavior.session_id.clone(),
+            role: CodingValidationRole::Behavior,
+            report_digest: behavior.digest(),
+            ..child.clone()
+        };
+        let submission = CodingCompletionSubmission {
+            task_id: contract.task_id.clone(),
+            work_id: child.work_id.clone(),
+            repository_id: contract.repository_id.clone(),
+            contract_digest: contract.digest(),
+            generation: contract.generation,
+            revision: review.revision.clone(),
+            implementation_session_id: child.parent_session_id.clone(),
+            commands: vec![CodingCommandResult {
+                command: "cargo test".into(),
+                exit_code: Some(0),
+                evidence_refs: vec!["session/test/tool-result".into()],
+            }],
+            readiness: vec![maestro_runtime::coding_acceptance::CodingAssertionResult {
+                assertion_id: "test".into(),
+                status: CodingVerificationStatus::Passed,
+                evidence_refs: vec!["session/test/tool-result".into()],
+            }],
+            review: Some(review),
+            behavior: Some(behavior),
+            handoff_items: vec![],
+        };
+        let feature = json!({
+            "id": contract.task_id,
+            "description": "Coding acceptance regression",
+            "status": "pending",
+            "fulfills": [],
+            CODING_ACCEPTANCE_METADATA_KEY: contract,
+            CODING_ACCEPTANCE_RESULT_METADATA_KEY: submission,
+            CODING_ACCEPTANCE_CHILD_RECORDS_KEY: [child, behavior_child],
+            "codingWorkflow": {
+                "workId": submission.work_id,
+                "implementationSessionId": submission.implementation_session_id,
+                "revision": submission.revision,
+                "contractDigest": submission.contract_digest,
+                "repositoryRoot": "/repository",
+            },
+        });
+        create_mission_store_snapshot(
+            "coding-mission",
+            None,
+            vec![feature],
+            "2026-06-19T00:00:00.000Z",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn coding_mission_terminal_gate_requires_actual_child_proof_and_disposed_handoffs() {
+        let mut snapshot = coding_completion_fixture();
+        snapshot.state = MissionState::Completed;
+        validate_coding_completion(&snapshot, false).unwrap();
+        let mut missing_child = snapshot.clone();
+        missing_child.features[0][CODING_ACCEPTANCE_CHILD_RECORDS_KEY] = json!([]);
+        assert!(
+            validate_coding_completion(&missing_child, false)
+                .unwrap_err()
+                .to_string()
+                .contains("child")
+        );
+        let mut open_handoff = snapshot.clone();
+        open_handoff.features[0][CODING_ACCEPTANCE_RESULT_METADATA_KEY]["handoffItems"] =
+            json!([CodingHandoffItem {
+                id: "unfinished-verification".into(),
+                disposition: CodingHandoffDisposition::Open,
+                evidence_refs: vec![],
+            }]);
+        assert!(validate_coding_completion(&open_handoff, false).is_err());
+        let mut stale = snapshot;
+        stale.features[0]["codingWorkflow"]["revision"] = json!("b".repeat(40));
+        assert!(
+            validate_coding_completion(&stale, false)
+                .unwrap_err()
+                .to_string()
+                .contains("revision")
+        );
+    }
+
+    #[test]
+    fn coding_mission_retains_historical_acceptance_without_rechecking_unrelated_saves() {
+        let mut previous = coding_completion_fixture();
+        previous.features[0]["status"] = json!("passed");
+        // The fixture checkout deliberately does not exist. An unchanged
+        // accepted feature must not require that historical checkout on a later
+        // task's progress update; newly submitted proof still does.
+        validate_new_coding_completions(Some(&previous), &previous).unwrap();
+        let mut changed = previous.clone();
+        changed.features[0]["codingWorkflow"]["repositoryRoot"] = json!("relative-root");
+        assert!(validate_new_coding_completions(Some(&previous), &changed).is_err());
+    }
+
+    #[test]
+    fn coding_mission_set_state_and_direct_save_reject_missing_submission() {
+        let temp = TempDir::new().unwrap();
+        let mut snapshot = coding_completion_fixture();
+        snapshot.features[0]
+            .as_object_mut()
+            .unwrap()
+            .remove(CODING_ACCEPTANCE_RESULT_METADATA_KEY);
+        let mut store = MissionStore::new(
+            snapshot,
+            MissionStoreConfig {
+                root_dir: Some(temp.path().to_owned()),
+                now: None,
+            },
+        )
+        .unwrap();
+        store.save().unwrap();
+        assert!(store.set_state(MissionState::Completed, None).is_err());
+        assert_ne!(store.get_snapshot().unwrap().state, MissionState::Completed);
+        store.snapshot.state = MissionState::Completed;
+        assert!(store.save().is_err());
+        let loaded = MissionStore::load(
+            "coding-mission",
+            MissionStoreConfig {
+                root_dir: Some(temp.path().to_owned()),
+                now: None,
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            loaded.get_snapshot().unwrap().state,
+            MissionState::Completed
+        );
+    }
+
+    #[test]
+    fn coding_mission_contract_cannot_be_removed_by_generic_update_or_artifact_overlay() {
+        let temp = TempDir::new().unwrap();
+        let snapshot = coding_completion_fixture();
+        let mut store = MissionStore::new(
+            snapshot.clone(),
+            MissionStoreConfig {
+                root_dir: Some(temp.path().to_owned()),
+                now: None,
+            },
+        )
+        .unwrap();
+        store.save().unwrap();
+        assert!(store.set_features(vec![]).is_err());
+        let mut stripped = snapshot.features[0].clone();
+        stripped
+            .as_object_mut()
+            .unwrap()
+            .remove(CODING_ACCEPTANCE_METADATA_KEY);
+        let manifest_path = get_mission_dir("coding-mission", Some(temp.path()))
+            .unwrap()
+            .join("features.json");
+        write_json_file(
+            &manifest_path,
+            &json!({
+                "version": 1,
+                "missionId": "coding-mission",
+                "updatedAt": "2099-06-19T00:00:00.000Z",
+                "features": [stripped],
+            }),
+        )
+        .unwrap();
+        assert!(store.save().is_err());
+        assert!(
+            MissionStore::load(
+                "coding-mission",
+                MissionStoreConfig {
+                    root_dir: Some(temp.path().to_owned()),
+                    now: None,
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn coding_mission_passed_artifact_cannot_bypass_terminal_proof() {
+        let temp = TempDir::new().unwrap();
+        let mut snapshot = coding_completion_fixture();
+        snapshot.features[0]
+            .as_object_mut()
+            .unwrap()
+            .remove(CODING_ACCEPTANCE_RESULT_METADATA_KEY);
+        let mut store = MissionStore::new(
+            snapshot.clone(),
+            MissionStoreConfig {
+                root_dir: Some(temp.path().to_owned()),
+                now: None,
+            },
+        )
+        .unwrap();
+        store.save().unwrap();
+        snapshot.features[0]["status"] = json!("passed");
+        let manifest_path = get_mission_dir("coding-mission", Some(temp.path()))
+            .unwrap()
+            .join("features.json");
+        write_json_file(
+            &manifest_path,
+            &json!({
+                "version": 1,
+                "missionId": "coding-mission",
+                "updatedAt": "2099-06-19T00:00:00.000Z",
+                "features": snapshot.features,
+            }),
+        )
+        .unwrap();
+        assert!(store.save().is_err());
     }
 
     #[test]

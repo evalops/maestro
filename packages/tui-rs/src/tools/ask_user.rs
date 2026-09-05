@@ -213,9 +213,9 @@ mod tests {
 
     #[test]
     fn background_question_returns_durable_task_id_without_blocking() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::config::test_process_env_lock();
         let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("MAESTRO_HOME");
         std::env::set_var("MAESTRO_HOME", home.path());
         let result = ask_user(serde_json::json!({
             "questions": [{
@@ -226,7 +226,10 @@ mod tests {
             "background": true,
             "nonBlockingReason": "Independent tests can continue"
         }));
-        std::env::remove_var("MAESTRO_HOME");
+        match previous_home {
+            Some(value) => std::env::set_var("MAESTRO_HOME", value),
+            None => std::env::remove_var("MAESTRO_HOME"),
+        }
 
         assert!(result.success);
         let details = result.details.expect("background decision details");

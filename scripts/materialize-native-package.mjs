@@ -2,10 +2,12 @@
 import {
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -65,6 +67,16 @@ for (const [platform, source] of binaries) {
 	copyFileSync(source, destination);
 	chmodSync(destination, 0o755);
 	console.log(`${basename(source)} -> ${destination}`);
+	const helper = inputDir
+		? join(inputDir, `deixic-code-device-${platform}.app`)
+		: resolve(cargoTargetDir, profile, "DeixicCodeDevice.app");
+	if (platform.startsWith("darwin-") && existsSync(helper)) {
+		const helperDestination = join(directory, "DeixicCodeDevice.app");
+		rmSync(helperDestination, { recursive: true, force: true });
+		cpSync(helper, helperDestination, { recursive: true, force: false, errorOnExist: true });
+		chmodSync(join(helperDestination, "Contents", "MacOS", "deixic-code-device"), 0o755);
+	}
+
 }
 
 mkdirSync(resolve("bin"), { recursive: true });

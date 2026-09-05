@@ -173,6 +173,7 @@ export function buildNativeInstallSmokeEnv(cwd, baseEnv = process.env) {
 	const env = {
 		...baseEnv,
 		MAESTRO_HOME: isolatedMaestroHome,
+		MAESTRO_DISABLE_KEYCHAIN: "1",
 		OPENAI_OAUTH_FILE: join(isolatedMaestroHome, "openai-oauth.json"),
 	};
 	// MAESTRO_TUI_BIN takes precedence over vendor/ in the JS launcher. Scrub it so

@@ -28,8 +28,11 @@ path = "src/lib.rs"
 [dependencies]
 maestro-a2a-ledger.workspace = true
 # Terminal handling
-crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
-ratatui = { version = "0.30.2", default-features = false, features = [
+crossterm = { workspace = true, features = ["bracketed-paste", "event-stream"] }
+maestro-ui.workspace = true
+maestro-presentation.workspace = true
+maestro-interaction.workspace = true
+ratatui = { workspace = true, features = [
     "crossterm_0_29",
     "layout-cache",
     "macros",
@@ -74,7 +77,7 @@ eventsource-stream.workspace = true
 pin-project-lite = "0.2"
 
 # Utilities
-unicode-width = "0.2"
+unicode-width.workspace = true
 unicode-properties = "0.1"
 textwrap = "0.16"
 anyhow.workspace = true

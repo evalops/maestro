@@ -393,6 +393,7 @@ pub async fn run_review(
 /// stdout printing and exit codes.
 async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
     let config = NativeAgentConfig {
+        model_dynamics: crate::config::model_dynamics_config(),
         model: model.to_string(),
         max_tokens: crate::model_catalog::default_max_output_tokens(model),
         max_tokens_source: crate::agent::MaxTokensSource::Catalog,
@@ -411,6 +412,7 @@ async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
         managed_mcp_policy: None,
         max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
         allow_unbounded_turn: false,
+        retry_config: crate::agent::retry::RetryConfig::default(),
     };
 
     let allowed_tools: HashSet<String> = REVIEW_TOOLS
@@ -593,6 +595,7 @@ async fn drain_events(
                 message,
                 fatal,
                 terminal,
+                ..
             } => {
                 drain.on_error(&message, fatal)?;
                 if terminal {
