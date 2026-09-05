@@ -52,3 +52,10 @@ test("tag retries dispatch main and correlate the normalized release version", (
   assert.match(tagWorkflow, /elif grep -q 'HTTP 404'/);
   assert.match(tagWorkflow, /cat "\$release_error" >&2\n\s+exit 1/);
 });
+
+test("only authenticated enabled device helpers are extracted and published", () => {
+  assert.match(releaseWorkflow, /--pattern 'code-device-\*\.json'/);
+  assert.match(releaseWorkflow, /verify-staged-release\.mjs[\s\S]*jq -r '\.enabled'[\s\S]*tar -xzf/);
+  assert.match(releaseWorkflow, /files\+=\(runtime-passport-maestro-\*\.json code-device-\*\.json\)/);
+  assert.doesNotMatch(releaseWorkflow, /files\+=\([^\n]*deixic-code-device-\*/);
+});

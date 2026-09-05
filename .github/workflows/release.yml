@@ -134,7 +134,7 @@ jobs:
           timeout 300s gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-binaries \
             --pattern MONO_SHA256SUMS --pattern MONO_SHA256SUMS.cosign.bundle --pattern release-metadata.json --pattern release-source-manifest.json \
             --pattern maestro-linux-x64 --pattern maestro-linux-arm64 --pattern maestro-darwin-x64 --pattern maestro-darwin-arm64 --pattern 'runtime-passport-maestro-*.json' \
-            --pattern 'deixic-code-device-*.app.tar.gz' --pattern 'smoked-*.txt' --pattern 'rustc-*.txt' --pattern 'signed-*.json' --pattern 'notarized-*.json'
+            --pattern 'code-device-*.json' --pattern 'deixic-code-device-*.app.tar.gz' --pattern 'smoked-*.txt' --pattern 'rustc-*.txt' --pattern 'signed-*.json' --pattern 'notarized-*.json'
       - name: Authenticate artifacts and release receipts
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
@@ -142,7 +142,9 @@ jobs:
           node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"
           chmod +x release-binaries/maestro-linux-* release-binaries/maestro-darwin-*
           for platform in darwin-x64 darwin-arm64; do
-            tar -xzf "release-binaries/deixic-code-device-${platform}.app.tar.gz" -C release-binaries
+            if [[ "$(jq -r '.enabled' "release-binaries/code-device-${platform}.json")" == true ]]; then
+              tar -xzf "release-binaries/deixic-code-device-${platform}.app.tar.gz" -C release-binaries
+            fi
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -409,7 +411,12 @@ jobs:
             maestro-web-dist.tar.gz
           )
           files+=(release-metadata.json version.json channel-manifest.json manifest.json)
-          files+=(runtime-passport-maestro-*.json deixic-code-device-*.app.tar.gz)
+          files+=(runtime-passport-maestro-*.json code-device-*.json)
+          for platform in darwin-x64 darwin-arm64; do
+            if [[ "$(jq -r '.enabled' "code-device-${platform}.json")" == true ]]; then
+              files+=("deixic-code-device-${platform}.app.tar.gz")
+            fi
+          done
           sha256sum "${files[@]}" > SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
           for binary in maestro-darwin-arm64 maestro-darwin-x64 maestro-linux-arm64 maestro-linux-x64; do
