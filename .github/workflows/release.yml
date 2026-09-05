@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   prepare:
+    if: github.repository == 'evalops/maestro' && github.ref == 'refs/heads/main'
     runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
@@ -79,6 +80,10 @@ jobs:
             exit 1
           fi
 
+          # Secrets are used only with source already admitted to protected main.
+          # A contents-write dispatch must not execute scripts from an arbitrary tag.
+          timeout 60s git fetch --no-tags origin main
+          git merge-base --is-ancestor "$release_sha" FETCH_HEAD
           git checkout --detach "$release_sha"
           package_version="$(node -p "require('./package.json').version")"
           package_name="$(node -p "require('./package.json').name")"
