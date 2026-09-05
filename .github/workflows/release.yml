@@ -131,7 +131,7 @@ jobs:
           set -euo pipefail
           mkdir release-binaries
           timeout 300s gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-binaries \
-            --pattern MONO_SHA256SUMS --pattern MONO_SHA256SUMS.cosign.bundle --pattern release-metadata.json \
+            --pattern MONO_SHA256SUMS --pattern MONO_SHA256SUMS.cosign.bundle --pattern release-metadata.json --pattern release-source-manifest.json \
             --pattern maestro-linux-x64 --pattern maestro-linux-arm64 --pattern maestro-darwin-x64 --pattern maestro-darwin-arm64 --pattern 'runtime-passport-maestro-*.json' \
             --pattern 'deixic-code-device-*.app.tar.gz' --pattern 'smoked-*.txt' --pattern 'rustc-*.txt' --pattern 'signed-*.json' --pattern 'notarized-*.json'
       - name: Authenticate artifacts and release receipts
