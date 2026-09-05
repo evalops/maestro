@@ -147,6 +147,10 @@ jobs:
             (
               cd release-binaries
               grep -E "^[a-f0-9]{64}  code-device-${platform}\.json$" MONO_SHA256SUMS | sha256sum --check --strict
+              if [[ "$(jq -r '.enabled' "code-device-${platform}.json")" != true && -e "deixic-code-device-${platform}.app.tar.gz" ]]; then
+                echo "::error::Disabled Code device helper must not be present in release assets."
+                exit 1
+              fi
             )
           done
           chmod +x release-binaries/maestro-linux-* release-binaries/maestro-darwin-*

@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 const workflow = readFileSync(new URL('./release.yml', import.meta.url), 'utf8');
 const authentication = workflow.split('node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"')[1].split('          chmod')[0];
-for (const mode of ['valid', 'changed', 'missing']) {
+for (const mode of ['valid', 'changed', 'missing', 'unexpected-helper']) {
   test(`older-source marker authentication: ${mode}`, t => {
     const root = mkdtempSync(join(tmpdir(), 'device-marker-'));
     t.after(() => rmSync(root, {recursive:true, force:true}));
@@ -22,6 +22,7 @@ for (const mode of ['valid', 'changed', 'missing']) {
     }
     if (mode === 'changed') writeFileSync(join(dir,'code-device-darwin-arm64.json'),'{}');
     if (mode === 'missing') lines.pop();
+    if (mode === 'unexpected-helper') writeFileSync(join(dir,'deixic-code-device-darwin-arm64.app.tar.gz'),'stale helper');
     writeFileSync(join(dir,'MONO_SHA256SUMS'),lines.join('\n')+'\n');
     const result = spawnSync('bash', ['-e','-o','pipefail','-c',authentication], {cwd:root,encoding:'utf8'});
     if (mode === 'valid') assert.equal(result.status,0,result.stderr);
