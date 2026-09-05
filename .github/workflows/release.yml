@@ -12,9 +12,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  # A tag push and a manual dispatch can target the same immutable release tag
-  # from different refs. Serialize releases so those paths cannot publish twice.
-  group: ${{ github.workflow }}-${{ github.event.client_payload.version || inputs.version }}
+  # Normalize manual and repository dispatch versions to one immutable tag.
+  # Serialize equivalent versions so those paths cannot publish twice.
+  group: ${{ github.workflow }}-${{ startsWith(github.event.client_payload.version || inputs.version, 'v') && (github.event.client_payload.version || inputs.version) || format('v{0}', github.event.client_payload.version || inputs.version) }}
   cancel-in-progress: false
 
 jobs:
