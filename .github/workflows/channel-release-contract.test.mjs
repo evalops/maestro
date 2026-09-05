@@ -39,3 +39,16 @@ test("channel pointers carry the signed native release contract", () => {
 	assert.doesNotMatch(releaseWorkflow, /maestro-\$\{RELEASE_CHANNEL\}-channel/);
 	assert.doesNotMatch(releaseWorkflow, /gh release upload "\$channel_tag"/);
 });
+
+const tagWorkflow = await readFile(new URL("./tag-release.yml", import.meta.url), "utf8");
+test("tag retries dispatch main and correlate the normalized release version", () => {
+  assert.match(releaseWorkflow, /run-name: Release \$\{\{ startsWith/);
+  assert.match(tagWorkflow, /--ref main/);
+  assert.doesNotMatch(tagWorkflow, /--ref "\$\{RELEASE_TAG\}"/);
+  assert.equal((tagWorkflow.match(/\.displayTitle ==/g) || []).length, 4);
+  assert.equal((tagWorkflow.match(/--json [^\n]*displayTitle/g) || []).length, 4);
+  assert.match(tagWorkflow, /outputs\.staged_ready == 'true'/);
+  assert.match(tagWorkflow, /MONO_SHA256SUMS\.cosign\.bundle/);
+  assert.match(tagWorkflow, /elif grep -q 'HTTP 404'/);
+  assert.match(tagWorkflow, /cat "\$release_error" >&2\n\s+exit 1/);
+});
