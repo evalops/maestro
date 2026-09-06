@@ -70,7 +70,7 @@ jobs:
   binaries:
     needs: prepare
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@sha
         with:
@@ -350,8 +350,8 @@ test("rejects broad build permissions and non-serialized releases", () => {
 			"  group: ${{ github.workflow }}\n",
 		)
 		.replace(
-			"  binaries:\n    needs: prepare\n    permissions:\n      contents: read\n",
 			"  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n",
+			"  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n      id-token: write\n",
 		);
 	const failures = validateReleaseWorkflow(broadened);
 	assert.ok(failures.some((failure) => failure.includes("default permissions")));
@@ -363,8 +363,8 @@ test("rejects extra workflow or job write permissions", () => {
 	const broadened = completeWorkflow
 		.replace("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  packages: write\n")
 		.replace(
-			"  binaries:\n    needs: prepare\n    permissions:\n      contents: read\n",
-			"  binaries:\n    needs: prepare\n    permissions:\n      contents: read\n      actions: write\n",
+			"  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n",
+			"  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n      actions: write\n",
 		);
 	const failures = validateReleaseWorkflow(broadened);
 	assert.ok(failures.some((failure) => failure.includes("default permissions")));
@@ -1037,3 +1037,9 @@ for (const replacement of ["echo skipped", 'if false; then node scripts/verify-s
   assert.ok(validateReleaseWorkflow(completeWorkflow.replace('node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"', replacement)).some(f => f.includes("must be authenticated")));
  });
 }
+
+ test("rejects a token that cannot read unpublished signed releases", () => {
+	const unreadable = completeWorkflow.replace("  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n", "  binaries:\n    needs: prepare\n    permissions:\n      contents: read\n");
+	assert.notEqual(unreadable, completeWorkflow);
+	assert.ok(validateReleaseWorkflow(unreadable).some(f => f.includes("binaries permissions")));
+});

@@ -270,12 +270,14 @@ export function validateReleaseWorkflow(source) {
 	}
 	for (const [name, job] of [
 		["prepare", prepare],
-		["binaries", binaries],
 		["post-publish-canary", canary],
 	]) {
 		if (!hasExactPermissions(job.permissions, { contents: "read" })) {
 			failures.push(`${name} permissions must be exactly contents: read`);
 		}
+	}
+	if (!hasExactPermissions(binaries.permissions, { contents: "write" })) {
+		failures.push("binaries permissions must be exactly contents: write to read the signed draft release");
 	}
 	if (
 		!hasExactPermissions(publish.permissions, {
