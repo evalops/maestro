@@ -246,6 +246,30 @@ export function validateReleaseWorkflow(source) {
 	const publish = jobs.publish;
 	const release = jobs["github-release"];
 	const canary = jobs["post-publish-canary"];
+    const identity = jobs["identity-readiness"];
+    const identityStep = findStep(identity, "Verify release test Identity session");
+    const identityCheckout = identity?.steps.filter(step => step.uses.startsWith("actions/checkout@")) ?? [];
+    const identityEnv = {
+        MAESTRO_EVALOPS_ACCESS_TOKEN: "${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}",
+        MAESTRO_EVALOPS_ORG_ID: "${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}",
+    };
+    if (!identity || identity.condition || identity.continueOnError ||
+        identity.environment !== "npm-release" || !hasNeed(identity, "prepare") ||
+        !hasExactPermissions(identity.permissions, {contents: "read"}) ||
+        identityCheckout.length !== 1 || identityCheckout[0].with.ref !== "${{ github.sha }}" ||
+        identityCheckout[0].with["persist-credentials"] !== "false" ||
+        !identityStep || requiredStepCanBeSkippedOrIgnored(identityStep) ||
+        identityStep.run !== "node .github/workflows/check-release-identity.mjs" ||
+        !hasExactRecord(identityStep.env, identityEnv) || !hasNeed(publish, "identity-readiness")) {
+        failures.push("publication must require the protected release-test Identity preflight");
+    }
+    const authenticatedReplayStep = findStep(canary, "Verify published package from npm");
+    if (canary?.environment !== "npm-release" ||
+        Object.entries(identityEnv).some(([key, value]) => authenticatedReplayStep?.env[key] !== value) ||
+        !hasNeed(release, "post-publish-canary")) {
+        failures.push("GitHub publication must wait for the authenticated registry replay canary");
+    }
+
 
 	for (const [name, job] of [
 		["prepare", prepare],
@@ -568,6 +592,12 @@ export function validateReleaseWorkflow(source) {
 	) {
 		failures.push("trusted and token modes must execute exact unswallowed npm publish commands");
 	}
+    for (const line of [
+        'wait_for_registry "$PACKAGE_NAME" "$PACKED_INTEGRITY"',
+        'wait_for_registry "$ALIAS_PACKAGE_NAME" "$ALIAS_PACKED_INTEGRITY"',
+    ]) {
+        if (!topLevelPublishLines.includes(line)) failures.push("publication must wait for exact package-index integrity after publishing");
+    }
 	const swallowedPublish = npmPublishLines.some((line) => {
 		const index = publishLines.indexOf(line);
 		return publishLines[index + 1] === "return 0";
