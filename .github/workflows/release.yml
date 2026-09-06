@@ -102,6 +102,25 @@ jobs:
             echo "npm_tag=$npm_tag"
           } >> "$GITHUB_OUTPUT"
 
+  identity-readiness:
+    needs: prepare
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 3
+    environment: npm-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows
+      - name: Verify release test Identity session
+        env:
+          MAESTRO_EVALOPS_ACCESS_TOKEN: ${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
+          MAESTRO_EVALOPS_ORG_ID: ${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
+        run: node .github/workflows/check-release-identity.mjs
+
   binaries:
     needs: prepare
     runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
@@ -169,6 +188,7 @@ jobs:
     needs:
       - prepare
       - binaries
+      - identity-readiness
     # Public free hosted minutes by default. Do not point this at private
     # self-hosted labels unless the runner group allows public repos.
     runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
@@ -293,7 +313,20 @@ jobs:
             local registry_integrity
             registry_integrity="$(
               command npm view "${package_name}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
-            )" || return 1
+            )" || registry_integrity=""
+            if [[ -z "$registry_integrity" ]]; then
+              # Immutable version metadata can arrive before the package index.
+              registry_integrity="$(node --input-type=module - "$package_name" "$RELEASE_VERSION" <<'NODE'
+          const [name, version] = process.argv.slice(2);
+          const url = `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+          const response = await fetch(url, { signal: AbortSignal.timeout(30000), redirect: "error" });
+          if (!response.ok) process.exit(1);
+          const metadata = await response.json();
+          if (metadata.name !== name || metadata.version !== version || typeof metadata.dist?.integrity !== "string") process.exit(1);
+          console.log(metadata.dist.integrity);
+          NODE
+              )" || return 1
+            fi
 
             if [[ -z "$registry_integrity" ]]; then
               return 1
@@ -303,6 +336,31 @@ jobs:
               return 2
             fi
             echo "Verified ${package_name}@${RELEASE_VERSION} already contains the packed tarball."
+          }
+
+          wait_for_registry() {
+            local package_name="$1"
+            local packed_integrity="$2"
+            local registry_integrity=""
+            local attempt remaining
+            local deadline=$((SECONDS + 300))
+            for attempt in {1..60}; do
+              remaining=$((deadline - SECONDS))
+              if [[ "$remaining" -le 0 ]]; then break; fi
+              registry_integrity="$(timeout "${remaining}s" npm view "${package_name}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null)" || registry_integrity=""
+              if [[ "$registry_integrity" == "$packed_integrity" ]]; then
+                return 0
+              fi
+              if [[ -n "$registry_integrity" ]]; then
+                echo "::error::Registry integrity mismatch for ${package_name}@${RELEASE_VERSION}."
+                return 2
+              fi
+              remaining=$((deadline - SECONDS))
+              if [[ "$remaining" -le 5 ]]; then break; fi
+              if [[ "$attempt" -lt 60 ]]; then sleep 5; fi
+            done
+            echo "::error::Registry metadata did not propagate for ${package_name}@${RELEASE_VERSION}; rerun after it is readable."
+            return 1
           }
 
           publish_or_verify() {
@@ -349,12 +407,15 @@ jobs:
 
           # shellcheck disable=SC2153 # Values are supplied by the step env block.
           publish_package "$PACKAGE_NAME" "$TARBALL" "$PACKED_INTEGRITY"
+          wait_for_registry "$PACKAGE_NAME" "$PACKED_INTEGRITY"
           publish_package "$ALIAS_PACKAGE_NAME" "$ALIAS_TARBALL" "$ALIAS_PACKED_INTEGRITY"
+          wait_for_registry "$ALIAS_PACKAGE_NAME" "$ALIAS_PACKED_INTEGRITY"
   github-release:
     needs:
       - prepare
       - binaries
       - publish
+      - post-publish-canary
     runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -481,6 +542,7 @@ jobs:
             release-assets/maestro-linux-*
             release-assets/maestro-darwin-*
   post-publish-canary:
+    environment: npm-release
     needs:
       - prepare
       - publish
@@ -500,6 +562,8 @@ jobs:
       - name: Verify published package from npm
         env:
           CLI_COMMAND: maestro
+          MAESTRO_EVALOPS_ACCESS_TOKEN: ${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
+          MAESTRO_EVALOPS_ORG_ID: ${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
           MAESTRO_INSTALL_AUDIT_LEVEL: critical
           MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
           MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: published-replay-evidence

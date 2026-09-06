@@ -67,6 +67,25 @@ jobs:
             echo "release_channel=$release_channel"
             echo "npm_tag=$npm_tag"
           } >> "$GITHUB_OUTPUT"
+  identity-readiness:
+    needs: prepare
+    runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 3
+    environment: npm-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: \${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows
+      - name: Verify release test Identity session
+        env:
+          MAESTRO_EVALOPS_ACCESS_TOKEN: \${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
+          MAESTRO_EVALOPS_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
+        run: node .github/workflows/check-release-identity.mjs
+
   binaries:
     needs: prepare
     permissions:
@@ -81,7 +100,7 @@ jobs:
         run: |
           node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"
   publish:
-    needs: [prepare, binaries]
+    needs: [prepare, binaries, identity-readiness]
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     environment:
       name: npm-release
@@ -184,7 +203,9 @@ jobs:
             publish_or_verify publish_with_token "\$package_name" "\$tarball" "\$packed_integrity"
           }
           publish_package "\$PACKAGE_NAME" "\$TARBALL" "\$PACKED_INTEGRITY"
+          wait_for_registry "\$PACKAGE_NAME" "\$PACKED_INTEGRITY"
           publish_package "\$ALIAS_PACKAGE_NAME" "\$ALIAS_TARBALL" "\$ALIAS_PACKED_INTEGRITY"
+          wait_for_registry "\$ALIAS_PACKAGE_NAME" "\$ALIAS_PACKED_INTEGRITY"
       - name: Smoke packed package without JS runtime
         env:
           NPM_CONFIG_FETCH_RETRIES: "1"
@@ -204,7 +225,7 @@ jobs:
           overwrite: true
           path: maestro-web-dist.tar.gz
   github-release:
-    needs: [prepare, binaries, publish]
+    needs: [prepare, binaries, publish, post-publish-canary]
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
@@ -261,6 +282,7 @@ jobs:
             release-assets/maestro-linux-*
             release-assets/maestro-darwin-*
   post-publish-canary:
+    environment: npm-release
     needs:
       - prepare
       - publish
@@ -277,6 +299,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Verify published package from npm
         env:
+          MAESTRO_EVALOPS_ACCESS_TOKEN: \${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
+          MAESTRO_EVALOPS_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -331,8 +355,8 @@ test("rejects swallowed npm publish failures", () => {
 test("comments cannot spoof environment, permissions, or dependencies", () => {
 	const spoofed = completeWorkflow
 		.replace(
-			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
-			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      # contents: read\n      id-token: write\n",
+			"  publish:\n    needs: [prepare, binaries, identity-readiness]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
+			"  publish:\n    needs: [prepare, binaries, identity-readiness]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      # contents: read\n      id-token: write\n",
 		)
 		.replace("    environment:\n      name: npm-release\n", "    # environment: npm-release\n")
 		.replace("      - publish\n", "      # - publish # needs: publish\n");
@@ -373,8 +397,8 @@ test("rejects extra workflow or job write permissions", () => {
 
 test("rejects publish checkout without contents read", () => {
 	const unreadablePublish = completeWorkflow.replace(
-		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
-		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      id-token: write\n",
+		"  publish:\n    needs: [prepare, binaries, identity-readiness]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
+		"  publish:\n    needs: [prepare, binaries, identity-readiness]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      id-token: write\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(unreadablePublish).some((failure) =>
@@ -743,8 +767,8 @@ test("rejects removing the token-backed publish fallback", () => {
 
 test("rejects a GitHub release job without npm publication dependency", () => {
 	const outOfOrder = completeWorkflow.replace(
-		"    needs: [prepare, binaries, publish]\n",
-		"    needs: [prepare, binaries]\n",
+		"    needs: [prepare, binaries, publish, post-publish-canary]\n",
+		"    needs: [prepare, binaries, identity-readiness]\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(outOfOrder).some((failure) =>
@@ -1043,3 +1067,15 @@ for (const replacement of ["echo skipped", 'if false; then node scripts/verify-s
 	assert.notEqual(unreadable, completeWorkflow);
 	assert.ok(validateReleaseWorkflow(unreadable).some(f => f.includes("binaries permissions")));
 });
+
+for (const [before, after] of [
+ ["    needs: [prepare, binaries, identity-readiness]", "    needs: [prepare, binaries]"],
+ ["node .github/workflows/check-release-identity.mjs", "echo skipped"],
+ ["    needs: [prepare, binaries, publish, post-publish-canary]", "    needs: [prepare, binaries, publish]"],
+]) {
+ test(`rejects missing release readiness: ${before}`, () => {
+  const changed = completeWorkflow.replace(before, after);
+  assert.notEqual(changed, completeWorkflow);
+  assert.ok(validateReleaseWorkflow(changed).some(f => f.includes("Identity preflight") || f.includes("authenticated registry replay")));
+ });
+}
