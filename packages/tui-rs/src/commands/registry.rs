@@ -2839,23 +2839,57 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/attach <path|list|clear|remove <n>>"),
     );
 
+    registry.register(Command::new(
+        "workers", "Inspect, redirect, cancel, or resume existing workers", CommandCategory::Tools,
+        Box::new(|ctx| {
+            use super::types::WorkerAction;
+            let raw = ctx.raw_args.trim();
+            let (verb, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+            let rest = rest.trim();
+            let action = match verb {
+                "" | "list" if rest.is_empty() => WorkerAction::List,
+                "inspect" | "cancel" if !rest.is_empty() && !rest.contains(char::is_whitespace) => {
+                    if verb == "inspect" { WorkerAction::Inspect(rest.into()) } else { WorkerAction::Cancel(rest.into()) }
+                }
+                "steer" | "resume" => {
+                    let (id, message) = rest.split_once(char::is_whitespace)
+                        .filter(|(id, message)| !id.is_empty() && !message.trim().is_empty())
+                        .ok_or_else(|| CommandError::new("Provide a worker id and a message."))?;
+                    if verb == "steer" { WorkerAction::Steer { agent_ref: id.into(), message: message.trim().into() } }
+                    else { WorkerAction::Resume { id: id.into(), message: message.trim().into() } }
+                }
+                _ => return Err(CommandError::new("Usage: /workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]")),
+            };
+            Ok(CommandOutput::Action(CommandAction::Worker(action)))
+        }),
+    ).usage("/workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]"));
+
     // Memory commands
     registry.register(
         Command::new(
             "memory",
-            "Account / local / shared memory status",
+            "Review, save, edit, or forget scoped memory; show account status",
             CommandCategory::Context,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
                 if raw.is_empty() {
                     return Ok(CommandOutput::Action(CommandAction::ShowMemory));
                 }
-                Err(CommandError::new(
-                    "Usage: /memory   (use `deixic-code memory remember|recall|status` for account memory)",
-                ))
+                let (action, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+                let mapped = match action {
+                    "list" => "list".to_string(),
+                    "review" => "review".to_string(),
+                    "save" => format!("apply {rest}"),
+                    "edit" => format!("update {rest}"),
+                    "forget" => format!("delete {rest}"),
+                    "reject" => format!("reject {rest}"),
+                    _ => return Err(CommandError::new("Usage: /memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::Harness(parse_harness_action(&mapped)?)))
             }),
         )
-        .usage("/memory"),
+        .group(vec!["list", "review", "save", "edit", "forget", "reject"])
+        .usage("/memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]"),
     );
 
     // Plan mode (Grok-style: plan.md + approve)

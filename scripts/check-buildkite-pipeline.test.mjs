@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
-
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 const root = new URL("../", import.meta.url);
 const pipeline = await readFile(new URL(".buildkite/pipeline.yml", root), "utf8");
 const advisory = await readFile(new URL(".buildkite/advisory.yml", root), "utf8");
@@ -269,5 +273,46 @@ test("legacy GitHub validation workflows are absent", async () => {
   ];
   for (const name of names) {
     await assert.rejects(access(new URL(`.github/workflows/${name}`, root)));
+  }
+});
+
+
+const runner = fileURLToPath(new URL('./run-buildkite-jetbrains.sh', import.meta.url));
+
+test('JetBrains CI detaches Gradle stdin from the controlling terminal', {
+  skip: process.platform !== 'linux',
+}, () => {
+  const root = mkdtempSync(join(tmpdir(), 'maestro-gradle-stdin-'));
+  try {
+    const bin = join(root, 'bin');
+    const plugin = join(root, 'packages/jetbrains-plugin');
+    mkdirSync(bin);
+    mkdirSync(plugin, { recursive: true });
+    writeFileSync(join(bin, 'java'), '#!/bin/sh\necho \'openjdk version "21.0.12"\' >&2\n', { mode: 0o755 });
+    // Shorten only the deadline; retain GNU timeout's real process-group behavior.
+    writeFileSync(join(bin, 'timeout'), `#!/bin/bash
+args=("$@")
+for i in "\${!args[@]}"; do
+  [[ "\${args[$i]}" != 10m ]] || args[$i]=1s
+  [[ "\${args[$i]}" != --kill-after=30s ]] || args[$i]=--kill-after=1s
+done
+exec /usr/bin/timeout "\${args[@]}"
+`, { mode: 0o755 });
+    writeFileSync(join(plugin, 'gradlew'), '#!/bin/sh\nexec "$TEST_NODE" "$TEST_READER"\n', { mode: 0o755 });
+    const reader = join(root, 'read-stdin.cjs');
+    writeFileSync(reader, `const fs = require('node:fs');
+fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+console.log('gradle stdin reached EOF');
+`);
+    const result = spawnSync('script', ['-q', '-e', '-c', `bash '${runner.replaceAll("'", "'\\''")}'`, '/dev/null'], {
+      cwd: root,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_NODE: process.execPath, TEST_READER: reader, BUILDKITE_BUILD_CHECKOUT_PATH: root },
+      input: '', encoding: 'utf8', timeout: 5000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /gradle stdin reached EOF/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

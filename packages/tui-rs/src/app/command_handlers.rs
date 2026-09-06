@@ -431,6 +431,16 @@ impl App {
             CommandAction::Harness(action) => self.handle_harness_action(action),
             CommandAction::Rlm(action) => self.handle_rlm_action(action),
             CommandAction::Mailbox(action) => self.handle_mailbox_action(action),
+            CommandAction::Worker(action) => {
+                let (name, args) = action.tool_call();
+                let call_id = format!("worker-command-{}", uuid::Uuid::new_v4());
+                let result = self.tool_executor.execute(name, &args, None, &call_id).await;
+                if result.success {
+                    self.state.add_system_message(result.output);
+                } else {
+                    self.state.error = Some(result.error.unwrap_or(result.output));
+                }
+            }
             CommandAction::SetDexPresentation(setting) => self.handle_dex_command(&setting),
             CommandAction::SetFooterStyle(style) => {
                 self.footer_style = style;
@@ -1071,7 +1081,9 @@ impl App {
 
     fn show_memory_status(&mut self) {
         use crate::path_utils::maestro_home_dir;
-        let mut msg = String::from("## Memory\n\n");
+        let mut msg = String::from(
+            "## Memory\n\nReview proposed corrections with `/memory review`; save one with `/memory save <proposal-id>`. Saved notes: `/memory list`, `/memory edit <entry-id> <text>`, `/memory forget <entry-id>`. Proposals include their scope and evidence and stay inactive until saved. These commands manage local supplemental context; account memory remains under its account controls.\n\n",
+        );
         msg.push_str(&format!(
             "**{}**\n\n",
             crate::memory_cli::local_account_memory_status()
