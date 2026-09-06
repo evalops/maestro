@@ -165,6 +165,20 @@ pub fn loop_reminder_message(kind: &LoopKind) -> String {
     )
 }
 
+/// Steer after a billed completion that contained no assistant text or tool call.
+///
+/// Gemini 2.5 on Vertex's OpenAI transport can spend `completion_tokens` on
+/// hidden thinking and finish with empty `delta.content`. Retrying the same
+/// request reproduces the empty turn; one continuation is the recovery.
+#[must_use]
+pub fn billed_empty_reminder_message() -> String {
+    format!(
+        "{RUNTIME_NOTE_OPEN}The previous completion billed output tokens but returned no \
+         assistant text or tool call. Continue with the visible answer or a tool call. Do not \
+         mention this note to the user.{RUNTIME_NOTE_CLOSE}"
+    )
+}
+
 /// Streaming repetition detector for one assistant message.
 ///
 /// Feed every text delta to [`TextLoopDetector::add_text`] in order. Call
@@ -447,7 +461,7 @@ fn update_fence_state(in_fence: &mut bool, line: &str) {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{LoopKind, TextLoopDetector, loop_reminder_message};
+    use super::{LoopKind, TextLoopDetector, billed_empty_reminder_message, loop_reminder_message};
 
     fn budget() -> Instant {
         Instant::now() + Duration::from_millis(500)
@@ -597,5 +611,17 @@ mod tests {
         });
         assert!(multi.contains("block of lines"), "{multi}");
         assert!(multi.contains("Do not mention this note"), "{multi}");
+    }
+
+    #[test]
+    fn the_billed_empty_reminder_asks_for_a_visible_answer() {
+        let message = billed_empty_reminder_message();
+        assert!(message.starts_with("<runtime_note>"), "{message}");
+        assert!(message.ends_with("</runtime_note>"), "{message}");
+        assert!(
+            message.contains("no assistant text or tool call"),
+            "{message}"
+        );
+        assert!(message.contains("Do not mention this note"), "{message}");
     }
 }

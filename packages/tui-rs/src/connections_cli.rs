@@ -912,12 +912,12 @@ impl ConnectionHealth {
         }
     }
 
-    const fn color(self) -> Color {
+    const fn color(self, theme: maestro_ui::UiTheme) -> Color {
         match self {
-            Self::Unknown => Color::DarkGray,
-            Self::Ready | Self::ReadyDelegated => Color::Green,
-            Self::ManagedUnverified => Color::Yellow,
-            Self::Unavailable | Self::Revoked => Color::Red,
+            Self::Unknown => theme.muted,
+            Self::Ready | Self::ReadyDelegated => theme.success,
+            Self::ManagedUnverified => theme.attention,
+            Self::Unavailable | Self::Revoked => theme.error,
         }
     }
 }
@@ -1269,7 +1269,16 @@ impl Drop for DashboardTerminal {
 }
 
 fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
+    render_dashboard_with_theme(frame, state, crate::themes::current_ui_theme());
+}
+
+fn render_dashboard_with_theme(
+    frame: &mut Frame,
+    state: &mut DashboardState,
+    theme: maestro_ui::UiTheme,
+) {
     let area = frame.area();
+    frame.buffer_mut().set_style(area, theme.text_style());
     let layout = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(8),
@@ -1280,7 +1289,7 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
         Line::from(Span::styled(
             "Connections & access",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.focus)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from("Provider credentials and sign-ins used by Deixic Code."),
@@ -1291,13 +1300,10 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
         .split(layout[1]);
     let items = if state.store.connections.is_empty() {
         vec![ListItem::new(vec![
-            Line::styled(
-                "No managed connections",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Line::styled("No managed connections", Style::default().fg(theme.muted)),
             Line::styled(
                 "Press a to add a connection.",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.focus),
             ),
         ])]
     } else {
@@ -1318,24 +1324,30 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
                 };
                 ListItem::new(vec![
                     Line::from(vec![
-                        Span::styled(connection.label.clone(), Style::default().fg(Color::White)),
-                        Span::styled(default, Style::default().fg(Color::Yellow)),
+                        Span::styled(connection.label.clone(), Style::default().fg(theme.text)),
+                        Span::styled(default, Style::default().fg(theme.attention)),
                     ]),
                     Line::from(vec![
                         Span::styled(
                             format!("{}  ", connection.provider_id),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(theme.muted),
                         ),
-                        Span::styled(health.label(), Style::default().fg(health.color())),
+                        Span::styled(health.label(), Style::default().fg(health.color(theme))),
                     ]),
                 ])
             })
             .collect()
     };
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Connections"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .title("Connections"),
+        )
         .highlight_symbol("› ")
-        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        .style(theme.text_style())
+        .highlight_style(theme.selection_style());
     frame.render_stateful_widget(list, panes[0], &mut state.list_state);
 
     let detail = state.selected_connection().map_or_else(
@@ -1352,17 +1364,29 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
                 .copied()
                 .unwrap_or(ConnectionHealth::Unknown);
             vec![
-                detail_line("Name", &connection.label),
-                detail_line("Provider", &connection.provider_id),
-                detail_line("Authentication", auth_kind_label(connection.auth_kind)),
-                detail_line("Access", &connection.capabilities.join(", ")),
-                detail_line("Runs in", placement_label(connection.placement)),
-                detail_line("Credential source", &credential_source_label(connection)),
-                detail_line("Generation", &connection.generation.to_string()),
-                detail_line("Default", if connection.is_default { "Yes" } else { "No" }),
+                detail_line("Name", &connection.label, theme),
+                detail_line("Provider", &connection.provider_id, theme),
+                detail_line(
+                    "Authentication",
+                    auth_kind_label(connection.auth_kind),
+                    theme,
+                ),
+                detail_line("Access", &connection.capabilities.join(", "), theme),
+                detail_line("Runs in", placement_label(connection.placement), theme),
+                detail_line(
+                    "Credential source",
+                    &credential_source_label(connection),
+                    theme,
+                ),
+                detail_line("Generation", &connection.generation.to_string(), theme),
+                detail_line(
+                    "Default",
+                    if connection.is_default { "Yes" } else { "No" },
+                    theme,
+                ),
                 Line::from(vec![
-                    Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(health.label(), Style::default().fg(health.color())),
+                    Span::styled("Status: ", Style::default().fg(theme.muted)),
+                    Span::styled(health.label(), Style::default().fg(health.color(theme))),
                 ]),
             ]
         },
@@ -1371,26 +1395,27 @@ fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Connection details"),
+                .title("Connection details")
+                .border_style(Style::default().fg(theme.border)),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(detail, panes[1]);
 
     let footer = if state.remove_confirmation {
         Paragraph::new("Remove this connection? Press y to remove it, or Esc to cancel.")
-            .style(Style::default().fg(Color::Red))
+            .style(Style::default().fg(theme.error))
     } else {
         Paragraph::new(state.message.as_deref().unwrap_or(
                 "a Add   t Check source   d Set default   k Rotate key   x Remove   r Refresh   q Close",
         ))
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(theme.muted))
     };
     frame.render_widget(footer, layout[2]);
 }
 
-fn detail_line(label: &str, value: &str) -> Line<'static> {
+fn detail_line(label: &str, value: &str, theme: maestro_ui::UiTheme) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{label}: "), Style::default().fg(theme.muted)),
         Span::raw(value.to_owned()),
     ])
 }
@@ -1911,6 +1936,56 @@ mod tests {
         assert!(rendered.contains("1Password reference"));
         assert!(rendered.contains("models.invoke"));
         assert!(!rendered.contains("op://engineering/openai/credential"));
+    }
+
+    #[test]
+    fn dashboard_uses_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            let mut connection = test_connection("work");
+            connection.label = "OpenAI work".into();
+            connection.is_default = true;
+            connection.secret_ref = ConnectionSecretRef::OnePassword {
+                reference: "op://engineering/openai/credential".into(),
+            };
+            let mut state = DashboardState {
+                store: ConnectionStore {
+                    schema_version: 1,
+                    connections: vec![connection],
+                },
+                selected: 0,
+                list_state: ListState::default(),
+                health: BTreeMap::from([("work".into(), ConnectionHealth::Ready)]),
+                message: None,
+                remove_confirmation: false,
+            };
+            state.sync_selection();
+
+            let backend = ratatui::backend::TestBackend::new(100, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render_dashboard_with_theme(frame, &mut state, theme))
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+
+            assert!(rendered.contains("Connections & access"));
+            assert!(rendered.contains("OpenAI work"));
+            assert!(rendered.contains("1Password reference"));
+            assert!(rendered.contains("models.invoke"));
+            assert!(!rendered.contains("op://engineering/openai/credential"));
+            crate::components::theme_test::assert_palette(terminal.backend().buffer(), theme);
+            crate::components::theme_test::assert_label(
+                terminal.backend().buffer(),
+                ConnectionHealth::Ready.label(),
+                theme.success,
+                theme.selection.unwrap(),
+            );
+        }
     }
 
     #[test]
