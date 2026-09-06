@@ -42,6 +42,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED: ${{ github.event.client_payload.version || github.event.inputs.version || github.ref_name }}
           TRIGGER_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           release_version="${REQUESTED#v}"
@@ -81,9 +82,25 @@ jobs:
             exit 1
           fi
 
-          # Secrets are used only with source already admitted to protected main.
+          # Secrets require source admitted to protected main or a fully protected release branch.
           # A contents-write dispatch must not execute scripts from an arbitrary tag.
           timeout 60s git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$release_sha" FETCH_HEAD; then
+            release_branch="releases/${release_tag}"
+            rules="$(timeout 60s gh api "repos/evalops/maestro/rules/branches/releases%2F${release_tag}")"
+            jq -e '
+              any(.[]; .type == "pull_request") and
+              any(.[]; .type == "non_fast_forward") and
+              any(.[]; .type == "deletion") and
+              any(.[]; .type == "required_linear_history") and
+              any(.[]; .type == "required_status_checks" and
+                .parameters.strict_required_status_checks_policy == true and
+                any(.parameters.required_status_checks[]; .context == "require-internal-pr" and .integration_id == 15368) and
+                any(.parameters.required_status_checks[]; .context == "unresolved-review-threads / unresolved-review-threads" and .integration_id == 15368) and
+                any(.parameters.required_status_checks[]; .context == "buildkite/maestro-ci" and .integration_id == 805657))
+            ' <<<"$rules" >/dev/null
+            timeout 60s git fetch --no-tags origin "refs/heads/$release_branch"
+          fi
           git merge-base --is-ancestor "$release_sha" FETCH_HEAD
           git checkout --detach "$release_sha"
           package_version="$(node -p "require('./package.json').version")"

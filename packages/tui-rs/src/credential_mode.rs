@@ -305,7 +305,7 @@ fn current_verified_identity_session_with_env() -> Result<(PlatformSession, Hash
     let snapshot = if platform_session_from(None, &env).is_some() {
         None
     } else {
-        crate::init_cli::load_evalops_snapshot().ok().flatten()
+        crate::init_cli::load_current_evalops_snapshot()?
     };
     let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
         &mut env,
@@ -323,9 +323,42 @@ pub(crate) fn verified_current_identity_session() -> Result<PlatformSession> {
     let snapshot = if platform_session_from(None, &env).is_some() {
         None
     } else {
-        crate::init_cli::load_evalops_snapshot().ok().flatten()
+        crate::init_cli::load_current_evalops_snapshot()?
     };
     verify_live_identity_session(snapshot.as_ref(), &env)
+}
+
+/// Return a replacement verified session only when the credential backing a
+/// long-running capture hook changed or reached its refresh window.
+///
+/// The common event path performs no network request. Stored OAuth credentials
+/// are refreshed and re-introspected only after expiry approaches, while an
+/// explicit environment token remains the caller's lifecycle responsibility.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn refreshed_identity_session_for_capture(
+    current_access_token: &str,
+) -> Result<Option<PlatformSession>> {
+    let env = std::env::vars().collect::<HashMap<String, String>>();
+    if let Some(session) = platform_session_from(None, &env) {
+        return if session.access_token == current_access_token {
+            Ok(None)
+        } else {
+            verify_live_identity_session(None, &env).map(Some)
+        };
+    }
+
+    let Some(snapshot) = crate::init_cli::load_evalops_snapshot()? else {
+        bail!(IDENTITY_REQUIRED_MESSAGE);
+    };
+    if snapshot.access == current_access_token
+        && snapshot.expires > chrono::Utc::now().timestamp_millis() + 60_000
+    {
+        return Ok(None);
+    }
+
+    let snapshot =
+        crate::init_cli::load_current_evalops_snapshot()?.context(IDENTITY_REQUIRED_MESSAGE)?;
+    verify_live_identity_session(Some(&snapshot), &env).map(Some)
 }
 
 /// Verify the access token with EvalOps Identity before it authorizes a local

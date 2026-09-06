@@ -929,10 +929,7 @@ async fn refresh_credentials(
     }
     let access =
         string_at(&payload, "access_token").context("EvalOps refresh missing access_token")?;
-    let expires = parse_timestamp(
-        payload.get("expires_at").and_then(Value::as_str),
-        "expires_at",
-    )?;
+    let expires = refresh_expiry(&payload, Utc::now().timestamp_millis())?;
     let mut metadata = existing.metadata.clone();
     metadata.insert(
         "identityBaseUrl".to_owned(),
@@ -941,7 +938,20 @@ async fn refresh_credentials(
     if let Some(org) = string_at(&payload, "organization_id") {
         metadata.insert("organizationId".to_owned(), Value::String(org));
     }
-    if let Some(scopes) = string_array(payload.get("scopes")) {
+    if let Some(scope) = payload.get("scope") {
+        let scope = scope
+            .as_str()
+            .context("Invalid scope in EvalOps refresh response")?;
+        metadata.insert(
+            "scopes".to_owned(),
+            Value::Array(
+                scope
+                    .split_whitespace()
+                    .map(|scope| Value::String(scope.to_owned()))
+                    .collect(),
+            ),
+        );
+    } else if let Some(scopes) = string_array(payload.get("scopes")) {
         metadata.insert(
             "scopes".to_owned(),
             Value::Array(scopes.into_iter().map(Value::String).collect()),
@@ -1890,6 +1900,28 @@ fn has_trace_evidence(summary: &Value) -> bool {
         })
 }
 
+fn refresh_expiry(payload: &Value, now_ms: i64) -> Result<i64> {
+    if let Some(value) = payload.get("expires_in") {
+        let seconds = value
+            .as_u64()
+            .filter(|seconds| *seconds > 0)
+            .context("Invalid expires_in in EvalOps refresh response")?;
+        return i64::try_from(seconds)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000))
+            .and_then(|milliseconds| now_ms.checked_add(milliseconds))
+            .context("EvalOps refresh expiry is out of range");
+    }
+    let expires = parse_timestamp(
+        payload.get("expires_at").and_then(Value::as_str),
+        "expires_at",
+    )?;
+    if expires <= now_ms {
+        bail!("EvalOps refresh expiry is not in the future");
+    }
+    Ok(expires)
+}
+
 fn parse_timestamp(value: Option<&str>, field: &str) -> Result<i64> {
     let value = value.ok_or_else(|| anyhow!("Missing {field} in EvalOps response"))?;
     DateTime::parse_from_rfc3339(value)
@@ -2143,6 +2175,48 @@ pub fn load_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
         return Ok(None);
     };
     Ok(Some(snapshot_from_credentials(&credentials)))
+}
+
+async fn load_current_evalops_snapshot_async() -> Result<Option<EvalOpsCredentialSnapshot>> {
+    let Some(credentials) = load_credentials()? else {
+        return Ok(None);
+    };
+    if credentials.expires > Utc::now().timestamp_millis() + 60_000 {
+        return Ok(Some(snapshot_from_credentials(&credentials)));
+    }
+    if credentials.refresh.trim().is_empty() {
+        bail!("EvalOps login expired and cannot be refreshed; run `maestro login`");
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("build EvalOps refresh client")?;
+    let refreshed = refresh_credentials(&credentials, &client)
+        .await
+        .context("refresh EvalOps login; run `maestro login` if the session was revoked")?;
+    save_credentials(&refreshed)?;
+    Ok(Some(snapshot_from_credentials(&refreshed)))
+}
+
+/// Load stored EvalOps credentials, refreshing an expired OAuth session
+/// without opening a browser.
+///
+/// Native-agent construction is synchronous and can run inside an existing
+/// Tokio runtime, so the async refresh stays isolated on a short-lived thread.
+/// An invalid or revoked refresh token fails closed and asks the user to log in
+/// again instead of unexpectedly launching an interactive OAuth flow.
+pub(crate) fn load_current_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
+    std::thread::spawn(|| -> Result<Option<EvalOpsCredentialSnapshot>> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build EvalOps refresh runtime")?
+            .block_on(load_current_evalops_snapshot_async())
+    })
+    .join()
+    .map_err(|_| anyhow!("EvalOps credential refresh thread panicked"))?
 }
 
 /// Resolve the trusted Identity authority used to verify a stored or
@@ -2902,6 +2976,11 @@ mod tests {
                             )
                         }
                     }
+                    ("POST", "/v1/tokens/refresh") => (
+                        200,
+                        String::new(),
+                        r#"{"access_token":"access-refreshed","expires_in":3600,"refresh_token":"refresh-rotated","organization_id":"org_from_stub","workspace_id":"workspace_from_stub","scope":"llm_gateway:invoke sessions:read sessions:write"}"#.to_owned(),
+                    ),
                     _ => (404, String::new(), r#"{"error":"not_found"}"#.to_owned()),
                 };
                 let reason = match status {
@@ -2928,6 +3007,109 @@ mod tests {
         } else {
             std::env::remove_var(name);
         }
+    }
+
+    #[test]
+    fn refresh_expiry_accepts_native_seconds_and_legacy_absolute_time() {
+        let now = 1_000;
+        assert_eq!(
+            refresh_expiry(&json!({"expires_in": 3600}), now).unwrap(),
+            3_601_000
+        );
+        assert_eq!(
+            refresh_expiry(&json!({"expires_at": "1970-01-01T01:00:01Z"}), now).unwrap(),
+            3_601_000
+        );
+        assert_eq!(
+            refresh_expiry(
+                &json!({"expires_in": 1, "expires_at": "ignored legacy value"}),
+                now
+            )
+            .unwrap(),
+            2_000
+        );
+    }
+
+    #[test]
+    fn refresh_expiry_rejects_invalid_or_expired_values_without_legacy_fallback() {
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("3600"),
+            json!(true),
+            Value::Null,
+            json!(u64::MAX),
+        ] {
+            assert!(
+                refresh_expiry(
+                    &json!({"expires_in": value, "expires_at": "2099-01-01T00:00:00Z"}),
+                    1_000
+                )
+                .is_err()
+            );
+        }
+        for payload in [
+            json!({}),
+            json!({"expires_at": "invalid"}),
+            json!({"expires_at": "1970-01-01T00:00:01Z"}),
+        ] {
+            assert!(refresh_expiry(&payload, 1_000).is_err());
+        }
+        assert!(refresh_expiry(&json!({"expires_in": 1}), i64::MAX).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn expired_evalops_login_refreshes_without_browser() {
+        let _guard = crate::config::test_process_env_lock_async().await;
+        let home = tempfile::tempdir().expect("maestro home");
+        let (identity, identity_task) = spawn_identity_stub(false).await;
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let previous_storage = std::env::var("MAESTRO_OAUTH_STORAGE_MODE").ok();
+        let previous_keychain = std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok();
+        std::env::set_var("MAESTRO_HOME", home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+
+        let mut metadata = Map::new();
+        metadata.insert("identityBaseUrl".to_owned(), Value::String(identity));
+        save_credentials(&OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-from-stub".to_owned(),
+            access: "access-expired".to_owned(),
+            expires: Utc::now().timestamp_millis() - 1,
+            metadata,
+        })
+        .expect("save expired credentials");
+
+        let refresh_started_at = Utc::now().timestamp_millis();
+        let snapshot = load_current_evalops_snapshot()
+            .expect("refresh expired credentials")
+            .expect("stored credentials");
+        assert_eq!(snapshot.access, "access-refreshed");
+        assert_eq!(snapshot.refresh, "refresh-rotated");
+        assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
+        assert!(
+            (refresh_started_at + 3_600_000..=Utc::now().timestamp_millis() + 3_600_000)
+                .contains(&snapshot.expires)
+        );
+        let stored = load_credentials()
+            .expect("load refreshed credentials")
+            .expect("credentials");
+        assert_eq!(
+            stored.metadata.get("scopes"),
+            Some(&json!([
+                "llm_gateway:invoke",
+                "sessions:read",
+                "sessions:write"
+            ]))
+        );
+
+        delete_credentials().expect("delete test credentials");
+        restore_env("MAESTRO_HOME", previous_home);
+        restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
+        restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
+        identity_task.abort();
     }
 
     #[tokio::test]

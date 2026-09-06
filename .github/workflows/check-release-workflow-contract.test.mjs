@@ -1,4 +1,5 @@
 import "./device-marker-auth-cases.mjs";
+import "./release-branch-admission.test.mjs";
 import "./source-provenance-link.test.mjs";
 import "./check-release-identity.test.mjs";
 import "./release-propagation.test.mjs";
@@ -40,6 +41,7 @@ jobs:
           EVENT_NAME: \${{ github.event_name }}
           REQUESTED: \${{ github.event.client_payload.version || github.event.inputs.version || github.ref_name }}
           TRIGGER_SHA: \${{ github.sha }}
+          GH_TOKEN: \${{ github.token }}
         run: |
           release_sha="$TRIGGER_SHA"
           if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "repository_dispatch" ]]; then
