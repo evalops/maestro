@@ -1,0 +1,31 @@
+{
+  "turn_context": {
+    "organization_id": "org-governed",
+    "workspace_id": "workspace-governed",
+    "thread_id": "session-governed",
+    "turn_id": "turn-steer",
+    "run_id": "run-original",
+    "runtime_generation": 7,
+    "identity_authorization": {
+      "schemaVersion": "identity.tool_authorization.v1",
+      "organizationId": "org-governed",
+      "workspaceId": "workspace-governed",
+      "applicationId": "deixic",
+      "subjectId": "user-1",
+      "actorChainDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decisionId": "decision-1",
+      "authorizationLineageId": "lineage-1",
+      "policyId": "policy-1",
+      "policyVersion": "v1",
+      "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "authorizationFingerprint": "authz_fingerprint_v1_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "capabilityDigest": "sha256:ddd9584683a7b562f5a4bed507ce5764186eb2ff8b95e0e0cf73436e0db9efc9",
+      "actionDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "audience": "evalops.maestro",
+      "issuedAtMs": 900,
+      "expiresAtMs": 2000,
+      "revocationEpoch": 7
+    }
+  },
+  "turn_digest": "sha256:c184ea9342a7ba424eddcec467605c3aae3de7358133c1c8cce4952d5ee2d319"
+}
