@@ -311,6 +311,8 @@ pub enum ToAgentMessage {
         is_error: bool,
     },
     GovernedClientToolResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        process_tool_cost_micros: Option<u64>,
         call_id: String,
         content: Vec<ClientToolResultContent>,
         is_error: bool,
@@ -628,6 +630,12 @@ pub struct IdentityToolAuthorizationEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GovernedToolGrant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Signed model and tool accounting bounds for a Platform process event.
+    pub process_budget: Option<crate::agent::process_budget::ProcessBudgetLimits>,
+    /// Platform-owned process definition instructions installed in the system role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_system_prompt: Option<String>,
     pub envelope_version: u32,
     pub grant_id: String,
     pub grant_version: u64,
@@ -955,6 +963,10 @@ pub enum FromAgentMessage {
     /// accepted by the response consumer rather than merely queued.
     ResponseAccepted { request_id: String },
     /// Safe managed-Gateway evidence for one inference request.
+    /// Private process usage checkpoint, persisted in the hosted replay stream.
+    ProcessBudgetCheckpoint {
+        budget: crate::agent::process_budget::ProcessBudgetState,
+    },
     ManagedGatewayReceipt {
         request_id: String,
         record_id: String,

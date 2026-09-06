@@ -11452,6 +11452,7 @@ async fn unacknowledged_response_releases_ownership_when_ledger_cleanup_fails() 
     let executor = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(&supervisor));
     let context = executor_context_with_response_key(workspace.path(), "not-expected-key");
     let response = ToAgentMessage::GovernedClientToolResult {
+        process_tool_cost_micros: None,
         call_id: "governed-call".to_string(),
         content: Vec::new(),
         is_error: false,

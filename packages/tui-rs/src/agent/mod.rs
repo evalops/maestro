@@ -109,6 +109,7 @@ pub use selective_summary::{
     RangeSelection, SelectiveSummaryOutcome, SelectiveSummaryPreview, SelectiveSummaryRequest,
     SelectiveSummaryResult, SummaryTurn,
 };
+pub mod process_budget;
 pub mod steer_signal;
 pub mod text_loop;
 pub mod token_counting;

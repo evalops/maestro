@@ -1180,6 +1180,8 @@ mod tests {
 
     fn test_governed_grant() -> GovernedToolGrant {
         GovernedToolGrant {
+            process_budget: None,
+            process_system_prompt: None,
             envelope_version: 2,
             grant_id: "grant-1".to_string(),
             grant_version: 1,

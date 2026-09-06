@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:15f6f09f9a18b1202b41655e4f1c4d296b9e6fcdfbbac161aff38808e75ac017",
+  "compatibilityDigest": "sha256:8efa2454532caab7f4bd47be2bccf25ccd8606bd4b56544c20221895f87c979e",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -38,7 +38,7 @@
       ],
       "schemaDeclaredVersion": "2026-08-08",
       "schemaContractDigest": "sha256:cf65a6aa422720c6cec243479ba4c3a6c2f3e54f838d6cd1b3e2b788d04229d5",
-      "runtimeContractDigest": "sha256:87da33291bad776db97e2c157ba80249770002ad0248fb536cbd2df50da3cb56",
+      "runtimeContractDigest": "sha256:3002399fbaa357ed66286181526739c6de943e4062328a77ada7562e00e1f1c0",
       "messages": {
         "toRuntime": [
           "hello",
@@ -71,6 +71,7 @@
           "conversation_snapshot",
           "hello_ok",
           "response_accepted",
+          "process_budget_checkpoint",
           "managed_gateway_receipt",
           "workspace_capability_set_applied",
           "ready",
@@ -117,6 +118,7 @@
         ],
         "runtimeOnlyFromRuntime": [
           "conversation_snapshot",
+          "process_budget_checkpoint",
           "managed_gateway_receipt",
           "codex_session_state",
           "codex_turn_state",
@@ -172,7 +174,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:45d3a08486f00d205c4fa59c61f164f2830a9032b8eb45adde1f336c80ca7548",
+      "contractDigest": "sha256:424b43325bbb2fcf1ce979e8f87ef12a6ffc6854d683ba7dcf11fdf154a55bf0",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",

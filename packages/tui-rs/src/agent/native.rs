@@ -1196,6 +1196,19 @@ enum AgentCommand {
     /// the next request. This hands the accounting to the runner, which
     /// subtracts what each response spent and clamps the request it is about to
     /// build. Sent once, before the prompt it applies to.
+    InstallProcessBudget {
+        limits: super::process_budget::ProcessBudgetLimits,
+        checkpoint: Option<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>>,
+        applied: oneshot::Sender<
+            Result<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>>,
+        >,
+    },
+
+    ClearProcessBudget {
+        system_prompt: String,
+        applied: oneshot::Sender<Result<()>>,
+    },
+
     SetOutputTokenBudget {
         max_total_output_tokens: u32,
     },
@@ -2048,6 +2061,7 @@ impl NativeAgent {
             prompt_context: None,
             output_token_budget: None,
             output_tokens_spent: 0,
+            process_budget: None,
             queued_system_prompts: HashMap::new(),
             system_prompt_revision: 0,
             runtime_prompt_revision: 0,
@@ -2348,11 +2362,42 @@ impl NativeAgent {
         Ok(())
     }
 
-    /// Cap the cumulative output tokens this agent may request across a run.
-    ///
-    /// Send this before the prompt it applies to. The runner then owns the
-    /// accounting and clamps each request it builds to the unspent remainder,
-    /// so no per-request update has to arrive before the next request is built.
+    /// Install the signed per-event budget and wait for native acknowledgement.
+    /// An existing checkpoint retains spent usage across agent replacement.
+    pub async fn install_process_budget(
+        &self,
+        limits: super::process_budget::ProcessBudgetLimits,
+        checkpoint: Option<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>>,
+    ) -> Result<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>> {
+        let (applied, receiver) = oneshot::channel();
+        self.command_tx
+            .send(AgentCommand::InstallProcessBudget {
+                limits,
+                checkpoint,
+                applied,
+            })
+            .map_err(|_| anyhow::anyhow!("process budget runner unavailable"))?;
+        receiver
+            .await
+            .context("process budget admission was not acknowledged")?
+    }
+
+    /// Retire Process authority at an inactive, verified grant boundary.
+    /// Acknowledgement covers both budget removal and the ordinary system prompt.
+    pub(crate) async fn clear_process_budget(&self, system_prompt: String) -> Result<()> {
+        let (applied, receiver) = oneshot::channel();
+        self.command_tx
+            .send(AgentCommand::ClearProcessBudget {
+                system_prompt,
+                applied,
+            })
+            .map_err(|_| anyhow::anyhow!("process budget runner unavailable"))?;
+        receiver
+            .await
+            .context("process budget retirement was not acknowledged")?
+    }
+
+    /// Cap cumulative output tokens before the prompt they apply to.
     pub fn set_output_token_budget(&self, max_total_output_tokens: u32) -> Result<()> {
         self.command_tx
             .send(AgentCommand::SetOutputTokenBudget {
@@ -2976,6 +3021,7 @@ struct NativeAgentRunner {
     /// Output tokens this runner has already spent against
     /// [`Self::output_token_budget`].
     output_tokens_spent: u64,
+    process_budget: Option<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>>,
 
     /// System prompt staged for the next queued prompt to start, with the
     /// [`Self::system_prompt_revision`] that was current when it was staged.
@@ -4117,6 +4163,24 @@ fn refresh_model_budgets(
     );
 }
 
+fn process_provider_cost_micros(cost: f64) -> Result<u64> {
+    let micros = cost * 1_000_000.0;
+    if !micros.is_finite() || micros < 0.0 || micros >= u64::MAX as f64 {
+        anyhow::bail!("invalid process provider cost");
+    }
+    // Gateway integer microcosts pass through one f64 division and multiplication.
+    // Normalize only their two-operation rounding envelope; genuine fractions
+    // outside that envelope still round up to the next billable micro-unit.
+    let nearest = micros.round();
+    let roundoff = 2.0 * f64::EPSILON * micros.abs();
+    let charged = if (micros - nearest).abs() <= roundoff {
+        nearest
+    } else {
+        micros.ceil()
+    };
+    Ok(charged as u64)
+}
+
 fn set_explicit_max_tokens(config: &mut NativeAgentConfig, max_tokens: u32) {
     config.max_tokens = max_tokens;
     config.max_tokens_source = MaxTokensSource::Explicit;
@@ -4789,6 +4853,21 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::SetMaxTokens { max_tokens } => {
                     set_explicit_max_tokens(&mut self.config, max_tokens);
+                }
+                AgentCommand::InstallProcessBudget {
+                    limits,
+                    checkpoint,
+                    applied,
+                } => {
+                    let result = self.apply_process_budget(limits, checkpoint);
+                    let _ = applied.send(result);
+                }
+                AgentCommand::ClearProcessBudget {
+                    system_prompt,
+                    applied,
+                } => {
+                    let result = self.retire_process_budget(system_prompt);
+                    let _ = applied.send(result);
                 }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
@@ -6106,6 +6185,21 @@ impl NativeAgentRunner {
                 AgentCommand::SetMaxTokens { max_tokens } => {
                     set_explicit_max_tokens(&mut self.config, max_tokens);
                 }
+                AgentCommand::InstallProcessBudget {
+                    limits,
+                    checkpoint,
+                    applied,
+                } => {
+                    let result = self.apply_process_budget(limits, checkpoint);
+                    let _ = applied.send(result);
+                }
+                AgentCommand::ClearProcessBudget {
+                    system_prompt,
+                    applied,
+                } => {
+                    let result = self.retire_process_budget(system_prompt);
+                    let _ = applied.send(result);
+                }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
                 } => {
@@ -6413,6 +6507,16 @@ impl NativeAgentRunner {
         request_messages: &[Message],
         include_tools: bool,
     ) -> Result<RequestConfig> {
+        if let Some(state) = self.process_budget.as_ref() {
+            if !include_tools {
+                anyhow::bail!("process grants do not admit auxiliary model requests");
+            }
+            state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                .admit_request()
+                .map_err(anyhow::Error::msg)?;
+        }
         if include_tools {
             self.apply_requested_boost()?;
         }
@@ -8364,6 +8468,68 @@ impl NativeAgentRunner {
         refused_tools
     }
 
+    fn retire_process_budget(&mut self, system_prompt: String) -> Result<()> {
+        if self.busy || !self.pending_messages.is_empty() || !self.deferred_commands.is_empty() {
+            anyhow::bail!("cannot retire process budget during an active or queued turn");
+        }
+        self.process_budget = None;
+        self.config.system_prompt = Some(system_prompt);
+        self.system_prompt_revision = self.system_prompt_revision.saturating_add(1);
+        self.runtime_prompt_revision = self.runtime_prompt_revision.saturating_add(1);
+        self.refresh_runtime_audit();
+        Ok(())
+    }
+
+    fn apply_process_budget(
+        &mut self,
+        limits: super::process_budget::ProcessBudgetLimits,
+        checkpoint: Option<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>>,
+    ) -> Result<Arc<std::sync::Mutex<super::process_budget::ProcessBudgetState>>> {
+        if self.model_route.uses_app_server() {
+            anyhow::bail!("process budgets require managed native inference");
+        }
+        let state = self.process_budget.clone().or(checkpoint);
+        let state = match state {
+            Some(state) => {
+                state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                    .install(&limits)
+                    .map_err(anyhow::Error::msg)?;
+                state
+            }
+            None => Arc::new(std::sync::Mutex::new(
+                super::process_budget::ProcessBudgetState::new(limits)
+                    .map_err(anyhow::Error::msg)?,
+            )),
+        };
+        self.process_budget = Some(Arc::clone(&state));
+        Ok(state)
+    }
+
+    fn refuse_process_tool_batch(
+        &mut self,
+        calls: Vec<(String, String, Value, Option<String>)>,
+        reason: &str,
+    ) {
+        let results = calls
+            .into_iter()
+            .map(|(id, tool, _, _)| ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: format!(
+                    "not_executed: {tool} was refused because {reason}; it did not run."
+                ),
+                is_error: Some(true),
+            })
+            .collect::<Vec<_>>();
+        if !results.is_empty() {
+            self.messages_mut().push(Message {
+                role: Role::User,
+                content: MessageContent::Blocks(results),
+            });
+        }
+    }
+
     /// Run the agent loop until complete or interrupted
     /// One user turn.
     ///
@@ -8853,6 +9019,38 @@ impl NativeAgentRunner {
             let mut pending_call_ids = std::collections::HashSet::new();
             pending_tool_calls
                 .retain(|(call_id, _, _, _)| pending_call_ids.insert(call_id.clone()));
+
+            let process_usage = self
+                .process_budget
+                .as_ref()
+                .map(|state| {
+                    if !saw_usage {
+                        return Err(anyhow::anyhow!("process response omitted usage"));
+                    }
+                    state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                        .observe_usage(
+                            // Managed Gateway uses OpenAI usage semantics:
+                            // cached tokens are a subset of input_tokens.
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.cost.map(process_provider_cost_micros).transpose()?,
+                        )
+                        .map_err(anyhow::Error::msg)
+                })
+                .transpose();
+            if let Err(error) = process_usage {
+                if !assistant_content.is_empty() {
+                    self.messages_mut().push(Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Blocks(assistant_content),
+                    });
+                }
+                self.refuse_process_tool_batch(pending_tool_calls, &error.to_string());
+                return Err(error);
+            }
+
             // Mark the cleanup-sensitive interval before storing ToolUse
             // history, closing the gap where outer request cancellation could
             // otherwise leave an orphaned provider message.
@@ -9057,6 +9255,23 @@ impl NativeAgentRunner {
                 self.set_tool_batch_active(false);
                 let outcome: TurnOutcome = step_budget.exhausted(unexecuted_tools);
                 return Err(anyhow::Error::new(outcome));
+            }
+
+            let process_tools = self
+                .process_budget
+                .as_ref()
+                .map(|state| {
+                    state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                        .admit_tools(pending_tool_calls.len())
+                        .map_err(anyhow::Error::msg)
+                })
+                .transpose();
+            if let Err(error) = process_tools {
+                self.refuse_process_tool_batch(pending_tool_calls, &error.to_string());
+                self.set_tool_batch_active(false);
+                return Err(error);
             }
 
             // If there are tool calls, handle them
@@ -12202,6 +12417,208 @@ mod tests {
             }
         });
         (format!("http://{address}/v1"), requests)
+    }
+
+    #[tokio::test]
+    async fn process_budget_refusal_deduplicates_tool_calls_in_checkpoint() {
+        let workspace = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_scripted_provider_request(&mut stream).await;
+            let calls = (0..2)
+                .map(|index| {
+                    serde_json::json!({
+                        "index":index, "id":"duplicate-call", "type":"function",
+                        "function":{"name":"read","arguments":"{\"path\":\"Cargo.toml\"}"}
+                    })
+                })
+                .collect::<Vec<_>>();
+            let tool = serde_json::json!({
+                "id":"duplicate-response","object":"chat.completion.chunk","created":0,"model":"gpt-4o",
+                "choices":[{"index":0,"delta":{"tool_calls":calls},"finish_reason":"tool_calls"}]
+            });
+            let usage = serde_json::json!({
+                "id":"duplicate-response","object":"chat.completion.chunk","created":0,"model":"gpt-4o",
+                "choices":[],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}
+            });
+            let body = format!("data: {tool}\n\ndata: {usage}\n\ndata: [DONE]\n\n");
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        });
+        let (agent, mut events) = NativeAgent::new_with_test_client(
+            NativeAgentConfig {
+                model: "openai/gpt-4o".into(),
+                cwd: workspace.path().display().to_string(),
+                ..NativeAgentConfig::default()
+            },
+            UnifiedClient::OpenAI(
+                crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        agent
+            .install_process_budget(
+                super::super::process_budget::ProcessBudgetLimits {
+                    event_id: "duplicate-event".into(),
+                    max_requests: 2,
+                    max_total_tokens: 10,
+                    max_cost_micros: 10,
+                    cost_micros_per_token: 1,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        agent.prompt("read file".into(), vec![]).await.unwrap();
+        let messages = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut checkpoint = None;
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::ConversationSnapshot { messages, .. }) => {
+                        checkpoint = Some(messages);
+                    }
+                    Some(FromAgent::Error {
+                        message,
+                        terminal: true,
+                        ..
+                    }) => {
+                        assert!(message.contains("budget exhausted"), "{message}");
+                        break checkpoint.expect("history precedes refusal");
+                    }
+                    Some(FromAgent::ToolStart { .. }) => panic!("refused tool executed"),
+                    Some(_) => {}
+                    None => panic!("missing process refusal"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let mut uses = 0;
+        let mut results = 0;
+        for message in messages {
+            if let MessageContent::Blocks(blocks) = message.content {
+                for block in blocks {
+                    match block {
+                        ContentBlock::ToolUse { id, .. } if id == "duplicate-call" => uses += 1,
+                        ContentBlock::ToolResult { tool_use_id, .. }
+                            if tool_use_id == "duplicate-call" =>
+                        {
+                            results += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            (uses, results),
+            (1, 1),
+            "checkpoint retains exactly one matched pair"
+        );
+        agent.shutdown().await;
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn process_budget_provider_cost_preserves_exact_gateway_micros_and_real_fractions() {
+        assert_eq!(
+            process_provider_cost_micros(123_f64 / 1_000_000.0).unwrap(),
+            123
+        );
+        assert_eq!(
+            process_provider_cost_micros(123.25 / 1_000_000.0).unwrap(),
+            124
+        );
+        assert_eq!(
+            process_provider_cost_micros(123.000_001 / 1_000_000.0).unwrap(),
+            124
+        );
+        for invalid in [f64::NAN, f64::INFINITY, -0.000_001] {
+            assert!(process_provider_cost_micros(invalid).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn process_budget_refuses_model_tool_effects_before_replay_can_intervene() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_scripted_provider_request(&mut stream).await;
+            let usage = serde_json::json!({"id":"budget-response", "object":"chat.completion.chunk",
+                "created":0, "model":"gpt-4o", "choices":[],
+                "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}});
+            let body = chat_sse_response("budget-response", "Read the file.", true)
+                .replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .unwrap(),
+        );
+        let (agent, mut events) = NativeAgent::new_with_test_client(config, client).unwrap();
+        let limits = super::super::process_budget::ProcessBudgetLimits {
+            event_id: "event-1".into(),
+            max_requests: 2,
+            max_total_tokens: 10,
+            max_cost_micros: 20,
+            cost_micros_per_token: 2,
+        };
+        let checkpoint = agent
+            .install_process_budget(limits.clone(), None)
+            .await
+            .unwrap();
+        agent
+            .prompt("Read Cargo.toml".into(), vec![])
+            .await
+            .unwrap();
+        let message = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::Error {
+                        message,
+                        terminal: true,
+                        ..
+                    }) => break message,
+                    Some(FromAgent::ToolStart { .. }) => {
+                        panic!("over-budget response executed a tool")
+                    }
+                    Some(FromAgent::TurnCompleted { .. }) => {
+                        panic!("over-budget process completed")
+                    }
+                    Some(_) => {}
+                    None => panic!("missing process failure"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(message.contains("budget exhausted"), "{message}");
+        assert_eq!(checkpoint.lock().unwrap().total_tokens, 11);
+        let replay = agent.install_process_budget(limits, None).await.unwrap();
+        assert!(Arc::ptr_eq(&checkpoint, &replay));
+        assert_eq!(replay.lock().unwrap().total_tokens, 11);
+        agent.shutdown().await;
+        server.await.unwrap();
     }
 
     #[tokio::test]

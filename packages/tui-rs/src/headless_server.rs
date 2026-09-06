@@ -71,6 +71,7 @@ struct RuntimeMeta {
     pending_client_tools: HashMap<String, PendingClientTool>,
     emitted_client_tool_terminals: HashSet<String>,
     conversation_snapshot: Option<Vec<maestro_ai::Message>>,
+    process_budget: Option<Arc<Mutex<crate::agent::process_budget::ProcessBudgetState>>>,
     turn_active: bool,
     transcript_grade: crate::transcript::TranscriptGrade,
     response_chunks: Vec<(String, bool)>,
@@ -213,6 +214,7 @@ impl HeadlessState {
                 pending_client_tools: HashMap::new(),
                 emitted_client_tool_terminals: HashSet::new(),
                 conversation_snapshot: None,
+                process_budget: None,
                 turn_active: false,
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
@@ -526,60 +528,85 @@ impl HeadlessState {
                     chrono::Utc::now().timestamp_millis(),
                 )?;
 
-                if let Some(existing) = self.governed_grant.as_ref() {
-                    if existing == &grant {
-                        return Ok(());
-                    }
-                    if existing.identity() == grant.identity() {
-                        anyhow::bail!("governed tool grant identity reused with different content");
-                    }
-                }
-                let handled_active_turn = {
-                    let mut meta = self
-                        .meta
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !meta.pending_tool_calls.is_empty() || !meta.pending_client_tools.is_empty()
-                    {
-                        anyhow::bail!("cannot change governed tool grant during an active turn");
-                    }
-                    if meta.turn_active {
-                        let existing = self
-                            .governed_grant
-                            .as_ref()
-                            .context("active governed turn is missing its prior grant")?;
-                        if governed_authority_material_digest(existing)?
-                            != governed_authority_material_digest(&grant)?
-                        {
-                            anyhow::bail!(
-                                "a steer grant cannot change the active run's tool capabilities"
-                            );
-                        }
-                        let (_, _, bindings) = governed_agent_inputs(&grant)?;
-                        meta.client_tool_bindings = bindings;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if handled_active_turn {
-                    self.governed_grant = Some(grant);
-                    return Ok(());
-                }
-
-                let (allowed_tools, external_tools, bindings) = governed_agent_inputs(&grant)?;
-                if let Some(agent) = self.agent.as_ref() {
-                    agent.replace_governed_tools(allowed_tools, external_tools)?;
-                    self.meta
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .client_tool_bindings = bindings;
-                }
-                self.governed_grant = Some(grant);
-                self.ensure_agent()?;
-                Ok(())
+                self.apply_verified_governed_grant(grant).await
             }
         }
+    }
+
+    /// Apply authority only after the runtime-owned context and signature have been verified.
+    async fn apply_verified_governed_grant(&mut self, grant: GovernedToolGrant) -> Result<()> {
+        if let Some(existing) = self.governed_grant.as_ref() {
+            if existing == &grant {
+                return Ok(());
+            }
+            if existing.identity() == grant.identity() {
+                anyhow::bail!("governed tool grant identity reused with different content");
+            }
+        }
+        let handled_active_turn = {
+            let mut meta = self
+                .meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !meta.pending_tool_calls.is_empty() || !meta.pending_client_tools.is_empty() {
+                anyhow::bail!("cannot change governed tool grant during an active turn");
+            }
+            if meta.turn_active {
+                let existing = self
+                    .governed_grant
+                    .as_ref()
+                    .context("active governed turn is missing its prior grant")?;
+                if governed_authority_material_digest(existing)?
+                    != governed_authority_material_digest(&grant)?
+                {
+                    anyhow::bail!("a steer grant cannot change the active run's tool capabilities");
+                }
+                let (_, _, bindings) = governed_agent_inputs(&grant)?;
+                meta.client_tool_bindings = bindings;
+                true
+            } else {
+                false
+            }
+        };
+        if handled_active_turn {
+            self.governed_grant = Some(grant);
+            return Ok(());
+        }
+
+        let (allowed_tools, external_tools, bindings) = governed_agent_inputs(&grant)?;
+        let previous_event = self
+            .governed_grant
+            .as_ref()
+            .and_then(|grant| grant.process_budget.as_ref())
+            .map(|budget| budget.event_id.as_str());
+        let next_event = grant
+            .process_budget
+            .as_ref()
+            .map(|budget| budget.event_id.as_str());
+        if previous_event.is_some() && previous_event != next_event {
+            let prompt = self
+                .workspace_capabilities
+                .prompt_for_next_turn()
+                .to_string();
+            if let Some(agent) = self.agent.as_ref() {
+                agent.clear_process_budget(prompt.clone()).await?;
+            }
+            self.meta
+                .lock()
+                .map_err(|_| anyhow::anyhow!("runtime metadata poisoned"))?
+                .process_budget = None;
+            self.system_prompt = prompt;
+        }
+        if let Some(agent) = self.agent.as_ref() {
+            agent.replace_governed_tools(allowed_tools, external_tools)?;
+            self.meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .client_tool_bindings = bindings;
+        }
+        self.governed_grant = Some(grant);
+        self.ensure_agent()?;
+        Ok(())
     }
 }
 
@@ -632,6 +659,10 @@ fn governed_authority_material_digest(grant: &GovernedToolGrant) -> Result<Strin
         "native_tool_ids": grant.native_tool_ids,
         "external_tools": grant.external_tools,
     });
+    if let Some(budget) = &grant.process_budget {
+        value["process_budget"] = serde_json::json!(budget);
+        value["process_system_prompt"] = serde_json::json!(grant.process_system_prompt);
+    }
     if !grant.connection_bindings.is_empty() {
         value["connection_bindings"] = serde_json::json!(grant.connection_bindings);
     }
@@ -948,6 +979,10 @@ fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Valu
         "native_tool_ids": grant.native_tool_ids,
         "external_tools": grant.external_tools,
     });
+    if let Some(budget) = &grant.process_budget {
+        value["process_budget"] = serde_json::json!(budget);
+        value["process_system_prompt"] = serde_json::json!(grant.process_system_prompt);
+    }
     // Preserve the exact v2 canonical form for grants minted before
     // connection bindings existed. New authority is included whenever used.
     if !grant.connection_bindings.is_empty() {
@@ -1061,6 +1096,19 @@ fn verify_governed_tool_grant_with_keys(
     {
         anyhow::bail!("governed Identity authorization is expired");
     }
+    if grant.process_budget.is_some() != grant.process_system_prompt.is_some() {
+        anyhow::bail!("process budget requires its signed system instructions");
+    }
+    if let Some(budget) = &grant.process_budget {
+        let prompt = grant.process_system_prompt.as_deref().unwrap_or_default();
+        if prompt.trim().is_empty() || prompt.len() > 32 * 1024 {
+            anyhow::bail!("invalid process system instructions");
+        }
+        budget.validate().map_err(anyhow::Error::msg)?;
+        if budget.event_id != grant.turn_id {
+            anyhow::bail!("process budget event does not match the governed turn");
+        }
+    }
     let canonical = governed_grant_canonical_bytes(grant)?;
     let expected_hash = format!("sha256:{}", sha256_hex(&canonical));
     if !constant_time_eq(expected_hash.as_bytes(), grant.grant_hash.as_bytes()) {
@@ -1103,7 +1151,7 @@ async fn submit_prompt_with_kind(
     let atts = attachments.unwrap_or_default();
     let queue_id = state.next_prompt_queue_id;
     state.next_prompt_queue_id = state.next_prompt_queue_id.saturating_add(1);
-    let (turn_active, workspace_prompt, staged_workspace_prompt) = {
+    let (turn_active, mut workspace_prompt, staged_workspace_prompt) = {
         let turn_active = state
             .meta
             .lock()
@@ -1118,6 +1166,14 @@ async fn submit_prompt_with_kind(
             state.workspace_capabilities.has_staged_set(),
         )
     };
+    if let Some(prompt) = state
+        .governed_grant
+        .as_ref()
+        .and_then(|grant| grant.process_system_prompt.as_deref())
+    {
+        workspace_prompt.push_str("\n\n");
+        workspace_prompt.push_str(prompt);
+    }
     let uses_app_server =
         crate::agent::codex_app_server_turns::model_should_use_app_server_turns(&state.model);
     if turn_active && staged_workspace_prompt && uses_app_server {
@@ -1141,6 +1197,30 @@ async fn submit_prompt_with_kind(
             .context("staged provider prompt install requires a native agent")?
             .ensure_provider_prompt_installed()
             .await?;
+    }
+    if let Some(limits) = state
+        .governed_grant
+        .as_ref()
+        .and_then(|grant| grant.process_budget.clone())
+    {
+        let checkpoint = state
+            .meta
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime metadata poisoned"))?
+            .process_budget
+            .clone();
+        state.ensure_agent()?;
+        let budget = state
+            .agent
+            .as_ref()
+            .context("process budget requires native agent")?
+            .install_process_budget(limits, checkpoint)
+            .await?;
+        state
+            .meta
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime metadata poisoned"))?
+            .process_budget = Some(budget);
     }
     match state.agent_mut() {
         Ok(agent) => {
@@ -1753,61 +1833,8 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     )?,
                 }
             }
-            ToAgentMessage::GovernedClientToolResult {
-                call_id,
-                content,
-                is_error,
-                tool_execution_id,
-                client_instance_id,
-                grant_id,
-                grant_version,
-                grant_hash,
-                turn_digest,
-                definition_digest,
-                args_digest,
-                owner_lease_epoch,
-                idempotency_key,
-            } => {
-                let Some(tool_tx) = state.tool_tx.as_ref() else {
-                    protocol_error(Some(call_id), "no pending native client-tool request")?;
-                    continue;
-                };
-                match prepare_client_tool_result(
-                    &state.meta,
-                    call_id.clone(),
-                    content,
-                    is_error,
-                    ClientToolResultBinding {
-                        tool_execution_id: Some(tool_execution_id),
-                        client_instance_id: Some(client_instance_id),
-                        grant_id: Some(grant_id),
-                        grant_version: Some(grant_version),
-                        grant_hash: Some(grant_hash),
-                        turn_digest: Some(turn_digest),
-                        definition_digest: Some(definition_digest),
-                        args_digest: Some(args_digest),
-                        owner_lease_epoch: Some(owner_lease_epoch),
-                        idempotency_key: Some(idempotency_key),
-                    },
-                ) {
-                    Ok(accepted) => {
-                        match dispatch_accepted_tool_response(
-                            &state.meta,
-                            tool_tx,
-                            accepted,
-                            call_id.clone(),
-                        ) {
-                            Ok(()) => {}
-                            Err(message) => protocol_error(Some(call_id), message)?,
-                        }
-                    }
-                    Err(error) => dispatch_client_tool_preparation_error(
-                        &state.meta,
-                        tool_tx,
-                        call_id,
-                        error,
-                    )?,
-                }
+            message @ ToAgentMessage::GovernedClientToolResult { .. } => {
+                handle_governed_client_tool_result(&state, message)?;
             }
             ToAgentMessage::ServerRequestResponse {
                 request_id,
@@ -2556,6 +2583,27 @@ async fn handle_agent_event(
     configured_model: &str,
     routed_provider: Option<&str>,
 ) -> Result<()> {
+    if matches!(
+        &msg,
+        FromAgent::ResponseEnd { .. }
+            | FromAgent::Error { .. }
+            | FromAgent::TurnCompleted { .. }
+            | FromAgent::ToolCall { .. }
+            | FromAgent::ToolEnd { .. }
+    ) {
+        let budget = meta
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime metadata poisoned"))?
+            .process_budget
+            .clone();
+        if let Some(budget) = budget {
+            let budget = budget
+                .lock()
+                .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                .clone();
+            emit(&FromAgentMessage::ProcessBudgetCheckpoint { budget })?;
+        }
+    }
     match msg {
         FromAgent::ConversationSnapshot {
             protocol_version,
@@ -3562,6 +3610,83 @@ fn dispatch_client_tool_preparation_error(
     protocol_error(Some(call_id), message)
 }
 
+fn handle_governed_client_tool_result(
+    state: &HeadlessState,
+    message: ToAgentMessage,
+) -> Result<()> {
+    let ToAgentMessage::GovernedClientToolResult {
+        process_tool_cost_micros,
+        call_id,
+        content,
+        is_error,
+        tool_execution_id,
+        client_instance_id,
+        grant_id,
+        grant_version,
+        grant_hash,
+        turn_digest,
+        definition_digest,
+        args_digest,
+        owner_lease_epoch,
+        idempotency_key,
+    } = message
+    else {
+        anyhow::bail!("expected governed client tool result");
+    };
+    let Some(tool_tx) = state.tool_tx.as_ref() else {
+        protocol_error(Some(call_id), "no pending native client-tool request")?;
+        return Ok(());
+    };
+    let process_budget = state
+        .meta
+        .lock()
+        .map_err(|_| anyhow::anyhow!("runtime metadata poisoned"))?
+        .process_budget
+        .clone();
+    if process_budget.is_some() != process_tool_cost_micros.is_some() {
+        protocol_error(
+            Some(call_id),
+            "process tool result requires its usage charge",
+        )?;
+        return Ok(());
+    }
+    let process_execution_id = tool_execution_id.clone();
+    match prepare_client_tool_result(
+        &state.meta,
+        call_id.clone(),
+        content,
+        is_error,
+        ClientToolResultBinding {
+            tool_execution_id: Some(tool_execution_id),
+            client_instance_id: Some(client_instance_id),
+            grant_id: Some(grant_id),
+            grant_version: Some(grant_version),
+            grant_hash: Some(grant_hash),
+            turn_digest: Some(turn_digest),
+            definition_digest: Some(definition_digest),
+            args_digest: Some(args_digest),
+            owner_lease_epoch: Some(owner_lease_epoch),
+            idempotency_key: Some(idempotency_key),
+        },
+    ) {
+        Ok(accepted) => {
+            if let (Some(budget), Some(cost)) = (process_budget, process_tool_cost_micros) {
+                budget
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
+                    .charge_tool(&process_execution_id, cost)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            match dispatch_accepted_tool_response(&state.meta, tool_tx, accepted, call_id.clone()) {
+                Ok(()) => {}
+                Err(message) => protocol_error(Some(call_id), message)?,
+            }
+        }
+        Err(error) => dispatch_client_tool_preparation_error(&state.meta, tool_tx, call_id, error)?,
+    }
+    Ok(())
+}
+
 fn prepare_client_tool_result(
     meta: &Arc<Mutex<RuntimeMeta>>,
     call_id: String,
@@ -3840,6 +3965,8 @@ mod tests {
 
     fn test_grant() -> GovernedToolGrant {
         let mut grant = GovernedToolGrant {
+            process_budget: None,
+            process_system_prompt: None,
             envelope_version: 2,
             grant_id: "grant-1".to_string(),
             grant_version: 1,
@@ -3886,6 +4013,83 @@ mod tests {
         };
         sign_test_grant(&mut grant);
         grant
+    }
+
+    #[test]
+    fn process_budget_is_signed_and_cannot_be_widened_by_grant_replay() {
+        let mut grant = test_grant();
+        assert!(
+            governed_grant_canonical_value(&grant)
+                .get("process_budget")
+                .is_none()
+        );
+        grant.process_system_prompt = Some("Handle the admitted process event.".into());
+        grant.process_budget = Some(crate::agent::process_budget::ProcessBudgetLimits {
+            event_id: "turn-1".into(),
+            max_requests: 2,
+            max_total_tokens: 10,
+            max_cost_micros: 20,
+            cost_micros_per_token: 2,
+        });
+        sign_test_grant(&mut grant);
+        verify_governed_tool_grant_with_keys(
+            &grant,
+            &test_grant_context(),
+            1_000,
+            &test_grant_keys(),
+        )
+        .unwrap();
+        let signed = grant.clone();
+        grant.process_system_prompt = Some("Replace the admitted instructions.".into());
+        grant.grant_hash = format!(
+            "sha256:{}",
+            sha256_hex(&governed_grant_canonical_bytes(&grant).unwrap())
+        );
+        assert!(
+            verify_governed_tool_grant_with_keys(
+                &grant,
+                &test_grant_context(),
+                1_000,
+                &test_grant_keys()
+            )
+            .is_err()
+        );
+        grant = signed.clone();
+        grant.process_budget = None;
+        sign_test_grant(&mut grant);
+        assert!(
+            verify_governed_tool_grant_with_keys(
+                &grant,
+                &test_grant_context(),
+                1_000,
+                &test_grant_keys()
+            )
+            .is_err()
+        );
+        grant = signed;
+        grant.process_budget.as_mut().unwrap().max_total_tokens = 100;
+        let canonical = governed_grant_canonical_bytes(&grant).unwrap();
+        grant.grant_hash = format!("sha256:{}", sha256_hex(&canonical));
+        assert!(
+            verify_governed_tool_grant_with_keys(
+                &grant,
+                &test_grant_context(),
+                1_000,
+                &test_grant_keys()
+            )
+            .is_err()
+        );
+        grant.process_budget.as_mut().unwrap().max_requests = 0;
+        sign_test_grant(&mut grant);
+        assert!(
+            verify_governed_tool_grant_with_keys(
+                &grant,
+                &test_grant_context(),
+                1_000,
+                &test_grant_keys()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -6554,5 +6758,356 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
             exposure.provider_prompt_sha256,
             sha256_prefixed(&provider_prompt_before)
         );
+    }
+
+    fn process_cost_wire_result(cost: Option<u64>) -> ToAgentMessage {
+        let mut wire = json!({
+            "type": "governed_client_tool_result",
+            "call_id": "cost-call", "content": [{"type":"text","text":"saved"}],
+            "is_error": false, "tool_execution_id":"cost-execution",
+            "client_instance_id":"client-1","grant_id":"grant-1","grant_version":2,
+            "grant_hash":"sha256:grant","turn_digest":"sha256:turn",
+            "definition_digest":"sha256:def","args_digest":"sha256:args",
+            "owner_lease_epoch":9,"idempotency_key":"client-tool:cost-execution"
+        });
+        if let Some(cost) = cost {
+            wire["process_tool_cost_micros"] = json!(cost);
+        }
+        serde_json::from_value(wire).expect("actual governed result wire")
+    }
+
+    #[tokio::test]
+    async fn process_cost_wire_charges_before_native_continuation_and_rejects_changed_replay() {
+        let workspace = tempfile::tempdir().unwrap();
+        let scripted = crate::ai::ScriptedClient::new(
+            "process-cost-wire",
+            vec![crate::ai::ScriptedResponse::text(
+                "must not call this model",
+            )],
+        );
+        let (agent, mut events) = NativeAgent::new_with_test_client(
+            NativeAgentConfig {
+                model: "scripted/process-cost-wire".into(),
+                cwd: workspace.path().display().to_string(),
+                ..NativeAgentConfig::default()
+            },
+            crate::ai::UnifiedClient::Scripted(scripted.clone()),
+        )
+        .unwrap();
+        let limits = crate::agent::process_budget::ProcessBudgetLimits {
+            event_id: "event-1".into(),
+            max_requests: 2,
+            max_total_tokens: 100,
+            max_cost_micros: 20,
+            cost_micros_per_token: 1,
+        };
+        let budget = agent.install_process_budget(limits, None).await.unwrap();
+        let mut state = HeadlessState::new(Some("scripted/process-cost-wire".into()));
+        {
+            let mut meta = state.meta.lock().unwrap();
+            meta.process_budget = Some(Arc::clone(&budget));
+            meta.pending_tool_calls.insert("cost-call".into());
+            meta.pending_client_tools.insert(
+                "cost-call".into(),
+                PendingClientTool {
+                    binding: ClientToolBinding {
+                        provider_tool_name: "client_provider_id".into(),
+                        tool_id: "tool-1".into(),
+                        connection_binding_id: None,
+                        logical_name: "save".into(),
+                        owner: ClientToolExecutionOwner {
+                            client_instance_id: "client-1".into(),
+                            lease_epoch: 9,
+                        },
+                        grant_id: "grant-1".into(),
+                        grant_version: 2,
+                        grant_hash: "sha256:grant".into(),
+                        turn_digest: "sha256:turn".into(),
+                        definition_digest: "sha256:def".into(),
+                        expires_at_ms: i64::MAX,
+                    },
+                    tool_execution_id: "cost-execution".into(),
+                    args_digest: "sha256:args".into(),
+                    idempotency_key: "client-tool:cost-execution".into(),
+                    result_digest: None,
+                },
+            );
+        }
+
+        // An omitted private charge must leave the governed request pending.
+        let (first_tx, mut first_rx) = mpsc::unbounded_channel();
+        state.tool_tx = Some(first_tx);
+        handle_governed_client_tool_result(&state, process_cost_wire_result(None)).unwrap();
+        assert!(first_rx.try_recv().is_err());
+        assert_eq!(budget.lock().unwrap().cost_micros, 0);
+        assert!(
+            state
+                .meta
+                .lock()
+                .unwrap()
+                .pending_tool_calls
+                .contains("cost-call")
+        );
+
+        // A disconnected native receiver models redelivery after an owner handoff.
+        // The handler must retain the already-incurred charge while restoring the
+        // exact governed request for retry.
+        drop(first_rx);
+        handle_governed_client_tool_result(&state, process_cost_wire_result(Some(21))).unwrap();
+        assert_eq!(budget.lock().unwrap().cost_micros, 21);
+        assert!(
+            state
+                .meta
+                .lock()
+                .unwrap()
+                .pending_tool_calls
+                .contains("cost-call")
+        );
+        handle_governed_client_tool_result(&state, process_cost_wire_result(Some(21))).unwrap();
+        assert_eq!(
+            budget.lock().unwrap().cost_micros,
+            21,
+            "redelivery charged twice"
+        );
+
+        // Replay cannot lower the owner-reported amount to regain model budget.
+        let pending = state.meta.lock().unwrap().pending_client_tools["cost-call"].clone();
+        let error = handle_governed_client_tool_result(&state, process_cost_wire_result(Some(1)))
+            .expect_err("changed cost must fail closed");
+        assert!(error.to_string().contains("changed on replay"), "{error:#}");
+        assert_eq!(budget.lock().unwrap().cost_micros, 21);
+
+        // Recreate the pending delivery after that fatal protocol failure using
+        // the same owner-bound request and shared accounting checkpoint.
+        {
+            let mut meta = state.meta.lock().unwrap();
+            meta.pending_tool_calls.insert("cost-call".into());
+            meta.pending_client_tools
+                .insert("cost-call".into(), pending);
+        }
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+        state.tool_tx = Some(tool_tx);
+        handle_governed_client_tool_result(&state, process_cost_wire_result(Some(21))).unwrap();
+        let (_, _, result, _, consumed) = tool_rx.recv().await.expect("native result delivery");
+        assert_eq!(result.unwrap().output, "saved");
+        assert_eq!(
+            budget.lock().unwrap().cost_micros,
+            21,
+            "native continuation must observe the charge before receiving the result"
+        );
+        consumed
+            .unwrap()
+            .send(ToolResponseConsumption::Accepted)
+            .unwrap();
+
+        // Run the real native request admission, rather than calling the budget
+        // helper in the test: no provider response may be consumed after the tool
+        // has exhausted the cost allowance.
+        agent
+            .prompt("Continue after saving".into(), vec![])
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::Error {
+                        message,
+                        terminal: true,
+                        ..
+                    }) => break message,
+                    Some(FromAgent::TurnCompleted { .. }) => panic!("over-budget turn completed"),
+                    Some(FromAgent::ToolStart { .. }) => panic!("over-budget tool executed"),
+                    Some(_) => {}
+                    None => panic!("missing terminal budget refusal"),
+                }
+            }
+        })
+        .await
+        .expect("bounded native refusal");
+        assert!(error.contains("budget exhausted"), "{error}");
+        assert_eq!(
+            scripted.remaining(),
+            1,
+            "tool cost arrived after model request"
+        );
+        assert_eq!(budget.lock().unwrap().requests, 0);
+        agent.shutdown().await;
+    }
+    #[tokio::test]
+    async fn process_budget_rotates_only_after_verified_inactive_grant() {
+        let workspace = tempfile::tempdir().unwrap();
+        let scripted = crate::ai::ScriptedClient::new(
+            "process-rotation",
+            vec![crate::ai::ScriptedResponse::text("ordinary reply")],
+        );
+        let (agent, mut events) = NativeAgent::new_with_test_client(
+            NativeAgentConfig {
+                model: "scripted/process-rotation".into(),
+                cwd: workspace.path().display().to_string(),
+                system_prompt: Some("PROCESS ONLY".into()),
+                ..NativeAgentConfig::default()
+            },
+            crate::ai::UnifiedClient::Scripted(scripted.clone()),
+        )
+        .unwrap();
+        let mut process = test_grant();
+        process.process_system_prompt = Some("PROCESS ONLY".into());
+        process.process_budget = Some(crate::agent::process_budget::ProcessBudgetLimits {
+            event_id: process.turn_id.clone(),
+            max_requests: 1,
+            max_total_tokens: 100,
+            max_cost_micros: 100,
+            cost_micros_per_token: 1,
+        });
+        sign_test_grant(&mut process);
+        verify_governed_tool_grant_with_keys(
+            &process,
+            &test_grant_context(),
+            1_000,
+            &test_grant_keys(),
+        )
+        .unwrap();
+        let budget = agent
+            .install_process_budget(process.process_budget.clone().unwrap(), None)
+            .await
+            .unwrap();
+        {
+            let mut spent = budget.lock().unwrap();
+            spent.admit_request().unwrap();
+            spent.observe_usage(5, 0, None).unwrap();
+        }
+        let mut state = HeadlessState::new(Some("scripted/process-rotation".into()));
+        state.agent = Some(agent);
+        state.governed_grant = Some(process.clone());
+        state.system_prompt = "PROCESS ONLY".into();
+        state.meta.lock().unwrap().process_budget = Some(Arc::clone(&budget));
+        state
+            .apply_verified_governed_grant(process.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            budget.lock().unwrap().requests,
+            1,
+            "same grant must not reset usage"
+        );
+
+        let mut next_process = process;
+        next_process.grant_id = "grant-process-2".into();
+        next_process.turn_id = "turn-process-2".into();
+        next_process.run_id = "run-process-2".into();
+        next_process.process_budget.as_mut().unwrap().event_id = next_process.turn_id.clone();
+        sign_test_grant(&mut next_process);
+        let next_context = GovernedGrantVerificationContext {
+            organization_id: "org-1",
+            workspace_id: "workspace-1",
+            thread_id: "thread-1",
+            turn_id: "turn-process-2",
+            run_id: "run-process-2",
+            runtime_generation: 7,
+        };
+        verify_governed_tool_grant_with_keys(
+            &next_process,
+            &next_context,
+            1_000,
+            &test_grant_keys(),
+        )
+        .unwrap();
+        state
+            .apply_verified_governed_grant(next_process.clone())
+            .await
+            .unwrap();
+        assert!(state.meta.lock().unwrap().process_budget.is_none());
+        let next_budget = state
+            .agent
+            .as_ref()
+            .unwrap()
+            .install_process_budget(next_process.process_budget.clone().unwrap(), None)
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&budget, &next_budget),
+            "new event needs new allowance"
+        );
+        assert_eq!(next_budget.lock().unwrap().requests, 0);
+        {
+            let mut spent = next_budget.lock().unwrap();
+            spent.admit_request().unwrap();
+            spent.observe_usage(3, 0, None).unwrap();
+        }
+        state.meta.lock().unwrap().process_budget = Some(Arc::clone(&next_budget));
+        state
+            .apply_verified_governed_grant(next_process)
+            .await
+            .unwrap();
+        assert_eq!(next_budget.lock().unwrap().requests, 1);
+        let mut ordinary = test_grant();
+        ordinary.grant_id = "grant-ordinary".into();
+        ordinary.turn_id = "turn-ordinary".into();
+        ordinary.run_id = "run-ordinary".into();
+        sign_test_grant(&mut ordinary);
+        let context = GovernedGrantVerificationContext {
+            organization_id: "org-1",
+            workspace_id: "workspace-1",
+            thread_id: "thread-1",
+            turn_id: "turn-ordinary",
+            run_id: "run-ordinary",
+            runtime_generation: 7,
+        };
+        verify_governed_tool_grant_with_keys(&ordinary, &context, 1_000, &test_grant_keys())
+            .unwrap();
+        state.meta.lock().unwrap().turn_active = true;
+        assert!(
+            state
+                .apply_verified_governed_grant(ordinary.clone())
+                .await
+                .is_err()
+        );
+        assert!(state.meta.lock().unwrap().process_budget.is_some());
+        state.meta.lock().unwrap().turn_active = false;
+        state.apply_verified_governed_grant(ordinary).await.unwrap();
+        assert!(
+            state.meta.lock().unwrap().process_budget.is_none(),
+            "private cost requirement must be cleared"
+        );
+        assert!(!state.system_prompt.contains("PROCESS ONLY"));
+        let agent = state.agent.as_ref().unwrap();
+        assert!(
+            !agent
+                .runtime_audit_snapshot()
+                .system_prompt
+                .unwrap_or_default()
+                .contains("PROCESS ONLY")
+        );
+        agent
+            .prompt("ordinary prompt".into(), vec![])
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::TurnCompleted { .. }) => break,
+                    Some(FromAgent::Error {
+                        message,
+                        terminal: true,
+                        ..
+                    }) => panic!("{message}"),
+                    Some(_) => {}
+                    None => panic!("missing ordinary completion"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            scripted.remaining(),
+            0,
+            "ordinary prompt reached the provider"
+        );
+        assert_eq!(
+            budget.lock().unwrap().requests,
+            1,
+            "retired checkpoint is unchanged"
+        );
+        state.agent.take().unwrap().shutdown().await;
     }
 }

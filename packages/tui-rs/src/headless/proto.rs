@@ -41,6 +41,8 @@ mod tests {
 
     fn test_grant() -> RuntimeGovernedToolGrant {
         RuntimeGovernedToolGrant {
+            process_budget: None,
+            process_system_prompt: None,
             envelope_version: 2,
             grant_id: "grant-1".into(),
             grant_version: 1,
@@ -164,6 +166,7 @@ mod tests {
                 is_error: false,
             },
             ToAgentMessage::GovernedClientToolResult {
+                process_tool_cost_micros: None,
                 call_id: "call-1".into(),
                 content: vec![],
                 is_error: false,
@@ -568,6 +571,7 @@ mod tests {
             FromAgentMessage::ConversationSnapshot { .. }
             | FromAgentMessage::HelloOk { .. }
             | FromAgentMessage::ResponseAccepted { .. }
+            | FromAgentMessage::ProcessBudgetCheckpoint { .. }
             | FromAgentMessage::ManagedGatewayReceipt { .. }
             | FromAgentMessage::WorkspaceCapabilitySetApplied { .. }
             | FromAgentMessage::Ready { .. }
