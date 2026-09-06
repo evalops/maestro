@@ -386,7 +386,6 @@ export function validateReleaseWorkflow(source) {
 			EVENT_NAME: "${{ github.event_name }}",
 			REQUESTED: "${{ github.event.client_payload.version || github.event.inputs.version || github.ref_name }}",
 			TRIGGER_SHA: "${{ github.sha }}",
-			GH_TOKEN: "${{ github.token }}",
 		})
 	) {
 		failures.push("immutable resolver must bind the triggering event and SHA");
