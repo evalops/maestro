@@ -1,0 +1,38 @@
+{
+  "name": "theme-picker-green",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "green"
+    },
+    {
+      "wait": "(?s)Select Theme.*green.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Select Theme.*green.*Enter select.*Esc cancel"
+    }
+  ]
+}

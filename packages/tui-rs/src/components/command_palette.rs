@@ -501,6 +501,9 @@ impl CommandPalette {
         let theme = crate::themes::current_ui_theme();
         // The palette keeps its existing exclusive presentation over the composer.
         frame.render_widget(Clear, area);
+        frame
+            .buffer_mut()
+            .set_style(area, crate::themes::current_theme().canvas_style());
         let inner = Modal::sized("Search", ModalSize::Wide)
             .theme(theme)
             .render(frame, area);

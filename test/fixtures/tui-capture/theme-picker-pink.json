@@ -1,0 +1,38 @@
+{
+  "name": "theme-picker-pink",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "pink"
+    },
+    {
+      "wait": "(?s)Select Theme.*pink.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Select Theme.*pink.*Enter select.*Esc cancel"
+    }
+  ]
+}

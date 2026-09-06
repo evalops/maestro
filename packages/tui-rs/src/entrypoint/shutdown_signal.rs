@@ -643,7 +643,43 @@ pub(super) async fn run_with_shutdown(
         // normal completion) is what lets a signal arriving during the
         // caller's subsequent worktree cleanup still force an exit.
         result = &mut run => {
-            result
+            drop(run);
+            let code = result?;
+            let target = app.resume_target.take();
+            if target.is_some() {
+                app.stop_agent_for_resume().await;
+            }
+            tokio::task::spawn_blocking(move || drop(app)).await?;
+            if code == 0 {
+                if let Some((cwd, session_id)) = target {
+                    let executable = std::env::current_exe()?;
+                    #[cfg(unix)]
+                    {
+                        // Replace the process so the old terminal input reader
+                        // cannot compete with the resumed TUI for keystrokes.
+                        use std::os::unix::process::CommandExt;
+                        let error = tokio::task::spawn_blocking(move || {
+                            std::process::Command::new(executable)
+                                .current_dir(cwd)
+                                .arg("--resume-session")
+                                .arg(session_id)
+                                .exec()
+                        }).await?;
+                        return Err(error.into());
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let status = tokio::process::Command::new(executable)
+                            .current_dir(cwd)
+                            .arg("--resume-session")
+                            .arg(session_id)
+                            .status()
+                            .await?;
+                        return Ok(status.code().unwrap_or(1));
+                    }
+                }
+            }
+            Ok(code)
         },
     }
 }

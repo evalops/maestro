@@ -46,7 +46,7 @@ class CaptureTests(unittest.TestCase):
     def test_light_scenes_select_real_palette_and_reduced_motion_is_explicit(self):
         for name in (
             "approval-light", "command-palette-light", "theme-picker-light",
-            "model-picker-light", "session-picker-light",
+            "model-picker-light", "session-picker-light", "idle-light", "conversation-light",
         ):
             with self.subTest(scene=name):
                 scenario = capture.load_scenario(capture.FIXTURES / f"{name}.json")
@@ -207,6 +207,20 @@ class CaptureTests(unittest.TestCase):
                 self.assertEqual(image.format, "PNG")
                 self.assertEqual(image.getpixel((16, 16)), (210, 139, 135))
                 self.assertGreater(len(image.getcolors() or []), 2)
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required for PTY integration")
+    def test_capture_preserves_blank_canvas_background_to_right_edge(self):
+        with tempfile.TemporaryDirectory(prefix="mst-", dir="/tmp") as temp:
+            root = Path(temp)
+            binary = root / "fixture"
+            binary.write_text(
+                "#!/bin/sh\nprintf 'ready\\n\\033[48;2;238;232;224m%60s\\033[0m\\n' ''\nread answer\n"
+            )
+            binary.chmod(0o755)
+            with capture.Terminal(root, binary, 60, 15) as terminal:
+                terminal.wait("ready", 3)
+                screen = capture.screen_from_ansi(terminal.capture(), 60, 15)
+                self.assertEqual(screen.buffer[1][59].bg, "eee8e0")
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required for PTY integration")
     def test_real_terminal_capture_timeout_and_cleanup(self):

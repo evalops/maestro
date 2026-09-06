@@ -9,3 +9,5 @@ description = "Composable terminal UI primitives for Deixic Code"
 ratatui.workspace = true
 maestro-interaction.workspace = true
 crossterm.workspace = true
+textwrap.workspace = true
+unicode-width.workspace = true

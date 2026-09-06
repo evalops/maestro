@@ -190,7 +190,7 @@ class ReviewTests(unittest.TestCase):
                     self.real_catalog("preview")
 
     def invoke_review(
-        self, destination, baseline=None, source_values=None, identity="source"
+        self, destination, baseline=None, source_values=None, identity="source", scene_ids=None
     ):
         def execute(command, **kwargs):
             return identity if "--identity" in command else "ready"
@@ -208,8 +208,20 @@ class ReviewTests(unittest.TestCase):
         ):
             if source_values:
                 with patch.object(review, "source_digest", side_effect=source_values):
-                    return review.review(destination, baseline)
-            return review.review(destination, baseline)
+                    return review.review(destination, baseline, scene_ids=scene_ids)
+            return review.review(destination, baseline, scene_ids=scene_ids)
+
+    def test_focused_review_is_not_a_complete_baseline(self):
+        other = dict(self.scene, id="conversation-typing")
+        with patch.object(review, "catalog", return_value=[self.scene, other]):
+            destination = self.root / "focused"
+            result = self.invoke_review(destination, scene_ids=["conversation-typing"])
+            self.assertEqual(result["scenes"], [other])
+            self.assertFalse(result["complete"])
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                review.accept(destination, self.root / "must-not-accept")
+            with self.assertRaisesRegex(ValueError, "unknown scene"):
+                self.invoke_review(self.root / "unknown", scene_ids=["typo"])
 
     def test_orchestration_compares_before_after_and_detects_source_race(self):
         baseline = self.root / "baseline"

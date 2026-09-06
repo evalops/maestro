@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 use uuid::Uuid;
 
-const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.evalops.dev";
+pub(crate) const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.evalops.dev";
 const DEFAULT_IDENTITY_BASE_URL: &str = "https://identity.evalops.dev";
 const TRUSTED_IDENTITY_AUTHORITIES: &[&str] = &["identity.evalops.dev", "api.staging.evalops.dev"];
 pub const TEST_IDENTITY_AUTHORITY_ENV: &str = "MAESTRO_TEST_IDENTITY_AUTHORITY";
@@ -45,7 +45,8 @@ fn open_browser_disabled() -> bool {
         Some("0" | "false" | "off" | "no")
     )
 }
-const REQUIRED_LOGIN_SCOPES: &str = "llm_gateway:invoke sessions:read sessions:write";
+const REQUIRED_LOGIN_SCOPES: &str =
+    "llm_gateway:invoke sessions:read sessions:write product_issues:write";
 const DEFAULT_API_KEY_SCOPES: &[&str] = &[
     "agent:register",
     "agent:heartbeat",
@@ -2535,6 +2536,7 @@ mod tests {
     fn login_requests_session_history_authority() {
         let scopes = REQUIRED_LOGIN_SCOPES.split_whitespace().collect::<Vec<_>>();
         assert!(scopes.contains(&"llm_gateway:invoke"));
+        assert!(scopes.contains(&"product_issues:write"));
         assert!(scopes.contains(&"sessions:read"));
         assert!(scopes.contains(&"sessions:write"));
     }

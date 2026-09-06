@@ -80,6 +80,7 @@ impl ReceiptSummary {
             ToolReceiptDetails::Origin(origin) => {
                 ("origin", Some(bounded_text(origin, STRING_LIMIT)))
             }
+            ToolReceiptDetails::FeedbackDraft { .. } => ("feedback draft", None),
             ToolReceiptDetails::Cached => ("cached", None),
             ToolReceiptDetails::None => ("none", None),
         };
@@ -1098,6 +1099,7 @@ mod tests {
         }))
         .unwrap();
         ParsedSession {
+            selective_summary_context: None,
             header,
             messages,
             meta: None,

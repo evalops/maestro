@@ -901,7 +901,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 66); // includes coding acceptance and durable subagent control
+    assert_eq!(count, 67); // includes draft-only feedback and durable subagent control
 }
 
 #[test]
@@ -2109,7 +2109,16 @@ async fn test_executor_edit_not_found() {
     let result = executor.execute("edit", &args, None, "test-call").await;
 
     assert!(!result.success);
-    assert!(result.error.unwrap().contains("not found"));
+    assert!(result.error.as_ref().unwrap().contains("not found"));
+    let execution = crate::agent::protocol::ToolExecution::from_legacy(
+        "test-call",
+        "edit",
+        crate::agent::protocol::ExecutionSource::Native,
+        result,
+    );
+    assert!(matches!(execution.receipt.details,
+        crate::agent::protocol::ToolReceiptDetails::BuiltIn(crate::tools::details::ToolDetails::Edit(details)) if details.text_not_found));
+    assert_eq!(std::fs::read_to_string(file_path).unwrap(), "hello world");
 }
 
 #[tokio::test]

@@ -144,6 +144,8 @@ static SAFE_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyL
         "status",
         "todo",
         "ask_user",
+        // Prepares local feedback only; submission remains a user-owned action.
+        "draft_feedback",
         "get_harness_context",
         "propose_harness_refinement",
         "get_rlm_context",

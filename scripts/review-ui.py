@@ -194,7 +194,7 @@ def accept(directory, baseline):
         stage.rename(baseline)
 
 
-def review(output, baseline=None, font=None):
+def review(output, baseline=None, font=None, scene_ids=None):
     if output.exists():
         raise ValueError("output exists; choose a new review directory")
     if output.is_relative_to(ROOT):
@@ -215,11 +215,18 @@ def review(output, baseline=None, font=None):
     pinned = output / "maestro-ui-preview"
     shutil.copy2(binary, pinned)
     scenes = catalog(pinned)
+    if scene_ids:
+        requested = set(scene_ids)
+        missing = requested - {scene["id"] for scene in scenes}
+        if missing:
+            raise ValueError("unknown scene: " + ", ".join(sorted(missing)))
+        scenes = [scene for scene in scenes if scene["id"] in requested]
     if run([str(pinned), "--identity"]).strip() != before_source:
         raise ValueError("copied preview does not match current source inputs")
     manifest = {
         "schema": SCHEMA,
         "complete": False,
+        "selection": sorted(set(scene_ids or [])),
         "source_sha256": before_source,
         "binary_sha256": sha(pinned),
         "font": str(font),
@@ -247,7 +254,7 @@ def review(output, baseline=None, font=None):
         declared = {case_name(scene) for scene in baseline_manifest["scenes"]}
         if set(baseline_manifest["images"]) != declared:
             raise ValueError("baseline image set does not match its catalog")
-        for name in sorted(declared - {case_name(scene) for scene in scenes}):
+        for name in sorted(declared - {case_name(scene) for scene in scenes}) if not scene_ids else []:
             old = baseline / f"{name}.png"
             if sha(old) != baseline_manifest["images"][name]:
                 raise ValueError(f"baseline changed: {name}")
@@ -299,10 +306,10 @@ def review(output, baseline=None, font=None):
         rows.append(f"<tr><th>{html.escape(name)}<br>{status}</th>{cells}</tr>")
     if before_source != source_digest() or sha(pinned) != manifest["binary_sha256"]:
         raise ValueError("inputs changed during review; regenerate")
-    manifest["complete"] = True
+    manifest["complete"] = not bool(scene_ids)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (output / "index.html").write_text(
-        '<!doctype html><meta charset="utf-8"><title>Dex Code UI review</title><style>body{font:14px system-ui;background:#1b1c1e;color:#e6e4e0;padding:24px}table{border-collapse:collapse}td,th{padding:12px;border-bottom:1px solid #444;text-align:left}img{max-width:38vw}th{font-weight:400}</style><h1>Dex Code component review</h1><p>Shared native widgets with supplied state. Review all changes before accepting a baseline.</p><table><tr><th>Scene</th><th>Before</th><th>After</th><th>Difference</th></tr>'
+        '<!doctype html><meta charset="utf-8"><title>Dex Code UI review</title><style>body{font:14px system-ui;background:#1b1c1e;color:#e6e4e0;padding:24px}table{border-collapse:collapse}td,th{padding:12px;border-bottom:1px solid #444;text-align:left}img{max-width:38vw}th{font-weight:400}</style><h1>Dex Code component review</h1><p>Shared native widgets with supplied state. Focused captures cannot be accepted as a complete baseline.</p><table><tr><th>Scene</th><th>Before</th><th>After</th><th>Difference</th></tr>'
         + "".join(rows)
         + "</table>"
     )
@@ -314,6 +321,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--font")
+    parser.add_argument("--scene", action="append", help="render one scene ID at all catalog sizes; repeatable; cannot be accepted as a full baseline")
     parser.add_argument(
         "--accept",
         type=Path,
@@ -322,7 +330,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.accept:
-            if not args.baseline or args.output:
+            if not args.baseline or args.output or args.scene:
                 parser.error("--accept requires --baseline and cannot use --output")
             accept(args.accept.resolve(), args.baseline.resolve())
             print(f"Accepted reviewed images: {args.baseline}")
@@ -333,6 +341,7 @@ def main():
                 args.output.resolve(),
                 args.baseline.resolve() if args.baseline else None,
                 args.font,
+                scene_ids=args.scene,
             )
             print(
                 f"Rendered {len(result['images'])} scenes: {args.output / 'index.html'}"

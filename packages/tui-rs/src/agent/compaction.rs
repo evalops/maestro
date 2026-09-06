@@ -1296,6 +1296,15 @@ pub(crate) fn render_context_summary(summary: &str) -> String {
     )
 }
 
+/// Extract display prose only from the exact envelope produced by `render_context_summary`.
+/// Lookalike tags and user-authored partial wrappers are ordinary content.
+pub(crate) fn extract_context_summary(text: &str) -> Option<&str> {
+    text.strip_prefix("<context_summary>\n")?
+        .strip_prefix(SUMMARY_PREAMBLE)?
+        .strip_prefix("\n\n")?
+        .strip_suffix("\n</context_summary>\n\nPlease continue from where we left off.")
+}
+
 /// Result of a compaction operation
 #[derive(Debug)]
 pub struct CompactionResult {

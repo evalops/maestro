@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use super::entries::{SessionEntry, SessionHeader};
 use super::writer::generate_session_filename;
 
-const MAX_SESSION_LINE_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const MAX_SESSION_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Result of forking a session file.
 #[derive(Debug, Clone)]

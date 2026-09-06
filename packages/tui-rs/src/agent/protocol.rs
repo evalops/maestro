@@ -358,6 +358,12 @@ pub enum ExecutionSource {
 #[serde(tag = "kind", content = "details", rename_all = "snake_case")]
 pub enum ToolReceiptDetails {
     BuiltIn(ToolDetails),
+    /// A local feedback proposal, with no send authority or selected evidence.
+    FeedbackDraft {
+        description: String,
+        expected_behavior: String,
+        reproduction_steps: String,
+    },
     Mcp {
         server: String,
         tool: String,
@@ -518,6 +524,13 @@ impl ToolExecution {
     pub fn to_legacy(&self) -> ToolResult {
         let details = match &self.receipt.details {
             ToolReceiptDetails::BuiltIn(details) => Some(details.to_json()),
+            ToolReceiptDetails::FeedbackDraft {
+                description,
+                expected_behavior,
+                reproduction_steps,
+            } => Some(
+                serde_json::json!({"feedback_draft":{"description":description,"expected_behavior":expected_behavior,"context":{"reproduction_steps":reproduction_steps}}}),
+            ),
             ToolReceiptDetails::Mcp {
                 server,
                 tool,
@@ -921,6 +934,27 @@ fn receipt_details(tool_name: &str, details: Option<&serde_json::Value>) -> Tool
         };
     }
 
+    if tool_name == "draft_feedback" {
+        let draft = &details["feedback_draft"];
+        if let (Some(description), Some(expected), Some(steps)) = (
+            draft["description"].as_str(),
+            draft["expected_behavior"].as_str(),
+            draft["context"]["reproduction_steps"].as_str(),
+        ) {
+            if !description.is_empty()
+                && [description, expected, steps]
+                    .iter()
+                    .all(|text| text.len() <= 4000)
+            {
+                return ToolReceiptDetails::FeedbackDraft {
+                    description: description.to_owned(),
+                    expected_behavior: expected.to_owned(),
+                    reproduction_steps: steps.to_owned(),
+                };
+            }
+        }
+        return ToolReceiptDetails::None;
+    }
     let builtin = match tool_name.to_ascii_lowercase().as_str() {
         "bash" => BashDetails::from_json(details).map(ToolDetails::Bash),
         "read" => serde_json::from_value(details.clone())

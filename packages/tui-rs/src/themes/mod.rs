@@ -6,10 +6,11 @@
 //!
 //! # Built-in Themes
 //!
-//! Three themes are included out of the box:
+//! These themes are included out of the box:
 //!
 //! - **dark** (default): Dark background with soft, eye-friendly colors
 //! - **light**: Light background suitable for bright environments
+//! - **green**, **pink**, **blue**: Gentle, tinted full-canvas palettes
 //! - **high-contrast**: Maximum contrast for accessibility
 //!
 //! # Custom Themes
@@ -106,6 +107,12 @@ use std::sync::RwLock;
 use crate::palette;
 
 pub mod osc11;
+
+/// VS Code's bundled color assets, mapped offline into the native palette.
+static VSCODE_THEMES: std::sync::LazyLock<Vec<Theme>> = std::sync::LazyLock::new(|| {
+    serde_json::from_str(include_str!("vscode/themes.json"))
+        .expect("bundled VS Code theme mappings are validated by tests")
+});
 
 /// Global theme state
 static CURRENT_THEME: RwLock<Option<Theme>> = RwLock::new(None);
@@ -256,6 +263,7 @@ impl Theme {
             "muted" => &self.colors.muted,
             "dim" => &self.colors.dim,
             "text" => &self.colors.text,
+            "assistant_message_bg" => &self.colors.assistant_message_bg,
             "user_message_bg" => &self.colors.user_message_bg,
             "user_message_text" => &self.colors.user_message_text,
             "md_heading" => &self.colors.md_heading,
@@ -349,45 +357,146 @@ pub fn dark_theme() -> Theme {
 pub fn light_theme() -> Theme {
     let mut theme = Theme::new("light");
     theme.colors = ThemeColors {
-        accent: "#0284c7".to_string(),
-        border: "#cbd5e1".to_string(),
-        success: "#16a34a".to_string(),
-        error: "#dc2626".to_string(),
-        warning: "#d97706".to_string(),
-        muted: "#64748b".to_string(),
-        dim: "#94a3b8".to_string(),
-        text: "#1e293b".to_string(),
+        accent: "#70537c".to_string(),
+        border: "#c6bac5".to_string(),
+        success: "#38594c".to_string(),
+        error: "#893747".to_string(),
+        warning: "#704d2d".to_string(),
+        muted: "#655868".to_string(),
+        dim: "#5d5063".to_string(),
+        text: "#514754".to_string(),
 
-        user_message_bg: "#f1f5f9".to_string(),
-        user_message_text: "#1e293b".to_string(),
-        assistant_message_bg: "transparent".to_string(),
-        assistant_message_text: "#1e293b".to_string(),
+        user_message_bg: "#e7dfd7".to_string(),
+        user_message_text: "#514754".to_string(),
+        assistant_message_bg: "#eee8e0".to_string(),
+        assistant_message_text: "#514754".to_string(),
 
-        tool_pending_bg: "#f1f5f9".to_string(),
-        tool_success_bg: "#dcfce7".to_string(),
-        tool_error_bg: "#fee2e2".to_string(),
+        tool_pending_bg: "#e7dfd7".to_string(),
+        tool_success_bg: "#dfe7dc".to_string(),
+        tool_error_bg: "#eedde0".to_string(),
 
-        md_heading: "#1d4ed8".to_string(),
-        md_link: "#0284c7".to_string(),
-        md_code: "#a16207".to_string(),
-        md_code_block: "#f1f5f9".to_string(),
-        md_code_block_border: "#cbd5e1".to_string(),
-        md_quote: "#64748b".to_string(),
+        md_heading: "#4d5275".to_string(),
+        md_link: "#70537c".to_string(),
+        md_code: "#68492e".to_string(),
+        md_code_block: "#e7dfd7".to_string(),
+        md_code_block_border: "#c6bac5".to_string(),
+        md_quote: "#655868".to_string(),
 
-        syntax_comment: "#94a3b8".to_string(),
-        syntax_keyword: "#7c3aed".to_string(),
-        syntax_function: "#1d4ed8".to_string(),
-        syntax_variable: "#a16207".to_string(),
-        syntax_string: "#16a34a".to_string(),
-        syntax_number: "#c2410c".to_string(),
-        syntax_type: "#be185d".to_string(),
+        syntax_comment: "#5d5063".to_string(),
+        syntax_keyword: "#70537c".to_string(),
+        syntax_function: "#4d5275".to_string(),
+        syntax_variable: "#68492e".to_string(),
+        syntax_string: "#38594c".to_string(),
+        syntax_number: "#7a4633".to_string(),
+        syntax_type: "#734060".to_string(),
 
-        thinking_off: "#94a3b8".to_string(),
-        thinking_low: "#d97706".to_string(),
-        thinking_medium: "#1d4ed8".to_string(),
-        thinking_high: "#7c3aed".to_string(),
+        thinking_off: "#5d5063".to_string(),
+        thinking_low: "#704d2d".to_string(),
+        thinking_medium: "#4d5275".to_string(),
+        thinking_high: "#70537c".to_string(),
     };
+    theme.colors.tool_pending_bg = "#dfd5d0".into();
     theme
+}
+
+/// Get the sage green theme, inspired by Everforest's soft surfaces.
+#[must_use]
+pub fn green_theme() -> Theme {
+    tinted_light_theme(
+        "green", "#e6ecdf", "#dbe3d2", "#404f43", "#4d5d49", "#3f6247", "#acbba5",
+    )
+}
+
+/// Get the muted rose theme, inspired by Rosé Pine's warm pinks.
+#[must_use]
+pub fn pink_theme() -> Theme {
+    tinted_light_theme(
+        "pink", "#f0e1e6", "#e8d5dd", "#58434f", "#604a57", "#81435c", "#c6a9b8",
+    )
+}
+
+/// Get the soft blue-gray theme.
+#[must_use]
+pub fn blue_theme() -> Theme {
+    tinted_light_theme(
+        "blue", "#e2e9ef", "#d5e0e9", "#414f60", "#4d596c", "#40597f", "#a9bacb",
+    )
+}
+
+fn tinted_light_theme(
+    name: &str,
+    surface: &str,
+    panel: &str,
+    text: &str,
+    muted: &str,
+    accent: &str,
+    border: &str,
+) -> Theme {
+    let mut theme = light_theme();
+    theme.name = name.into();
+    theme.colors = ThemeColors {
+        accent: accent.into(),
+        border: border.into(),
+        text: text.into(),
+        muted: muted.into(),
+        user_message_bg: panel.into(),
+        user_message_text: text.into(),
+        assistant_message_bg: surface.into(),
+        assistant_message_text: text.into(),
+        tool_pending_bg: panel.into(),
+        md_heading: accent.into(),
+        md_link: accent.into(),
+        md_code_block: panel.into(),
+        md_code_block_border: border.into(),
+        md_quote: muted.into(),
+        syntax_keyword: accent.into(),
+        syntax_function: accent.into(),
+        thinking_medium: accent.into(),
+        thinking_high: accent.into(),
+        ..theme.colors
+    };
+    theme.colors.tool_pending_bg = match name {
+        "green" => "#cfdac5",
+        "pink" => "#dfc7d2",
+        "blue" => "#c8d6e2",
+        _ => panel,
+    }
+    .into();
+    theme
+}
+
+/// Full-canvas dark counterparts to the gentle light palettes.
+#[must_use]
+pub fn tinted_dark_theme(name: &str) -> Option<Theme> {
+    let (surface, panel, selection, text, muted, accent, border) = match name {
+        "green-dark" => (
+            "#222d27", "#2c3830", "#39473d", "#e0e8da", "#b1c0ac", "#b1d3a1", "#829780",
+        ),
+        "pink-dark" => (
+            "#30252e", "#3b2e38", "#493a45", "#eee0e7", "#cbb1c0", "#efb2cd", "#a3899a",
+        ),
+        "blue-dark" => (
+            "#242c37", "#2d3744", "#3a4655", "#e1e8ef", "#b0bfd0", "#adcbee", "#8195ae",
+        ),
+        _ => return None,
+    };
+    let mut theme = tinted_light_theme(name, surface, panel, text, muted, accent, border);
+    theme.colors.tool_pending_bg = selection.into();
+    theme.colors.success = "#b2d1a8".into();
+    theme.colors.warning = "#e4c795".into();
+    theme.colors.error = "#efb0af".into();
+    theme.colors.tool_success_bg = panel.into();
+    theme.colors.tool_error_bg = panel.into();
+    theme.colors.dim = muted.into();
+    theme.colors.md_code = "#e4c795".into();
+    theme.colors.syntax_comment = muted.into();
+    theme.colors.syntax_variable = text.into();
+    theme.colors.syntax_string = "#b2d1a8".into();
+    theme.colors.syntax_number = "#e4c795".into();
+    theme.colors.syntax_type = accent.into();
+    theme.colors.thinking_off = muted.into();
+    theme.colors.thinking_low = "#e4c795".into();
+    Some(theme)
 }
 
 /// Get the high contrast theme
@@ -447,8 +556,16 @@ pub fn available_themes() -> Vec<String> {
         "auto".to_string(),
         "dark".to_string(),
         "light".to_string(),
+        "green".to_string(),
+        "pink".to_string(),
+        "blue".to_string(),
+        "green-dark".to_string(),
+        "pink-dark".to_string(),
+        "blue-dark".to_string(),
         "high-contrast".to_string(),
     ];
+
+    themes.extend(VSCODE_THEMES.iter().map(|theme| theme.name.clone()));
 
     // Look for user themes
     if let Some(home) = dirs::home_dir() {
@@ -509,12 +626,23 @@ pub fn load_theme(name: &str) -> Result<Theme, ThemeError> {
         return load_theme(resolve_auto_theme_name());
     }
 
+    if let Some(theme) = tinted_dark_theme(name) {
+        return Ok(theme);
+    }
+
     // Check built-in themes first
     match name {
         "dark" => return Ok(dark_theme()),
         "light" => return Ok(light_theme()),
+        "green" => return Ok(green_theme()),
+        "pink" => return Ok(pink_theme()),
+        "blue" => return Ok(blue_theme()),
         "high-contrast" => return Ok(high_contrast_theme()),
         _ => {}
+    }
+
+    if let Some(theme) = VSCODE_THEMES.iter().find(|theme| theme.name == name) {
+        return Ok(theme.clone());
     }
 
     // Try user themes directory
@@ -659,10 +787,28 @@ pub fn current_ui_theme() -> maestro_ui::UiTheme {
 }
 
 impl Theme {
+    /// An explicit theme surface also owns the surrounding chat canvas.
+    #[must_use]
+    pub fn canvas_style(&self) -> Style {
+        parse_color(&self.colors.assistant_message_bg).map_or_else(Style::default, |surface| {
+            Style::default()
+                .bg(surface)
+                .fg(self.get_color("text").unwrap_or(Color::Reset))
+        })
+    }
+
     /// Resolve the shared control palette without changing the active theme.
     pub fn ui_theme(&self) -> maestro_ui::UiTheme {
         let theme = self;
         maestro_ui::UiTheme {
+            panel: self
+                .canvas_style()
+                .bg
+                .and_then(|_| parse_color(&theme.colors.user_message_bg)),
+            selection: self
+                .canvas_style()
+                .bg
+                .and_then(|_| parse_color(&theme.colors.tool_pending_bg)),
             surface: parse_color(&theme.colors.assistant_message_bg)
                 .or_else(|| parse_color(&theme.colors.md_code_block))
                 .unwrap_or(Color::Reset),
@@ -694,9 +840,186 @@ mod ui_theme_tests {
             assert_ne!(ui.surface, ui.text);
             assert_eq!(
                 ui.surface,
-                parse_color(&theme.colors.md_code_block).unwrap()
+                parse_color(&theme.colors.assistant_message_bg)
+                    .or_else(|| parse_color(&theme.colors.md_code_block))
+                    .unwrap()
             );
         }
+    }
+
+    #[test]
+    fn gentle_light_canvas_and_controls_share_readable_opaque_colors() {
+        for name in ["light", "green", "pink", "blue"] {
+            assert!(available_themes().contains(&name.to_string()));
+            let theme = load_theme(name).unwrap();
+            assert_eq!(theme.name, name);
+            let ui = theme.ui_theme();
+            assert_eq!(theme.canvas_style().bg, Some(ui.surface));
+            assert_eq!(theme.canvas_style().fg, Some(ui.text));
+            assert_eq!(dark_theme().canvas_style(), Style::default());
+            let luminance = |hex: &str| {
+                let linear = |offset| {
+                    let value =
+                        f64::from(u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap())
+                            / 255.0;
+                    if value <= 0.04045 {
+                        value / 12.92
+                    } else {
+                        ((value + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                0.2126 * linear(1) + 0.7152 * linear(3) + 0.0722 * linear(5)
+            };
+            for foreground in [
+                &theme.colors.text,
+                &theme.colors.muted,
+                &theme.colors.accent,
+                &theme.colors.success,
+                &theme.colors.warning,
+                &theme.colors.error,
+            ] {
+                let ratio = (luminance(&theme.colors.assistant_message_bg) + 0.05)
+                    / (luminance(foreground) + 0.05);
+                assert!(
+                    ratio >= 4.5,
+                    "{} {foreground} has only {ratio:.2}:1 contrast",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn theme_families_keep_text_readable_on_every_surface() {
+        fn luminance(hex: &str) -> f64 {
+            let linear = |i| {
+                let v = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).unwrap()) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(1) + 0.7152 * linear(3) + 0.0722 * linear(5)
+        }
+        for name in [
+            "light",
+            "green",
+            "pink",
+            "blue",
+            "green-dark",
+            "pink-dark",
+            "blue-dark",
+        ] {
+            let theme = load_theme(name).unwrap();
+            let c = &theme.colors;
+            for bg in [
+                &c.assistant_message_bg,
+                &c.user_message_bg,
+                &c.tool_pending_bg,
+                &c.md_code_block,
+            ] {
+                for fg in [
+                    &c.text,
+                    &c.muted,
+                    &c.accent,
+                    &c.success,
+                    &c.warning,
+                    &c.error,
+                    &c.md_code,
+                    &c.syntax_comment,
+                    &c.syntax_keyword,
+                    &c.syntax_function,
+                    &c.syntax_variable,
+                    &c.syntax_string,
+                    &c.syntax_number,
+                    &c.syntax_type,
+                ] {
+                    let (a, b) = (luminance(bg), luminance(fg));
+                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                    assert!(contrast >= 4.5, "{name} {fg} on {bg}: {contrast:.2}:1");
+                }
+            }
+            assert!(available_themes().contains(&name.to_string()));
+            assert_ne!(c.assistant_message_bg, c.user_message_bg);
+            assert_ne!(c.user_message_bg, c.tool_pending_bg);
+        }
+    }
+
+    #[test]
+    fn limited_color_families_preserve_text_and_surface_separation() {
+        for name in [
+            "light",
+            "green",
+            "pink",
+            "blue",
+            "green-dark",
+            "pink-dark",
+            "blue-dark",
+        ] {
+            let theme = load_theme(name).unwrap();
+            for level in [palette::ColorLevel::Basic, palette::ColorLevel::Indexed] {
+                let convert = |hex: &str| {
+                    palette::color_for_level(
+                        u8::from_str_radix(&hex[1..3], 16).unwrap(),
+                        u8::from_str_radix(&hex[3..5], 16).unwrap(),
+                        u8::from_str_radix(&hex[5..7], 16).unwrap(),
+                        level,
+                    )
+                };
+                for fg in [
+                    &theme.colors.text,
+                    &theme.colors.muted,
+                    &theme.colors.accent,
+                    &theme.colors.success,
+                    &theme.colors.warning,
+                    &theme.colors.error,
+                ] {
+                    for bg in [
+                        &theme.colors.assistant_message_bg,
+                        &theme.colors.user_message_bg,
+                        &theme.colors.tool_pending_bg,
+                    ] {
+                        assert_ne!(
+                            convert(fg),
+                            convert(bg),
+                            "{name}: {fg} collapses onto {bg} at {level:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_vscode_palettes_are_selectable_and_fully_opaque() {
+        let names = available_themes();
+        assert!(VSCODE_THEMES.len() >= 19);
+        let mut seen = std::collections::HashSet::new();
+        for source in VSCODE_THEMES.iter() {
+            assert!(seen.insert(&source.name));
+            assert_eq!(names.iter().filter(|name| *name == &source.name).count(), 1);
+            let theme = load_theme(&source.name).unwrap();
+            assert_eq!(
+                theme.colors.assistant_message_bg,
+                source.colors.assistant_message_bg
+            );
+            assert_ne!(theme.colors.text, theme.colors.assistant_message_bg);
+            for (_, value) in serde_json::to_value(&theme.colors)
+                .unwrap()
+                .as_object()
+                .unwrap()
+            {
+                let value = value.as_str().unwrap();
+                assert_eq!(value.len(), 7, "{}: {value}", theme.name);
+                assert!(
+                    value.starts_with('#') && value[1..].chars().all(|c| c.is_ascii_hexdigit())
+                );
+            }
+            assert_eq!(theme.canvas_style().bg, Some(theme.ui_theme().surface));
+        }
+        let monokai = load_theme("vscode-monokai").unwrap();
+        assert_eq!(monokai.colors.assistant_message_bg, "#272822");
     }
 
     #[test]

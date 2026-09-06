@@ -1,4 +1,6 @@
 //! Deterministic component scenes using the widgets linked by the native TUI.
+mod conversation;
+
 use maestro_presentation::{
     appearance::{Appearance, LOOKS},
     clock::{ViewClock, pet_frame},
@@ -74,6 +76,7 @@ pub fn catalog() -> Vec<Scene> {
             });
         }
     }
+    scenes.extend(conversation::scenes());
     scenes
 }
 
@@ -83,6 +86,9 @@ pub fn render(scene: &Scene) -> Result<Buffer, String> {
         || scene.time_ms > 86_400_000
     {
         return Err("width must be 8..240, height 3..100, time-ms 0..86400000".into());
+    }
+    if scene.id.starts_with("conversation-") {
+        return conversation::render(scene);
     }
     if matches!(scene.id.as_str(), "picker" | "picker-scrolled") {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(

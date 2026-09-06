@@ -444,6 +444,10 @@ struct Args {
     #[arg(short, long)]
     resume: bool,
 
+    /// Resume a specific session in its saved workspace.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["resume", "continue", "print", "headless", "rpc", "no_session", "worktree", "prompt"])]
+    resume_session: Option<String>,
+
     /// Do not persist this conversation (ephemeral session).
     #[arg(long = "no-session")]
     no_session: bool,
@@ -1026,7 +1030,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     // Parse command-line arguments using clap.
     // `Args::parse()` reads from std::env::args() and returns our Args struct.
     // If parsing fails (e.g., unknown flag), clap prints help and exits.
-    let args = match Args::try_parse_from(raw_args.clone()) {
+    let mut args = match Args::try_parse_from(raw_args.clone()) {
         Ok(args) => args,
         Err(error)
             if matches!(
@@ -1039,6 +1043,15 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         }
         Err(error) => return Err(error.into()),
     };
+
+    if let Some(id) = &args.resume_session {
+        let cwd = std::env::current_dir()?;
+        let manager = crate::session::SessionManager::new(cwd.to_string_lossy().to_string());
+        let session = manager.load_session(id)?;
+        if args.model.is_none() {
+            args.model = Some(session.header.model);
+        }
+    }
 
     // Set API key from CLI if provided.
     // This allows users to override environment variables via command line.
@@ -1135,7 +1148,14 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         return Ok(code);
     }
 
-    run_interactive_with_shutdown(move || App::new_with_initial_prompt(initial_prompt)).await
+    run_interactive_with_shutdown(move || {
+        let mut app = App::new_with_initial_prompt(initial_prompt)?;
+        if let Some(id) = &args.resume_session {
+            app.resume_session_at_startup(id);
+        }
+        Ok(app)
+    })
+    .await
 }
 
 /// The trust command writes global trust for the current working directory.

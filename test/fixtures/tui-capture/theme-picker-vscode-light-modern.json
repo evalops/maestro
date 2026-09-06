@@ -1,0 +1,38 @@
+{
+  "name": "theme-picker-vscode-light-modern",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "vscode-light-modern"
+    },
+    {
+      "wait": "(?s)Select Theme.*vscode-light-modern.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Select Theme.*vscode-light-modern.*Enter select.*Esc cancel"
+    }
+  ]
+}

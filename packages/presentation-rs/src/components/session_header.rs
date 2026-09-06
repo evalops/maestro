@@ -32,6 +32,7 @@ pub struct SessionHeaderWidget<'a> {
     git_branch: Option<&'a str>,
     context_used: Option<u64>,
     context_window: Option<u64>,
+    theme: Option<maestro_ui::UiTheme>,
 }
 
 impl<'a> SessionHeaderWidget<'a> {
@@ -42,7 +43,15 @@ impl<'a> SessionHeaderWidget<'a> {
             git_branch,
             context_used: None,
             context_window: None,
+            theme: None,
         }
+    }
+
+    /// Supply the application's palette; omitted palettes keep legacy terminal styling.
+    #[must_use]
+    pub fn theme(mut self, theme: Option<maestro_ui::UiTheme>) -> Self {
+        self.theme = theme;
+        self
     }
 
     #[must_use]
@@ -59,7 +68,10 @@ impl Widget for SessionHeaderWidget<'_> {
             return;
         }
 
-        buf.set_style(area, Style::default().bg(brand_surface()));
+        buf.set_style(
+            area,
+            Style::default().bg(self.theme.map_or_else(brand_surface, |theme| theme.surface)),
+        );
         let location = format_session_location(self.cwd, self.git_branch);
         let brand_label = super::deixic_logo::PRODUCT_TITLE;
         let brand_width = brand_label.width() as u16;
@@ -79,12 +91,18 @@ impl Widget for SessionHeaderWidget<'_> {
         let mut header_spans = vec![Span::styled(
             brand_label,
             Style::default()
-                .fg(brand_violet())
+                .fg(self.theme.map_or_else(brand_violet, |theme| theme.focus))
                 .add_modifier(Modifier::BOLD),
         )];
         if !location.is_empty() {
-            header_spans.push(Span::styled(divider, Style::default().fg(brand_border())));
-            header_spans.push(Span::styled(location, Style::default().fg(brand_muted())));
+            header_spans.push(Span::styled(
+                divider,
+                Style::default().fg(self.theme.map_or_else(brand_border, |theme| theme.border)),
+            ));
+            header_spans.push(Span::styled(
+                location,
+                Style::default().fg(self.theme.map_or_else(brand_muted, |theme| theme.muted)),
+            ));
         }
         Paragraph::new(Line::from(header_spans)).render(area, buf);
 
@@ -93,21 +111,23 @@ impl Widget for SessionHeaderWidget<'_> {
                 (Some(used), Some(window))
                     if used.saturating_mul(100) >= window.saturating_mul(90) =>
                 {
-                    Color::Red
+                    self.theme.map_or(Color::Red, |theme| theme.error)
                 }
                 (Some(used), Some(window))
                     if used.saturating_mul(100) >= window.saturating_mul(75) =>
                 {
-                    Color::Yellow
+                    self.theme.map_or(Color::Yellow, |theme| theme.attention)
                 }
-                _ => brand_muted(),
+                _ => self.theme.map_or_else(brand_muted, |theme| theme.muted),
             };
             let x = area.right().saturating_sub(context_width);
             buf.set_string(
                 x,
                 area.y,
                 context,
-                Style::default().fg(color).bg(brand_surface()),
+                Style::default()
+                    .fg(color)
+                    .bg(self.theme.map_or_else(brand_surface, |theme| theme.surface)),
             );
         }
     }

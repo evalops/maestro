@@ -102,6 +102,7 @@ mod tests {
 
     fn executed(tool_name: &str, args: &serde_json::Value, call_index: u64) -> ToolResultContext {
         ToolResultContext {
+            edit: None,
             turn_id: "turn-1".to_string(),
             call_id: format!("call-{call_index}"),
             tool_name: tool_name.to_string(),

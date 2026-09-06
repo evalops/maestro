@@ -6701,6 +6701,8 @@ async fn a2a_tasks_list_supports_spec_filters_pagination_and_payload_trimming() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn a2a_tasks_list_rejects_invalid_history_length() {
+    // Authorization reads the profile environment mutated by other tests.
+    let _guard = ENV_LOCK.lock().await;
     let state = test_app_state_with_sessions(HashMap::new());
     let request = "GET /tasks?historyLength=abc HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
     let mut initial = request.as_bytes().to_vec();

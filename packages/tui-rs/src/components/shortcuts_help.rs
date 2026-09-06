@@ -288,6 +288,16 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
+            "Ctrl+S",
+            "Stash / restore / swap draft",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Ctrl+R",
+            "Search prompt history",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
             "Ctrl+U",
             "Delete to start of line",
         ));

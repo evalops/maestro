@@ -3093,6 +3093,7 @@ mod tests {
             favorite: false,
         };
         ParsedSession {
+            selective_summary_context: None,
             header,
             messages: vec![
                 AppMessage::User {

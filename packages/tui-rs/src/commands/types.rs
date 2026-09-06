@@ -249,6 +249,8 @@ pub enum CommandAction {
     SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)
     CompactConversation(Option<String>),
+    /// Summarize a selected span into a saved child conversation.
+    SummarizeConversation,
     /// MCP (Model Context Protocol) actions
     Mcp(McpAction),
     /// Native hosted Computer task console actions.
@@ -269,6 +271,8 @@ pub enum CommandAction {
     SetFocus(Option<bool>),
     /// Export current session
     ExportSession(ExportAction),
+    /// Manage a local product issue draft; only Send performs network I/O.
+    BugReport(String),
     /// Show or search prompt history
     ShowHistory(HistoryAction),
     /// Show tool execution history

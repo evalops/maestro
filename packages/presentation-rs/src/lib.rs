@@ -6,9 +6,12 @@ pub mod dex_delight;
 pub mod shimmer;
 pub mod components {
     pub mod appearance_picker;
+    pub mod composer;
     pub mod deixic_logo;
     pub mod dex_companion;
     pub mod session_header;
+    pub mod theme_preview;
+    pub mod tool_result;
 }
 
 pub mod palette;

@@ -1,0 +1,38 @@
+{
+  "name": "theme-picker-blue-dark",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "blue-dark"
+    },
+    {
+      "wait": "(?s)Select Theme.*blue.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Select Theme.*blue.*Enter select.*Esc cancel"
+    }
+  ]
+}

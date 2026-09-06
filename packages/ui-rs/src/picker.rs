@@ -132,6 +132,8 @@ mod tests {
 
     fn theme() -> UiTheme {
         UiTheme {
+            panel: None,
+            selection: None,
             surface: Color::Black,
             text: Color::White,
             muted: Color::Gray,

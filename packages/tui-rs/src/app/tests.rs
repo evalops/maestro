@@ -710,6 +710,7 @@ fn test_compact_conversation_logic() {
 fn test_restore_visible_session_messages_applies_compactions() {
     let mut state = AppState::new();
     let session = ParsedSession {
+        selective_summary_context: None,
         header: SessionHeader {
             version: Some(2),
             id: "session-1".to_string(),
@@ -818,6 +819,7 @@ fn test_restore_visible_session_messages_applies_compactions() {
 fn test_restore_visible_session_messages_applies_multiple_compactions_in_order() {
     let mut state = AppState::new();
     let session = ParsedSession {
+        selective_summary_context: None,
         header: SessionHeader {
             version: Some(2),
             id: "session-2".to_string(),
@@ -952,6 +954,7 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
 fn test_restore_lifecycle_notifications_in_compacted_transcript_order() {
     let mut state = AppState::new();
     let session = ParsedSession {
+        selective_summary_context: None,
         header: SessionHeader {
             version: Some(2),
             id: "session-lifecycle-order".to_string(),
@@ -3082,6 +3085,7 @@ fn rewind_is_blocked_while_busy() {
 fn restore_side_questions_by_timestamp_without_model_history_entries() {
     let mut state = AppState::new();
     let session = ParsedSession {
+        selective_summary_context: None,
         header: SessionHeader {
             version: Some(2),
             id: "ordered-side-questions".into(),
@@ -5559,4 +5563,373 @@ fn dex_reactions_respect_attention_and_reduced_motion() {
     app.pet_dex();
     assert!(!app.dex_pet_active());
     assert!(app.dex_look().pet_frame.is_none());
+}
+
+#[test]
+fn cross_workspace_resume_defers_transcript_until_fresh_agent_and_missing_workspace_stays_open() {
+    use std::io::Write;
+    let root = tempdir().unwrap();
+    let target = root.path().join("retained-worktree");
+    std::fs::create_dir(&target).unwrap();
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let mut file =
+        std::fs::File::create(sessions.join("2024-01-15T10-30-00-000Z_target.jsonl")).unwrap();
+    writeln!(file, "{}", serde_json::json!({"type":"session","id":"target","timestamp":"2024-01-15T10:30:00Z","cwd":target,"model":"openai/gpt-5.2","thinkingLevel":"medium"})).unwrap();
+    drop(file);
+    let mut app = new_test_app();
+    app.session_manager =
+        crate::session::SessionManager::with_sessions_dir(root.path().to_str().unwrap(), &sessions);
+    app.state.session_id = Some("original".into());
+    app.resume_session_at_startup("target");
+    assert!(app.should_quit);
+    assert_eq!(app.resume_target, Some((target.clone(), "target".into())));
+    assert_eq!(app.state.session_id.as_deref(), Some("original"));
+    // A vanished worktree must not close the current conversation.
+    app.should_quit = false;
+    app.resume_target = None;
+    std::fs::remove_dir(&target).unwrap();
+    app.resume_session_at_startup("target");
+    assert!(!app.should_quit);
+    assert!(app.resume_target.is_none());
+    assert_eq!(app.state.session_id.as_deref(), Some("original"));
+    assert!(app.state.error.as_deref().unwrap().contains("workspace"));
+}
+
+#[tokio::test]
+async fn bug_report_draft_persists_and_dismiss_suppresses_repeated_suggestions() {
+    use crate::bug_report::{self, DraftStatus};
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.handle_bug_report("draft The terminal stopped responding")
+        .await
+        .unwrap();
+    app.handle_bug_report("expected The next turn should start")
+        .await
+        .unwrap();
+    let saved = bug_report::load(app.session_manager.current_session_path().as_deref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.description, "The terminal stopped responding");
+    assert_eq!(saved.expected_behavior, "The next turn should start");
+    assert_eq!(saved.status, DraftStatus::Draft);
+    app.handle_bug_report("dismiss").await.unwrap();
+    app.suggest_bug_report();
+    assert_eq!(
+        bug_report::load(app.session_manager.current_session_path().as_deref())
+            .unwrap()
+            .unwrap()
+            .status,
+        DraftStatus::Dismissed
+    );
+    app.handle_bug_report("draft A different problem")
+        .await
+        .unwrap();
+    let next = bug_report::load(app.session_manager.current_session_path().as_deref())
+        .unwrap()
+        .unwrap();
+    assert_ne!(next.id, saved.id);
+}
+
+#[tokio::test]
+async fn bug_report_suggestion_never_copies_error_payload_and_does_not_replace_a_draft() {
+    use crate::bug_report;
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.ensure_session_started().unwrap();
+    app.handle_agent_message(FromAgent::Error {
+        message: "private provider payload".into(),
+        fatal: false,
+        terminal: true,
+        retryable: false,
+    })
+    .await
+    .unwrap();
+    let first = bug_report::load(app.session_manager.current_session_path().as_deref())
+        .unwrap()
+        .unwrap();
+    assert!(!first.description.contains("private provider payload"));
+    app.suggest_bug_report();
+    assert_eq!(
+        first.id,
+        bug_report::load(app.session_manager.current_session_path().as_deref())
+            .unwrap()
+            .unwrap()
+            .id
+    );
+}
+
+#[tokio::test]
+async fn composer_recall_stash_swaps_complete_drafts_without_losing_attachments() {
+    let mut app = new_test_app();
+    let pasted = "世界 pasted\n".repeat(12);
+    app.state.insert_paste(&pasted);
+    app.state.textarea.set_cursor(3);
+    let folded = app.state.textarea.display_text().into_owned();
+    app.pending_attachments = vec!["/tmp/first.png".into()];
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert!(app.state.input().is_empty());
+    assert!(app.pending_attachments.is_empty());
+    app.state.set_input("second draft");
+    app.state.textarea.set_cursor(2);
+    app.pending_attachments = vec!["/tmp/second.png".into()];
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), pasted);
+    assert_eq!(app.state.cursor(), 3);
+    assert_eq!(app.state.textarea.display_text(), folded);
+    assert_eq!(app.pending_attachments, ["/tmp/first.png"]);
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "second draft");
+    assert_eq!(app.state.cursor(), 2);
+    assert_eq!(app.pending_attachments, ["/tmp/second.png"]);
+}
+
+#[tokio::test]
+async fn composer_recall_search_cancel_preserves_draft_and_enter_never_submits() {
+    let mut app = new_test_app();
+    app.prompt_history.add("deploy staging safely");
+    app.prompt_history.add("review production changes");
+    app.state.set_input("original 世界 draft");
+    app.state.textarea.set_cursor(9);
+    app.pending_attachments = vec!["/tmp/image.png".into()];
+    let messages = app.state.messages.len();
+    app.handle_key(KeyCode::Char('r'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    app.handle_paste("dss"); // Existing history fuzzy subsequence matching.
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "original 世界 draft");
+    assert_eq!(app.state.cursor(), 9);
+    assert_eq!(app.pending_attachments, ["/tmp/image.png"]);
+    app.handle_key(KeyCode::Char('r'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    app.handle_paste("dss");
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "deploy staging safely");
+    assert_eq!(app.pending_attachments, ["/tmp/image.png"]);
+    assert_eq!(app.state.messages.len(), messages);
+    assert!(!app.state.busy);
+    assert!(app.history_search.is_none());
+}
+
+#[tokio::test]
+async fn composer_recall_search_selection_and_empty_results_stay_in_search() {
+    let mut app = new_test_app();
+    app.prompt_history.add("older prompt");
+    app.prompt_history.add("newer prompt");
+    app.state.set_input("draft");
+    app.handle_key(KeyCode::Char('r'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    app.handle_key(KeyCode::Down, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "older prompt");
+    app.handle_key(KeyCode::Char('r'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    app.handle_paste("zzzz_no_match");
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert!(app.history_search.is_some());
+    assert_eq!(app.state.input(), "older prompt");
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    app.active_modal = ActiveModal::ShortcutsHelp;
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert!(app.draft_stash.is_none());
+    assert_eq!(app.state.input(), "older prompt");
+}
+
+#[tokio::test]
+async fn composer_recall_attachment_only_stash_restores_into_empty_composer() {
+    let mut app = new_test_app();
+    app.pending_attachments = vec!["/tmp/image.png".into()];
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert!(app.draft_stash.is_some());
+    assert!(app.pending_attachments.is_empty());
+    app.handle_key(KeyCode::Char('s'), CrosstermModifiers::CONTROL)
+        .await
+        .unwrap();
+    assert!(app.draft_stash.is_none());
+    assert_eq!(app.pending_attachments, ["/tmp/image.png"]);
+    assert!(app.state.input().is_empty());
+}
+
+#[tokio::test]
+async fn selective_summary_failed_adoption_removes_child_and_keeps_original() {
+    // Other tests fork subprocesses, which can temporarily inherit a just-
+    // released flock until exec. Exercise the intended failure points in an
+    // isolated process without weakening their assertions or retrying saves.
+    if std::env::var_os("MAESTRO_SUMMARY_ADOPTION_TEST_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::selective_summary_failed_adoption_removes_child_and_keeps_original",
+                "--nocapture",
+            ])
+            .env("MAESTRO_SUMMARY_ADOPTION_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use crate::agent::selective_summary::SelectiveSummaryResult;
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.ensure_session_started().unwrap();
+    app.flush_session();
+    let original = app.session_manager.current_session_path().unwrap();
+    let before = std::fs::read(&original).unwrap();
+    for messages in [
+        Vec::new(),
+        vec![crate::ai::Message {
+            role: crate::ai::Role::User,
+            content: crate::ai::MessageContent::text("summary"),
+        }],
+    ] {
+        let error = app
+            .save_selective_summary(
+                &SelectiveSummaryResult {
+                    messages,
+                    summary: "summary".into(),
+                    first_turn: 1,
+                    last_turn: 1,
+                    total_turns: 1,
+                },
+                "stale".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("empty") || error.to_string().contains("Agent stopped"),
+            "{error:#}"
+        );
+        assert_eq!(
+            app.session_manager.current_session_path().as_ref(),
+            Some(&original)
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), before);
+        let transcripts = std::fs::read_dir(original.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .collect::<Vec<_>>();
+        assert_eq!(transcripts, vec![original.clone()]);
+    }
+}
+
+#[tokio::test]
+async fn selective_summary_continue_restores_exact_provider_history() {
+    use crate::agent::{NativeAgent, NativeAgentConfig};
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.ensure_session_started().unwrap();
+    let (_, child_path) = app.session_manager.fork_session_snapshot().unwrap();
+    let history: Vec<crate::ai::Message> = serde_json::from_value(serde_json::json!([
+        {"role":"user", "content":crate::agent::compaction::render_context_summary("previous work")},
+        {"role":"user", "content":"retained request"},
+        {"role":"assistant", "content":[{"type":"tool_use","id":"read-1","name":"read","input":{"path":"test.txt"}}]},
+        {"role":"user", "content":[{"type":"tool_result","tool_use_id":"read-1","content":"result","is_error":false}]},
+        {"role":"assistant", "content":"retained answer"}
+    ])).unwrap();
+    crate::session::append_selective_summary_checkpoint(&child_path, &history).unwrap();
+    let original = app.session_manager.current_session_path().unwrap();
+    std::fs::File::open(&original)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH)
+        .unwrap();
+    let client = crate::ai::UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("fixture", "http://127.0.0.1:1/v1").unwrap(),
+    );
+    let (agent, _events) = NativeAgent::new_with_test_client(
+        NativeAgentConfig {
+            model: "openai/gpt-5.5".into(),
+            cwd: "/tmp".into(),
+            ..Default::default()
+        },
+        client,
+    )
+    .unwrap();
+    app.native_agent = Some(agent);
+    app.continue_last_session();
+    assert_eq!(
+        app.session_manager.current_session_path().as_ref(),
+        Some(&child_path)
+    );
+    let preview = app
+        .native_agent
+        .as_ref()
+        .unwrap()
+        .start_selective_summary_preview()
+        .unwrap();
+    let actual = tokio::time::timeout(Duration::from_secs(5), preview)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let expected = crate::agent::selective_summary::preview(&history).unwrap();
+    assert_eq!(actual.history_digest, expected.history_digest);
+    app.native_agent.take().unwrap().shutdown().await;
+}
+
+#[tokio::test]
+async fn feedback_model_drafts_queue_hide_and_edit_without_sending() {
+    use crate::bug_report::{self, DraftStatus};
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path().join("sessions"));
+    app.ensure_session_started().unwrap();
+    let tool = bug_report::draft_tool(
+        serde_json::json!({"description":"Ignored correction", "expected_behavior":"Follow correction", "reproduction_steps":"Correct and retry"}),
+    );
+    app.accept_feedback_tool("draft_feedback", &tool);
+    app.handle_bug_report("hide").await.unwrap();
+    let path = app.session_manager.current_session_path().unwrap();
+    let draft = bug_report::load(Some(&path)).unwrap().unwrap();
+    assert!(draft.hidden);
+    assert_eq!(draft.status, DraftStatus::Draft);
+    app.handle_bug_report("queue").await.unwrap();
+    assert_eq!(app.active_modal, ActiveModal::Feedback);
+    app.handle_feedback_key(KeyCode::Enter).await.unwrap();
+    app.handle_feedback_key(KeyCode::Char('r')).await.unwrap();
+    app.handle_paste(" then observe the second failure");
+    app.handle_feedback_key(KeyCode::Enter).await.unwrap();
+    let saved = bug_report::load(Some(&path)).unwrap().unwrap();
+    assert!(saved.context.reproduction_steps.ends_with("second failure"));
+    assert!(!matches!(
+        saved.status,
+        DraftStatus::Sending | DraftStatus::Sent { .. }
+    ));
+    app.handle_bug_report("new Another failure").await.unwrap();
+    assert_eq!(bug_report::load_all(&path).unwrap().len(), 2);
 }
