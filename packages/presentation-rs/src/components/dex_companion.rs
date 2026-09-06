@@ -55,6 +55,7 @@ pub struct DexCompanion {
     animations: bool,
     frame: u64,
     look: crate::dex_delight::DexLook,
+    theme: Option<maestro_ui::UiTheme>,
 }
 
 impl DexCompanion {
@@ -67,6 +68,7 @@ impl DexCompanion {
             animations: false,
             frame: 0,
             look: Default::default(),
+            theme: None,
         }
     }
 
@@ -95,6 +97,17 @@ impl DexCompanion {
     pub const fn look(mut self, look: crate::dex_delight::DexLook) -> Self {
         self.look = look;
         self
+    }
+
+    /// Match an opaque application palette; absent palettes retain the chosen cosmetics.
+    pub const fn theme(mut self, theme: Option<maestro_ui::UiTheme>) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    fn accent(&self) -> Color {
+        self.theme
+            .map_or(self.look.accent.color(), |theme| theme.focus)
     }
 
     /// Six compact expressions; the explicit state label remains the authority.
@@ -132,7 +145,7 @@ impl DexCompanion {
             self.look.eyes(self.state, motion),
             self.look.prop()
         );
-        let style = Style::default().fg(self.look.accent.color());
+        let style = Style::default().fg(self.accent());
         if !self.hopping() && area.height > 1 {
             Paragraph::new(self.look.cap())
                 .style(style)
@@ -149,7 +162,7 @@ impl DexCompanion {
         let mut spans = vec![Span::styled(
             "Dex",
             Style::default()
-                .fg(self.look.accent.color())
+                .fg(self.accent())
                 .add_modifier(Modifier::BOLD),
         )];
         if self.personality == DexPersonality::Expressive {
@@ -167,7 +180,11 @@ impl DexCompanion {
             spans.push(Span::raw(format!(" {signal}")));
         }
         spans.push(Span::raw(format!(" · {}", self.state.label())));
-        Line::from(spans)
+        let line = Line::from(spans);
+        match self.theme {
+            Some(theme) => line.style(theme.text_style()),
+            None => line,
+        }
     }
 }
 
@@ -194,7 +211,7 @@ impl Widget for DexCompanion {
                         line.to_string()
                             .replace("•   •", eyes)
                             .replace("• •", &eyes.replace("   ", " ")),
-                        Style::default().fg(self.look.accent.color()),
+                        Style::default().fg(self.accent()),
                     )
                 })
                 .collect()
@@ -216,20 +233,32 @@ pub fn render_welcome_portrait(
     state: DexCompanionState,
     animations: bool,
 ) {
+    render_welcome_portrait_with_theme(area, buf, look, state, animations, None);
+}
+
+/// Draw the welcome portrait using the same palette as the surrounding mark.
+pub fn render_welcome_portrait_with_theme(
+    area: Rect,
+    buf: &mut Buffer,
+    look: crate::dex_delight::DexLook,
+    state: DexCompanionState,
+    animations: bool,
+    theme: Option<maestro_ui::UiTheme>,
+) {
     if let Some(mark) = crate::dex_delight::welcome_portrait_area(area) {
         let eyes = look.eyes(state, animations);
         let face = format!("  ╭─╯ {:5}  ╰╮ ", eyes.replace(' ', "   "));
         Paragraph::new(face)
-            .style(Style::default().fg(look.accent.color()))
+            .style(Style::default().fg(theme.map_or(look.accent.color(), |theme| theme.focus)))
             .render(Rect::new(mark.x, mark.y + 1, mark.width, 1), buf);
         for y in mark.y..mark.bottom() {
             for x in mark.x..mark.right() {
-                buf[(x, y)].set_fg(look.accent.color());
+                buf[(x, y)].set_fg(theme.map_or(look.accent.color(), |theme| theme.focus));
             }
         }
         if look.accessory != crate::dex_delight::DexAccessory::None {
             Paragraph::new(look.cap())
-                .style(Style::default().fg(look.accent.color()))
+                .style(Style::default().fg(theme.map_or(look.accent.color(), |theme| theme.focus)))
                 .render(Rect::new(mark.x + 4, mark.y.saturating_sub(1), 5, 1), buf);
         }
     }
@@ -238,6 +267,34 @@ pub fn render_welcome_portrait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_theme_colors_the_whole_welcome_portrait() {
+        let theme = maestro_ui::UiTheme {
+            focus: Color::Green,
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        render_welcome_portrait_with_theme(
+            area,
+            &mut buf,
+            Default::default(),
+            DexCompanionState::Ready,
+            false,
+            Some(theme),
+        );
+        let mark = crate::dex_delight::welcome_portrait_area(area).unwrap();
+        for y in mark.y..mark.bottom() {
+            for x in mark.x..mark.right() {
+                assert_eq!(buf[(x, y)].fg, theme.focus);
+            }
+        }
+        let companion = DexCompanion::new(DexCompanionState::Working).theme(Some(theme));
+        assert_eq!(companion.status_line().spans[0].style.fg, Some(theme.focus));
+        companion.render_face(Rect::new(0, 0, 6, 2), &mut buf);
+        assert_eq!(buf[(0, 1)].fg, theme.focus);
+    }
 
     #[test]
     fn status_and_portrait_share_the_selected_accent() {

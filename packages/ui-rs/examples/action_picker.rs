@@ -30,6 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let theme = UiTheme {
+        panel: None,
+        selection: None,
         surface: Color::Black,
         text: Color::White,
         muted: Color::Gray,

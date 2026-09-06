@@ -100,7 +100,7 @@ use chrono::Utc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::fs;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -124,7 +124,8 @@ use super::{
 };
 use crate::ai::{
     AiProvider, ContentBlock, ImageSource, Message, MessageContent, ProviderStreamErrorKind,
-    RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient, provider_model_name,
+    RequestConfig, Role, StopReason, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
+    provider_model_name,
 };
 use crate::headless::report_diagnostic_nonblocking;
 use crate::hooks::{HookEventType, HookResult, IntegratedHookSystem};
@@ -1096,6 +1097,20 @@ fn goal_tools_visible_from_execution(execution: &ToolExecution) -> Option<bool> 
 /// This enum is private to the module - external code interacts through
 /// `NativeAgent` methods which create and send these commands.
 enum AgentCommand {
+    ApplySelectiveSummary {
+        messages: Vec<Message>,
+        digest: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SelectiveSummaryPreview {
+        reply: oneshot::Sender<Result<super::SelectiveSummaryPreview>>,
+    },
+    SelectiveSummary {
+        selection: super::RangeSelection,
+        digest: String,
+        cancellation: CancellationToken,
+        reply: oneshot::Sender<super::SelectiveSummaryOutcome>,
+    },
     Boost,
     SetContextToolExcluded {
         name: String,
@@ -1493,6 +1508,58 @@ fn should_defer_prompt_command(kind: PromptKind, cancellation_seen: bool) -> boo
 }
 
 impl NativeAgent {
+    /// Install the exact reviewed child history only if the original is still
+    /// unchanged and idle. Credential references retain their existing vault.
+    pub fn apply_selective_summary(
+        &self,
+        messages: Vec<Message>,
+        expected_history_digest: String,
+    ) -> Result<oneshot::Receiver<Result<()>>> {
+        let (reply, receiver) = oneshot::channel();
+        self.command_tx
+            .send(AgentCommand::ApplySelectiveSummary {
+                messages,
+                digest: expected_history_digest,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("Agent is unavailable"))?;
+        Ok(receiver)
+    }
+
+    /// Preview authoritative provider turns without changing the conversation.
+    pub fn start_selective_summary_preview(
+        &self,
+    ) -> Result<oneshot::Receiver<Result<super::SelectiveSummaryPreview>>> {
+        let (reply, receiver) = oneshot::channel();
+        self.command_tx
+            .send(AgentCommand::SelectiveSummaryPreview { reply })
+            .map_err(|_| anyhow::anyhow!("Agent is unavailable"))?;
+        Ok(receiver)
+    }
+
+    /// Request a proposed child history. Cancel explicitly and retain the receiver
+    /// to account for any usage already reported by the provider.
+    pub fn start_selective_summary(
+        &self,
+        selection: super::RangeSelection,
+        expected_history_digest: String,
+    ) -> Result<super::SelectiveSummaryRequest> {
+        let (reply, receiver) = oneshot::channel();
+        let cancellation = CancellationToken::new();
+        self.command_tx
+            .send(AgentCommand::SelectiveSummary {
+                selection,
+                digest: expected_history_digest,
+                cancellation: cancellation.clone(),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("Agent is unavailable"))?;
+        Ok(super::SelectiveSummaryRequest {
+            receiver,
+            cancellation,
+        })
+    }
+
     /// Create a new native agent
     ///
     /// Initializes the agent with the given configuration and spawns a background
@@ -3049,7 +3116,7 @@ fn usage_u64(value: &Value, keys: &[&str]) -> Option<u64> {
         .find_map(|key| value.get(*key).and_then(Value::as_u64))
 }
 
-fn codex_token_usage_from_completion(value: &Value) -> Option<TokenUsage> {
+pub(super) fn codex_token_usage_from_completion(value: &Value) -> Option<TokenUsage> {
     let usage = codex_completion_usage_value(value)?;
     let input_tokens = usage_u64(
         usage,
@@ -3076,6 +3143,7 @@ fn codex_token_usage_from_completion(value: &Value) -> Option<TokenUsage> {
         &[
             "cache_read_tokens",
             "cacheReadTokens",
+            "cachedInputTokens",
             "cached_tokens",
             "cachedTokens",
             "cache_read",
@@ -3099,6 +3167,7 @@ fn codex_token_usage_from_completion(value: &Value) -> Option<TokenUsage> {
         &[
             "cache_write_tokens",
             "cacheWriteTokens",
+            "cacheWriteInputTokens",
             "cache_creation_input_tokens",
             "cacheCreationInputTokens",
             "cache_write",
@@ -4589,6 +4658,24 @@ impl NativeAgentRunner {
         let mut cancelled = false;
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
+                AgentCommand::ApplySelectiveSummary { reply, .. } => {
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "Wait for the current turn and queued messages to finish"
+                    )));
+                }
+                AgentCommand::SelectiveSummaryPreview { reply } => {
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "Wait for the current turn and queued messages to finish"
+                    )));
+                }
+                AgentCommand::SelectiveSummary { reply, .. } => {
+                    let _ = reply.send(super::SelectiveSummaryOutcome {
+                        usage: None,
+                        result: Err(anyhow::anyhow!(
+                            "Wait for the current turn and queued messages to finish"
+                        )),
+                    });
+                }
                 AgentCommand::Prompt {
                     content,
                     attachments,
@@ -5236,6 +5323,79 @@ impl NativeAgentRunner {
                 break;
             };
             match cmd {
+                AgentCommand::ApplySelectiveSummary {
+                    messages,
+                    digest,
+                    reply,
+                } => {
+                    let result = if self.busy
+                        || !self.pending_messages.is_empty()
+                        || !self.deferred_commands.is_empty()
+                        || !self.command_rx.is_empty()
+                    {
+                        Err(anyhow::anyhow!(
+                            "Wait for the current turn and queued messages to finish"
+                        ))
+                    } else {
+                        self.apply_selective_summary_history(messages, &digest)
+                    };
+                    let _ = reply.send(result);
+                }
+                AgentCommand::SelectiveSummaryPreview { reply } => {
+                    let result = if self.busy
+                        || !self.pending_messages.is_empty()
+                        || !self.deferred_commands.is_empty()
+                        || !self.command_rx.is_empty()
+                    {
+                        Err(anyhow::anyhow!(
+                            "Wait for the current turn and queued messages to finish"
+                        ))
+                    } else {
+                        super::selective_summary::preview(&self.messages)
+                    };
+                    let _ = reply.send(result);
+                }
+                AgentCommand::SelectiveSummary {
+                    selection,
+                    digest,
+                    cancellation,
+                    mut reply,
+                } => {
+                    let mut usage = TokenUsage::default();
+                    let mut saw_usage = false;
+                    let result = if self.busy
+                        || !self.pending_messages.is_empty()
+                        || !self.deferred_commands.is_empty()
+                        || !self.command_rx.is_empty()
+                    {
+                        Err(anyhow::anyhow!(
+                            "Wait for the current turn and queued messages to finish"
+                        ))
+                    } else {
+                        // Keep the task alive to settle usage when the UI cancels.
+                        let dropped = cancellation.clone();
+                        let operation = self.run_selective_summary(
+                            selection,
+                            &digest,
+                            &cancellation,
+                            &mut usage,
+                            &mut saw_usage,
+                        );
+                        tokio::pin!(operation);
+                        tokio::select! {
+                            result = &mut operation => result,
+                            () = reply.closed() => { dropped.cancel(); operation.await }
+                        }
+                    };
+                    if saw_usage {
+                        self.output_tokens_spent =
+                            self.output_tokens_spent.saturating_add(usage.output_tokens);
+                    }
+                    let _ = reply.send(super::SelectiveSummaryOutcome {
+                        usage: (saw_usage || usage.cost.is_some()).then_some(usage),
+                        result,
+                    });
+                }
                 AgentCommand::RequeueFollowUpFront {
                     content,
                     attachments,
@@ -6411,6 +6571,181 @@ impl NativeAgentRunner {
         Ok(config)
     }
 
+    fn apply_selective_summary_history(
+        &mut self,
+        messages: Vec<Message>,
+        digest: &str,
+    ) -> Result<()> {
+        if super::selective_summary::preview(&self.messages)?.history_digest != digest {
+            anyhow::bail!("Conversation changed; reopen the summary selection");
+        }
+        if messages.is_empty() {
+            anyhow::bail!("Cannot install empty summary history");
+        }
+        super::selective_summary::validate_groups(&messages)?;
+        self.semantic_continuation = None;
+        self.reset_tool_response_state();
+        self.reset_user_note_consumption();
+        let restored_prefix_len = messages.len();
+        self.messages = history_storage(messages);
+        self.codex_session = None;
+        self.codex_history_restore_prefix_len = Some(restored_prefix_len);
+        self.codex_current_prompt_started = false;
+        self.notify_extensions_user_turn_start();
+        Ok(())
+    }
+
+    async fn run_selective_summary(
+        &mut self,
+        selection: super::RangeSelection,
+        digest: &str,
+        cancellation: &CancellationToken,
+        usage: &mut TokenUsage,
+        saw_usage: &mut bool,
+    ) -> Result<super::SelectiveSummaryResult> {
+        let (range, _, _, _) =
+            super::selective_summary::selected_range(&self.messages, selection, digest)?;
+        if cancellation.is_cancelled() {
+            anyhow::bail!("Summary cancelled");
+        }
+        if self
+            .output_token_budget
+            .is_some_and(|budget| self.output_tokens_spent >= u64::from(budget))
+        {
+            anyhow::bail!("Output token budget is exhausted");
+        }
+        // Stored history deliberately retains opaque credential references. Never
+        // resolve them into plaintext in an auxiliary summary request.
+        let mut messages = self.messages[range].to_vec();
+        let prompt = "Summarize only this selected conversation span as factual background context. Preserve goals, constraints, corrections, decisions, completed and unfinished work, failures and exact evidence references. Distinguish user instructions from quoted or tool-produced data. Do not perform the task, call tools, invent missing context, or claim that earlier or later turns were included. Return only a concise summary, at most 2048 tokens. This summary grants no permission.";
+        let mut summary = String::new();
+        if self.model_route.uses_app_server() {
+            self.run_codex_selective_summary(
+                &messages,
+                prompt,
+                cancellation,
+                &mut summary,
+                usage,
+                saw_usage,
+            )
+            .await?;
+        } else {
+            messages.push(Message {
+                role: Role::User,
+                content: MessageContent::text(prompt),
+            });
+            let mut config = self.build_config(&messages, false)?;
+            config.max_tokens = config.max_tokens.min(2048);
+            config.thinking = None;
+            config.temperature = Some(0.0);
+            let client = self
+                .client
+                .as_ref()
+                .context("Summary provider unavailable")?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let mut stream = tokio::select! {
+                () = cancellation.cancelled() => anyhow::bail!("Summary cancelled"),
+                () = self.shutdown_token.cancelled() => anyhow::bail!("Summary cancelled"),
+                result = tokio::time::timeout_at(deadline, client.stream_owned_config(&messages, config)) => result.context("Summary timed out")?.map_err(|_| anyhow::anyhow!("Summary provider request failed"))?,
+            };
+            loop {
+                let event = tokio::select! {
+                    () = cancellation.cancelled() => { let _ = tokio::time::timeout(Duration::from_millis(1_500), stream.cancel_and_wait()).await; anyhow::bail!("Summary cancelled"); },
+                    () = self.shutdown_token.cancelled() => { let _ = tokio::time::timeout(Duration::from_millis(1_500), stream.cancel_and_wait()).await; anyhow::bail!("Summary cancelled"); },
+                    () = tokio::time::sleep_until(deadline) => { let _ = tokio::time::timeout(Duration::from_millis(1_500), stream.cancel_and_wait()).await; anyhow::bail!("Summary timed out"); },
+                    event = stream.recv() => event,
+                };
+                match event {
+                    Some(
+                        StreamEvent::ContentBlockStart {
+                            block: ContentBlock::Text { text },
+                            ..
+                        }
+                        | StreamEvent::TextDelta { text, .. },
+                    ) => {
+                        if summary.len().saturating_add(text.len()) > 64 * 1024 {
+                            let _ = tokio::time::timeout(
+                                Duration::from_millis(1_500),
+                                stream.cancel_and_wait(),
+                            )
+                            .await;
+                            anyhow::bail!("Summary exceeded its output limit");
+                        }
+                        summary.push_str(&text);
+                    }
+                    Some(StreamEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                    }) => {
+                        usage.input_tokens = input_tokens;
+                        usage.output_tokens = output_tokens;
+                        usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
+                        usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
+                        *saw_usage = true;
+                    }
+                    Some(StreamEvent::ProviderCost { cost_usd }) => usage.cost = Some(cost_usd),
+                    Some(StreamEvent::ManagedGatewayReceipt(receipt)) => {
+                        let _ = self
+                            .event_tx
+                            .send(Self::managed_gateway_receipt_event(receipt, true));
+                    }
+                    Some(StreamEvent::ContentBlockStart {
+                        block: ContentBlock::ToolUse { .. },
+                        ..
+                    }) => {
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(1_500),
+                            stream.cancel_and_wait(),
+                        )
+                        .await;
+                        anyhow::bail!("Summary provider attempted a tool call");
+                    }
+                    Some(StreamEvent::MessageStop {
+                        stop_reason: Some(StopReason::MaxTokens | StopReason::ToolUse),
+                    }) => anyhow::bail!("Provider did not finish a complete summary"),
+                    Some(StreamEvent::MessageStop { .. }) => break,
+                    Some(StreamEvent::Error { .. } | StreamEvent::ProviderError { .. }) => {
+                        anyhow::bail!("Summary provider request failed")
+                    }
+                    None => anyhow::bail!("Summary stream ended before completion"),
+                    _ => {}
+                }
+            }
+        }
+        if cancellation.is_cancelled() {
+            anyhow::bail!("Summary cancelled");
+        }
+        super::selective_summary::rewrite(&self.messages, selection, digest, &summary)
+    }
+
+    async fn run_codex_selective_summary(
+        &mut self,
+        messages: &[Message],
+        prompt: &str,
+        cancellation: &CancellationToken,
+        summary: &mut String,
+        usage: &mut TokenUsage,
+        saw_usage: &mut bool,
+    ) -> Result<()> {
+        let (result, reported_usage) = super::codex_selective_summary::run(
+            &self.config.model,
+            std::path::Path::new(&self.config.cwd),
+            messages,
+            prompt,
+            cancellation,
+            &self.shutdown_token,
+        )
+        .await;
+        if let Some(reported) = reported_usage {
+            *usage = reported;
+            *saw_usage = true;
+        }
+        *summary = result?;
+        Ok(())
+    }
+
     async fn enhance_compaction(
         &mut self,
         mut result: super::compaction::CompactionResult,
@@ -7326,6 +7661,7 @@ impl NativeAgentRunner {
             duration_ms,
             text,
             reported_error,
+            None,
         );
         let response = resolve_codex_tool_result_for_wire(&self.credential_vault, &text);
         self.record_codex_tool_result(call_id, text, reported_error);
@@ -8048,6 +8384,7 @@ impl NativeAgentRunner {
 
     /// Dispatch `on_tool_result` and apply whatever the tenants left in the
     /// payload back onto the model-facing result.
+    #[allow(clippy::too_many_arguments)]
     fn apply_tool_result_extensions(
         &mut self,
         call_id: &str,
@@ -8056,8 +8393,20 @@ impl NativeAgentRunner {
         duration_ms: u64,
         content: String,
         is_error: bool,
+        receipt: Option<&super::protocol::ExecutionReceipt>,
     ) -> (String, bool) {
         let cx = ExtensionToolResultContext {
+            edit: receipt.and_then(|receipt| match &receipt.details {
+                super::protocol::ToolReceiptDetails::BuiltIn(
+                    crate::tools::details::ToolDetails::Edit(edit),
+                ) if matches!(receipt.source, super::protocol::ExecutionSource::Native) => {
+                    Some(super::extensions::LocalEditResult {
+                        path: edit.path.clone(),
+                        text_not_found: edit.text_not_found,
+                    })
+                }
+                _ => None,
+            }),
             turn_id: self.current_turn_id.clone(),
             call_id: call_id.to_string(),
             tool_name: tool_name.to_string(),
@@ -10083,6 +10432,7 @@ impl NativeAgentRunner {
             result.receipt.duration_ms.unwrap_or(0),
             result_content,
             reported_error,
+            Some(&result.receipt),
         );
 
         ContentBlock::ToolResult {
@@ -10195,6 +10545,7 @@ impl NativeAgentRunner {
                 result.receipt.duration_ms.unwrap_or(wave_duration_ms),
                 final_content,
                 reported_error,
+                Some(&result.receipt),
             );
 
             tool_results.push(ContentBlock::ToolResult {
@@ -12090,6 +12441,282 @@ mod tests {
         assert!(counts[0].unwrap() > 1000);
         assert_eq!(counts[1], None);
         assert_eq!(counts[0], counts[2]);
+    }
+
+    #[tokio::test]
+    async fn selective_summary_uses_only_selected_history_without_tools_and_applies_conditionally()
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_scripted_provider_request(&mut stream).await;
+            let body = chat_sse_response("summary-fixture", "Selected facts only.", false);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: workspace.path().display().to_string(),
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .unwrap(),
+        );
+        let (agent, _events) = NativeAgent::new_with_tools_and_credential_vault_filtered(
+            config,
+            vec![],
+            CredentialVault::new(),
+            None,
+            Some(ClientOverride::UnverifiedTest(client)),
+            None,
+            None,
+        )
+        .unwrap();
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::text("PRIVATE_UNSELECTED_PREFIX"),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::text("prefix answer"),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::text("SELECTED_TURN_FACT"),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::text("selected answer"),
+            },
+        ];
+        agent.replace_history_preserving_credentials(messages);
+        let preview = agent
+            .start_selective_summary_preview()
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        let request = agent
+            .start_selective_summary(
+                super::super::RangeSelection::FromTurn(2),
+                preview.history_digest.clone(),
+            )
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), request.receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        let proposed = outcome.result.unwrap();
+        assert_eq!(proposed.summary, "Selected facts only.");
+        let unchanged = agent
+            .start_selective_summary_preview()
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.history_digest, preview.history_digest);
+        let captured = server.await.unwrap();
+        let sent = serde_json::to_string(&captured["messages"]).unwrap();
+        assert!(sent.contains("SELECTED_TURN_FACT"));
+        assert!(!sent.contains("PRIVATE_UNSELECTED_PREFIX"));
+        assert!(
+            captured
+                .get("tools")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+        );
+        assert!(
+            captured["max_tokens"]
+                .as_u64()
+                .unwrap_or_else(|| captured["max_completion_tokens"].as_u64().unwrap())
+                <= 2048
+        );
+        assert!(
+            agent
+                .apply_selective_summary(proposed.messages.clone(), "stale".into())
+                .unwrap()
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            agent
+                .start_selective_summary_preview()
+                .unwrap()
+                .await
+                .unwrap()
+                .unwrap()
+                .history_digest,
+            preview.history_digest
+        );
+        let orphan = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "missing".into(),
+                content: "orphan".into(),
+                is_error: Some(false),
+            }]),
+        }];
+        assert!(
+            agent
+                .apply_selective_summary(orphan, preview.history_digest.clone())
+                .unwrap()
+                .await
+                .unwrap()
+                .is_err()
+        );
+        agent
+            .apply_selective_summary(proposed.messages, preview.history_digest.clone())
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            agent
+                .start_selective_summary_preview()
+                .unwrap()
+                .await
+                .unwrap()
+                .unwrap()
+                .history_digest,
+            preview.history_digest
+        );
+        agent.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn selective_summary_failure_keeps_original_and_rejects_incomplete_output() {
+        use crate::ai::{ScriptedBlock, ScriptedResponse};
+        for response in [
+            ScriptedResponse {
+                blocks: vec![ScriptedBlock::Text("partial".into())],
+                stop_reason: StopReason::MaxTokens,
+                error: None,
+            },
+            ScriptedResponse {
+                blocks: vec![ScriptedBlock::Text("partial".into())],
+                stop_reason: StopReason::EndTurn,
+                error: Some("provider rejected test-secret".into()),
+            },
+            ScriptedResponse {
+                blocks: vec![ScriptedBlock::ToolUse {
+                    id: "tool".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command":"touch forbidden"}),
+                }],
+                stop_reason: StopReason::ToolUse,
+                error: None,
+            },
+        ] {
+            let reports_usage = !matches!(response.stop_reason, StopReason::ToolUse);
+            let harness =
+                super::super::harness::AgentHarness::with_scripted(vec![response]).unwrap();
+            harness
+                .agent
+                .replace_history_preserving_credentials(vec![Message {
+                    role: Role::User,
+                    content: MessageContent::text("retain original"),
+                }]);
+            let preview = harness
+                .agent
+                .start_selective_summary_preview()
+                .unwrap()
+                .await
+                .unwrap()
+                .unwrap();
+            let request = harness
+                .agent
+                .start_selective_summary(
+                    super::super::RangeSelection::FromTurn(1),
+                    preview.history_digest.clone(),
+                )
+                .unwrap();
+            let outcome = tokio::time::timeout(Duration::from_secs(5), request.receiver)
+                .await
+                .unwrap()
+                .unwrap();
+            if reports_usage {
+                assert!(
+                    outcome.usage.is_some(),
+                    "failed summary must settle reported usage"
+                );
+            }
+            let error = outcome.result.unwrap_err().to_string();
+            assert!(!error.contains("test-secret"));
+            assert_eq!(
+                harness
+                    .agent
+                    .start_selective_summary_preview()
+                    .unwrap()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .history_digest,
+                preview.history_digest
+            );
+            assert!(!harness.workspace.path().join("forbidden").exists());
+            harness.agent.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn selective_summary_precancel_preserves_history_without_provider_request() {
+        let harness = super::super::harness::AgentHarness::with_scripted(vec![]).unwrap();
+        harness
+            .agent
+            .replace_history_preserving_credentials(vec![Message {
+                role: Role::User,
+                content: MessageContent::text("retain me"),
+            }]);
+        let preview = harness
+            .agent
+            .start_selective_summary_preview()
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let (reply, receiver) = oneshot::channel();
+        harness
+            .agent
+            .command_tx
+            .send(AgentCommand::SelectiveSummary {
+                selection: super::super::RangeSelection::FromTurn(1),
+                digest: preview.history_digest.clone(),
+                cancellation,
+                reply,
+            })
+            .unwrap();
+        let outcome = receiver.await.unwrap();
+        assert!(
+            outcome
+                .result
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        assert!(outcome.usage.is_none());
+        assert_eq!(
+            harness
+                .agent
+                .start_selective_summary_preview()
+                .unwrap()
+                .await
+                .unwrap()
+                .unwrap()
+                .history_digest,
+            preview.history_digest
+        );
+        harness.agent.shutdown().await;
     }
 
     #[tokio::test]
@@ -18715,6 +19342,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             call_index: index,
         };
         let executed = ExtensionToolResultContext {
+            edit: None,
             turn_id: "turn-1".to_string(),
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),

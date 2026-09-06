@@ -160,8 +160,12 @@ pub enum ActiveModal {
     ShortcutsHelp,
     /// File checkpoint restore picker (double-Esc on empty input)
     RewindPicker,
+    /// Select and review a conversation summary.
+    SelectiveSummary,
     /// Full-output detail view (Ctrl+E)
     DetailView,
+    /// Review local feedback without interrupting the running agent.
+    Feedback,
 }
 
 #[derive(Debug, Clone)]
@@ -621,6 +625,8 @@ pub struct App {
 
     /// Flag to exit the main loop.
     should_quit: bool,
+    /// Relaunch in the saved workspace after this agent and writer shut down.
+    pub(crate) resume_target: Option<(std::path::PathBuf, String)>,
 
     /// Terminal capabilities (color support, viewport position, etc.).
     capabilities: TerminalCapabilities,
@@ -637,6 +643,7 @@ pub struct App {
 
     /// Which modal (if any) is currently shown.
     active_modal: ActiveModal,
+    feedback_ui: bug_reports::FeedbackUi,
 
     /// File search modal component (like VS Code's Ctrl+P).
     file_search: FileSearchModal,
@@ -729,6 +736,7 @@ pub struct App {
 
     /// File checkpoint restore picker modal.
     rewind_picker: RewindPicker,
+    selective_summary: Option<selective_summary::SummaryDialog>,
 
     /// Token usage and cost tracker.
     usage_tracker: crate::usage::UsageTracker,
@@ -848,6 +856,8 @@ pub struct App {
     /// Local paths attached via `/attach` or clipboard image paste for the
     /// next `submit_prompt` (cleared after send).
     pending_attachments: Vec<String>,
+    draft_stash: Option<composer_recall::Draft>,
+    history_search: Option<composer_recall::HistorySearch>,
 
     /// Last observed MCP server status snapshots for transition messages.
     last_mcp_server_statuses: HashMap<String, crate::tools::McpServerStatus>,
@@ -1526,12 +1536,14 @@ impl App {
             terminal_size,
             terminal_events: None,
             should_quit: false,
+            resume_target: None,
             capabilities,
             command_palette: CommandPalette::new(Arc::clone(&command_registry)),
             command_registry,
             slash_matcher,
             slash_state: SlashCycleState::new(),
             active_modal: ActiveModal::None,
+            feedback_ui: bug_reports::FeedbackUi::default(),
             file_search: FileSearchModal::new(),
             workspace_files: Vec::new(),
             workspace_scan_rx: None,
@@ -1561,6 +1573,7 @@ impl App {
             current_model_user_set: false,
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
             rewind_picker: RewindPicker::new(),
+            selective_summary: None,
             usage_tracker: crate::usage::UsageTracker::new(),
             active_turn_summary: None,
             active_turn_start_message_index: None,
@@ -1603,6 +1616,8 @@ impl App {
             ui_prefs,
             configured_animations,
             pending_attachments: Vec::new(),
+            draft_stash: None,
+            history_search: None,
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
@@ -1947,6 +1962,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if agent_activity {
                 needs_redraw = true;
             }
+            if self.poll_selective_summary() {
+                needs_redraw = true;
+            }
             if self.poll_setup_login() {
                 needs_redraw = true;
             }
@@ -1991,7 +2009,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                                 needs_redraw = true;
                             }
                             MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                                if self.slash_state.has_completions() =>
+                                if self.active_modal == ActiveModal::None
+                                    && self.history_search.is_none()
+                                    && self.slash_state.has_completions() =>
                             {
                                 // Click-to-select on the slash completion popup.
                                 if let Ok(size) = self.terminal.size() {
@@ -3444,11 +3464,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// Cancel the current native-agent operation and wait until its request,
     /// approval, and foreground-tool cleanup are all quiescent. The
     /// repeat-signal monitor remains the escape hatch if cleanup wedges.
-    pub(crate) async fn signal_shutdown_teardown(&mut self) -> (Vec<String>, bool) {
+    pub(crate) async fn stop_agent_for_resume(&mut self) {
         if let Some(agent) = self.native_agent.take() {
             agent.shutdown().await;
         }
         self.drain_agent_events_after_shutdown().await;
+    }
+
+    pub(crate) async fn signal_shutdown_teardown(&mut self) -> (Vec<String>, bool) {
+        self.stop_agent_for_resume().await;
         let disable_theme_reporting = self.prepare_terminal_restore();
         (
             self.terminal_session_ended_sequences(),
@@ -3604,6 +3628,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         allow_post_interrupt_queue: bool,
         allow_terminal_notifications: bool,
     ) -> Result<()> {
+        if allow_terminal_notifications {
+            if let FromAgent::Error {
+                fatal,
+                terminal,
+                retryable,
+                ..
+            } = &msg
+            {
+                if (*fatal || *terminal) && !retryable {
+                    self.suggest_bug_report();
+                }
+            }
+        }
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
                 Some((response_id.clone(), usage.clone()))
@@ -3735,12 +3772,25 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.usage_tracker.set_model(model.clone());
                 self.model_monitor.verify(model.clone());
             }
-            FromAgent::BoostChanged {
-                thinking: Some(level),
-                ..
-            } => {
-                self.current_thinking_level = *level;
-                self.record_thinking_level_change(*level);
+            FromAgent::BoostChanged { status, thinking } => {
+                if let Some(level) = thinking {
+                    self.current_thinking_level = *level;
+                    self.record_thinking_level_change(*level);
+                }
+                match status {
+                    crate::model_dynamics::BoostStatus::Pending => {
+                        self.state.status = Some(
+                            "Boost queued for the next model request; applies once to that task."
+                                .into(),
+                        );
+                    }
+                    crate::model_dynamics::BoostStatus::Active => {
+                        self.state.status = Some(
+                            "Boost active for this task; your setting returns when it ends.".into(),
+                        );
+                    }
+                    _ => {}
+                }
             }
             FromAgent::ModelChanged { model, provider } => {
                 let pending_matches = self
@@ -4240,6 +4290,7 @@ was missing; retry to review the exact execution context."
 
         self.record_tool_result(call_id, tool, &result, execution.as_ref());
         self.persist_attachment_extract(call_id, tool, &result);
+        self.accept_feedback_tool(tool, &result);
     }
 
     /// Spawn a guardian review for a pending approval (guardian mode only).
@@ -4409,6 +4460,8 @@ Input:
   {}     Edit last queued follow-up
   @             Open file search
   /             Start slash command
+  Ctrl+S        Stash / restore / swap draft (including attachments)
+  Ctrl+R        Search prompt history (Enter restores, Esc cancels)
   Ctrl+U        Clear input
   Esc           Cancel / Close modal
 
@@ -4439,6 +4492,7 @@ Slash Commands:
   /setup        Sign in to EvalOps Identity, then optionally add a local API key
   /queue        Manage queued prompts (list/cancel/modes)
   /steer        Send a steering message
+  /summarize    Summarize selected turns into a new conversation
   /sessions     Browse sessions
   /files        Search files
   /commands     Open command palette
@@ -4462,6 +4516,7 @@ Slash Commands:
     }
 
     fn render_inner(&mut self) -> Result<()> {
+        self.poll_feedback_send();
         if self.terminal_size.is_none() {
             self.terminal_size = self
                 .terminal
@@ -4506,7 +4561,9 @@ Slash Commands:
         let setup_modal = &self.setup_modal;
         let shortcuts_help = &self.shortcuts_help;
         let rewind_picker = &mut self.rewind_picker;
+        let selective_summary = &mut self.selective_summary;
         let detail_view = &self.detail_view;
+        let feedback_ui = &self.feedback_ui;
         let footer_style = self.footer_style;
         let dex_frame = (self.dex_pose_started.elapsed().as_millis() / 100) as u64;
         let dex_personality = self.ui_prefs.dex_personality();
@@ -4516,6 +4573,8 @@ Slash Commands:
             .unwrap_or(self.configured_animations);
         let goal_badge = self.goal_store.status_line();
         let attach_count = self.pending_attachments.len();
+        let draft_stashed = self.draft_stash.is_some();
+        let history_search = &self.history_search;
 
         // DEC mode 2026 lets capable terminals present a whole Ratatui diff
         // atomically, eliminating visible partial-frame tearing. Unknown DEC
@@ -4548,6 +4607,9 @@ Slash Commands:
                     .with_goal_badge(goal_badge.as_deref())
                     .with_attach_count(attach_count);
                 frame.render_widget(view, area);
+                if active_modal == ActiveModal::None && state.input().is_empty() {
+                    feedback_ui.render_card(frame, area, calculate_input_height(state, area));
+                }
 
                 // Show error if any. Wrap the full provider message across lines
                 // (extracted upstream from the error body) instead of clipping a
@@ -4589,7 +4651,10 @@ Slash Commands:
                 }
 
                 // Render slash completions if active
-                if active_modal == ActiveModal::None && slash_state.has_completions() {
+                if active_modal == ActiveModal::None
+                    && history_search.is_none()
+                    && slash_state.has_completions()
+                {
                     Self::render_slash_completions_static(
                         slash_state,
                         command_registry,
@@ -4645,6 +4710,11 @@ Slash Commands:
                     ActiveModal::ShortcutsHelp => {
                         frame.render_widget(shortcuts_help.clone(), area);
                     }
+                    ActiveModal::SelectiveSummary => {
+                        if let Some(dialog) = selective_summary {
+                            dialog.render(frame, area);
+                        }
+                    }
                     ActiveModal::RewindPicker => {
                         rewind_picker.render(frame, area);
                     }
@@ -4653,6 +4723,7 @@ Slash Commands:
                             frame.render_widget(detail, area);
                         }
                     }
+                    ActiveModal::Feedback => feedback_ui.render(frame, area),
                     ActiveModal::None => {}
                 }
 
@@ -4676,7 +4747,8 @@ Slash Commands:
                         &state.textarea,
                         ChatInputWidgetOptions {
                             busy: state.busy,
-                            pending_input_preview: None,
+                            pending_input_preview:
+                                crate::components::PendingInputPreview::from_state(state),
                             ghost_text: None,
                         },
                     );
@@ -4684,6 +4756,13 @@ Slash Commands:
                     if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                         frame.set_cursor_position((cursor_x, cursor_y));
                     }
+                    composer_recall::render(
+                        frame,
+                        area,
+                        input_area,
+                        history_search.as_ref(),
+                        draft_stashed,
+                    );
                 }
             })
             .map(|_| ());
@@ -5205,8 +5284,11 @@ fn short_codex_status_id(value: &str) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod a2a_handoff;
+mod bug_reports;
 mod checkpoints;
 mod command_handlers;
+mod composer_recall;
+mod selective_summary;
 // `pub(crate)` so `agent::compaction` can assert that its token counts and
 // this breakdown's agree; nothing outside the crate uses it.
 pub(crate) mod context_breakdown;

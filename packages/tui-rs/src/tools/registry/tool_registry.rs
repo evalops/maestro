@@ -952,6 +952,18 @@ impl ToolRegistry {
             },
         );
 
+        if std::env::var("MAESTRO_FEEDBACK_DRAFTS").as_deref() != Ok("off") {
+            tools.insert("draft_feedback".to_owned(), ToolDefinition {
+                tool: Tool::new("draft_feedback", "Prepare local product feedback when a tool repeatedly fails, the user corrects your behavior, you notice a mistake, or the user asks to report it. Describe the specific actual and expected behavior and reproduction steps. This tool never sends feedback or selects session evidence. The user reviews and sends it in /feedback. Continue the original task after drafting.").with_schema(serde_json::json!({
+                    "type":"object", "properties": {
+                        "description":{"type":"string","minLength":1,"maxLength":4000},
+                        "expected_behavior":{"type":"string","maxLength":4000},
+                        "reproduction_steps":{"type":"string","maxLength":4000}
+                    }, "required":["description","expected_behavior","reproduction_steps"],"additionalProperties":false
+                })), requires_approval: false,
+            });
+        }
+
         // Ask user tool
         tools.insert(
             "ask_user".to_string(),
@@ -1489,7 +1501,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 66);  // includes coding acceptance and durable subagent control
+    /// assert_eq!(count, 67);  // includes draft-only feedback and durable subagent control
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

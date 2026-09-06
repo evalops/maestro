@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, lstatSync } from 'node:fs';
+import { readFileSync, lstatSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifySourceManifest } from './release-source-manifest.mjs';
@@ -10,7 +10,7 @@ export const platforms = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm6
 export const stagedFiles = [
   'release-metadata.json', 'release-source-manifest.json',
   ...platforms.flatMap(p => [`maestro-${p}`, `smoked-${p}.txt`, `rustc-${p}.txt`, `runtime-passport-maestro-${p}.json`]),
-  ...platforms.filter(p => p.startsWith('darwin-')).flatMap(p => [`signed-${p}.json`, `notarized-${p}.json`, `deixic-code-device-${p}.app.tar.gz`]),
+  ...platforms.filter(p => p.startsWith('darwin-')).flatMap(p => [`signed-${p}.json`, `notarized-${p}.json`, `code-device-${p}.json`]),
 ];
 
 // Only interpret the checksum manifest after authenticating it with Cosign.
@@ -21,17 +21,25 @@ export function verifyStagedFiles(dir, version, sourceRoot = process.cwd()) {
     if (!match || sums.has(match[2])) throw new Error('Invalid or duplicate checksum entry');
     sums.set(match[2], match[1]);
   }
-  for (const name of stagedFiles) {
+  const verifyFile = name => {
     const path = join(dir, name);
     if (!lstatSync(path).isFile()) throw new Error(`Not a regular file: ${name}`);
     const digest = createHash('sha256').update(readFileSync(path)).digest('hex');
     if (sums.get(name) !== digest) throw new Error(`Checksum mismatch: ${name}`);
-  }
+  };
+  for (const name of stagedFiles) verifyFile(name);
   const metadata = JSON.parse(readFileSync(join(dir, 'release-metadata.json'), 'utf8'));
   if (metadata.version !== version || metadata.releaseTag !== `v${version}` || !/^[a-f0-9]{40}$/.test(metadata.receipt?.sourceSha ?? '')) {
     throw new Error('Staged release version or source does not match');
   }
   for (const p of platforms.filter(p => p.startsWith('darwin-'))) {
+    const capability = JSON.parse(readFileSync(join(dir, `code-device-${p}.json`), 'utf8'));
+    if (capability.schemaVersion !== 1 || capability.platform !== p || typeof capability.enabled !== 'boolean') {
+      throw new Error(`Invalid Code device capability: ${p}`);
+    }
+    const helper = `deixic-code-device-${p}.app.tar.gz`;
+    if (capability.enabled) verifyFile(helper);
+    else if (sums.has(helper) || existsSync(join(dir, helper))) throw new Error(`Unexpected disabled Code device helper: ${p}`);
     const marker = JSON.parse(readFileSync(join(dir, `notarized-${p}.json`), 'utf8'));
     if (marker.schema !== 'evalops.maestro.macos-notarization.v1' || marker.status !== 'Accepted' || marker.platform !== p || marker.binarySha256 !== sums.get(`maestro-${p}`)) {
       throw new Error(`Invalid notarization receipt: ${p}`);

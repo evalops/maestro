@@ -61,6 +61,8 @@ fn rendering_scrolls_with_navigation_and_clips_to_the_given_area() {
         widgets::{ListItem, Paragraph},
     };
     let theme = UiTheme {
+        panel: None,
+        selection: None,
         surface: Color::Black,
         text: Color::White,
         muted: Color::Gray,
@@ -118,6 +120,8 @@ fn long_unicode_search_keeps_the_edited_suffix_and_cursor_visible() {
     use maestro_ui::{PickerOptions, UiTheme};
     use ratatui::{Terminal, backend::TestBackend, style::Color, widgets::ListItem};
     let theme = UiTheme {
+        panel: None,
+        selection: None,
         surface: Color::Black,
         text: Color::White,
         muted: Color::Gray,
@@ -270,6 +274,8 @@ fn loading_and_error_replace_rendered_rows_and_preserve_host_help() {
     use maestro_ui::{PickerOptions, PickerStatus, UiTheme};
     use ratatui::{Terminal, backend::TestBackend, style::Color, widgets::ListItem};
     let theme = UiTheme {
+        panel: None,
+        selection: None,
         surface: Color::Black,
         text: Color::White,
         muted: Color::Gray,

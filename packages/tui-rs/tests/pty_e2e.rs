@@ -401,6 +401,25 @@ impl PtySession {
         strip_ansi(&output)
     }
 
+    /// Optimized terminal painting moves across existing blank cells instead
+    /// of emitting spaces. Compare content without whitespace for prose checks.
+    fn wait_for_compact_text(&mut self, needle: &str, timeout: Duration) {
+        let expected: String = needle.chars().filter(|c| !c.is_whitespace()).collect();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let screen = self.screen_text();
+            let compact: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
+            if compact.contains(&expected) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?}: {screen}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Poll until `needle` appears in the stripped output; panic with a dump
     /// of the captured output on timeout (grok-build's screen dump on failure).
     fn wait_for_text(&mut self, needle: &str, timeout: Duration) {
@@ -959,4 +978,151 @@ fn specialist_exec_applies_focus_model_and_tool_ceiling_to_the_request() {
     let tools = request["tools"].as_array().unwrap();
     assert!(!tools.is_empty());
     assert!(tools.iter().all(|tool| tool["function"]["name"] == "read"));
+}
+
+/// Resume must rebuild the executor, not just change the displayed transcript.
+#[test]
+fn pty_resume_in_saved_workspace_executes_relative_tool_in_that_workspace() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![
+        tool_call_turn(
+            "bash",
+            &serde_json::json!({"command": "printf resumed > resume-marker.txt"}),
+        ),
+        text_turn("PTY_RESUME_WORKSPACE_OK"),
+    ]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let saved = workdir.path().join("retained worktree");
+    std::fs::create_dir(&saved).unwrap();
+    let id = "pty-workspace-resume";
+    let path = write_fork_fixture(workdir.path(), id);
+    let source = std::fs::read_to_string(&path).unwrap();
+    let mut lines = source.lines();
+    let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    header["cwd"] = serde_json::json!(saved);
+    std::fs::write(
+        &path,
+        format!("{header}\n{}\n", lines.collect::<Vec<_>>().join("\n")),
+    )
+    .unwrap();
+    let mut session = PtySession::spawn_with_args(&mock, workdir.path(), &["--resume-session", id]);
+    session.wait_for_text("PTY_FORK_SOURCE_READY", READY_TIMEOUT);
+    session.submit_prompt("write the resume marker");
+    session.wait_for_text("Action Approval Required", TURN_TIMEOUT);
+    session.send_bytes_until(b"y", "PTY_RESUME_WORKSPACE_OK", TURN_TIMEOUT);
+    assert_eq!(
+        std::fs::read_to_string(saved.join("resume-marker.txt")).unwrap(),
+        "resumed"
+    );
+    assert!(!workdir.path().join("resume-marker.txt").exists());
+    session.shutdown();
+}
+
+/// The report flow stays in the terminal and never sends a model prompt.
+#[test]
+fn pty_bug_report_draft_review_and_dismiss() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![text_turn("PTY_BUG_READY")]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let mut session = PtySession::spawn(&mock, workdir.path(), "start bug report scenario");
+    session.wait_for_compact_text("PTY_BUG_READY", READY_TIMEOUT);
+    session.submit_prompt("/bug draft The terminal stopped responding");
+    session.wait_for_compact_text("Bug report drafted", TURN_TIMEOUT);
+    session.submit_prompt("/bug review");
+    session.wait_for_compact_text("What happened:", TURN_TIMEOUT);
+    session.wait_for_compact_text("Diagnostics: None", TURN_TIMEOUT);
+    session.send_bytes(b"0");
+    wait_for_feedback_status(workdir.path(), "Dismissed");
+    let mut paths = vec![workdir.path().join(".composer/agent/sessions")];
+    let mut dismissed = false;
+    while let Some(path) = paths.pop() {
+        if path.is_dir() {
+            paths.extend(
+                std::fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+            for line in std::fs::read_to_string(path).unwrap().lines() {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                dismissed |= value["customType"] == "product_issue_draft_v1"
+                    && value["data"]["status"] == "Dismissed";
+            }
+        }
+    }
+    assert!(
+        dismissed,
+        "dismiss must be persisted in the real session log"
+    );
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "report commands must never become model prompts"
+    );
+    session.shutdown();
+}
+
+#[test]
+fn pty_model_feedback_card_review_edit_and_discard() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![
+        tool_call_turn(
+            "draft_feedback",
+            &serde_json::json!({"description":"The tool repeated a corrected mistake", "expected_behavior":"Use the corrected instruction", "reproduction_steps":"Correct the tool and retry"}),
+        ),
+        text_turn("PTY_FEEDBACK_DRAFTED"),
+    ]);
+    let workdir = tempfile::tempdir().unwrap();
+    let mut session = PtySession::spawn(&mock, workdir.path(), "Draft feedback for this failure");
+    session.wait_for_compact_text("PTY_FEEDBACK_DRAFTED", READY_TIMEOUT);
+    session.wait_for_compact_text("Bug report drafted", TURN_TIMEOUT);
+    session.send_bytes(b"1");
+    session.wait_for_compact_text("Reproduction steps:", TURN_TIMEOUT);
+    session.send_bytes(b"r");
+    session.wait_for_compact_text("Edit repro", TURN_TIMEOUT);
+    session.send_bytes(b" and inspect the output\r");
+    session.wait_for_compact_text("and inspect the output", TURN_TIMEOUT);
+    session.send_bytes(b"0");
+    wait_for_feedback_status(workdir.path(), "Dismissed");
+    assert_eq!(
+        mock.request_count(),
+        2,
+        "feedback controls must not trigger model requests"
+    );
+    session.shutdown();
+}
+
+// Ratatui diffs may reuse characters already on the screen. The durable report
+// status is the authoritative dismissal result, independent of paint encoding.
+fn wait_for_feedback_status(root: &std::path::Path, expected: &str) {
+    let deadline = Instant::now() + TURN_TIMEOUT;
+    loop {
+        let mut paths = vec![root.join(".composer/agent/sessions")];
+        while let Some(path) = paths.pop() {
+            if path.is_dir() {
+                paths.extend(
+                    std::fs::read_dir(path)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path()),
+                );
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                let text = std::fs::read_to_string(path).unwrap();
+                if text
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .any(|entry| {
+                        entry["customType"] == "product_issue_draft_v1"
+                            && entry["data"]["status"] == expected
+                    })
+                {
+                    return;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "feedback status {expected} was not persisted"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

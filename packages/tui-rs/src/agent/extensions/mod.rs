@@ -85,6 +85,8 @@ pub struct ToolCallContext {
 /// State handed to [`AgentExtension::on_tool_result`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResultContext {
+    /// Trusted local edit receipt; absent for unknown or provider-native results.
+    pub edit: Option<LocalEditResult>,
     /// Identifier of the turn this call belongs to.
     pub turn_id: String,
     /// Provider-assigned tool-use identifier.
@@ -99,6 +101,13 @@ pub struct ToolResultContext {
     pub is_error: bool,
     /// Wall-clock duration the runner measured for this call.
     pub duration_ms: u64,
+}
+
+/// Content-free local edit outcome used for repair suggestions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalEditResult {
+    pub path: String,
+    pub text_not_found: bool,
 }
 
 /// Immutable completion of a tool executed inside the provider.
@@ -592,6 +601,7 @@ mod tests {
 
     fn tool_result_context() -> ToolResultContext {
         ToolResultContext {
+            edit: None,
             turn_id: "turn-1".to_string(),
             call_id: "call-1".to_string(),
             tool_name: "bash".to_string(),

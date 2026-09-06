@@ -121,6 +121,13 @@ class CaptureFixture:
                                 "I couldn’t read missing-checklist.md because it does not exist. Check the filename or choose README.md to continue."
                             )
                         finish = "stop"
+                    elif fixture.scene in {"summary-review", "summary-save"} and fixture.turn == 3:
+                        request = json.loads(request_body)
+                        if request.get("tools"):
+                            self.send_error(409, "summary must not expose tools")
+                            return
+                        delta = {"role": "assistant", "content": "The user asked for a release checklist review. The README was read successfully. The project tracks release owners, review steps, and shipped work. No files were changed."}
+                        finish = "stop"
                     else:
                         self.send_error(409, "capture fixture exhausted")
                         return

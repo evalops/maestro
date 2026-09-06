@@ -129,7 +129,16 @@ impl WelcomeScreen {
         let brand_height = area.height.saturating_sub(reserved_rows);
         let mut lines = if self.personality == super::dex_companion::DexPersonality::Quiet {
             vec![
-                super::deixic_logo::product_title_line(false),
+                if crate::themes::current_theme().canvas_style().bg.is_some() {
+                    Line::styled(
+                        super::deixic_logo::PRODUCT_TITLE,
+                        Style::default()
+                            .fg(crate::themes::current_ui_theme().text)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    super::deixic_logo::product_title_line(false)
+                },
                 Line::from(super::deixic_logo::COMPOSER_HINT),
             ]
         } else {
@@ -139,6 +148,12 @@ impl WelcomeScreen {
         lines.push(
             super::dex_companion::DexCompanion::new(super::dex_companion::DexCompanionState::Ready)
                 .personality(self.personality)
+                .theme(
+                    crate::themes::current_theme()
+                        .canvas_style()
+                        .bg
+                        .map(|_| crate::themes::current_ui_theme()),
+                )
                 .status_line(),
         );
 
@@ -195,6 +210,7 @@ impl WelcomeScreen {
 impl Widget for WelcomeScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
+        buf.set_style(area, crate::themes::current_theme().canvas_style());
 
         let content = crate::wrapping::word_wrap_lines(
             &self.build_content(area),

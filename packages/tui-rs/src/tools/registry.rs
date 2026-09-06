@@ -784,6 +784,7 @@ fn is_reserved_execute_dispatch_name(name: &str) -> bool {
             | "get_goal"
             | "update_goal"
             | "ask_user"
+            | "draft_feedback"
             | "extract_document"
             | "notebook_edit"
             | "websearch"

@@ -305,6 +305,19 @@ pub fn render_welcome_with_summary(
     ready: bool,
     facts: Option<(&str, &str)>,
 ) {
+    render_welcome_with_theme(area, buf, animate, session_id, ready, facts, None);
+}
+
+/// Render the same welcome layout using an explicitly supplied application palette.
+pub fn render_welcome_with_theme(
+    area: Rect,
+    buf: &mut Buffer,
+    animate: bool,
+    session_id: Option<&str>,
+    ready: bool,
+    facts: Option<(&str, &str)>,
+    theme: Option<maestro_ui::UiTheme>,
+) {
     if area.is_empty() {
         return;
     }
@@ -317,7 +330,7 @@ pub fn render_welcome_with_summary(
                 LaunchState::Working
             },
         );
-        let summary = [
+        let mut summary = [
             product_title_line(false).alignment(Alignment::Left),
             facts.map_or_else(
                 || hint_line().alignment(Alignment::Left),
@@ -362,12 +375,20 @@ pub fn render_welcome_with_summary(
                 },
             ),
         ];
+        if let Some(theme) = theme {
+            for (row, line) in summary.iter_mut().enumerate() {
+                let color = if row == 0 { theme.text } else { theme.muted };
+                line.style = line.style.fg(color);
+                for span in &mut line.spans {
+                    span.style = span.style.fg(color);
+                }
+            }
+        }
         if ready && facts.is_some() && area.height >= 6 {
             Paragraph::new("What are we making?")
-                .style(Style::default().fg(Color::Rgb(
-                    DEIXIC_MUTED.0,
-                    DEIXIC_MUTED.1,
-                    DEIXIC_MUTED.2,
+                .style(Style::default().fg(theme.map_or(
+                    Color::Rgb(DEIXIC_MUTED.0, DEIXIC_MUTED.1, DEIXIC_MUTED.2),
+                    |theme| theme.muted,
                 )))
                 .render(
                     Rect::new(area.x + 3, area.y + 5, area.width.saturating_sub(3), 1),
@@ -375,7 +396,13 @@ pub fn render_welcome_with_summary(
                 );
         }
         let logo_width = logo_visual_width(COMPACT_MIN_HEIGHT) + 3;
-        for (row, line) in logo.into_iter().enumerate() {
+        for (row, mut line) in logo.into_iter().enumerate() {
+            if let Some(theme) = theme {
+                line.style = line.style.fg(theme.focus);
+                for span in &mut line.spans {
+                    span.style = span.style.fg(theme.focus);
+                }
+            }
             Paragraph::new(line).render(
                 Rect::new(area.x + 1, area.y + 1 + row as u16, logo_width, 1),
                 buf,
@@ -394,7 +421,15 @@ pub fn render_welcome_with_summary(
         }
         return;
     }
-    let content = welcome_content_lines_with_metadata(area.height, animate, session_id, ready);
+    let mut content = welcome_content_lines_with_metadata(area.height, animate, session_id, ready);
+    if let Some(theme) = theme {
+        for line in &mut content {
+            line.style = line.style.fg(theme.text);
+            for span in &mut line.spans {
+                span.style = span.style.fg(theme.text);
+            }
+        }
+    }
     let content_height = content.len() as u16;
     let y_offset = if area.height > content_height {
         (area.height - content_height) / 2

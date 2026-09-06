@@ -2652,9 +2652,10 @@ impl ToolExecutor {
                         .map(|(i, _)| i)
                         .collect();
                     if positions.is_empty() {
-                        let details = EditDetails::new(path.clone())
+                        let mut details = EditDetails::new(path.clone())
                             .with_replacements(replacements_total)
                             .with_duration(start_time.elapsed().as_millis() as u64);
+                        details.text_not_found = true;
                         return ToolResult::failure(
                             "oldText not found in file. Make sure the string matches exactly."
                                 .to_string(),
@@ -3314,6 +3315,13 @@ impl ToolExecutor {
             ),
             "compact_mailbox" => crate::tools::context_tools::compact_mailbox(),
             "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
+            "draft_feedback" => {
+                if event_tx.is_none() {
+                    ToolResult::failure("Feedback drafts require an interactive session.")
+                } else {
+                    crate::bug_report::draft_tool(args.clone())
+                }
+            }
             "ask_user" => ask_user::ask_user(args.clone()),
             "extract_document" => {
                 extract_document::extract_document_with_cancellation(args.clone(), cancel).await

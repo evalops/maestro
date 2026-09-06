@@ -42,7 +42,7 @@
 //!
 //! Tool calls are rendered as collapsible sections with:
 //! - Status pill: `[RUN]`, `[OK]`, `[ERR]`, `[PEND]` with color coding
-//! - Tool-specific icons (see `get_tool_icon()`)
+//! - Shared tool-phase icons and concise outcome labels
 //! - Expandable arguments (JSON pretty-printed)
 //! - Output display (truncated to first 10 lines when collapsed)
 //! - Click indicator: `[+]` collapsed, `[-]` expanded
@@ -117,51 +117,81 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
-use crate::components::textarea::{TextArea, TextAreaWidget};
+use crate::components::textarea::TextArea;
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{RuntimeBadgeParams, build_runtime_badges};
 use crate::session::ThinkingLevel;
-use crate::shimmer::{DEIXIC_ACCENT, DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT};
+use crate::shimmer::{DEIXIC_ACCENT, DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_TEXT};
 use crate::state::{
     ApprovalMode, InteractionMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus,
 };
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::tool_summary::summarize_tool_use;
 use crate::wrapping::{RtOptions, word_wrap_lines};
+#[cfg(test)]
+use maestro_presentation::components::tool_result::preview_lines as tool_preview_lines;
+use maestro_presentation::components::{
+    composer::Composer,
+    tool_result::{ToolPhase, ToolResult},
+};
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
+fn conversation_theme() -> maestro_ui::UiTheme {
+    conversation_theme_for(&crate::themes::current_theme())
+}
+
+fn conversation_theme_for(theme: &crate::themes::Theme) -> maestro_ui::UiTheme {
+    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
+        theme.ui_theme()
+    } else {
+        maestro_presentation::palette::conversation()
+    }
+}
+
+fn semantic_color(key: &str, fallback: Color) -> Color {
+    semantic_color_for_theme(&crate::themes::current_theme(), key, fallback)
+}
+
+fn semantic_color_for_theme(theme: &crate::themes::Theme, key: &str, fallback: Color) -> Color {
+    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
+        theme.get_color(key).unwrap_or(fallback)
+    } else {
+        fallback
+    }
+}
+
+fn themed_chrome(key: &str, fallback: (u8, u8, u8)) -> Color {
+    semantic_color(key, brand_color(fallback))
+}
+
 fn brand_color(rgb: (u8, u8, u8)) -> Color {
     Color::Rgb(rgb.0, rgb.1, rgb.2)
 }
 
 fn brand_violet() -> Color {
-    brand_color(DEIXIC_ACCENT)
+    themed_chrome("accent", DEIXIC_ACCENT)
 }
 
 fn brand_border() -> Color {
-    brand_color(DEIXIC_BORDER)
+    themed_chrome("border", DEIXIC_BORDER)
 }
 
 fn brand_muted() -> Color {
-    brand_color(DEIXIC_MUTED)
-}
-
-fn brand_surface() -> Color {
-    brand_color(DEIXIC_SURFACE)
+    themed_chrome("muted", DEIXIC_MUTED)
 }
 
 fn brand_text() -> Color {
-    brand_color(DEIXIC_TEXT)
+    themed_chrome("text", DEIXIC_TEXT)
 }
 
 /// Parse markdown text into styled lines
@@ -177,13 +207,19 @@ fn parse_markdown_lines(text: &str) -> Vec<Line<'static>> {
                 // Code block start with language hint
                 let lang = line_text.trim_start_matches("```").trim();
                 lines.push(Line::from(vec![
-                    Span::styled("```", Style::default().fg(Color::DarkGray)),
-                    Span::styled(lang.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        "```",
+                        Style::default().fg(semantic_color("muted", Color::DarkGray)),
+                    ),
+                    Span::styled(
+                        lang.to_string(),
+                        Style::default().fg(semantic_color("warning", Color::Yellow)),
+                    ),
                 ]));
             } else {
                 lines.push(Line::from(Span::styled(
                     "```",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(semantic_color("muted", Color::DarkGray)),
                 )));
             }
             continue;
@@ -194,7 +230,7 @@ fn parse_markdown_lines(text: &str) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(
                 format!("  {line_text}"),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(semantic_color("success", Color::Green))
                     .add_modifier(Modifier::DIM),
             )));
         } else {
@@ -208,6 +244,10 @@ fn parse_markdown_lines(text: &str) -> Vec<Line<'static>> {
 
 /// Parse a single line of markdown into styled spans
 fn parse_markdown_line(text: &str) -> Line<'static> {
+    parse_markdown_line_with_theme(text, &crate::themes::current_theme())
+}
+
+fn parse_markdown_line_with_theme(text: &str, theme: &crate::themes::Theme) -> Line<'static> {
     let mut spans = Vec::new();
     let mut current = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -250,7 +290,11 @@ fn parse_markdown_line(text: &str) -> Line<'static> {
             let code_text: String = chars[start..i].iter().collect();
             spans.push(Span::styled(
                 code_text,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                if theme.name != "dark" || theme.canvas_style().bg.is_some() {
+                    Style::default().fg(semantic_color_for_theme(theme, "md_code", Color::Cyan))
+                } else {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+                },
             ));
             if i < chars.len() {
                 i += 1; // skip closing `
@@ -282,7 +326,7 @@ fn parse_markdown_line(text: &str) -> Line<'static> {
                 spans.push(Span::styled(
                     link_text,
                     Style::default()
-                        .fg(Color::Blue)
+                        .fg(semantic_color_for_theme(theme, "md_link", Color::Blue))
                         .add_modifier(Modifier::UNDERLINED),
                 ));
                 if i < chars.len() {
@@ -325,51 +369,42 @@ fn format_timestamp(time: SystemTime) -> String {
     format!("{hours:02}:{minutes:02}")
 }
 
-/// Get tool-specific icon (matching TypeScript TUI patterns)
-fn get_tool_icon(tool: &str) -> &'static str {
-    match tool.to_lowercase().as_str() {
-        "bash" => "λ",
-        "read" => "◇",
-        "write" => "◆",
-        "edit" => "◈",
-        "glob" => "◎",
-        "grep" => "⊛",
-        "task" => "⊕",
-        "todowrite" => "☐",
-        "webfetch" => "↯",
-        "websearch" => "⌕",
-        _ => "●",
-    }
-}
-
-fn format_tool_status_summary(status: ToolCallStatus, summary: &str) -> String {
+fn tool_phase(status: ToolCallStatus) -> ToolPhase {
     match status {
-        ToolCallStatus::Completed => summary.to_string(),
-        ToolCallStatus::Running => format!("Running · {summary}"),
-        ToolCallStatus::Failed => format!("Failed · {summary}"),
-        ToolCallStatus::Pending => format!("Pending · {summary}"),
-        ToolCallStatus::Cancelled => format!("Cancelled · {summary}"),
-        ToolCallStatus::Blocked => format!("Blocked · {summary}"),
+        ToolCallStatus::Pending => ToolPhase::Pending,
+        ToolCallStatus::Running => ToolPhase::Running,
+        ToolCallStatus::Completed => ToolPhase::Completed,
+        ToolCallStatus::Failed => ToolPhase::Failed,
+        ToolCallStatus::Cancelled => ToolPhase::Cancelled,
+        ToolCallStatus::Blocked => ToolPhase::Blocked,
     }
 }
 
-// Keep all expanded output lines; focus compact previews on content.
-fn tool_preview_lines(text: &str, expanded: bool) -> Vec<String> {
-    text.lines()
-        .filter(|line| {
-            expanded
-                || (!line.trim().starts_with("```")
-                    && !line.trim().is_empty()
-                    && !line.split_once('\t').is_some_and(|(number, content)| {
-                        number.trim().parse::<usize>().is_ok() && content.trim().is_empty()
-                    }))
-        })
-        .map(|line| line.replace('\t', "  "))
-        .collect()
-}
-
-fn should_show_tool_args_preview(summary: &str, args_preview: &str) -> bool {
-    !args_preview.is_empty() && !summary.contains(args_preview)
+fn tool_result_lines(
+    tc: &crate::state::ToolCallState,
+    expanded: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let summary = if tc.status == ToolCallStatus::Completed {
+        summarize_tool_use(&tc.tool, &tc.args)
+    } else {
+        crate::tool_summary::summarize_tool_intent(&tc.tool, &tc.args)
+    };
+    let summary = format!("{summary} · {}", tc.tool);
+    let arguments = get_tool_args_preview(&tc.tool, &tc.args, width.saturating_sub(20) as usize);
+    let clamp = clamp_tool_output(&tc.output, tool_output_limits());
+    let banner = format_tool_output_truncation(&clamp);
+    ToolResult {
+        phase: tool_phase(tc.status),
+        summary: &summary,
+        arguments: &arguments,
+        output: &clamp.text,
+        expanded,
+        detail: &format!("· {} #{}", tc.tool, tc.call_id),
+        truncation: banner.as_deref(),
+        theme: conversation_theme(),
+    }
+    .lines(width)
 }
 
 fn focus_turn_is_collapsed(
@@ -402,15 +437,15 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
     }
 
     let (bullet, color) = if failed > 0 {
-        ("●", Color::Red)
+        ("●", semantic_color("error", Color::Red))
     } else if blocked > 0 {
-        ("●", Color::Magenta)
+        ("●", semantic_color("accent", Color::Magenta))
     } else if running > 0 {
-        ("●", Color::Cyan)
+        ("●", semantic_color("accent", Color::Cyan))
     } else if pending > 0 || cancelled > 0 {
-        ("○", Color::Yellow)
+        ("○", semantic_color("warning", Color::Yellow))
     } else {
-        ("●", Color::Green)
+        ("●", semantic_color("success", Color::Green))
     };
 
     let mut parts = vec![format!(
@@ -438,7 +473,7 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
             if selected { "› " } else { "  " },
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(semantic_color("accent", Color::Cyan)),
         ),
         Span::styled(
             bullet,
@@ -448,7 +483,7 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
         Span::styled(
             parts.join(" · "),
             Style::default()
-                .fg(Color::White)
+                .fg(semantic_color("text", Color::White))
                 .add_modifier(Modifier::BOLD),
         ),
     ];
@@ -460,17 +495,20 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
     {
         spans.push(Span::styled(
             " · Live: ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(semantic_color("muted", Color::DarkGray)),
         ));
         spans.push(Span::styled(
             summarize_tool_use(&tool_call.tool, &tool_call.args),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(semantic_color("accent", Color::Cyan)),
         ));
     }
-    spans.push(Span::styled("  [+]", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        "  [+]",
+        Style::default().fg(semantic_color("muted", Color::DarkGray)),
+    ));
     let line = Line::from(spans);
     if selected {
-        line.style(Style::default().bg(Color::DarkGray))
+        line.style(Style::default().bg(semantic_color("user_message_bg", Color::DarkGray)))
     } else {
         line
     }
@@ -561,40 +599,9 @@ pub fn calculate_message_height(
         } else {
             !expanded_tools.contains(&tc.call_id)
         };
-        let summary_label = summarize_tool_use(&tc.tool, &tc.args);
-        let args_preview =
-            get_tool_args_preview(&tc.tool, &tc.args, width.saturating_sub(20) as usize);
-        let show_args_preview = should_show_tool_args_preview(&summary_label, &args_preview);
-
-        // header line
-        height += 1;
-
-        if show_args_preview {
-            height += 1;
-        }
-
-        if !tc.output.is_empty() {
-            let clamp = clamp_tool_output(&tc.output, tool_output_limits());
-            let output_lines = tool_preview_lines(&clamp.text, expanded);
-            let max_output_lines = if expanded { 50 } else { 5 };
-            let total_lines = output_lines.len();
-            let truncated = total_lines > max_output_lines;
-
-            if !output_lines.is_empty() {
-                // The renderer clips each preview line horizontally; it does
-                // not wrap tool output into additional rows.
-                height += output_lines.len().min(max_output_lines) as u16;
-
-                if truncated {
-                    height += 1;
-                }
-                if clamp.truncated {
-                    height += 1;
-                }
-            } else if clamp.truncated {
-                height += 1;
-            }
-        }
+        height += tool_result_lines(tc, expanded, width)
+            .len()
+            .min(u16::MAX as usize) as u16;
 
         // Separate tools, but let the next message supply the turn spacing.
         if tool_index + 1 < message.tool_calls.len() {
@@ -716,19 +723,19 @@ impl Widget for MessageWidget<'_> {
                 Span::styled(
                     "  ✻ ",
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(semantic_color("muted", Color::DarkGray))
                         .add_modifier(Modifier::DIM),
                 ),
                 Span::styled(
                     "Conversation compacted",
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(semantic_color("muted", Color::DarkGray))
                         .add_modifier(Modifier::DIM),
                 ),
                 Span::styled(
                     format!("  {timestamp}"),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(semantic_color("muted", Color::DarkGray))
                         .add_modifier(Modifier::DIM),
                 ),
             ]);
@@ -835,17 +842,20 @@ impl Widget for MessageWidget<'_> {
 
             // Thinking header with collapse/expand indicator
             let thinking_header = Line::from(vec![
-                Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "  │ ",
+                    Style::default().fg(semantic_color("muted", Color::DarkGray)),
+                ),
                 Span::styled("◆ ", Style::default().fg(brand_violet())),
                 Span::styled("Thinking", Style::default().fg(brand_violet())),
                 Span::styled(
                     format!(" ({} chars) ", self.message.thinking.len()),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(semantic_color("muted", Color::DarkGray)),
                 ),
                 Span::styled(
                     toggle_hint,
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(semantic_color("muted", Color::DarkGray))
                         .add_modifier(Modifier::DIM),
                 ),
             ]);
@@ -869,11 +879,14 @@ impl Widget for MessageWidget<'_> {
                     let max_len = area.width.saturating_sub(6) as usize;
                     let truncated = truncate_location(line, max_len);
                     let content = Line::from(vec![
-                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "  │ ",
+                            Style::default().fg(semantic_color("muted", Color::DarkGray)),
+                        ),
                         Span::styled(
                             truncated,
                             Style::default()
-                                .fg(Color::DarkGray)
+                                .fg(semantic_color("muted", Color::DarkGray))
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]);
@@ -898,11 +911,14 @@ impl Widget for MessageWidget<'_> {
                     let max_len = area.width.saturating_sub(6) as usize;
                     let truncated = truncate_location(line, max_len);
                     let preview = Line::from(vec![
-                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "  │ ",
+                            Style::default().fg(semantic_color("muted", Color::DarkGray)),
+                        ),
                         Span::styled(
                             truncated,
                             Style::default()
-                                .fg(Color::DarkGray)
+                                .fg(semantic_color("muted", Color::DarkGray))
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]);
@@ -987,159 +1003,10 @@ impl Widget for MessageWidget<'_> {
                 !expanded
             };
 
-            // Status bullet plus concise summary label.
-            let (bullet, bullet_style) = match tool_call.status {
-                ToolCallStatus::Running => ("●", Style::default().fg(brand_violet())),
-                ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green)),
-                ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red)),
-                ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow)),
-                ToolCallStatus::Cancelled => ("⊘", Style::default().fg(Color::Yellow)),
-                ToolCallStatus::Blocked => ("●", Style::default().fg(brand_violet())),
-            };
-            let summary_label = if tool_call.status == ToolCallStatus::Completed {
-                summarize_tool_use(&tool_call.tool, &tool_call.args)
-            } else {
-                crate::tool_summary::summarize_tool_intent(&tool_call.tool, &tool_call.args)
-            };
-            let header_label = format_tool_status_summary(tool_call.status, &summary_label);
-
-            // Get tool args preview for inline display
-            let args_preview = get_tool_args_preview(
-                &tool_call.tool,
-                &tool_call.args,
-                area.width.saturating_sub(20) as usize,
-            );
-            let show_args_preview = should_show_tool_args_preview(&summary_label, &args_preview);
-
-            let mut header_spans = vec![
-                Span::styled(format!("  {bullet} "), bullet_style),
-                Span::styled(header_label, Style::default().fg(brand_text())),
-                Span::styled(
-                    if expanded {
-                        "  [−] collapse"
-                    } else {
-                        "  [+] expand"
-                    },
-                    Style::default().fg(brand_muted()),
-                ),
-            ];
-            if expanded {
-                header_spans.push(Span::styled(
-                    format!("  · {} #{}", tool_call.tool, tool_call.call_id),
-                    Style::default().fg(brand_muted()),
-                ));
-            }
-            let header_line = Line::from(header_spans);
-            Paragraph::new(header_line).render(
-                Rect {
-                    x: area.x,
-                    y,
-                    width: area.width,
-                    height: 1,
-                },
-                buf,
-            );
-            y += 1;
-
-            // Show args preview inline with tree prefix
-            if y < max_y && show_args_preview {
-                let preview_line = Line::from(vec![
-                    Span::styled("  └ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(args_preview.clone(), Style::default().fg(Color::DarkGray)),
-                ]);
-                Paragraph::new(preview_line).render(
-                    Rect {
-                        x: area.x,
-                        y,
-                        width: area.width,
-                        height: 1,
-                    },
-                    buf,
-                );
-                y += 1;
-            }
-
-            // Output block (truncated to max 5 lines when collapsed)
-            if y < max_y && !tool_call.output.is_empty() {
-                let clamp = clamp_tool_output(&tool_call.output, tool_output_limits());
-                let banner = format_tool_output_truncation(&clamp);
-                let output_lines = tool_preview_lines(&clamp.text, expanded);
-                let max_output_lines = if expanded { 50 } else { 5 };
-                let total_lines = output_lines.len();
-                let truncated = total_lines > max_output_lines;
-
-                // Render output lines with tree prefix
-                for (i, line) in output_lines.iter().take(max_output_lines).enumerate() {
-                    if y >= max_y {
-                        break;
-                    }
-                    let prefix = if i == 0 && args_preview.is_empty() {
-                        "  └ "
-                    } else {
-                        "    "
-                    };
-                    let output_line = Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
-                        Span::styled(line.as_str(), Style::default().fg(brand_muted())),
-                    ]);
-                    Paragraph::new(output_line).render(
-                        Rect {
-                            x: area.x,
-                            y,
-                            width: area.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-                    y += 1;
-                }
-
-                // Show ellipsis if truncated
-                if truncated && y < max_y {
-                    let omitted = total_lines - max_output_lines;
-                    let ellipsis_line = Line::from(vec![
-                        Span::styled("    ", Style::default()),
-                        Span::styled(
-                            format!("… +{omitted} lines"),
-                            Style::default().fg(brand_muted()),
-                        ),
-                    ]);
-                    Paragraph::new(ellipsis_line).render(
-                        Rect {
-                            x: area.x,
-                            y,
-                            width: area.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-                    y += 1;
-                }
-
-                if let Some(banner) = banner {
-                    if y < max_y {
-                        let banner_line = Line::from(vec![
-                            Span::styled("    ", Style::default()),
-                            Span::styled(
-                                banner,
-                                Style::default()
-                                    .fg(Color::DarkGray)
-                                    .add_modifier(Modifier::DIM),
-                            ),
-                        ]);
-                        Paragraph::new(banner_line).render(
-                            Rect {
-                                x: area.x,
-                                y,
-                                width: area.width,
-                                height: 1,
-                            },
-                            buf,
-                        );
-                        y += 1;
-                    }
-                }
-            }
+            let lines = tool_result_lines(tool_call, expanded, area.width);
+            let height = (lines.len().min(u16::MAX as usize) as u16).min(max_y - y);
+            Paragraph::new(lines).render(Rect { y, height, ..area }, buf);
+            y += height;
 
             // Only separate tools within this message.
             if y < max_y && tool_index + 1 < self.message.tool_calls.len() {
@@ -1205,11 +1072,23 @@ fn get_tool_args_preview(tool: &str, args: &serde_json::Value, max_len: usize) -
         }
     };
 
-    if preview.len() > max_len {
-        format!("{}...", &preview[..max_len.saturating_sub(3)])
-    } else {
-        preview
+    if preview.width() <= max_len {
+        return preview;
     }
+    let suffix = ".".repeat(max_len.min(3));
+    let budget = max_len.saturating_sub(suffix.len());
+    let mut clipped = String::new();
+    let mut width = 0;
+    let span = Span::raw(preview);
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let next = grapheme.symbol.width();
+        if width + next > budget {
+            break;
+        }
+        clipped.push_str(grapheme.symbol);
+        width += next;
+    }
+    clipped + &suffix
 }
 
 /// A stateless widget for rendering a single tool call.
@@ -1252,46 +1131,17 @@ impl<'a> ToolCallWidget<'a> {
 
 impl Widget for ToolCallWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 {
-            return;
+        ToolResult {
+            phase: tool_phase(self.status),
+            summary: self.tool,
+            arguments: "",
+            output: self.output,
+            expanded: self.expanded,
+            detail: "",
+            truncation: None,
+            theme: conversation_theme(),
         }
-
-        let (status_icon, status_color) = match self.status {
-            ToolCallStatus::Pending => ("?", Color::Yellow),
-            ToolCallStatus::Running => ("*", brand_violet()),
-            ToolCallStatus::Completed => ("+", Color::Green),
-            ToolCallStatus::Failed => ("!", Color::Red),
-            ToolCallStatus::Cancelled => ("x", Color::Yellow),
-            ToolCallStatus::Blocked => ("X", brand_violet()),
-        };
-
-        let tool_icon = get_tool_icon(self.tool);
-
-        let header = Line::from(vec![
-            Span::styled(status_icon, Style::default().fg(status_color)),
-            Span::raw(" "),
-            Span::styled(tool_icon, Style::default().fg(brand_violet())),
-            Span::raw(" "),
-            Span::styled(self.tool, Style::default().fg(brand_text())),
-        ]);
-
-        let header_para = Paragraph::new(header);
-        header_para.render(Rect { height: 1, ..area }, buf);
-
-        // Render output if expanded
-        if self.expanded && area.height > 1 && !self.output.is_empty() {
-            let output_area = Rect {
-                y: area.y + 1,
-                height: area.height.saturating_sub(1),
-                ..area
-            };
-
-            let output = Paragraph::new(self.output)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::LEFT));
-            output.render(output_area, buf);
-        }
+        .render(area, buf);
     }
 }
 
@@ -1351,6 +1201,7 @@ pub struct ChatInputWidget<'a> {
     pending_input_preview: Option<PendingInputPreview>,
     ghost_text: Option<String>,
     runtime_footer: Option<String>,
+    interaction_mode: Option<InteractionMode>,
 }
 
 #[derive(Debug)]
@@ -1390,13 +1241,7 @@ const PREVIEW_LINE_LIMIT: usize = 3;
 const INTERRUPT_STEERING_DESCRIPTION: &str = "Ctrl+C interrupt and apply now";
 const EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION: &str = "edit queued follow-ups";
 
-/// In-box prompt painted on the composer textarea row (`"> "`).
-///
-/// Kept off the border title so it cannot render as a detached `>` above the
-/// rounded box. When the editor is empty, the terminal cursor sits on the
-/// trailing space. There is no placeholder copy.
-const COMPOSER_PROMPT: &str = "> ";
-pub(crate) const COMPOSER_PROMPT_WIDTH: u16 = 2;
+pub(crate) use maestro_presentation::components::composer::PROMPT_WIDTH as COMPOSER_PROMPT_WIDTH;
 
 /// Usable editor width inside the composer (borders + in-box prompt).
 #[must_use]
@@ -1422,15 +1267,6 @@ fn chrome_model_label(model: &str) -> String {
     match model.rsplit_once('/') {
         Some((_, rest)) if !rest.is_empty() => rest.to_string(),
         _ => model.to_string(),
-    }
-}
-
-fn composer_editor_area(textarea_area: Rect) -> Rect {
-    Rect {
-        x: textarea_area.x.saturating_add(COMPOSER_PROMPT_WIDTH),
-        y: textarea_area.y,
-        width: textarea_area.width.saturating_sub(COMPOSER_PROMPT_WIDTH),
-        height: textarea_area.height,
     }
 }
 
@@ -1463,7 +1299,7 @@ impl PendingInputPreview {
         }
 
         let dim_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(semantic_color("muted", Color::DarkGray))
             .add_modifier(Modifier::DIM);
         let mut lines = Vec::new();
 
@@ -1539,7 +1375,7 @@ impl PendingInputPreview {
         italic: bool,
     ) {
         let dim_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(semantic_color("muted", Color::DarkGray))
             .add_modifier(Modifier::DIM);
         let header = Line::from(vec![
             Span::styled("• ", dim_style),
@@ -1575,6 +1411,7 @@ impl PendingInputPreview {
         }
     }
 
+    #[cfg(test)]
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
             return;
@@ -1597,10 +1434,11 @@ impl<'a> ChatInputWidget<'a> {
             pending_input_preview: options.pending_input_preview,
             ghost_text: options.ghost_text,
             runtime_footer: None,
+            interaction_mode: None,
         }
     }
 
-    /// Attach Grok-style runtime context to the lower-right input border.
+    /// Attach model context and the active interaction mode to the composer.
     #[must_use]
     pub fn with_runtime_footer(
         mut self,
@@ -1617,10 +1455,37 @@ impl<'a> ChatInputWidget<'a> {
                 thinking_level.label().to_ascii_lowercase()
             ));
         }
-        context.push_str(" · ");
-        context.push_str(interaction_mode.label());
         self.runtime_footer = Some(context);
+        self.interaction_mode = Some(interaction_mode);
         self
+    }
+
+    fn footer_for_width(&self, width: u16) -> Option<String> {
+        let mode = self.interaction_mode?;
+        let mut footer = format!(
+            "Mode: {}",
+            match mode {
+                InteractionMode::Normal => "Act",
+                InteractionMode::Plan => "Plan",
+                InteractionMode::AlwaysApprove => "Auto-approve",
+            }
+        );
+        let available = usize::from(width.saturating_sub(2));
+        if let Some(model) = &self.runtime_footer {
+            let candidate = format!("{footer} · {model}");
+            if candidate.width() <= available {
+                footer = candidate;
+            }
+        }
+        let hint = match mode {
+            InteractionMode::Plan => " · /plan off to act",
+            InteractionMode::Normal => " · /plan to plan",
+            InteractionMode::AlwaysApprove => "",
+        };
+        if footer.width() + hint.width() <= available {
+            footer.push_str(hint);
+        }
+        Some(footer)
     }
 
     /// Calculate the on-screen cursor position within the input area.
@@ -1636,137 +1501,37 @@ impl<'a> ChatInputWidget<'a> {
     /// - Cursor is outside visible area (scrolled out of view)
     #[must_use]
     pub fn cursor_pos(&self, input_area: Rect) -> Option<(u16, u16)> {
-        if input_area.width < 3 || input_area.height < 3 {
-            return None;
-        }
-
-        let inner = Rect {
-            x: input_area.x + 1,
-            y: input_area.y + 1,
-            width: input_area.width.saturating_sub(2),
-            height: input_area.height.saturating_sub(2),
-        };
-        let preview_height = self
+        let queued = self
             .pending_input_preview
             .as_ref()
-            .map_or(0, |preview| preview.desired_height(inner.width));
-        let textarea_area = Rect {
-            x: inner.x,
-            y: inner.y.saturating_add(preview_height),
-            width: inner.width,
-            height: inner.height.saturating_sub(preview_height),
-        };
-        if textarea_area.height == 0 {
-            return None;
-        }
+            .map_or_else(Vec::new, |preview| {
+                preview.build_lines(input_area.width.saturating_sub(2))
+            });
+        self.shared(&queued, None).cursor_pos(input_area)
+    }
 
-        // Empty editor: sit on the prompt's trailing space.
-        if self.textarea.is_empty() {
-            let cursor_x = textarea_area
-                .x
-                .saturating_add(COMPOSER_PROMPT_WIDTH.saturating_sub(1));
-            return Some((cursor_x, textarea_area.y));
+    fn shared<'b>(&'b self, queued: &'b [Line<'static>], footer: Option<&'b str>) -> Composer<'b> {
+        Composer {
+            editor: self.textarea,
+            queued,
+            busy: self.busy,
+            footer,
+            completion: self.ghost_text.as_deref(),
+            theme: conversation_theme(),
         }
-
-        let editor_area = composer_editor_area(textarea_area);
-        if editor_area.width == 0 {
-            return None;
-        }
-        self.textarea.cursor_pos(editor_area)
     }
 }
 
 impl Widget for ChatInputWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 {
-            return;
-        }
-
-        // Keep the composer as the only high-contrast control surface. The
-        // violet-gray border gives the empty session a deliberate landing
-        // point while preserving the busy-state distinction.
-        let border_style = if self.busy {
-            Style::default().fg(brand_muted())
-        } else {
-            Style::default().fg(brand_border())
-        };
-
-        let mut block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(border_style)
-            .style(Style::default().bg(brand_surface()));
-        if let Some(runtime_footer) = self.runtime_footer {
-            block = block.title_bottom(
-                Line::from(format!(" {runtime_footer} "))
-                    .style(Style::default().fg(brand_muted()))
-                    .alignment(Alignment::Right),
-            );
-        }
-
-        let mut inner = block.inner(area);
-        // Keep editor/cursor geometry while dropping the enclosing side rails.
-        inner.x = inner.x.saturating_add(1).min(area.right());
-        inner.width = inner.width.saturating_sub(2);
-        block.render(area, buf);
-
-        let preview_height = self
+        let queued = self
             .pending_input_preview
             .as_ref()
-            .map_or(0, |preview| preview.desired_height(inner.width));
-        if let Some(preview) = &self.pending_input_preview {
-            let preview_area = Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: preview_height.min(inner.height),
-            };
-            preview.render(preview_area, buf);
-        }
-
-        let textarea_area = Rect {
-            x: inner.x,
-            y: inner.y.saturating_add(preview_height),
-            width: inner.width,
-            height: inner.height.saturating_sub(preview_height),
-        };
-        if textarea_area.height == 0 {
-            return;
-        }
-
-        if textarea_area.width > 0 {
-            buf.set_stringn(
-                textarea_area.x,
-                textarea_area.y,
-                COMPOSER_PROMPT,
-                usize::from(textarea_area.width),
-                Style::default().fg(brand_violet()),
-            );
-        }
-
-        let editor_area = composer_editor_area(textarea_area);
-        if editor_area.width == 0 {
-            return;
-        }
-
-        let text_style = Style::default().fg(brand_text());
-        TextAreaWidget::new(self.textarea)
-            .style(text_style)
-            .render(editor_area, buf);
-
-        // Render ghost-text completion dimmed right after the cursor.
-        // The caller only passes `ghost_text` when the cursor is at end of
-        // input, so the cursor position is exactly where the suffix belongs.
-        if let Some(ghost) = &self.ghost_text {
-            if let Some((cursor_x, cursor_y)) = self.textarea.cursor_pos(editor_area) {
-                let remaining = usize::from(editor_area.right().saturating_sub(cursor_x));
-                if remaining > 0 {
-                    let ghost_style = Style::default()
-                        .fg(brand_muted())
-                        .add_modifier(Modifier::DIM);
-                    buf.set_stringn(cursor_x, cursor_y, ghost, remaining, ghost_style);
-                }
-            }
-        }
+            .map_or_else(Vec::new, |preview| {
+                preview.build_lines(area.width.saturating_sub(2))
+            });
+        let footer = self.footer_for_width(area.width);
+        self.shared(&queued, footer.as_deref()).render(area, buf);
     }
 }
 
@@ -1882,7 +1647,7 @@ impl Widget for TurnStatusWidget<'_> {
         } else {
             activity.to_owned()
         };
-        let dim = Style::default().fg(Color::DarkGray);
+        let dim = Style::default().fg(semantic_color("muted", Color::DarkGray));
         let mut spans = vec![Span::styled(
             "◐ ",
             Style::default().fg(Color::Rgb(
@@ -1907,7 +1672,7 @@ impl Widget for TurnStatusWidget<'_> {
         if area.width >= 48 && !self.queue.is_empty() {
             spans.push(Span::styled(
                 format!("  ·  {} queued", self.queue.total),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(semantic_color("warning", Color::Yellow)),
             ));
         }
         if area.width >= 64 {
@@ -2658,6 +2423,8 @@ impl<'a> ChatView<'a> {
 
 impl Widget for ChatView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let theme = crate::themes::current_theme();
+        buf.set_style(area, theme.canvas_style());
         if area.height < 5 || area.width < 10 {
             return;
         }
@@ -2703,16 +2470,18 @@ impl Widget for ChatView<'_> {
         if header_height > 0 {
             SessionHeaderWidget::new(self.state.cwd.as_deref(), self.state.git_branch.as_deref())
                 .with_context(context_used, self.state.context_window)
+                .theme(theme.canvas_style().bg.map(|_| theme.ui_theme()))
                 .render(chunks[0], buf);
         }
 
         // Render messages
-        self.render_messages(chunks[1], buf);
+        self.render_messages(chunks[1], buf, theme.canvas_style());
 
         let mut activity_area = chunks[2];
         if show_face && activity_area.height > 0 {
             if let Some(state) = self.dex_state {
                 super::dex_companion::DexCompanion::new(state)
+                    .theme(theme.canvas_style().bg.map(|_| theme.ui_theme()))
                     .personality(self.dex_personality)
                     .animations(self.animations)
                     .frame(self.dex_frame)
@@ -2776,6 +2545,7 @@ impl Widget for ChatView<'_> {
             .render(activity_area, buf);
         } else if let Some(state) = self.dex_state {
             let mut line = super::dex_companion::DexCompanion::new(state)
+                .theme(theme.canvas_style().bg.map(|_| theme.ui_theme()))
                 .personality(self.dex_personality)
                 .status_line();
             let available = usize::from(activity_area.width).saturating_sub(line.width() + 3);
@@ -2807,12 +2577,13 @@ impl Widget for ChatView<'_> {
         let startup_summary_visible = chunks[1].width >= 44
             && chunks[1].height >= 5
             && !self.state.messages.iter().any(should_render_message);
-        if !startup_summary_visible {
-            input_widget = input_widget.with_runtime_footer(
-                self.state.model.as_deref(),
-                self.state.thinking_level,
-                self.state.interaction_mode,
-            );
+        input_widget = input_widget.with_runtime_footer(
+            self.state.model.as_deref(),
+            self.state.thinking_level,
+            self.state.interaction_mode,
+        );
+        if startup_summary_visible {
+            input_widget.runtime_footer = None;
         }
 
         input_widget.render(chunks[3], buf);
@@ -2899,7 +2670,7 @@ impl ChatView<'_> {
         key ^ (self.state.expanded_focus_turns.len() as u64).rotate_left(40)
     }
 
-    fn render_messages(&self, area: Rect, buf: &mut Buffer) {
+    fn render_messages(&self, area: Rect, buf: &mut Buffer, canvas: Style) {
         // Filter to only renderable messages
         let renderable_messages: Vec<&Message> = self
             .state
@@ -2914,7 +2685,6 @@ impl ChatView<'_> {
                 .model
                 .as_deref()
                 .map(chrome_model_label)
-                .map(|model| format!("{model} · {}", self.state.interaction_mode.label()))
                 .unwrap_or_else(|| "Sign in to choose a model".to_string());
             let location = format_session_location(
                 self.state.cwd.as_deref(),
@@ -2930,23 +2700,31 @@ impl ChatView<'_> {
                         .render(area, buf);
                 }
             } else {
-                crate::components::deixic_logo::render_welcome_with_summary(
+                crate::components::deixic_logo::render_welcome_with_theme(
                     area,
                     buf,
                     self.animations,
                     self.state.session_id.as_deref(),
                     !self.state.busy,
                     Some((&runtime, &location)),
+                    crate::themes::current_theme()
+                        .canvas_style()
+                        .bg
+                        .map(|_| crate::themes::current_ui_theme()),
                 );
             }
             if self.dex_personality != super::dex_companion::DexPersonality::Quiet {
-                maestro_presentation::components::dex_companion::render_welcome_portrait(
+                maestro_presentation::components::dex_companion::render_welcome_portrait_with_theme(
                     area,
                     buf,
                     self.dex_look,
                     self.dex_state
                         .unwrap_or(super::dex_companion::DexCompanionState::Ready),
                     self.animations,
+                    crate::themes::current_theme()
+                        .canvas_style()
+                        .bg
+                        .map(|_| crate::themes::current_ui_theme()),
                 );
             }
             if area.height >= 7 {
@@ -3025,6 +2803,7 @@ impl ChatView<'_> {
                 .min(usize::from(max_y.saturating_sub(y))) as u16;
             let msg_area = Rect::new(0, 0, area.width, full_height);
             let mut message_buffer = Buffer::empty(msg_area);
+            message_buffer.set_style(msg_area, canvas);
 
             let widget = MessageWidget::new(message)
                 .with_continuation(continues_turn(
@@ -3093,6 +2872,54 @@ impl ChatView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_code_uses_readable_theme_ink_without_terminal_dimming() {
+        for name in [
+            "light",
+            "green",
+            "pink",
+            "blue",
+            "green-dark",
+            "pink-dark",
+            "blue-dark",
+        ] {
+            let theme = crate::themes::load_theme(name).unwrap();
+            let line = parse_markdown_line_with_theme("Run `cargo test`.", &theme);
+            let code = line
+                .spans
+                .iter()
+                .find(|span| span.content == "cargo test")
+                .unwrap();
+            assert_eq!(code.style.fg, theme.get_color("md_code"));
+            assert!(!code.style.add_modifier.contains(Modifier::DIM));
+        }
+        let legacy = parse_markdown_line_with_theme("`cargo test`", &crate::themes::dark_theme());
+        assert!(legacy.spans[0].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn markdown_links_respect_distinct_theme_link_colors() {
+        let mut custom = crate::themes::light_theme();
+        custom.colors.md_heading = "#ff0000".into();
+        custom.colors.md_link = "#00ff00".into();
+        assert_ne!(custom.get_color("md_link"), custom.get_color("md_heading"));
+        for theme in [crate::themes::light_theme(), custom] {
+            let line = parse_markdown_line_with_theme("See [guide](https://example.com).", &theme);
+            let link = line
+                .spans
+                .iter()
+                .find(|span| span.content == "guide")
+                .unwrap();
+            assert_eq!(link.style.fg, theme.get_color("md_link"));
+            assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
+        }
+        let line = parse_markdown_line_with_theme(
+            "[guide](https://example.com)",
+            &crate::themes::dark_theme(),
+        );
+        assert_eq!(line.spans[0].style.fg, Some(Color::Blue));
+    }
 
     fn polish_message(id: &str, content: &str) -> Message {
         Message {
@@ -3244,6 +3071,32 @@ mod tests {
     }
 
     #[test]
+    fn message_copy_preserves_canvas_including_blank_cells() {
+        let mut state = crate::state::AppState::new();
+        state.messages = vec![polish_message("canvas", "Readable message")];
+        let area = Rect::new(0, 0, 80, 20);
+        let canvas = Style::default()
+            .bg(Color::Rgb(238, 232, 224))
+            .fg(Color::Rgb(81, 71, 84));
+        let mut buf = Buffer::empty(area);
+        buf.set_style(area, canvas);
+        ChatView::new(&state).render_messages(area, &mut buf, canvas);
+        assert!(
+            buffer_lines(&buf, 80, 20)
+                .join("\n")
+                .contains("Readable message")
+        );
+        for cell in &buf.content {
+            assert_eq!(cell.bg, Color::Rgb(238, 232, 224));
+        }
+        let body_row = buffer_lines(&buf, 80, 20)
+            .iter()
+            .position(|line| line.contains("Readable message"))
+            .unwrap();
+        assert_eq!(buf[(0, body_row as u16)].fg, Color::Rgb(81, 71, 84));
+    }
+
+    #[test]
     fn adjacent_dex_messages_share_heading_but_not_system_or_side_turns() {
         let mut state = crate::state::AppState::new();
         state.messages = vec![
@@ -3252,7 +3105,7 @@ mod tests {
         ];
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
-        ChatView::new(&state).render_messages(area, &mut buf);
+        ChatView::new(&state).render_messages(area, &mut buf, Style::default());
         let text = buffer_lines(&buf, 80, 20).join("\n");
         assert_eq!(text.matches("Dex").count(), 1);
         assert!(text.contains("Read complete."));
@@ -3260,7 +3113,7 @@ mod tests {
         // Changing the predecessor must invalidate the following cached height.
         state.messages[0].kind = MessageKind::System;
         let mut buf = Buffer::empty(area);
-        ChatView::new(&state).render_messages(area, &mut buf);
+        ChatView::new(&state).render_messages(area, &mut buf, Style::default());
         let text = buffer_lines(&buf, 80, 20).join("\n");
         assert!(text.contains("System"));
         assert!(text.contains("Dex"));
@@ -3283,7 +3136,7 @@ mod tests {
         for (width, height) in [(80, 10), (40, 11), (100, 13)] {
             let area = Rect::new(0, 0, width, height);
             let mut buf = Buffer::empty(area);
-            ChatView::new(&state).render_messages(area, &mut buf);
+            ChatView::new(&state).render_messages(area, &mut buf, Style::default());
             let text = buffer_lines(&buf, width, height).join("\n");
             assert!(text.contains("Line 40"), "{text}");
             assert!(!text.contains("Line 01"));
@@ -3292,7 +3145,7 @@ mod tests {
         state.scroll_offset = 20;
         let area = Rect::new(0, 0, 80, 10);
         let mut buf = Buffer::empty(area);
-        ChatView::new(&state).render_messages(area, &mut buf);
+        ChatView::new(&state).render_messages(area, &mut buf, Style::default());
         let text = buffer_lines(&buf, 80, 10).join("\n");
         assert!(text.contains("Line 20"), "{text}");
         assert!(!text.contains("Line 40"));
@@ -3366,6 +3219,43 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn queued_preview_keeps_the_editor_visible_in_a_short_composer() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("Keep this draft");
+        let widget = ChatInputWidget::new(
+            &textarea,
+            ChatInputWidgetOptions {
+                busy: true,
+                pending_input_preview: Some(PendingInputPreview {
+                    follow_up: vec!["Next task".into(); 5],
+                    ..Default::default()
+                }),
+                ghost_text: None,
+            },
+        );
+        let area = Rect::new(0, 0, 40, 5);
+        assert!(
+            widget.cursor_pos(area).is_some(),
+            "queued previews must leave an editor row"
+        );
+        let mut buffer = Buffer::empty(area);
+        widget.render(area, &mut buffer);
+        assert!(
+            buffer_lines(&buffer, 40, 5)
+                .join("\n")
+                .contains("Keep this draft")
+        );
+    }
+
+    #[test]
+    fn tool_argument_preview_does_not_split_unicode() {
+        let args = serde_json::json!({"file_path": "界".repeat(30)});
+        let preview = get_tool_args_preview("read", &args, 20);
+        assert!(preview.width() <= 20);
+        assert!(preview.ends_with("..."));
     }
 
     #[test]
@@ -3486,7 +3376,7 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("GPT-5.4 (high) · always-approve"));
+        assert!(rendered.contains("Mode: Auto-approve · GPT-5.4 (high)"));
     }
 
     #[test]
@@ -3512,7 +3402,7 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("GPT-5.5 · normal"));
+        assert!(rendered.contains("Mode: Act · GPT-5.5"));
         assert!(!rendered.contains("openai-codex/gpt-5.5"));
     }
 
@@ -3530,10 +3420,45 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         let catalog_hits = rendered.matches("GPT-5.5").count();
         assert_eq!(catalog_hits, 1, "model must appear once:\n{rendered}");
-        assert!(rendered.contains("GPT-5.5 · normal"));
+        assert!(rendered.contains("Mode: Act"));
+        assert!(rendered.contains("/plan to plan"));
         assert!(!rendered.contains("via openai-codex"));
         assert!(!rendered.contains("openai-codex/gpt-5.5"));
         assert!(!rendered.contains("Describe what you want to build..."));
+    }
+
+    #[test]
+    fn composer_mode_remains_visible_at_startup_and_in_conversation() {
+        for (mode, label) in [
+            (InteractionMode::Normal, "Mode: Act"),
+            (InteractionMode::Plan, "Mode: Plan"),
+            (InteractionMode::AlwaysApprove, "Mode: Auto-approve"),
+        ] {
+            for width in [24, 40, 100] {
+                for has_messages in [false, true] {
+                    let mut state = crate::state::AppState::default();
+                    state.model = Some("provider/a-very-long-custom-model-name".into());
+                    state.thinking_level = ThinkingLevel::High;
+                    state.interaction_mode = mode;
+                    if has_messages {
+                        state
+                            .messages
+                            .push(polish_message("user", "Inspect the files"));
+                    }
+                    let area = Rect::new(0, 0, width, 16);
+                    let mut buffer = Buffer::empty(area);
+                    ChatView::new(&state).render(area, &mut buffer);
+                    let lines = buffer_lines(&buffer, width, 16);
+                    assert!(
+                        lines.iter().any(|line| line.contains(label)),
+                        "mode missing: {lines:?}"
+                    );
+                    if width == 100 && mode == InteractionMode::Plan {
+                        assert!(lines.iter().any(|line| line.contains("/plan off to act")));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -3713,24 +3638,28 @@ mod tests {
         };
 
         let width = 100;
-        let height = calculate_message_height(
-            &message,
-            width,
-            &HashSet::new(),
-            true,
-            false,
-            &HashSet::new(),
-        );
-        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
-
-        MessageWidget::new(&message)
-            .with_expanded_tools(&HashSet::new())
-            .render(Rect::new(0, 0, width, height), &mut buf);
-
-        let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("Read package.json"));
-        assert!(rendered.contains("· read"));
-        assert!(rendered.contains("/Users/jonathanhaas/Documents/Projects/maestro/package.json"));
+        for compact in [true, false] {
+            let expanded = HashSet::new();
+            let height = calculate_message_height(
+                &message,
+                width,
+                &expanded,
+                compact,
+                false,
+                &HashSet::new(),
+            );
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+            MessageWidget::new(&message)
+                .with_expanded_tools(&expanded)
+                .with_compact_tool_outputs(compact)
+                .render(buf.area, &mut buf);
+            let rendered = buffer_lines(&buf, width, height).join("\n");
+            assert!(rendered.contains("Read package.json"));
+            assert!(rendered.contains("· read"));
+            assert!(
+                rendered.contains("/Users/jonathanhaas/Documents/Projects/maestro/package.json")
+            );
+        }
     }
 
     fn focus_view_message() -> Message {
@@ -4042,5 +3971,28 @@ mod dex_notice_layout_tests {
             .position(|line| line.contains("Dex · ready"))
             .unwrap();
         assert_ne!(notice, status);
+    }
+}
+
+#[cfg(test)]
+mod transparent_theme_regression {
+    use super::*;
+    #[test]
+    fn transparent_high_contrast_uses_selected_palette() {
+        let theme = crate::themes::high_contrast_theme();
+        assert!(theme.canvas_style().bg.is_none());
+        let actual = conversation_theme_for(&theme);
+        let expected = theme.ui_theme();
+        assert_eq!(actual.text, expected.text);
+        assert_eq!(actual.muted, expected.muted);
+        assert_eq!(actual.focus, expected.focus);
+        assert_eq!(
+            semantic_color_for_theme(&theme, "md_link", Color::Blue),
+            theme.get_color("md_link").unwrap()
+        );
+        assert_eq!(
+            conversation_theme_for(&crate::themes::dark_theme()).text,
+            maestro_presentation::palette::conversation().text
+        );
     }
 }

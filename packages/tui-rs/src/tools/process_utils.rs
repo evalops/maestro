@@ -171,7 +171,7 @@ impl ProcessGroupGuard {
         self.0 = None;
     }
     pub(crate) fn terminate(&mut self) {
-        if let Some(pid) = self.0.take() {
+        if let Some(pid) = self.0 {
             kill_process_group(pid);
         }
     }
@@ -180,7 +180,18 @@ impl ProcessGroupGuard {
 #[cfg(unix)]
 impl Drop for ProcessGroupGuard {
     fn drop(&mut self) {
-        self.terminate();
+        let Some(pid) = self.0 else { return };
+        // A shell can be in fork while the first group signal is delivered.
+        // Keep the group identity through that boundary and sweep children
+        // that inherit its pipes. Do not wait indefinitely for unreaped zombies.
+        for _ in 0..20 {
+            self.terminate();
+            if !process_group_exists(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.disarm();
     }
 }
 
@@ -191,43 +202,58 @@ mod tests {
     #[tokio::test]
     async fn dropping_group_owner_stops_commands_after_readiness() {
         use tokio::io::AsyncReadExt;
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("unexpected");
-        let mut command = tokio::process::Command::new("sh");
-        command
-            .args(["-c", "printf ready; sleep 30; touch unexpected"])
-            .current_dir(dir.path())
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        set_new_process_group(&mut command);
-        let mut child = command.spawn().unwrap();
-        let guard = ProcessGroupGuard::new(child.id());
-        let mut stdout = child.stdout.take().unwrap();
-        let mut ready = [0; 5];
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stdout.read_exact(&mut ready),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(&ready, b"ready");
-        drop(guard);
-        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        for _ in 0..32 {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("unexpected");
+            let mut command = tokio::process::Command::new("sh");
+            command
+                .args(["-c", "printf ready; sleep 30; touch unexpected"])
+                .current_dir(dir.path())
+                .stdout(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            set_new_process_group(&mut command);
+            let mut child = command.spawn().unwrap();
+            let guard = ProcessGroupGuard::new(child.id());
+            let mut stdout = child.stdout.take().unwrap();
+            let mut ready = [0; 5];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                stdout.read_exact(&mut ready),
+            )
             .await
             .unwrap()
             .unwrap();
-        assert!(!status.success());
-        let mut tail = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stdout.read_to_end(&mut tail),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(tail.is_empty());
-        assert!(!marker.exists());
+            assert_eq!(&ready, b"ready");
+            drop(guard);
+            let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!status.success());
+            let mut tail = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                stdout.read_to_end(&mut tail),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(tail.is_empty());
+            assert!(!marker.exists());
+        }
+    }
+
+    #[test]
+    fn terminate_keeps_ownership_until_explicit_disarm() {
+        let mut guard = ProcessGroupGuard::new(None);
+        guard.terminate();
+        assert!(guard.0.is_none());
+        // Use an impossible PID to test ownership without signaling a live group.
+        guard.0 = Some(i32::MAX as u32);
+        guard.terminate();
+        assert_eq!(guard.0, Some(i32::MAX as u32));
+        guard.disarm();
+        assert!(guard.0.is_none());
     }
 
     #[test]

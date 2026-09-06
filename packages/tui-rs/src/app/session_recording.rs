@@ -38,8 +38,9 @@ impl App {
             return Ok(());
         }
 
-        let cwd = std::env::current_dir()
-            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
+        // The session owner captures the workspace at startup. Persist that
+        // same scope so resume never points tools at a different directory.
+        let cwd = self.session_manager.cwd().to_owned();
         let session_id = uuid::Uuid::new_v4().to_string();
         let model = if !self.current_model.is_empty() {
             self.current_model.clone()

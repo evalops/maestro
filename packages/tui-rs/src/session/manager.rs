@@ -392,6 +392,12 @@ impl SessionInfo {
     }
 }
 
+/// Validated child writer held alongside the original until adoption is committed.
+pub struct PreparedSessionAdoption {
+    session_id: String,
+    writer: SessionWriter,
+}
+
 /// High-level session persistence coordinator.
 ///
 /// Manages the lifecycle of conversation sessions, including discovery, loading,
@@ -707,6 +713,28 @@ impl SessionManager {
         self.current_session_id = Some(session_id);
         self.writer = Some(writer);
         Ok(())
+    }
+
+    /// Open and validate a child while retaining the current writer and its lock.
+    /// Drop the returned value to cancel; adoption itself cannot fail.
+    pub fn prepare_session_adoption(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<PreparedSessionAdoption, super::writer::SessionWriteError> {
+        self.flush()?;
+        let writer = SessionWriter::open_existing(path.as_ref())?;
+        let session = SessionReader::read_file(path.as_ref())
+            .map_err(|error| super::writer::SessionWriteError::SerializeError(error.to_string()))?;
+        Ok(PreparedSessionAdoption {
+            session_id: session.header.id,
+            writer,
+        })
+    }
+
+    /// Commit a prepared writer after the guarded in-memory context change succeeds.
+    pub fn adopt_prepared_session(&mut self, prepared: PreparedSessionAdoption) {
+        self.current_session_id = Some(prepared.session_id);
+        self.writer = Some(prepared.writer);
     }
 
     /// Reset the active session writer and ID.
@@ -3655,5 +3683,28 @@ mod tests {
             decoy.exists(),
             "checkpoint cleanup must not escape the checkpoints directory"
         );
+    }
+    #[test]
+    fn selective_summary_prepared_adoption_keeps_source_locked_until_commit() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "prepared-source");
+        let mut manager = SessionManager::with_sessions_dir("/tmp", dir.path());
+        let source = manager.list_sessions().unwrap().remove(0);
+        manager
+            .resume_session_by_path(&source.id, &source.path)
+            .unwrap();
+        let (child_id, child_path) = manager.fork_session_snapshot().unwrap();
+        let prepared = manager.prepare_session_adoption(&child_path).unwrap();
+        assert_eq!(manager.current_session_id(), Some(source.id.as_str()));
+        assert!(SessionWriter::open_existing(&source.path).is_err());
+        assert!(SessionWriter::open_existing(&child_path).is_err());
+        drop(prepared);
+        assert!(SessionWriter::open_existing(&source.path).is_err());
+        assert!(SessionWriter::open_existing(&child_path).is_ok());
+        let prepared = manager.prepare_session_adoption(&child_path).unwrap();
+        manager.adopt_prepared_session(prepared);
+        assert_eq!(manager.current_session_id(), Some(child_id.as_str()));
+        assert!(SessionWriter::open_existing(&source.path).is_ok());
+        assert!(SessionWriter::open_existing(&child_path).is_err());
     }
 }

@@ -167,7 +167,7 @@ pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,
 };
-pub(crate) use message::{calculate_input_height, composer_editor_width};
+pub(crate) use message::{PendingInputPreview, calculate_input_height, composer_editor_width};
 pub use model_selector::ModelSelector;
 pub use operations::{OperationRow, OperationsModal, ReceiptSummary, project_session};
 pub use rate_limit::{

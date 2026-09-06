@@ -152,6 +152,12 @@ pub enum ApprovalMode {
 /// Feature flags active during the turn.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FeatureFlags {
+    #[serde(default)]
+    pub boost_suggested: bool,
+    #[serde(default)]
+    pub boost_requested: bool,
+    #[serde(default)]
+    pub boost_applied: bool,
     pub safe_mode: bool,
     pub guardian_enabled: bool,
     pub compaction_enabled: bool,
@@ -264,6 +270,8 @@ pub struct CanonicalTurnEvent {
     // ─── Token Economics ────────────────────────────────────────────────────
     pub tokens: TokenUsage,
     pub cost_usd: f64,
+    /// Provider-reported cost only when every response supplied a cost.
+    pub reported_cost_usd: Option<f64>,
 
     // ─── Business Context ───────────────────────────────────────────────────
     pub sandbox_mode: SandboxMode,
@@ -295,6 +303,12 @@ pub struct CanonicalTurnEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalTurnEvent {
     pub schema_version: u16,
+    #[serde(default)]
+    pub boost_suggested: bool,
+    #[serde(default)]
+    pub boost_requested: bool,
+    #[serde(default)]
+    pub boost_applied: bool,
     #[serde(rename = "type")]
     pub event_type: String,
     pub timestamp: String,
@@ -309,6 +323,9 @@ pub struct ExternalTurnEvent {
     pub tool_failure_count: u32,
     pub tokens: TokenUsage,
     pub cost_usd: f64,
+    /// Provider-reported cost only when every response supplied a cost.
+    #[serde(default)]
+    pub reported_cost_usd: Option<f64>,
     pub sandbox_mode: SandboxMode,
     pub approval_mode: ApprovalMode,
     pub mcp_server_count: u32,
@@ -329,6 +346,9 @@ impl CanonicalTurnEvent {
     pub fn external_projection(&self) -> ExternalTurnEvent {
         ExternalTurnEvent {
             schema_version: 1,
+            boost_suggested: self.features.boost_suggested,
+            boost_requested: self.features.boost_requested,
+            boost_applied: self.features.boost_applied,
             event_type: self.event_type.clone(),
             timestamp: self.timestamp.clone(),
             turn_number: self.turn_number,
@@ -342,6 +362,7 @@ impl CanonicalTurnEvent {
             tool_failure_count: self.tool_failure_count,
             tokens: self.tokens.clone(),
             cost_usd: self.cost_usd,
+            reported_cost_usd: self.reported_cost_usd,
             sandbox_mode: self.sandbox_mode,
             approval_mode: self.approval_mode,
             mcp_server_count: self.mcp_server_count,
@@ -665,6 +686,7 @@ impl TurnCollector {
             // Tokens
             tokens,
             cost_usd,
+            reported_cost_usd: None,
 
             // Business context
             sandbox_mode: self.sandbox_mode,
