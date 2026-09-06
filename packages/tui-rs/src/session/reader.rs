@@ -450,6 +450,9 @@ pub struct ParsedSession {
     /// Complete conversation history in chronological order.
     pub messages: Vec<AppMessage>,
 
+    /// Exact rewritten provider history and the length of its display projection.
+    pub selective_summary_context: Option<(Vec<crate::ai::Message>, usize)>,
+
     /// User-provided session metadata (title, summary, tags).
     ///
     /// None if no metadata entry exists in the file.
@@ -577,6 +580,7 @@ impl SessionReader {
 
         let mut header: Option<SessionHeader> = None;
         let mut messages: Vec<AppMessage> = Vec::new();
+        let mut selective_summary_context = None;
         let mut meta: Option<SessionMeta> = None;
         let mut stats = SessionStats::default();
         let mut extracted_by_id: HashMap<String, String> = HashMap::new();
@@ -749,7 +753,56 @@ impl SessionReader {
                 SessionEntry::SideQuestion(entry) => side_questions.push(entry),
                 SessionEntry::PlanReview(entry) => plan_review_events.push(entry),
                 SessionEntry::Custom(entry) => {
-                    if entry.custom_type == "subagent_lifecycle_applied" {
+                    if entry.custom_type == super::selective_summary::CONTEXT_TYPE {
+                        let checkpoint = super::selective_summary::decode_context(entry.data)
+                            .map_err(SessionReadError::InvalidFormat)?;
+                        let mut projected =
+                            super::selective_summary::display_messages(&checkpoint.messages);
+                        super::selective_summary::restore_display_timestamps(
+                            &mut projected,
+                            &messages,
+                            &checkpoint.messages,
+                            timestamp_millis(&entry.timestamp),
+                        )
+                        .map_err(|error| SessionReadError::InvalidFormat(error.to_string()))?;
+                        messages = projected;
+                        compactions.clear();
+                        lifecycle_notifications.clear();
+                        lifecycle_agent_notes.clear();
+                        consumed_lifecycle_agent_notes.clear();
+                        compaction_context_entries.clear();
+                        visible_context_len = 0;
+                        for message in &checkpoint.messages {
+                            compaction_context_entries.push(CompactionContextEntry {
+                                id: None,
+                                visible_index: visible_context_len,
+                            });
+                            if super::selective_summary::context_message_visible(message) {
+                                visible_context_len += 1;
+                            }
+                        }
+                        selective_summary_context = Some((checkpoint.messages, messages.len()));
+                    } else if entry.custom_type == super::selective_summary::USAGE_TYPE {
+                        let usage = super::selective_summary::decode_usage(entry.data)
+                            .map_err(SessionReadError::InvalidFormat)?;
+                        let usage_tokens = TokenUsage {
+                            input: usage.usage.input_tokens,
+                            output: usage.usage.output_tokens,
+                            cache_read: usage.usage.cache_read_tokens,
+                            cache_write: usage.usage.cache_write_tokens,
+                            cost: usage.usage.cost.map(|total| super::TokenCost {
+                                total,
+                                ..Default::default()
+                            }),
+                        };
+                        stats.total_input_tokens += usage_tokens.input;
+                        stats.total_output_tokens += usage_tokens.output;
+                        stats.total_cost += usage_tokens.total_cost();
+                        usage_entries.push(UsageEntry {
+                            model: usage.model,
+                            usage: usage_tokens,
+                        });
+                    } else if entry.custom_type == "subagent_lifecycle_applied" {
                         if let Some((id, data)) = entry.id.zip(entry.data) {
                             if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
                                 lifecycle_notifications.push(PendingLifecycleNotification {
@@ -807,6 +860,7 @@ impl SessionReader {
         Ok(ParsedSession {
             header,
             messages,
+            selective_summary_context,
             meta,
             stats,
             thinking_level_changes,

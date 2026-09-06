@@ -47,6 +47,42 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.74] - 2026-09-05
+
+### Fixed
+
+- Preserve exact model history when continuing summarized conversations, remove failed summary forks, retain message timestamps, and reject checkpoints that exceed the session format's size limit.
+- Honor the selected high-contrast palette in conversation controls and Markdown.
+- Release the current native TUI and managed default model through reviewed public source tags and signed native packages.
+
+## [0.10.73] - 2026-09-06
+
+### Added
+
+- Enable tool-free Codex conversation summaries (#8449). <!-- maestro-release-note:eb4595ac1317 -->
+- Stage and budget review proof experiments (#8450). <!-- maestro-release-note:f948b164eaff -->
+- Submit reviewed bug reports to product feedback (#8445). <!-- maestro-release-note:91e0d93f66a2 -->
+- Scope platform discovery to approved organizations (#8440). <!-- maestro-release-note:76841c522251 -->
+- Recover drafts and selectively summarize conversations (#8437). <!-- maestro-release-note:83ab29392d38 -->
+
+### Fixed
+
+- Let proto-plan refresh moved SDK tags when preparing the base ref (#8447). <!-- maestro-release-note:d7da3c9ea208 -->
+- Let a provider-routed credential read the operations it enqueued (#8438). <!-- maestro-release-note:ae6c7087190e -->
+- Migrate outbound callers to scoped workload credentials (#8436). <!-- maestro-release-note:9b402f41b9c9 -->
+- Migrate production service-token callers to workload credentials (#8441). <!-- maestro-release-note:547d5891e074 -->
+- Give the stability fence the evalops/k8s token (#8444). <!-- maestro-release-note:c76682d322bf -->
+- Narrow identity oauth invalid grant helper (#8439). <!-- maestro-release-note:4587c18473c1 -->
+- Check prepaid model availability without reservations (#8427). <!-- maestro-release-note:b12963b7738a -->
+- Recover missed credit funding after provider reconciliation (#8432). <!-- maestro-release-note:839cf26161ce -->
+
+## [0.10.72] - 2026-09-05
+
+### Fixed
+
+- Preserve disabled Code device enrollment during signed release packaging. Enabled helpers remain required and checksum authenticated.
+- Resolve release setup actions from Mono and retain mandatory native signing, notarization, and conformance checks.
+
 ## [0.10.71] - 2026-09-02
 
 ### Added

@@ -79,7 +79,7 @@ pin-project-lite = "0.2"
 # Utilities
 unicode-width.workspace = true
 unicode-properties = "0.1"
-textwrap = "0.16"
+textwrap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 time.workspace = true

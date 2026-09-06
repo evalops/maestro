@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 use maestro_ui::{ActionPicker, KeyHint, Modal, ModalSize, PickerOptions, PickerOutcome};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::ListItem,
@@ -82,10 +82,22 @@ impl ThemeSelector {
         let inner = Modal::sized("Select Theme", ModalSize::Standard)
             .theme(theme)
             .render(frame, area);
+        let (picker_area, preview_area) = if inner.height >= 12 {
+            let chunks = Layout::vertical([Constraint::Min(5), Constraint::Length(7)]).split(inner);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (inner, None)
+        };
+        if let Some(area) = preview_area {
+            frame.render_widget(
+                maestro_presentation::components::theme_preview::ThemePreview(theme),
+                area,
+            );
+        }
         let current = &self.current_theme;
         self.picker.render(
             frame,
-            inner,
+            picker_area,
             theme,
             PickerOptions {
                 placeholder: "Type to filter themes...",
@@ -116,6 +128,51 @@ impl ThemeSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vscode_palette_can_be_previewed_cancelled_and_selected() {
+        let mut selector = ThemeSelector::new();
+        selector.show();
+        let original = selector.original_theme().unwrap().name.clone();
+        let preview = selector.insert_str("vscode-monokai");
+        let theme = selector.theme_for(&preview).unwrap().unwrap();
+        assert_eq!(theme.name, "vscode-monokai");
+        assert_eq!(theme.colors.assistant_message_bg, "#272822");
+        let cancel = selector.handle_key(KeyCode::Esc, false);
+        assert_eq!(selector.theme_for(&cancel).unwrap().unwrap().name, original);
+
+        selector.show();
+        selector.insert_str("vscode-light-modern");
+        let selected = selector.handle_key(KeyCode::Enter, false);
+        assert_eq!(
+            selector.theme_for(&selected).unwrap().unwrap().name,
+            "vscode-light-modern"
+        );
+        assert!(!selector.is_visible());
+    }
+
+    #[test]
+    fn picker_renders_the_same_sample_at_wide_and_narrow_sizes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(100, 30), (60, 20)] {
+            let mut selector = ThemeSelector::new();
+            selector.show();
+            let original = selector.original_theme().unwrap().name.clone();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| selector.render(f, f.area())).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Dex · ready"));
+            assert!(text.contains("Let's make something useful."));
+            assert!(text.contains("Ask Dex"));
+            assert_eq!(selector.original_theme().unwrap().name, original);
+        }
+    }
+
     #[test]
     fn current_theme_is_selected_and_preview_cancel_returns_the_opening_palette() {
         let mut selector = ThemeSelector::new();

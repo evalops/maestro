@@ -101,6 +101,7 @@ impl<'a> Modal<'a> {
 
     /// Apply application-owned semantic colors, bold title and horizontal padding.
     pub fn theme(mut self, theme: UiTheme) -> Self {
+        let theme = theme.on_panel();
         self.block = self
             .block
             .border_style(Style::default().fg(theme.border))
@@ -269,3 +270,6 @@ impl Widget for SearchField<'_> {
             .render(area, buf);
     }
 }
+
+/// Unicode-aware editor state and rendering, without a terminal or event loop.
+pub mod textarea;

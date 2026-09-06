@@ -91,6 +91,7 @@
 //! ```
 
 pub mod codex_app_server_turns;
+mod codex_selective_summary;
 pub mod compaction;
 pub mod credential_store;
 pub mod extensions;
@@ -102,7 +103,12 @@ pub mod protocol;
 pub mod reminders;
 pub mod retry;
 pub mod safety;
+pub mod selective_summary;
 pub mod session_scope;
+pub use selective_summary::{
+    RangeSelection, SelectiveSummaryOutcome, SelectiveSummaryPreview, SelectiveSummaryRequest,
+    SelectiveSummaryResult, SummaryTurn,
+};
 pub mod steer_signal;
 pub mod text_loop;
 pub mod token_counting;

@@ -1,0 +1,44 @@
+{
+  "name": "conversation-green",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "green"
+    },
+    {
+      "wait": "(?s)Select Theme.*green.*Enter select.*Esc cancel"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "Read the README and explain what this project does."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "The README is a good starting point"
+    },
+    {
+      "absent": "Working|Thinking"
+    },
+    {
+      "wait": "Dex · finished"
+    }
+  ]
+}

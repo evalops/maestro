@@ -153,3 +153,30 @@ Limits per process: 32 monitors total, 8 per task, 256 bytes per regex, 1 MiB co
 - Skills: `.maestro/skills/<name>/SKILL.md` and user skill dirs; invocable as `/<name>` when `user_invocable` is enabled.
 
 Built-in names always take precedence.
+
+## Bug reports
+
+`/bug` (alias `/feedback`) shows the current session's bug report draft.
+
+- `/bug draft <description>` creates or edits what happened.
+- `/bug expected <text>` records what should have happened.
+- `/bug diagnostics on|off` opts into the app version; defaults to off.
+- `/bug review` shows the exact report fields and destination workspace.
+- `/bug send` submits the reviewed report and displays its `DX-…` reference.
+- `/bug dismiss` dismisses the local draft. It cannot retract a report the service already accepted.
+
+A non-retryable terminal failure suggests one local draft per session. Error
+payloads, prompts, tool output, environment variables, and transcripts are not
+attached automatically. Add reproduction details yourself and check the draft
+for private information before sending. Drafts survive session resume, and
+editing requires a new review. If delivery is uncertain, retrying uses the same
+submission ID. An uncertain report cannot be edited; dismiss it before creating
+a different report. Drafts are unavailable with `--no-session`.
+
+Reports use the existing Deixic product-issue service, staff queue, and
+notification outbox. Sign in and select a workspace to send. The default platform
+origin is the same as product setup; `MAESTRO_EVALOPS_BASE_URL` supports a configured
+HTTPS origin. New logins request the narrow `product_issues:write` permission;
+existing web clients retain `console:write`. Installations with an explicit
+`IDENTITY_ALLOWED_PRODUCT_SCOPES` override must include `product_issues:write`.
+A missing permission leaves the draft saved and asks you to sign in again.

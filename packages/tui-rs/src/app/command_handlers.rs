@@ -448,6 +448,7 @@ impl App {
                 }
             }
             CommandAction::Attach(action) => self.handle_attach_action(action),
+            CommandAction::SummarizeConversation => self.open_selective_summary(),
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let transcript_messages: Vec<_> = self
@@ -544,6 +545,11 @@ impl App {
                 } else {
                     "Focus view disabled.".to_string()
                 });
+            }
+            CommandAction::BugReport(args) => {
+                if let Err(error) = self.handle_bug_report(&args).await {
+                    self.state.add_system_message(format!("Bug report: {error}"));
+                }
             }
             CommandAction::ExportSession(export_action) => {
                 self.handle_export_action(export_action);
@@ -1114,7 +1120,7 @@ impl App {
         self.state.add_system_message(msg);
     }
 
-    fn continue_last_session(&mut self) {
+    pub(super) fn continue_last_session(&mut self) {
         if self.state.busy {
             self.state.status = Some(
                 "Wait for the active response to finish before continuing another session."
@@ -1160,25 +1166,7 @@ impl App {
                 self.session_resume_failed = false;
                 crate::plan_mode::set_active_session_id(Some(session_id.clone()));
                 self.hydrate_usage_from_session(&session);
-                use crate::ai::{Message as AiMessage, MessageContent, Role};
-                use crate::state::{MessageKind, MessageRole};
-                let agent_messages: Vec<AiMessage> = self
-                    .state
-                    .messages
-                    .iter()
-                    .filter(|m| m.kind == MessageKind::Regular)
-                    .filter_map(|m| match m.role {
-                        MessageRole::User => Some(AiMessage {
-                            role: Role::User,
-                            content: MessageContent::text(m.content.clone()),
-                        }),
-                        MessageRole::Assistant if m.is_assistant_reply() => Some(AiMessage {
-                            role: Role::Assistant,
-                            content: MessageContent::text(m.content.clone()),
-                        }),
-                        _ => None,
-                    })
-                    .collect();
+                let agent_messages = crate::session::model_history(&session);
                 if let Some(agent) = &self.native_agent {
                     agent.replace_history(agent_messages);
                 }
@@ -1204,6 +1192,28 @@ impl App {
     /// append-ready session writer. Shared by the session switcher and the
     /// `maestro fork` startup resume.
     pub(crate) fn apply_resumed_session(&mut self, session: &crate::session::ParsedSession) {
+        let saved = std::path::Path::new(&session.header.cwd);
+        let current = std::path::Path::new(self.session_manager.cwd());
+        if saved != current
+            && dunce::canonicalize(saved)
+                .ok()
+                .zip(dunce::canonicalize(current).ok())
+                .is_none_or(|(saved, current)| saved != current)
+        {
+            if !saved.is_absolute() || !saved.is_dir() {
+                self.state.error = Some(format!(
+                    "Cannot resume: workspace {} is missing. Restore that directory and try again.",
+                    saved.display()
+                ));
+                return;
+            }
+            // Tools, trust, hooks, and project configuration are bound at startup.
+            // Keep this transcript untouched until orderly shutdown, then build
+            // a fresh agent in the saved directory.
+            self.resume_target = Some((saved.to_path_buf(), session.header.id.clone()));
+            self.should_quit = true;
+            return;
+        }
         self.dex_terminal = None;
         self.dex_delight = Default::default();
         let session_id = session.header.id.clone();

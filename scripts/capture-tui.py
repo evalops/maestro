@@ -118,6 +118,8 @@ def load_scenario(path):
             "Tab",
             "Up",
             "Down",
+            "C-s",
+            "C-r",
             "C-k",
             "C-t",
             "C-e",
@@ -357,7 +359,8 @@ class Terminal:
         self.close()
 
     def capture(self):
-        return self.run("capture-pane", "-p", "-e", "-t", "capture:0.0")
+        # Preserve trailing blank cells: they carry the canvas background.
+        return self.run("capture-pane", "-p", "-e", "-N", "-t", "capture:0.0")
 
     def cursor(self):
         x, y, visible = map(

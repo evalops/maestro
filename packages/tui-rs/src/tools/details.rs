@@ -380,6 +380,9 @@ impl WriteDetails {
 /// Detailed information about a file edit operation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EditDetails {
+    /// Exact-match failure reported by the local editor, never inferred from output.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_not_found: bool,
     /// Path that was edited
     pub path: String,
 

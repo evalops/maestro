@@ -1721,6 +1721,13 @@ impl AppState {
         input
     }
 
+    /// Exchange the complete editor, preserving cursor and folded paste content.
+    pub fn swap_input_editor(&mut self, editor: &mut TextArea) {
+        std::mem::swap(&mut self.textarea, editor);
+        self.input_preferred_col = None;
+        self.reset_kill_state();
+    }
+
     /// Set the input text directly (e.g., for command history).
     pub fn set_input(&mut self, text: &str) {
         self.textarea.set_text(text);

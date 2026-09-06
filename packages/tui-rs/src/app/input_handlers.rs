@@ -31,6 +31,28 @@ impl App {
         let alt = modifiers.contains(CrosstermModifiers::ALT);
         let shift = modifiers.contains(CrosstermModifiers::SHIFT);
 
+        if self.active_modal == ActiveModal::None && self.history_search.is_some() {
+            self.handle_history_search_key(code, modifiers);
+            return Ok(());
+        }
+
+        if self.active_modal == ActiveModal::None
+            && self.state.input().is_empty()
+            && !ctrl
+            && !alt
+            && self.feedback_ui.card_visible()
+        {
+            match code {
+                KeyCode::Char('1') => return self.handle_bug_report("review").await,
+                KeyCode::Char('2') => {
+                    self.handle_bug_report("review").await?;
+                    self.feedback_ui.quick_send = true;
+                    return Ok(());
+                }
+                KeyCode::Char('0') => return self.handle_bug_report("hide").await,
+                _ => {}
+            }
+        }
         // Suggestions only fill an empty composer; a separate Enter still submits.
         if self.active_modal == ActiveModal::None
             && self.state.input().is_empty()
@@ -67,8 +89,20 @@ impl App {
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
             ActiveModal::Setup => return self.handle_setup_modal_key(code, ctrl).await,
             ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
+            ActiveModal::SelectiveSummary => return self.handle_selective_summary_key(code).await,
             ActiveModal::RewindPicker => return self.handle_rewind_picker_key(code),
             ActiveModal::DetailView => return self.handle_detail_view_key(code),
+            ActiveModal::Feedback => {
+                if ctrl && code == KeyCode::Char('c') {
+                    self.active_modal = ActiveModal::None;
+                    return Ok(());
+                }
+                if shift && code == KeyCode::Enter {
+                    self.paste_feedback("\n");
+                    return Ok(());
+                }
+                return self.handle_feedback_key(code).await;
+            }
             ActiveModal::None => {}
         }
 
@@ -110,6 +144,23 @@ impl App {
             self.active_modal = ActiveModal::FileSearch;
             return Ok(());
         }
+        if modifiers == CrosstermModifiers::CONTROL
+            && !self.matches_binding(self.toggle_tool_outputs_binding, code, modifiers)
+            && !self.matches_binding(self.queued_follow_up_edit_binding, code, modifiers)
+        {
+            match code {
+                KeyCode::Char('s') => {
+                    self.swap_draft_stash();
+                    return Ok(());
+                }
+                KeyCode::Char('r') => {
+                    self.open_history_search();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         if is_focus_view_binding(code, modifiers) {
             let enabled = self.state.toggle_focus_view();
             self.state.status = Some(if enabled {
@@ -502,9 +553,14 @@ impl App {
     /// Route a bracketed paste to the open modal's text input, or to the
     /// main input when no modal is open.
     pub(super) fn handle_paste(&mut self, raw: &str) {
+        if self.active_modal == ActiveModal::None && self.history_search.is_some() {
+            self.paste_history_query(raw);
+            return;
+        }
         // Normalize line endings like the main-input paste path does.
         let text: String = raw.chars().filter(|c| *c != '\r').collect();
         match self.active_modal {
+            ActiveModal::Feedback => self.paste_feedback(&text),
             ActiveModal::FileSearch => self.file_search.insert_str(&text),
             ActiveModal::SessionSwitcher => self.session_switcher.insert_str(&text),
             ActiveModal::CommandPalette => self.command_palette.insert_str(&text),

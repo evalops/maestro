@@ -76,6 +76,7 @@ npm run check:macos-signature
 npm run check:release-channels
 python3 scripts/check-ui-consistency.py
 python3 scripts/test-check-ui-consistency.py
+python3 -m unittest discover -s scripts -p test_boost_outcomes.py
 if [[ "${mode}" == "--contracts" ]]; then
   exit 0
 fi

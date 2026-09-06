@@ -150,6 +150,7 @@ mod index;
 mod manager;
 mod model_history;
 mod reader;
+mod selective_summary;
 mod wire_format_generated;
 mod writer;
 
@@ -161,12 +162,13 @@ pub use export::{ExportFormat, ExportOptions, SessionExporter, export_session_fi
 pub use fork::{ForkedSession, fork_session_file};
 pub(crate) use fork::{fork_session_prefix, rewind_boundary};
 pub use index::{IndexedSession, SessionIndexEntry, collect_sessions, default_index_path};
-pub use manager::{SessionInfo, SessionManager};
+pub use manager::{PreparedSessionAdoption, SessionInfo, SessionManager};
 pub(crate) use model_history::model_history;
 pub use reader::{
     LifecycleAgentNoteEntry, LifecycleNotificationEntry, ParsedSession, SessionReadError,
     SessionReader,
 };
+pub use selective_summary::{append_selective_summary_checkpoint, selective_summary_usage_entry};
 pub(crate) use writer::SessionLock;
 pub use writer::{
     SessionWriter, generate_session_filename, sanitize_path_for_dirname, sessions_dir,

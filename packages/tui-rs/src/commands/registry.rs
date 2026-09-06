@@ -2059,6 +2059,13 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::CommandPalette))),
     ));
 
+    registry.register(Command::new(
+        "summarize",
+        "Summarize from or through a chosen turn into a saved conversation",
+        CommandCategory::Context,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::SummarizeConversation))),
+    ));
+
     // Compact command
     registry.register(
         Command::new(
@@ -3019,6 +3026,19 @@ pub fn build_command_registry() -> CommandRegistry {
             vec!["summary", "detailed", "reset"],
         ))
         .usage("/cost [summary|detailed|reset]"),
+    );
+
+    registry.register(
+        Command::new(
+            "bug",
+            "Draft, review, or send a product bug report",
+            CommandCategory::Session,
+            Box::new(|ctx| Ok(CommandOutput::Action(CommandAction::BugReport(
+                if ctx.raw_args.trim().is_empty() && ctx.command_name == "bug" { "compose".into() } else { ctx.raw_args.clone() }
+            )))),
+        )
+        .alias("feedback")
+        .usage("/bug [description|queue|draft <text>|expected <text>|repro <steps>|review|send|export|dismiss|diagnostics on|off]"),
     );
 
     // Export command

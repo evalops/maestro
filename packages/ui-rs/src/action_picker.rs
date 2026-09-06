@@ -306,6 +306,7 @@ impl<T> ActionPicker<T> {
         options: PickerOptions<'_>,
         row: impl Fn(&'a T) -> ListItem<'a>,
     ) {
+        let theme = theme.on_panel();
         if !self.visible {
             return;
         }

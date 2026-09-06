@@ -149,3 +149,25 @@ notice; `ActionPicker` chooses Busy for Loading and Error for Error. Notices
 never start timers, infer outcomes, or repeat a successful state already visible
 in the selected object. `SearchField::theme` gives standalone search fields the
 same entered-text, placeholder and border colors as `Picker`.
+
+## Shared theme surfaces
+
+Pass one `UiTheme` from the application. `surface` is the canvas; optional
+`panel` colors editors and dialogs, and optional `selection` colors selected
+rows while preserving success, attention and error foregrounds. Omitted fields
+retain the existing surface. Use `..UiTheme::default()` for palettes that do not
+need layers. `theme.on_panel()`, `text_style()`, `muted_style()` and
+`selection_style()` keep child controls consistent without global state.
+
+The presentation crate's `ThemePreview(theme)` renders the same sample and real
+composer across palettes. `DexCompanion::theme(Some(theme))` matches its portrait
+and label to the palette without changing activity or motion. `None` preserves
+the caller's chosen cosmetic accent. Native opaque themes supply the palette;
+the existing transparent dark theme retains its cosmetic colors.
+
+Native `/theme` includes `green` / `green-dark`, `pink` / `pink-dark`, and
+`blue` / `blue-dark`. These are custom gentle palettes. Escape restores the
+opening theme; Enter saves the highlighted choice using the existing settings.
+The true-color regression checks text and status contrast on all layered
+surfaces; limited-color tests check foreground/background separation. Actual
+16-color RGB values remain terminal-defined.

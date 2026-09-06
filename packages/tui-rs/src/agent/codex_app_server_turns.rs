@@ -1160,7 +1160,8 @@ fn normalize_resume_error_message(message: &str) -> String {
 /// Optional process-local override for the app-server executable. Hosted
 /// children receive these variables through their own transport environment;
 /// the normal desktop path leaves both unset and resolves Codex as before.
-fn codex_app_server_spawn_override_from_env() -> Result<(Option<String>, Option<Vec<String>>)> {
+pub(super) fn codex_app_server_spawn_override_from_env()
+-> Result<(Option<String>, Option<Vec<String>>)> {
     let command = env::var("MAESTRO_CODEX_APP_SERVER_COMMAND")
         .ok()
         .filter(|value| !value.trim().is_empty());

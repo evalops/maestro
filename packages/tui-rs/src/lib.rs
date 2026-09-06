@@ -1445,3 +1445,6 @@ pub use swarm::{
 };
 
 pub mod code_authority;
+
+/// Session-backed product issue drafts and the product feedback client.
+pub(crate) mod bug_report;

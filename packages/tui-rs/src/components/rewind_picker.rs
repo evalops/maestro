@@ -3,26 +3,22 @@
 //! Lists the current session's file checkpoints so the user can pick one to
 //! restore. Opened by pressing Esc twice with an empty composer.
 
+use crossterm::event::KeyCode;
+use maestro_ui::{ActionPicker, KeyHint, Modal, PickerOptions, PickerOutcome, UiTheme};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::ListItem,
 };
 
 use crate::checkpoints::Checkpoint;
 
 /// Rewind picker modal state
 pub struct RewindPicker {
-    /// Checkpoints to choose from, newest first
-    checkpoints: Vec<Checkpoint>,
-    /// Selected index
-    selected: usize,
-    /// Whether the modal is visible
-    visible: bool,
-    /// List state for scrolling
-    list_state: ListState,
+    picker: ActionPicker<Checkpoint>,
+    checkpoint_count: usize,
 }
 
 impl Default for RewindPicker {
@@ -36,53 +32,45 @@ impl RewindPicker {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            checkpoints: Vec::new(),
-            selected: 0,
-            visible: false,
-            list_state: ListState::default(),
+            picker: ActionPicker::new(Vec::new()),
+            checkpoint_count: 0,
         }
     }
 
     /// Show the modal with the given checkpoints (newest first)
     pub fn show(&mut self, checkpoints: Vec<Checkpoint>) {
-        self.visible = true;
-        self.checkpoints = checkpoints;
-        self.selected = 0;
-        self.list_state.select(Some(0));
+        self.checkpoint_count = checkpoints.len();
+        self.picker = ActionPicker::new(checkpoints);
+        self.picker.open();
     }
 
     /// Hide the modal
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.picker.close();
     }
 
     /// Check if visible
     #[must_use]
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.picker.is_open()
     }
 
     /// Move selection up
     pub fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-            self.list_state.select(Some(self.selected));
-        }
+        self.picker.handle_key(KeyCode::Up, false);
     }
 
     /// Move selection down
     pub fn move_down(&mut self) {
-        if self.selected + 1 < self.checkpoints.len() {
-            self.selected += 1;
-            self.list_state.select(Some(self.selected));
-        }
+        self.picker.handle_key(KeyCode::Down, false);
     }
 
     /// Confirm selection and return the chosen checkpoint
     pub fn confirm(&mut self) -> Option<Checkpoint> {
-        let checkpoint = self.checkpoints.get(self.selected).cloned();
-        self.hide();
-        checkpoint
+        match self.picker.handle_key(KeyCode::Enter, false) {
+            PickerOutcome::Selected(checkpoint) => Some(checkpoint),
+            _ => None,
+        }
     }
 
     /// Summary of the files a checkpoint touched
@@ -107,49 +95,41 @@ impl RewindPicker {
         summary
     }
 
-    /// Render the modal
+    /// Render the modal using the active application palette.
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        if !self.visible {
+        self.render_themed(frame, area, crate::themes::current_ui_theme());
+    }
+
+    fn render_themed(&mut self, frame: &mut Frame, area: Rect, theme: UiTheme) {
+        if !self.is_visible() {
             return;
         }
-
-        // Two lines per checkpoint plus borders and a hint line.
-        let content_height = (self.checkpoints.len() as u16) * 2 + 1;
-        let modal_width = 72.min(area.width.saturating_sub(4));
-        let modal_height = (content_height + 2)
-            .min(area.height.saturating_sub(4))
-            .max(5);
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear the area
-        frame.render_widget(Clear, modal_area);
-
-        let block = Block::default()
-            .title(" Rewind to checkpoint ")
-            .title_bottom(" ↑/↓ · Enter files · c conversation · b both · Esc cancel ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        let items: Vec<ListItem> = self
-            .checkpoints
-            .iter()
-            .map(|checkpoint| {
+        let height = self.checkpoint_count.saturating_mul(2).saturating_add(3);
+        let height = u16::try_from(height).unwrap_or(u16::MAX).max(5);
+        let inner = Modal::new("Rewind to checkpoint", 72, height)
+            .theme(theme)
+            .render(frame, area);
+        let row_theme = theme.on_panel();
+        self.picker.render(
+            frame,
+            inner,
+            theme,
+            PickerOptions {
+                empty: "No checkpoints to rewind to",
+                hints: Some(&[
+                    KeyHint::new("↑↓", "navigate"),
+                    KeyHint::new("Enter", "files"),
+                    KeyHint::new("c", "conversation"),
+                    KeyHint::new("b", "both"),
+                    KeyHint::new("Esc", "cancel"),
+                ]),
+                ..PickerOptions::default()
+            },
+            |checkpoint| {
                 let title = Line::from(vec![
                     Span::styled(
                         checkpoint.short_id().to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        row_theme.text_style().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!(
                         "  {}  \"{}\"",
@@ -158,15 +138,11 @@ impl RewindPicker {
                 ]);
                 let files = Line::from(Span::styled(
                     format!("  {}", Self::files_summary(checkpoint)),
-                    Style::default().fg(Color::DarkGray),
+                    row_theme.muted_style(),
                 ));
                 ListItem::new(vec![title, files])
-            })
-            .collect();
-
-        let list =
-            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
-        frame.render_stateful_widget(list, inner, &mut self.list_state);
+            },
+        );
     }
 }
 
@@ -204,14 +180,14 @@ mod tests {
             checkpoint("oldest-xxx", &["b.rs"]),
         ]);
         assert!(picker.is_visible());
-        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.picker.selected().unwrap().id, "newest-xxx");
 
         picker.move_up();
-        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.picker.selected().unwrap().id, "newest-xxx");
         picker.move_down();
-        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.picker.selected().unwrap().id, "oldest-xxx");
         picker.move_down();
-        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.picker.selected().unwrap().id, "oldest-xxx");
 
         let chosen = picker.confirm().expect("a checkpoint is selected");
         assert_eq!(chosen.id, "oldest-xxx");
@@ -227,5 +203,101 @@ mod tests {
         );
         let one = checkpoint("id", &["a.rs"]);
         assert_eq!(RewindPicker::files_summary(&one), "1 file: a.rs");
+    }
+
+    #[test]
+    fn rewind_picker_uses_light_and_opaque_palettes_at_wide_and_narrow_widths() {
+        use ratatui::{Terminal, backend::TestBackend, style::Color};
+        let opaque = UiTheme {
+            surface: Color::Rgb(20, 25, 30),
+            panel: Some(Color::Rgb(30, 35, 40)),
+            selection: Some(Color::Rgb(50, 55, 60)),
+            text: Color::Rgb(230, 235, 240),
+            muted: Color::Rgb(160, 165, 170),
+            border: Color::Rgb(100, 105, 110),
+            ..UiTheme::default()
+        };
+        for theme in [crate::themes::light_theme().ui_theme(), opaque] {
+            for width in [100, 40] {
+                let mut picker = RewindPicker::new();
+                picker.show(vec![
+                    checkpoint("newest-xxx", &["a.rs"]),
+                    checkpoint("oldest-xxx", &["b.rs"]),
+                ]);
+                picker.move_down();
+                let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+                terminal
+                    .draw(|frame| picker.render_themed(frame, frame.area(), theme))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let rendered: Vec<String> = (0..20)
+                    .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+                    .collect();
+                let selected_y = rendered
+                    .iter()
+                    .position(|line| line.contains("oldest"))
+                    .unwrap() as u16;
+                let file_y = selected_y + 1;
+                let file_x = rendered[file_y as usize].find("1 file").unwrap();
+                // Locate by cells, because the selection marker is multibyte UTF-8.
+                let file_x = rendered[file_y as usize][..file_x].chars().count() as u16;
+                assert_eq!(buffer[(file_x, file_y)].fg, theme.muted);
+                assert_eq!(
+                    buffer[(file_x, file_y)].bg,
+                    theme.selection.unwrap_or(theme.on_panel().surface)
+                );
+                let old_x = rendered[selected_y as usize].find("oldest").unwrap();
+                let old_x = rendered[selected_y as usize][..old_x].chars().count() as u16;
+                assert_eq!(buffer[(old_x, selected_y)].fg, theme.text);
+                assert_eq!(
+                    buffer[(old_x, selected_y)].bg,
+                    theme.selection.unwrap_or(theme.on_panel().surface)
+                );
+                let outer = Modal::new("Rewind to checkpoint", 72, 7)
+                    .theme(theme)
+                    .area(buffer.area);
+                assert_eq!(buffer[(outer.x, outer.y)].fg, theme.border);
+                assert_eq!(buffer[(outer.x, outer.y)].bg, theme.on_panel().surface);
+                assert_eq!(picker.confirm().unwrap().id, "oldest-xxx");
+                if width == 100 {
+                    assert!(rendered.iter().any(|line| line.contains("do things")));
+                    assert!(rendered.iter().any(|line| line.contains("conversation")));
+                    assert!(rendered.iter().any(|line| line.contains("both")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rewind_picker_empty_and_tiny_areas_are_safe() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(100, 20), (4, 3), (1, 1)] {
+            let mut picker = RewindPicker::new();
+            picker.show(Vec::new());
+            picker.move_up();
+            picker.move_down();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    picker.render_themed(
+                        frame,
+                        frame.area(),
+                        crate::themes::light_theme().ui_theme(),
+                    );
+                })
+                .unwrap();
+            if width == 100 {
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(text.contains("No checkpoints to rewind to"));
+            }
+            assert!(picker.confirm().is_none());
+            assert!(!picker.is_visible());
+        }
     }
 }

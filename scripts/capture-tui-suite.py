@@ -71,6 +71,8 @@ CASES = [
 # Bounded cohesion coverage: real light palette selection, narrow modals and
 # an explicit reduced-motion command. Long Unicode queries are covered above.
 CASES += [
+    ("idle-light", 100, 30),
+    ("conversation-light", 100, 30),
     ("approval-light", 60, 20),
     ("command-palette-light", 60, 20),
     ("theme-picker-light", 100, 30),
@@ -78,6 +80,9 @@ CASES += [
     ("session-picker-light", 100, 30),
     ("dex-reduced-motion", 100, 30),
 ]
+CASES += [(f"{scene}-{color}", 100, 30)
+          for color in ("green", "pink", "blue", "green-dark", "pink-dark", "blue-dark")
+          for scene in ("conversation", "theme-picker")]
 # Live progress includes an elapsed timer. Keep the actual capture for review;
 # do not normalize or paint over it to manufacture a stable screenshot.
 LIVE_SCENES = {"streaming"}
