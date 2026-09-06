@@ -4263,6 +4263,40 @@ mod tests {
     }
 
     #[test]
+    fn governed_turn_digest_matches_platform_consumer_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/governed-turn-digest.json"))
+                .unwrap();
+        let context = &fixture["turn_context"];
+        let mut grant = test_grant();
+        grant.organization_id = context["organization_id"].as_str().unwrap().into();
+        grant.workspace_id = context["workspace_id"].as_str().unwrap().into();
+        grant.thread_id = context["thread_id"].as_str().unwrap().into();
+        grant.turn_id = context["turn_id"].as_str().unwrap().into();
+        grant.run_id = context["run_id"].as_str().unwrap().into();
+        grant.identity_authorization =
+            Some(serde_json::from_value(context["identity_authorization"].clone()).unwrap());
+        grant.external_tools = vec![ExternalToolDefinition {
+            tool_id: "tool-1".into(),
+            name: "read_file".into(),
+            description: "Read an admitted file".into(),
+            input_schema: json!({"type": "object"}),
+            execution_owner: ClientToolExecutionOwner {
+                client_instance_id: "client-1".into(),
+                lease_epoch: 7,
+            },
+            connection_binding_id: None,
+            metadata: None,
+        }];
+        sign_test_grant(&mut grant);
+        let (_, _, bindings) = governed_agent_inputs(&grant).unwrap();
+        assert_eq!(
+            bindings.values().next().unwrap().turn_digest,
+            fixture["turn_digest"].as_str().unwrap()
+        );
+    }
+
+    #[test]
     fn arbitrary_client_tool_names_are_qualified_only_at_the_provider_boundary() {
         let mut grant = test_grant();
         grant.external_tools = vec![ExternalToolDefinition {

@@ -365,7 +365,17 @@ run_install() {
   bash "$ROOT/scripts/install.sh"
 }
 
-run_install > "$fixture/first-install.log" 2>&1 ||
+# Replacing a source install must preserve both old entrypoints for rollback.
+mkdir -p "$install_dir"
+printf '%s\n' '#!/bin/sh' 'export MAESTRO_INSTALL_METHOD=source' 'exit 0' > "$install_dir/maestro"
+chmod +x "$install_dir/maestro"
+ln -s maestro "$install_dir/deixic-code"
+cp "$install_dir/maestro" "$fixture/previous-source-launcher"
+
+mkdir -p "$fixture/shadow"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$fixture/shadow/maestro"
+chmod +x "$fixture/shadow/maestro"
+PATH="$fixture/shadow:$PATH" run_install > "$fixture/first-install.log" 2>&1 ||
   fail "first install failed: $(cat "$fixture/first-install.log")"
 [[ -x "$install_dir/maestro" ]] || fail "launcher was not installed"
 [[ -x "$install_dir/deixic-code" ]] || fail "canonical launcher was not installed"
@@ -373,6 +383,14 @@ run_install > "$fixture/first-install.log" 2>&1 ||
   fail "canonical launcher did not execute the compatibility binary"
 grep -q 'Installed Deixic Code 0.0.1' "$fixture/first-install.log" ||
   fail "installer did not report the canonical product name"
+
+grep -Fq "PATH selects $fixture/shadow/maestro" "$fixture/first-install.log" || fail "shadowing executable was not reported"
+backup_dir="$(find "$data_dir/releases/0.0.1" -type d -name previous-launchers | head -n 1)"
+[[ -n "$backup_dir" ]] || fail "previous launchers were not retained"
+cmp "$fixture/previous-source-launcher" "$backup_dir/maestro" || fail "source launcher backup changed"
+[[ -L "$backup_dir/deixic-code" ]] || fail "canonical symlink backup was not preserved"
+[[ "$("$install_dir/maestro")" == 'fixture binary' ]] || fail "compatibility launcher does not start default entrypoint"
+[[ "$("$install_dir/deixic-code")" == 'fixture binary' ]] || fail "canonical launcher does not start default entrypoint"
 
 progress_install_dir="$fixture/progress-bin"
 progress_data_dir="$fixture/progress-data"

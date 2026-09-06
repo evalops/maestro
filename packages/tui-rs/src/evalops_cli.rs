@@ -212,7 +212,8 @@ async fn login() -> Result<i32> {
     match perform_evalops_login().await {
         Ok(()) => {
             println!("EvalOps credentials saved successfully.");
-            println!("Try \"maestro --provider evalops --model gpt-4o-mini\".");
+            println!("Run `deixic-code` to open the TUI with your configured default model.");
+            println!("Run `deixic-code doctor --live` to verify your login and setup.");
             Ok(0)
         }
         Err(error) => {
