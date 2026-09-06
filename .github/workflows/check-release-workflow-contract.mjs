@@ -13,7 +13,7 @@ function indentation(line) {
 }
 
 function scalar(value) {
-	return value.trim().replace(/^["']|["']$/gu, "").replace(/\s+#.*$/u, "");
+	return value.trim().replace(/^(["'])([\s\S]*)\1$/u, "$2").replace(/\s+#.*$/u, "");
 }
 
 export function parseWorkflow(source) {
@@ -159,7 +159,20 @@ export function parseWorkflow(source) {
 		}
 		if (indent === 10 && (stepSection === "env" || stepSection === "with")) {
 			const entry = /^          ([a-zA-Z0-9_-]+):\s*(.*?)\s*$/u.exec(line);
-			if (entry) step[stepSection][entry[1]] = scalar(entry[2]);
+			if (entry) {
+                let value = scalar(entry[2]);
+                if (value === "|") {
+                    const values = [];
+                    while (index + 1 < lines.length) {
+                        const next = lines[index + 1];
+                        if (next.trim() && indentation(next) <= 10) break;
+                        index += 1;
+                        if (next.trim()) values.push(next.trim());
+                    }
+                    value = values.join("\n");
+                }
+                step[stepSection][entry[1]] = value;
+            }
 		}
 	}
 
@@ -249,7 +262,7 @@ export function validateReleaseWorkflow(source) {
 		failures.push("workflow default permissions must be exactly contents: read");
 	}
 	const normalizedReleaseConcurrency =
-		"${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}";
+		"${{ github.workflow }}-${{ startsWith(github.event.client_payload.version || inputs.version, 'v') && (github.event.client_payload.version || inputs.version) || format('v{0}', github.event.client_payload.version || inputs.version) }}";
 	if (concurrencyGroup !== normalizedReleaseConcurrency) {
 		failures.push(
 			"release workflows must serialize only duplicate paths for the same normalized release tag",
@@ -292,7 +305,9 @@ export function validateReleaseWorkflow(source) {
 		["post-publish-canary", canary],
 	]) {
 		if (
-			job.condition ||
+			(name === "prepare"
+                ? job.condition !== "github.repository == 'evalops/maestro' && github.ref == 'refs/heads/main'"
+                : job.condition) ||
 			(job.continueOnError && job.continueOnError !== "false")
 		) {
 			failures.push(`${name} job must not be conditional or ignored`);
@@ -315,9 +330,9 @@ export function validateReleaseWorkflow(source) {
 	const prepareCheckout = prepare.steps.find((step) =>
 		step.uses.startsWith("actions/checkout@"),
 	);
-	if (prepareCheckout?.with["fetch-depth"] !== "1") {
+	if (prepareCheckout?.with["fetch-depth"] !== "0") {
 		failures.push(
-			"prepare checkout must be shallow before the bounded immutable tag fetch",
+			"prepare checkout must include history for protected main ancestry verification",
 		);
 	}
 	const resolveLines = executableLines(resolveStep?.run ?? "");
@@ -343,7 +358,7 @@ export function validateReleaseWorkflow(source) {
 	if (
 		!hasExactRecord(resolveStep?.env ?? {}, {
 			EVENT_NAME: "${{ github.event_name }}",
-			REQUESTED: "${{ github.event.inputs.version || github.ref_name }}",
+			REQUESTED: "${{ github.event.client_payload.version || github.event.inputs.version || github.ref_name }}",
 			TRIGGER_SHA: "${{ github.sha }}",
 		})
 	) {
@@ -351,7 +366,7 @@ export function validateReleaseWorkflow(source) {
 	}
 	const triggerShaIndex = resolveLines.indexOf('release_sha="$TRIGGER_SHA"');
 	const dispatchIndex = resolveLines.indexOf(
-		'if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then',
+		'if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "repository_dispatch" ]]; then',
 	);
 	const fetchedShaIndex = resolveLines.indexOf(
 		'release_sha="$(git rev-list -n 1 "$release_tag")"',
@@ -377,6 +392,12 @@ export function validateReleaseWorkflow(source) {
 	if (!topLevelResolveLines.includes('git checkout --detach "$release_sha"')) {
 		failures.push("immutable release resolution must check out the resolved SHA");
 	}
+	const ancestryIndex = topLevelResolveLines.indexOf('git merge-base --is-ancestor "$release_sha" FETCH_HEAD');
+    if (ancestryIndex < 0 || topLevelResolveLines.indexOf('timeout 60s git fetch --no-tags origin main') >= ancestryIndex ||
+        !topLevelResolveLines.includes('timeout 60s git fetch --no-tags origin main') ||
+        ancestryIndex >= topLevelResolveLines.indexOf('git checkout --detach "$release_sha"')) {
+        failures.push("release source must pass protected main ancestry verification before checkout");
+    }
 	const boundedFetch =
 		'fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then';
 	if (
@@ -413,6 +434,17 @@ export function validateReleaseWorkflow(source) {
 		failures.push("immutable resolver outputs must use one grouped GITHUB_OUTPUT write");
 	}
 
+    const authenticate = findStep(binaries, "Authenticate artifacts and release receipts");
+    const authLines = executableLines(authenticate?.run ?? "");
+    // A strict shell preamble is permitted; no other command may precede authentication.
+    if (authLines[0] === "set -euo pipefail") authLines.shift();
+    const verifyCommand = 'node scripts/verify-staged-release.mjs release-binaries "$RELEASE_VERSION"';
+    const authIndex = binaries.steps.indexOf(authenticate);
+    if (requiredStepCanBeSkippedOrIgnored(authenticate) || authLines[0] !== verifyCommand ||
+        authenticate?.env.RELEASE_VERSION !== "${{ needs.prepare.outputs.release_version }}" ||
+        binaries.steps.some((step, index) => index < authIndex && (step.run.includes("tar -x") || step.uses.startsWith("actions/upload-artifact@")))) {
+        failures.push("native artifacts must be authenticated for the immutable version before extraction or upload");
+    }
 	if (!hasNeed(binaries, "prepare")) failures.push("binaries must need prepare");
 	if (!hasNeed(publish, "prepare") || !hasNeed(publish, "binaries")) {
 		failures.push("publish must need prepare and binaries");
@@ -662,7 +694,7 @@ export function validateReleaseWorkflow(source) {
 			"${{ needs.prepare.outputs.release_tag }}" ||
 		releaseStep?.with.name !==
 			"Maestro ${{ needs.prepare.outputs.release_version }}" ||
-		releaseStep?.with.files !== "release-assets/*"
+		releaseStep?.with.files !== "release-assets/*.json\nrelease-assets/*.tgz\nrelease-assets/*.tar.gz\nrelease-assets/*.txt\nrelease-assets/*SUMS\nrelease-assets/*.bundle\nrelease-assets/maestro-linux-*\nrelease-assets/maestro-darwin-*"
 	) {
 		failures.push(
 			"GitHub release metadata and files must bind to immutable prepare outputs",

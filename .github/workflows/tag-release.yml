@@ -29,6 +29,7 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_version: ${{ steps.release.outputs.release_version }}
       tag_exists: ${{ steps.release.outputs.tag_exists }}
+      staged_ready: ${{ steps.staged-release.outputs.ready }}
       registry_published: ${{ steps.registry-release.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,6 +80,29 @@ jobs:
           fi
 
 
+      - id: staged-release
+        name: Check signed Mono staging
+        if: ${{ github.repository == 'evalops/maestro' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/staged-release.json"
+          release_error="$RUNNER_TEMP/staged-release.stderr"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$release_json" 2> "$release_error"; then
+            ready="$(jq 'any(.assets[]; .name == "MONO_SHA256SUMS.cosign.bundle")' "$release_json")"
+          elif grep -q 'HTTP 404' "$release_error"; then
+            ready=false
+          else
+            cat "$release_error" >&2
+            exit 1
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [[ "$ready" != true ]]; then
+            echo "Tag ${RELEASE_TAG} is ready; awaiting signed Mono artifacts." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - id: active-release
         name: Check active public release workflow
         if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published != 'true' }}
@@ -91,9 +115,9 @@ jobs:
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
-              --json headBranch,status \
+              --json headBranch,status,displayTitle \
               --limit 50 \
-              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .status != \"completed\")] | length"
           )"
           echo "active_count=${active_count}" >> "$GITHUB_OUTPUT"
           if [[ "${active_count}" == "0" ]]; then
@@ -196,7 +220,7 @@ jobs:
     needs:
       - tag-current-version
       - verify-published-registry-package
-    if: ${{ always() && github.repository == 'evalops/maestro' && needs.tag-current-version.result == 'success' && (needs.tag-current-version.outputs.registry_published != 'true' || needs.verify-published-registry-package.result == 'success') && (needs.tag-current-version.outputs.tag_exists != 'true' || needs.tag-current-version.outputs.registry_published != 'true') && (needs.tag-current-version.outputs.active_release_count == '0' || needs.tag-current-version.outputs.active_release_count == '') }}
+    if: ${{ always() && github.repository == 'evalops/maestro' && needs.tag-current-version.result == 'success' && needs.tag-current-version.outputs.staged_ready == 'true' && (needs.tag-current-version.outputs.registry_published != 'true' || needs.verify-published-registry-package.result == 'success') && (needs.tag-current-version.outputs.tag_exists != 'true' || needs.tag-current-version.outputs.registry_published != 'true') && (needs.tag-current-version.outputs.active_release_count == '0' || needs.tag-current-version.outputs.active_release_count == '') }}
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
@@ -216,9 +240,9 @@ jobs:
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
-              --json headBranch,status \
+              --json headBranch,status,displayTitle \
               --limit 50 \
-              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .status != \"completed\")] | length"
           }
 
           # shellcheck disable=SC2317,SC2329 # Invoked indirectly through retry.
@@ -226,9 +250,9 @@ jobs:
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
-              --json event,headBranch \
+              --json event,headBranch,displayTitle \
               --limit 50 \
-              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
           }
 
           # shellcheck disable=SC2317,SC2329 # Invoked indirectly through retry.
@@ -236,9 +260,9 @@ jobs:
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
-              --json databaseId,event,headBranch \
+              --json databaseId,event,headBranch,displayTitle \
               --limit 50 \
-              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\") | .databaseId] | max // empty"
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .event == \"workflow_dispatch\") | .databaseId] | max // empty"
           }
 
           retry() {
@@ -266,7 +290,7 @@ jobs:
           existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
           existing_latest_run_id="$(retry "List latest dispatched release workflow id" latest_dispatched_release_run_id)"
           dispatch_status=0
-          retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
+          retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref main --field "version=${RELEASE_VERSION}" || dispatch_status=$?
 
           for attempt in 1 2 3 4 5 6; do
             release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"

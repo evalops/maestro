@@ -3,7 +3,7 @@ name: preview-channel-release
 on:
   schedule:
     - cron: "0 5 * * *" # alpha
-    - cron: "30 5 * * *" # beta, after alpha but from one commit earlier
+    - cron: "30 5 * * *" # beta, after alpha
   workflow_dispatch:
     inputs:
       channel:
@@ -23,20 +23,14 @@ concurrency:
 
 jobs:
   publish-channel-source:
+    if: github.repository == 'evalops/maestro' && github.ref == 'refs/heads/main'
     runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       actions: write
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - name: Create immutable preview source
+      - name: Select staged signed preview
         id: preview
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,49 +46,30 @@ jobs:
               *) echo "::error::Unknown channel schedule: ${SCHEDULE}"; exit 1 ;;
             esac
           fi
-
-          git fetch --no-tags origin main
-          stable_version="$(git show origin/main:package.json | jq -r .version)"
-          cp scripts/channel-version.mjs "$RUNNER_TEMP/channel-version.mjs"
-          cp scripts/sync-package-metadata.js "$RUNNER_TEMP/sync-package-metadata.js"
-          cp .github/workflows/release.yml "$RUNNER_TEMP/release.yml"
-          release="$(node "$RUNNER_TEMP/channel-version.mjs" "$stable_version" "$channel" "$GITHUB_RUN_NUMBER")"
-          source_offset="$(jq -r .sourceOffset <<<"$release")"
-          version="$(jq -r .version <<<"$release")"
-          source_ref=origin/main
-          if [[ "$source_offset" == "1" ]]; then
-            source_ref=origin/main^
+          case "$channel" in alpha|beta) ;; *) exit 1 ;; esac
+          # Mono owns preview source and signed builds. Finalize an existing
+          # staged candidate; never synthesize source that differs from its binaries.
+          tag="$(timeout 60s gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+            jq -r --arg channel "$channel" '[.[] | select(.draft and (.tag_name | test("-" + $channel + "[.-]"))) |
+              select(any(.assets[]; .name == "MONO_SHA256SUMS.cosign.bundle"))] |
+              sort_by(.created_at) | last | .tag_name // empty')"
+          if [[ -z "$tag" ]]; then
+            echo "No staged signed ${channel} release is ready." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-
-          git checkout --detach "$source_ref"
-          cp "$RUNNER_TEMP/channel-version.mjs" scripts/channel-version.mjs
-          cp "$RUNNER_TEMP/sync-package-metadata.js" scripts/sync-package-metadata.js
-          cp "$RUNNER_TEMP/release.yml" .github/workflows/release.yml
-          npm ci
-          node scripts/version.js set "$version" --release-notes-ref "$source_ref"
-          git config user.name "evalops-release-bot"
-          git config user.email "release-bot@evalops.dev"
-          git add -A
-          git commit -m "Release Maestro ${version}"
-          tag="v${version}"
-          git tag "$tag"
-          git push origin "refs/tags/${tag}"
-
-          gh workflow run release.yml --ref "$tag" --field "version=${version}"
+          gh workflow run release.yml --ref main --field "version=${tag}"
           {
             echo "channel=$channel"
-            echo "source_ref=$source_ref"
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
       - name: Summarize dispatched release
+        if: steps.preview.outputs.tag != ''
         env:
           CHANNEL: ${{ steps.preview.outputs.channel }}
-          SOURCE_REF: ${{ steps.preview.outputs.source_ref }}
           TAG: ${{ steps.preview.outputs.tag }}
         run: |
           {
             echo "### Preview release dispatched"
             echo "- Channel: ${CHANNEL}"
-            echo "- Product source: ${SOURCE_REF}"
             echo "- Immutable tag: ${TAG}"
           } >> "$GITHUB_STEP_SUMMARY"
