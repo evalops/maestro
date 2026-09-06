@@ -392,11 +392,6 @@ async fn live_metadata_check_with_env(
     }
 }
 
-async fn live_metadata_check(model: &SelectedModelReport) -> DoctorCheck {
-    let env = std::env::vars().collect();
-    live_metadata_check_with_env(model, &env).await
-}
-
 /// Providers covered by the doctor auth health section.
 const AUTH_HEALTH_PROVIDERS: &[&str] = &[
     "openai",
@@ -433,7 +428,7 @@ fn credential_mode_check(readiness: &Result<crate::credential_mode::DetectedMode
             "credential_mode",
             CheckStatus::Fail,
             "platform session is missing workspace scope",
-            Some("Sign in again or set MAESTRO_EVALOPS_WORKSPACE_ID.".to_owned()),
+            Some("Run `deixic-code doctor --live` to verify your account scope. If verification fails, run `deixic-code evalops login`.".to_owned()),
             false,
         ),
         Ok(crate::credential_mode::DetectedMode::Byok) => check(
@@ -630,6 +625,52 @@ fn codex_app_server_transport_check(selected_provider: &str) -> DoctorCheck {
     }
 }
 
+async fn managed_setup_check(
+    readiness: &Result<crate::credential_mode::DetectedMode>,
+    live: bool,
+) -> DoctorCheck {
+    let Ok(crate::credential_mode::DetectedMode::Platform(session)) = readiness else {
+        return check(
+            "managed_setup",
+            CheckStatus::Skipped,
+            "Managed setup needs a verified managed login",
+            Some("Run `deixic-code doctor --live` after signing in.".to_owned()),
+            live,
+        );
+    };
+    if crate::managed_setup::platform_base_url().is_none() {
+        return check("managed_setup", CheckStatus::Warning,
+            "MCP setup has no Deixic address",
+            Some("Set MAESTRO_MANAGED_SETUP_URL to your organization's Deixic address. Model requests can still work; MCP servers require a verified policy.".to_owned()), false);
+    }
+    if !live {
+        return check(
+            "managed_setup",
+            CheckStatus::Skipped,
+            "Deixic address is configured; connection not checked",
+            Some("Run `deixic-code doctor --live` to check managed setup.".to_owned()),
+            false,
+        );
+    }
+    let session = session.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::managed_setup::ManagedSetupClient::resolve_with(
+            Some(&session),
+            None,
+            0,
+            Duration::ZERO,
+            crate::managed_setup::fetch_managed_setup,
+        )
+    })
+    .await;
+    match result {
+        Ok(client) if client.origin() == crate::managed_setup::ManagedSetupOrigin::Fetched =>
+            check("managed_setup", CheckStatus::Pass, "Managed setup verified for your account", None, true),
+        _ => check("managed_setup", CheckStatus::Warning, "Managed setup could not be verified",
+            Some("Check MAESTRO_MANAGED_SETUP_URL and your organization's access. MCP access remains governed by the last verified policy, or refused when none is available.".to_owned()), true),
+    }
+}
+
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
     let requested = model_override
         .map(str::trim)
@@ -637,7 +678,11 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         .map(str::to_owned)
         .or_else(|| crate::config::configured_model_route(cwd, None))
         .unwrap_or_else(|| crate::credential_mode::DEFAULT_MANAGED_MODEL.to_owned());
-    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
+    let snapshot = if live {
+        None
+    } else {
+        crate::init_cli::load_evalops_snapshot().ok().flatten()
+    };
     let process_env = std::env::vars().collect::<HashMap<String, String>>();
     let mut env = process_env.clone();
     let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
@@ -648,7 +693,11 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
     let readiness =
         crate::service_connections::ConnectionBroker::merge_default_for_model(&requested, &mut env)
             .and_then(|_| {
-                crate::credential_mode::require_ready_from(snapshot.as_ref(), &env, &requested)
+                if live {
+                    crate::credential_mode::require_ready(&requested)
+                } else {
+                    crate::credential_mode::require_ready_from(snapshot.as_ref(), &env, &requested)
+                }
             });
     let resolved = match readiness.as_ref() {
         Ok(crate::credential_mode::DetectedMode::Platform(session)) => {
@@ -682,7 +731,16 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         catalog,
     };
     let mut checks = config_checks(cwd);
-    checks.push(credential_mode_check(&readiness));
+    let mut identity_check = credential_mode_check(&readiness);
+    identity_check.live = live;
+    if !live && identity_check.status == CheckStatus::Pass {
+        identity_check.detail = Some(
+            "Saved credentials only. Run `deixic-code doctor --live` to verify your login."
+                .to_owned(),
+        );
+    }
+    checks.push(identity_check);
+    checks.push(managed_setup_check(&readiness, live).await);
     checks.push(match resolved {
         Ok(provider) if provider.credential.is_some() => check(
             "provider",
@@ -779,7 +837,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         )),
     }
     if live {
-        checks.push(live_metadata_check(&selected_model).await);
+        checks.push(live_metadata_check_with_env(&selected_model, &env).await);
     } else {
         checks.push(check(
             "live_metadata",
@@ -987,6 +1045,99 @@ mod tests {
                 .as_deref()
                 .is_some_and(|detail| detail.contains("deixic-code evalops login"))
         );
+    }
+
+    #[test]
+    fn live_report_verifies_identity_and_rejects_revoked_sessions() {
+        let _lock = crate::config::test_process_env_lock();
+        let _restore = EnvRestore::capture(crate::credential_mode::TEST_IDENTITY_ENV_VARS);
+        crate::credential_mode::install_test_identity_env();
+        std::env::remove_var(crate::credential_mode::WORKSPACE_ID_ENV);
+        std::env::set_var(
+            crate::credential_mode::BASE_URL_ENV,
+            crate::credential_mode::test_identity_base_url(),
+        );
+        let cwd = tempfile::tempdir().expect("cwd");
+        let report = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(build_report(
+                Some(crate::credential_mode::DEFAULT_MANAGED_MODEL),
+                true,
+                cwd.path(),
+            ));
+        let identity = report
+            .checks
+            .iter()
+            .find(|check| check.id == "credential_mode")
+            .expect("Identity check");
+        assert_eq!(identity.status, CheckStatus::Pass, "{identity:?}");
+        assert!(identity.live);
+        std::env::set_var(crate::credential_mode::ACCESS_TOKEN_ENV, "inactive-token");
+        let rejected = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(build_report(
+                Some(crate::credential_mode::DEFAULT_MANAGED_MODEL),
+                true,
+                cwd.path(),
+            ));
+        let rejected_identity = rejected
+            .checks
+            .iter()
+            .find(|check| check.id == "credential_mode")
+            .expect("Identity check");
+        assert_eq!(rejected_identity.status, CheckStatus::Fail);
+        assert!(rejected_identity.live);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.id == "managed_setup")
+        );
+        let json = serde_json::to_string(&report).expect("report JSON");
+        assert!(!json.contains("fixture-evalops-access-token"));
+    }
+
+    #[test]
+    fn managed_setup_report_requires_the_matching_tenant() {
+        let _lock = crate::config::test_process_env_lock();
+        let _restore = EnvRestore::capture(&["MAESTRO_MANAGED_SETUP_URL"]);
+        let session = crate::credential_mode::platform_session_from(
+            None,
+            &HashMap::from([
+                (
+                    crate::credential_mode::ACCESS_TOKEN_ENV.to_owned(),
+                    "test-token".to_owned(),
+                ),
+                (
+                    crate::credential_mode::ORG_ID_ENV.to_owned(),
+                    "org-test".to_owned(),
+                ),
+                (
+                    crate::credential_mode::WORKSPACE_ID_ENV.to_owned(),
+                    "workspace-test".to_owned(),
+                ),
+            ]),
+        )
+        .expect("session");
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
+            for (body, expected) in [
+                (r#"{"version":1,"organizationId":"org-test","workspaceId":"workspace-test","rules":[],"skills":[],"mcp":{"mode":"MCP_POLICY_MODE_ALLOWLIST","servers":[]}}"#, CheckStatus::Pass),
+                (r#"{"version":1,"organizationId":"other-org","workspaceId":"workspace-test","rules":[],"skills":[],"mcp":{"mode":"MCP_POLICY_MODE_ALLOWLIST","servers":[]}}"#, CheckStatus::Warning),
+            ] {
+                let (base, server) = test_server(200, body, Duration::ZERO).await;
+                std::env::set_var("MAESTRO_MANAGED_SETUP_URL", base);
+                let report = managed_setup_check(&Ok(crate::credential_mode::DetectedMode::Platform(session.clone())), true).await;
+                assert_eq!(report.status, expected, "{report:?}");
+                assert!(report.live);
+                let request = server.await.expect("server");
+                assert!(request.contains("/console.v1.ManagedSetupService/GetManagedSetup"));
+                assert!(!serde_json::to_string(&report).expect("report").contains("test-token"));
+            }
+        });
     }
 
     #[test]

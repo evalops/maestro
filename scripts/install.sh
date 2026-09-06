@@ -1082,7 +1082,7 @@ mv "$tmpdir/maestro-web" "$stage/web"
 
 release_version_root="$release_root/$release_version"
 mkdir -p "$release_version_root"
-"$stage/bin/maestro" --version >/dev/null ||
+staged_version="$("$stage/bin/maestro" --version)" ||
   fail "Staged Maestro binary failed its version check"
 release_dir="$(mktemp -d "$release_version_root/${platform}.XXXXXX")" ||
   fail "Could not create release directory"
@@ -1136,6 +1136,19 @@ fi
 rm -rf "$stage"
 stage=""
 
+# Preserve both entrypoints, including source-build launchers and symlinks.
+# The release directory is unique, so a later install cannot overwrite this backup.
+previous_launchers="$release_dir/previous-launchers"
+mkdir -p "$previous_launchers"
+for command_name in maestro deixic-code; do
+  previous="$install_dir/$command_name"
+  if [[ -f "$previous" || -L "$previous" ]]; then
+    cp -P "$previous" "$previous_launchers/$command_name"
+  elif [[ -e "$previous" ]]; then
+    fail "Cannot replace $previous: expected a file or symlink"
+  fi
+done
+
 launcher_stage="$install_dir/.maestro.install.$$"
 release_dir_quoted="$(shell_quote "$release_dir")"
 install_dir_quoted="$(shell_quote "$install_dir")"
@@ -1179,9 +1192,27 @@ chmod 755 "$canonical_launcher_stage"
 mv -f "$canonical_launcher_stage" "$install_dir/deixic-code"
 canonical_launcher_stage=""
 
+for command_name in maestro deixic-code; do
+  installed_version="$("$install_dir/$command_name" --version)" ||
+    fail "Installed $command_name failed verification; previous launchers are in $previous_launchers"
+  [[ "$installed_version" == "$staged_version" ]] ||
+    fail "Installed $command_name does not match the staged binary; previous launchers are in $previous_launchers"
+done
+
 if [[ "$update_progress" != "1" ]]; then
   printf 'Installed Deixic Code %s to %s\n' "$release_version" "$install_dir/deixic-code" >&2
   printf 'The maestro command remains available as a compatibility alias at %s.\n' "$install_dir/maestro" >&2
   printf 'Release files retained under %s for rollback.\n' "$release_root" >&2
+  printf 'Previous launchers retained in %s.\n' "$previous_launchers" >&2
+  for command_name in maestro deixic-code; do
+    selected="$(command -v "$command_name" || true)"
+    if [[ -n "$selected" && "$selected" != "$install_dir/$command_name" ]]; then
+      printf 'PATH selects %s. Put %s first on PATH, then restart your shell.\n' "$selected" "$install_dir" >&2
+    fi
+  done
+  if [[ "$platform" == darwin-* ]]; then
+    printf 'macOS may request keychain access when switching from a source build. Approve the Deixic Code request to reuse your login.\n' >&2
+  fi
+  printf 'Run deixic-code to open the TUI; use deixic-code doctor --live to check your login and default model.\n' >&2
   "$install_dir/deixic-code" --version
 fi
