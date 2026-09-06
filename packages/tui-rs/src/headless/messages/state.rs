@@ -804,6 +804,7 @@ impl AgentState {
             // not a customer-visible protocol event.
             FromAgentMessage::ConversationSnapshot { .. } => None,
             FromAgentMessage::ResponseAccepted { .. } => None,
+            FromAgentMessage::ProcessBudgetCheckpoint { .. } => None,
             FromAgentMessage::ManagedGatewayReceipt {
                 request_id,
                 record_id,

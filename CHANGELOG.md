@@ -47,6 +47,20 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.75] - 2026-09-06
+
+### Changed
+
+- Preserve task context and simplify worker controls (#8466).
+- Keep previous launchers during upgrades and identify commands shadowed by PATH (#8491).
+
+### Fixed
+
+- Verify live login health and tenant-bound managed setup; direct login to the configured default model (#8491).
+- Preserve identity-bound governed turn digests (#8486).
+- Consume gateway integer usage costs (#8485).
+- Detach Gradle CI from terminal stdin (#8471).
+
 ## [0.10.74] - 2026-09-05
 
 ### Fixed

@@ -2075,3 +2075,19 @@ fn coding_completion_survives_wire_and_headless_event_translation() {
         coding_completion: None, coding_child_records, ..
     } if coding_child_records.is_empty()));
 }
+
+#[test]
+fn process_budget_checkpoint_round_trips_without_becoming_a_turn_terminal() {
+    let wire = serde_json::json!({
+        "type":"process_budget_checkpoint",
+        "budget": {
+            "limits":{"event_id":"event-1","max_requests":2,"max_total_tokens":10,
+                "max_cost_micros":20,"cost_micros_per_token":2},
+            "requests":1,"tool_calls":0,"total_tokens":5,"cost_micros":10,"awaiting_usage":false,"tool_costs":{}
+        }
+    });
+    let message: FromAgentMessage = serde_json::from_value(wire.clone()).unwrap();
+    assert!(message.terminal_event().is_none());
+    assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+    assert!(AgentState::default().handle_message(message).is_none());
+}
