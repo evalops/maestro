@@ -1,5 +1,5 @@
 {
-  "generated_at": 1788597522,
+  "generated_at": 1788679600,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -7496,7 +7496,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 1024000,
-        "output_tokens": 26214
+        "output_tokens": 819200
       },
       "verification": {
         "state": "catalog",

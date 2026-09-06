@@ -113,7 +113,7 @@ struct PromptHook {
 struct MaestroSessionHistoryHook {
     organization_id: String,
     workspace_id: String,
-    access_token: String,
+    access_token: Arc<std::sync::Mutex<String>>,
     endpoint: Option<String>,
     state_dir: PathBuf,
 }
@@ -130,6 +130,38 @@ impl MaestroSessionHistoryHook {
         let Some(session_id) = session_id else {
             return;
         };
+        #[cfg(test)]
+        let access_token = self
+            .access_token
+            .lock()
+            .expect("session-history access-token lock")
+            .clone();
+        #[cfg(not(test))]
+        let access_token = {
+            let Ok(mut access_token) = self.access_token.lock() else {
+                eprintln!("[session-history] capture deferred: access-token lock poisoned");
+                return;
+            };
+            match crate::credential_mode::refreshed_identity_session_for_capture(&access_token) {
+                Ok(Some(session)) => {
+                    if session.organization_id != self.organization_id
+                        || session.workspace_id.as_deref() != Some(self.workspace_id.as_str())
+                    {
+                        eprintln!(
+                            "[session-history] capture deferred: refreshed Identity tenant changed"
+                        );
+                        return;
+                    }
+                    *access_token = session.access_token;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("[session-history] capture deferred: {error}");
+                    return;
+                }
+            }
+            access_token.clone()
+        };
         let event = maestro_session_history::MaestroTranscriptEvent {
             event_name: event_name.to_string(),
             source_session_id: session_id.to_string(),
@@ -139,7 +171,7 @@ impl MaestroSessionHistoryHook {
             organization_id: self.organization_id.clone(),
             workspace_id: self.workspace_id.clone(),
             endpoint: self.endpoint.clone(),
-            access_token: Some(self.access_token.clone()),
+            access_token: Some(access_token),
             model: None,
         };
         if let Err(error) =
@@ -1478,7 +1510,7 @@ impl IntegratedHookSystem {
         let hook = Arc::new(MaestroSessionHistoryHook {
             organization_id,
             workspace_id,
-            access_token,
+            access_token: Arc::new(std::sync::Mutex::new(access_token)),
             endpoint,
             state_dir,
         });

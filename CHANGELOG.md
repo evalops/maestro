@@ -47,7 +47,28 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.76] - 2026-09-06
+
+### Changed
+
+- Preserve task context and simplify worker controls (#8466).
+- Enforce signed Process budgets in the native runtime (#8493).
+- Preserve old launchers during upgrades and identify commands shadowed by PATH (#8491).
+
+### Fixed
+
+- Verify live login health and tenant-bound managed setup; direct login to the configured default model (#8491).
+- Refresh expired saved logins using native Identity expiry and scope fields (#8502).
+- Preserve identity-bound governed turn digests (#8486).
+- Consume gateway integer usage costs (#8485).
+- Detach Gradle CI from terminal stdin (#8471).
+
+This release supersedes the unpublished 0.10.75 candidate. Release source is
+reviewed on a protected version branch so public main can advance independently.
+
 ## [0.10.75] - 2026-09-06
+
+Unpublished candidate; superseded by 0.10.76 after a cross-repository source-tag mismatch.
 
 ### Changed
 
