@@ -2464,10 +2464,7 @@ impl OpenAiClient {
                                         }
 
                                         if let Some(usage) = &chunk.usage {
-                                            if let Some(cost_usd) = usage
-                                                .cost
-                                                .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                                            {
+                                            if let Some(cost_usd) = usage.cost_usd() {
                                                 let _ =
                                                     tx.send(StreamEvent::ProviderCost { cost_usd });
                                             }
@@ -2681,10 +2678,44 @@ struct OpenAiDelta {
 #[derive(Debug, Deserialize)]
 struct OpenAiUsage {
     cost: Option<f64>,
+    // Gateway emits both spellings together; serde aliases would reject that
+    // response as a duplicate field and discard its token usage as well.
+    cost_micros: Option<u64>,
+    #[serde(rename = "costMicros")]
+    cost_micros_camel: Option<u64>,
+    pricing_source: Option<String>,
+    #[serde(rename = "pricingSource")]
+    pricing_source_camel: Option<String>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+impl OpenAiUsage {
+    fn cost_usd(&self) -> Option<f64> {
+        if [
+            self.pricing_source.as_deref(),
+            self.pricing_source_camel.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|source| matches!(source, "missing" | "unconfigured" | "cost_unavailable"))
+        {
+            return None;
+        }
+        if self
+            .cost_micros
+            .zip(self.cost_micros_camel)
+            .is_some_and(|(snake, camel)| snake != camel)
+        {
+            return None;
+        }
+        self.cost_micros
+            .or(self.cost_micros_camel)
+            .map(|micros| micros as f64 / 1_000_000.0)
+            .or_else(|| self.cost.filter(|cost| cost.is_finite() && *cost >= 0.0))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2758,6 +2789,72 @@ mod tests {
         assert_eq!(details.cache_write_tokens, Some(30));
         let absent: super::OpenAiUsage = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(absent.cost, None);
+    }
+
+    #[test]
+    fn gateway_usage_cost_micros_preserves_units_and_unavailable_states() {
+        for value in [
+            serde_json::json!({"cost_micros":12345}),
+            serde_json::json!({"costMicros":12345}),
+            serde_json::json!({"cost_micros":12345,"costMicros":12345,"cost":9.0}),
+        ] {
+            let usage: super::OpenAiUsage = serde_json::from_value(value).unwrap();
+            assert_eq!(usage.cost_usd(), Some(0.012345));
+        }
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"cost_micros":1,"costMicros":2,"cost":9.0}),
+            serde_json::json!({"cost_micros":0,"pricing_source":"unconfigured"}),
+            serde_json::json!({"costMicros":0,"pricingSource":"missing"}),
+            serde_json::json!({"cost_micros":12345,"cost":9.0,"pricing_source":"cost_unavailable"}),
+        ] {
+            let usage: super::OpenAiUsage = serde_json::from_value(value).unwrap();
+            assert_eq!(usage.cost_usd(), None);
+        }
+        let zero: super::OpenAiUsage = serde_json::from_value(
+            serde_json::json!({"cost_micros":0,"pricing_source":"provider_ref"}),
+        )
+        .unwrap();
+        assert_eq!(zero.cost_usd(), Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn gateway_usage_cost_micros_reaches_stream_without_losing_tokens() {
+        for (source, expected) in [("provider_ref", Some(0.012345)), ("unconfigured", None)] {
+            let chunk = serde_json::json!({"id":"gateway-cost","object":"chat.completion.chunk","created":1,"model":"glm-5p3","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"cost_micros":12345,"costMicros":12345,"pricing_source":source,"pricingSource":source}});
+            let wire = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+            let client = client_with_responses_sse(&wire).with_route_provider("fireworks");
+            let mut stream = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "glm-5p3".into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let (cost, tokens) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut cost = None;
+                let mut tokens = None;
+                while let Some(event) = stream.recv().await {
+                    match event {
+                        StreamEvent::ProviderCost { cost_usd } => cost = Some(cost_usd),
+                        StreamEvent::Usage {
+                            input_tokens,
+                            output_tokens,
+                            ..
+                        } => tokens = Some((input_tokens, output_tokens)),
+                        _ => {}
+                    }
+                }
+                (cost, tokens)
+            })
+            .await
+            .expect("Gateway usage stream should terminate");
+            assert_eq!(tokens, Some((100, 5)));
+            assert_eq!(cost, expected);
+        }
     }
 
     use super::*;
