@@ -850,6 +850,8 @@ pub struct App {
 
     /// Status-bar density (`/footer rich|solo|history|clear`).
     footer_style: FooterStyle,
+    worker_badge: Option<String>,
+    worker_badge_refreshed: std::time::Instant,
     ui_prefs: crate::ui_prefs::UiPrefs,
     configured_animations: bool,
 
@@ -1613,6 +1615,8 @@ impl App {
             managed_setup,
             goal_auto_continue_armed: false,
             footer_style: ui_prefs.footer_style(),
+            worker_badge: None,
+            worker_badge_refreshed: std::time::Instant::now(),
             ui_prefs,
             configured_animations,
             pending_attachments: Vec::new(),
@@ -1673,6 +1677,9 @@ You have access to the following tools:
 - write: Write to files. REQUIRED: {{\"file_path\":\"/abs/path\",\"content\":\"...\"}}.
 - glob: Find files by pattern. REQUIRED: {{\"pattern\":\"*.rs\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
 - grep: Search file contents. REQUIRED: {{\"pattern\":\"regex or text\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
+
+Remembering corrections:
+- When the user repeats a correction, offer to remember it. If `propose_harness_refinement` is available, stage a memory proposal in the narrowest applicable scope, with the exact correction and its session/turn sources as evidence. Use only actual user messages as evidence; do not invent source references. Tell the user to review it with `/memory review` and save it with `/memory save <proposal-id>`. A proposal stays inactive until the user explicitly saves it.
 
 Hosted Computer delegation:
 - When the user explicitly asks to "work on this in a Computer", "use a Computer", "send this to Computer", or equivalent, treat that as a request to delegate the whole task to the managed hosted Computer.
@@ -2121,6 +2128,21 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // Refresh MCP badge counts periodically without blocking the UI.
             if self.refresh_mcp_badges().await {
                 needs_redraw = true;
+            }
+
+            if self.worker_badge_refreshed.elapsed() >= Duration::from_secs(1) {
+                self.worker_badge_refreshed = std::time::Instant::now();
+                let next = match self.tool_executor.worker_activity() {
+                    Ok((0, 0)) => None,
+                    Ok((running, waiting)) => Some(format!(
+                        "↗ {running} running · {waiting} need input /workers"
+                    )),
+                    Err(_) => Some("↗ workers unavailable /workers".into()),
+                };
+                if next != self.worker_badge {
+                    self.worker_badge = next;
+                    needs_redraw = true;
+                }
             }
 
             if self.operations.poll_load() {
@@ -4572,6 +4594,7 @@ Slash Commands:
             .animations
             .unwrap_or(self.configured_animations);
         let goal_badge = self.goal_store.status_line();
+        let worker_badge = self.worker_badge.as_deref();
         let attach_count = self.pending_attachments.len();
         let draft_stashed = self.draft_stash.is_some();
         let history_search = &self.history_search;
@@ -4605,6 +4628,7 @@ Slash Commands:
                     .with_runtime_status(sandbox_label, workspace_trusted, pending_approvals)
                     .with_footer_style(footer_style)
                     .with_goal_badge(goal_badge.as_deref())
+                    .with_worker_badge(worker_badge)
                     .with_attach_count(attach_count);
                 frame.render_widget(view, area);
                 if active_modal == ActiveModal::None && state.input().is_empty() {

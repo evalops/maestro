@@ -430,7 +430,7 @@ fn command_from_input(input: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn build_continuation_record(messages: &[Message]) -> ContinuationRecord {
+pub(crate) fn build_continuation_record(messages: &[Message]) -> ContinuationRecord {
     let mut record = ContinuationRecord::default();
     let mut commands_by_id = HashMap::<String, usize>::new();
 
@@ -559,9 +559,12 @@ impl ContinuationRecord {
 
     fn to_markdown(&self) -> String {
         let mut sections = Vec::new();
+        if !self.user_requests.is_empty() {
+            sections.push(format!("Latest user request: #{}. Later corrections replace only what they change; other boundaries remain.", self.user_requests.len()));
+        }
         if !self.constraints.is_empty() {
             sections.push(format!(
-                "## Constraints\n- {}",
+                "## Earlier constraint excerpts (check later user corrections)\n- {}",
                 self.constraints.join("\n- ")
             ));
         }

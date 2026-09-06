@@ -279,6 +279,7 @@ async fn dispatcher_completes_with_actual_terminal_producer_receipts_only_after_
         let id = uuid::Uuid::new_v4().to_string();
         let profile = crate::agents_cli::trusted_builtin_validator_profile(builtin);
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "session:dispatcher-implementation".into(),
             parent_call_id: format!("validate-{name}"),

@@ -50,6 +50,8 @@ pub struct ModelDynamicsConfig {
     pub medium: Option<ModelChoice>,
     pub heavy: Option<ModelChoice>,
     pub boost: Option<ModelChoice>,
+    /// Optional tool-free summarizer; the active conversation model is unchanged.
+    pub summary_model: Option<String>,
     pub fallbacks: Vec<ModelChoice>,
     pub auto_boost: bool,
 }

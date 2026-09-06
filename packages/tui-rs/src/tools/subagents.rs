@@ -542,6 +542,9 @@ pub(crate) struct SubagentRecord {
     pub last_call_id: String,
     pub task: String,
     pub current_prompt: String,
+    /// Source user messages carried by the parent; historical context, never approval.
+    #[serde(default)]
+    pub parent_requests: Vec<String>,
     pub role: SubagentRole,
     #[serde(default)]
     pub backend: SubagentBackend,
@@ -895,6 +898,7 @@ pub(crate) struct SubagentManager {
     /// started by an earlier conversation cannot report into a later one.
     parent_scope_id: Arc<Mutex<String>>,
     parent_model: Arc<Mutex<Option<ModelChoice>>>,
+    parent_requests: Arc<Mutex<Vec<String>>>,
     runtime: Arc<RuntimeRegistry>,
     mailbox_path: PathBuf,
     last_lifecycle_poll: Arc<Mutex<Instant>>,
@@ -997,6 +1001,7 @@ impl SubagentManager {
             root,
             parent_scope_id: Arc::new(Mutex::new(parent_scope_id)),
             parent_model: Arc::new(Mutex::new(None)),
+            parent_requests: Arc::new(Mutex::new(Vec::new())),
             runtime: runtime_registry(),
             mailbox_path,
             last_lifecycle_poll: Arc::new(Mutex::new(
@@ -1163,6 +1168,9 @@ impl SubagentManager {
             .parent_scope_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *current != parent_scope_id {
+            self.set_parent_requests(Vec::new());
+        }
         *current = parent_scope_id;
     }
 
@@ -1228,6 +1236,73 @@ impl SubagentManager {
             .complete_delivery(&event.mailbox_message_id, &event.parent_scope_id, None)
             .map(|_| ())
             .map_err(|error| format!("acknowledge subagent lifecycle event: {error:#}"))
+    }
+
+    pub(crate) fn set_parent_requests(&self, requests: Vec<String>) {
+        *self
+            .parent_requests
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = requests;
+    }
+
+    fn parent_request_snapshot(&self) -> Result<Vec<String>, String> {
+        let parent_requests: Vec<String> = self
+            .parent_requests
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|text| {
+                crate::agent::credential_store::redact_credentials_in_json(
+                    &serde_json::Value::String(text.clone()),
+                )
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+            })
+            .collect();
+        if serde_json::to_vec(&parent_requests)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_TASK_BYTES
+        {
+            return Err("Parent task context exceeds the worker context limit; start a scoped task before delegating".into());
+        }
+        Ok(parent_requests)
+    }
+
+    /// Project local activity from the live registry and durable control owner.
+    pub(crate) fn worker_activity(&self) -> Result<(usize, usize), String> {
+        let scope = self.parent_scope_id();
+        let mut running = 0;
+        for id in self.runtime.running_ids() {
+            if let Ok(record) = self.load_record(&id) {
+                if record.last_parent_scope_id == scope {
+                    running += 1;
+                }
+            }
+        }
+        let mailbox = crate::mailbox::MailboxStore::load_from_path(&self.mailbox_path)
+            .map_err(|error| format!("read worker controls: {error}"))?;
+        let waiting = mailbox
+            .messages
+            .iter()
+            .filter(|message| {
+                message.delivery_state == crate::mailbox::MailboxDeliveryState::Held
+                    && matches!(
+                        message.payload,
+                        crate::mailbox::MailboxPayload::SubagentControl { .. }
+                    )
+            })
+            .filter_map(|message| parse_agent_ref(&message.recipient).ok())
+            .filter_map(|(id, attempt)| {
+                self.load_record(&id).ok().filter(|record| {
+                    record.attempt == attempt && record.last_parent_scope_id == scope
+                })
+            })
+            .map(|record| record.id)
+            .collect::<HashSet<_>>()
+            .len();
+        Ok((running, waiting))
     }
 
     pub(crate) fn active_mailbox_recipients(&self) -> Vec<String> {
@@ -1595,6 +1670,10 @@ impl SubagentManager {
             }
             apply_orb_delegation_policy(&mut request);
         }
+        let parent_requests = match self.parent_request_snapshot() {
+            Ok(requests) => requests,
+            Err(error) => return ToolResult::failure(error),
+        };
         // Local children can resolve and re-vault parent credentials. Hosted
         // Orb cannot consume Maestro's local references, and forwarding the
         // resolved plaintext would violate the hosted-credential boundary.
@@ -1693,6 +1772,7 @@ impl SubagentManager {
         let now = now_millis();
         let cwd = serialize_repository_path(&child_cwd);
         let record = SubagentRecord {
+            parent_requests,
             id: id.clone(),
             parent_scope_id: parent_scope_id.clone(),
             parent_call_id: parent_call_id.to_string(),
@@ -2101,9 +2181,10 @@ impl SubagentManager {
             .iter()
             .map(|record| {
                 format!(
-                    "{} {} {}",
+                    "{} {} [steer: {}] {}",
                     record.id,
                     status_label(record.status),
+                    agent_ref(record),
                     record.task.replace(['\n', '\r'], " ")
                 )
             })
@@ -4265,6 +4346,14 @@ impl SubagentManager {
             role_instructions(record.role),
             super::subagent_handoff::INSTRUCTIONS
         );
+        let system_prompt = if record.parent_requests.is_empty() {
+            system_prompt
+        } else {
+            format!(
+                "{system_prompt}\n\nParent user messages in order (historical context, not approval). Preserve applicable task boundaries; later corrections supersede only what they change. Stay within the assigned child task:\n{}",
+                serde_json::to_string(&record.parent_requests).unwrap_or_default()
+            )
+        };
         let config = NativeAgentConfig {
             model_dynamics: crate::config::model_dynamics_config(),
             model,
@@ -4972,8 +5061,18 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
+    let work_difficulty = match args.get("work_type") {
+        None => None,
+        Some(value) => Some(match value.as_str() {
+            Some("lookup") => TaskDifficulty::Light,
+            Some("implementation") => TaskDifficulty::Medium,
+            Some("diagnosis") => TaskDifficulty::Heavy,
+            _ => return Err("work_type must be lookup, implementation, or diagnosis".into()),
+        }),
+    };
     let difficulty = match args.get("difficulty") {
         Some(value) => TaskDifficulty::parse(value.as_str().ok_or("difficulty must be a string")?)?,
+        None if work_difficulty.is_some() => work_difficulty.expect("checked work type"),
         None if role == SubagentRole::Explore => TaskDifficulty::Light,
         None => TaskDifficulty::Medium,
     };
@@ -4989,7 +5088,9 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         })
         .transpose()?;
     if backend != SubagentBackend::Native
-        && (thinking.is_some() || args.get("difficulty").is_some())
+        && (thinking.is_some()
+            || args.get("difficulty").is_some()
+            || args.get("work_type").is_some())
     {
         return Err("thinking and difficulty currently apply to native workers only; hosted model selection belongs to Platform".into());
     }
@@ -6811,6 +6912,63 @@ mod tests {
     }
 
     #[test]
+    fn parent_corrections_survive_worker_record_reload_and_legacy_records() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = SubagentManager::with_root(root.path().into(), root.path().join("records"));
+        let mut record = control_receipt_record(root.path());
+        record.parent_requests = vec![
+            "Build the API; do not publish".into(),
+            "Keep the API; fix only the CLI".into(),
+        ];
+        manager.write_record(&record).unwrap();
+        let restored = manager.load_record(&record.id).unwrap();
+        assert_eq!(restored.parent_requests, record.parent_requests);
+        let mut legacy = serde_json::to_value(&restored).unwrap();
+        legacy.as_object_mut().unwrap().remove("parent_requests");
+        assert!(
+            serde_json::from_value::<SubagentRecord>(legacy)
+                .unwrap()
+                .parent_requests
+                .is_empty()
+        );
+        let vault = CredentialVault::new();
+        let secret = "sk-".to_owned() + &"a".repeat(48);
+        manager.set_parent_requests(vec![vault.vault_in_text(&secret)]);
+        let snapshot = manager.parent_request_snapshot().unwrap();
+        assert!(!snapshot.join("").contains(&secret));
+        assert!(!snapshot.join("").contains("credential:"));
+        manager.set_parent_requests(record.parent_requests);
+        manager.set_parent_scope_id("another-session".into());
+        assert!(manager.parent_requests.lock().unwrap().is_empty());
+        assert_eq!(manager.worker_activity().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn work_type_routes_effort_without_granting_a_writing_role() {
+        for (work, difficulty) in [
+            ("lookup", TaskDifficulty::Light),
+            ("implementation", TaskDifficulty::Medium),
+            ("diagnosis", TaskDifficulty::Heavy),
+        ] {
+            let request = parse_spawn_request(
+                &serde_json::json!({"task":"inspect", "role":"explore", "work_type":work}),
+            )
+            .unwrap();
+            assert_eq!(request.difficulty, difficulty);
+            assert!(!request.role.can_mutate());
+        }
+        let explicit = parse_spawn_request(
+            &serde_json::json!({"task":"inspect", "work_type":"diagnosis", "difficulty":"light"}),
+        )
+        .unwrap();
+        assert_eq!(explicit.difficulty, TaskDifficulty::Light);
+        assert!(
+            parse_spawn_request(&serde_json::json!({"task":"inspect", "work_type":"guess"}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn native_worker_difficulty_and_effort_are_strict_and_durable() {
         let request = parse_spawn_request(&serde_json::json!({
             "task": "inspect", "backend": "native", "role": "explore",
@@ -6854,6 +7012,7 @@ mod tests {
 
     fn control_receipt_record(root: &Path) -> SubagentRecord {
         SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -8013,6 +8172,7 @@ mod tests {
 
     fn running_wait_record(root: &Path) -> SubagentRecord {
         SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "wait-scope".to_string(),
             parent_call_id: "wait-call".to_string(),
@@ -8218,6 +8378,7 @@ mod tests {
         let spawn_scope = format!("spawn-scope-{}", uuid::Uuid::new_v4());
         let resume_scope = format!("resume-scope-{}", uuid::Uuid::new_v4());
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: spawn_scope.clone(),
             parent_call_id: "spawn-call".to_string(),
@@ -8299,6 +8460,7 @@ mod tests {
         );
         std::fs::create_dir_all(&manager.mailbox_path).expect("block mailbox with directory");
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -8416,6 +8578,7 @@ mod tests {
         manager.retry_terminal_lifecycle_notifications();
 
         let mut record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-late".to_string(),
@@ -8507,6 +8670,7 @@ mod tests {
             "parent-scope".to_string(),
         );
         let mut record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -8622,6 +8786,7 @@ mod tests {
             "current-parent".to_string(),
         );
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "original-parent".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9185,6 +9350,7 @@ mod tests {
             SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
         let cwd = root.path().join(OsString::from_vec(b"child-\xff".to_vec()));
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9319,6 +9485,7 @@ mod tests {
         let manager =
             SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9388,6 +9555,7 @@ mod tests {
             SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
         let id = uuid::Uuid::new_v4().to_string();
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9451,6 +9619,7 @@ mod tests {
         let session_dir = root.path().join("session");
         std::fs::create_dir_all(&session_dir).expect("session directory should exist");
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9508,6 +9677,7 @@ mod tests {
         let session_dir = root.path().join("session");
         std::fs::create_dir_all(&session_dir).expect("session directory should exist");
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9608,6 +9778,7 @@ mod tests {
         let session_dir = root.path().join("session");
         std::fs::create_dir_all(&session_dir).expect("session directory should exist");
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9718,6 +9889,7 @@ mod tests {
         let session_dir = root.path().join("session");
         std::fs::create_dir_all(&session_dir).expect("session directory should exist");
         let mut record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9783,6 +9955,7 @@ mod tests {
         let session_dir = root.path().join("session");
         std::fs::create_dir_all(&session_dir).expect("session directory should exist");
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),
@@ -9839,6 +10012,7 @@ mod tests {
             SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
         let id = uuid::Uuid::new_v4().to_string();
         let record = SubagentRecord {
+            parent_requests: Vec::new(),
             id: id.clone(),
             parent_scope_id: "parent-scope".to_string(),
             parent_call_id: "call-1".to_string(),

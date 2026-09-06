@@ -1381,6 +1381,14 @@ impl ToolExecutor {
         self.subagents.acknowledge_lifecycle_event(event)
     }
 
+    pub(crate) fn set_subagent_parent_requests(&self, requests: Vec<String>) {
+        self.subagents.set_parent_requests(requests);
+    }
+
+    pub(crate) fn worker_activity(&self) -> Result<(usize, usize), String> {
+        self.subagents.worker_activity()
+    }
+
     pub(crate) fn subagent_mailbox_recipients(&self) -> Vec<String> {
         self.subagents.active_mailbox_recipients()
     }

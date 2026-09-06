@@ -5778,6 +5778,75 @@ async fn composer_recall_attachment_only_stash_restores_into_empty_composer() {
     assert!(app.state.input().is_empty());
 }
 
+#[test]
+fn correction_memory_review_save_edit_forget_survives_reload() {
+    use crate::commands::HarnessAction;
+    use crate::harness::{HarnessKind, HarnessScope, HarnessStore};
+    use std::path::Path;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("harness.json");
+    let mut app = new_test_app();
+    app.harness_store = HarnessStore::with_path(&path);
+    app.state.cwd = Some(root.path().display().to_string());
+    let scope = HarnessStore::scope_key(HarnessScope::Workspace, root.path(), None).unwrap();
+    let proposal = app
+        .harness_store
+        .propose(
+            HarnessKind::Memory,
+            HarnessScope::Workspace,
+            scope,
+            "local-work",
+            "Run builds locally",
+            "User correction in session s1 turns 3 and 7",
+        )
+        .unwrap();
+    assert!(
+        app.harness_store
+            .visible_entries(root.path(), None)
+            .is_empty()
+    );
+    app.handle_harness_action(HarnessAction::Apply(proposal));
+    app.harness_store = HarnessStore::load_from_path(&path).unwrap();
+    let entry = app.harness_store.visible_entries(root.path(), None)[0].clone();
+    assert_eq!(
+        entry.evidence.as_deref(),
+        Some("User correction in session s1 turns 3 and 7")
+    );
+    assert!(
+        app.harness_store
+            .visible_entries(Path::new("/other-workspace"), None)
+            .is_empty()
+    );
+    app.handle_harness_action(HarnessAction::Update {
+        id: entry.id.clone(),
+        content: "Use local builds with two jobs".into(),
+        evidence: None,
+    });
+    app.harness_store = HarnessStore::load_from_path(&path).unwrap();
+    assert_eq!(
+        app.harness_store.visible_entries(root.path(), None)[0].content,
+        "Use local builds with two jobs"
+    );
+    assert_eq!(
+        app.harness_store.visible_entries(root.path(), None)[0].evidence,
+        entry.evidence
+    );
+    app.handle_harness_action(HarnessAction::Apply("missing-proposal".into()));
+    assert!(
+        app.state
+            .error
+            .as_ref()
+            .is_some_and(|error| error.contains("unknown"))
+    );
+    app.handle_harness_action(HarnessAction::Delete(entry.id));
+    assert!(
+        HarnessStore::load_from_path(&path)
+            .unwrap()
+            .visible_entries(root.path(), None)
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn selective_summary_failed_adoption_removes_child_and_keeps_original() {
     // Other tests fork subprocesses, which can temporarily inherit a just-

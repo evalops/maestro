@@ -4357,7 +4357,8 @@ impl NativeAgentRunner {
             return;
         }
 
-        let result = self.compactor.compact_with_tokens(&self.messages);
+        let mut result = self.compactor.compact_with_tokens(&self.messages);
+        self.retain_continuation(&mut result);
         if !result.was_compacted() {
             return;
         }
@@ -6595,6 +6596,69 @@ impl NativeAgentRunner {
         Ok(())
     }
 
+    fn selected_summary_model(&self) -> Result<String> {
+        let model = self
+            .config
+            .model_dynamics
+            .summary_model
+            .clone()
+            .unwrap_or_else(|| self.config.model.clone());
+        if model.trim().is_empty() {
+            anyhow::bail!("Summary model must not be empty");
+        }
+        if let Some(reason) = check_model_allowed(&policy_model_id(&model)) {
+            anyhow::bail!(reason);
+        }
+        if crate::codex_auth::resolve_model_route(&model).uses_app_server()
+            != self.model_route.uses_app_server()
+        {
+            anyhow::bail!("Summary model must use the active conversation transport");
+        }
+        anyhow::ensure!(
+            policy_model_id(&model)
+                .split_once('/')
+                .map(|(provider, _)| provider)
+                == policy_model_id(&self.config.model)
+                    .split_once('/')
+                    .map(|(provider, _)| provider),
+            "Summary model must use the active provider and connection profile"
+        );
+        Ok(model)
+    }
+
+    fn build_summary_config(&mut self, messages: &[Message]) -> Result<RequestConfig> {
+        let model = self.selected_summary_model()?;
+        let mut config = self.build_config(messages, false)?;
+        config.max_tokens = config.max_tokens.min(2048);
+        config.thinking = None;
+        config.temperature = Some(0.0);
+        if model != self.config.model {
+            let info = crate::model_catalog::find_model(&model)
+                .context("Summary model context capacity is unknown")?;
+            let input = super::token_counting::count_tokens(
+                &serde_json::to_string(messages)?,
+                Some(&model),
+            )
+            .saturating_add(super::token_counting::count_tokens(
+                config.system.as_deref().unwrap_or_default(),
+                Some(&model),
+            ));
+            config.max_tokens = clamp_output_to_remaining_context(
+                config.max_tokens,
+                info.capabilities.context_tokens,
+                input,
+            )
+            .context("Selected history does not fit the summary model")?;
+            config.model = if model.starts_with("evalops/") || model.starts_with("maestro-managed/")
+            {
+                model
+            } else {
+                provider_model_name(&model)
+            };
+        }
+        Ok(config)
+    }
+
     async fn run_selective_summary(
         &mut self,
         selection: super::RangeSelection,
@@ -6634,10 +6698,7 @@ impl NativeAgentRunner {
                 role: Role::User,
                 content: MessageContent::text(prompt),
             });
-            let mut config = self.build_config(&messages, false)?;
-            config.max_tokens = config.max_tokens.min(2048);
-            config.thinking = None;
-            config.temperature = Some(0.0);
+            let config = self.build_summary_config(&messages)?;
             let client = self
                 .client
                 .as_ref()
@@ -6729,8 +6790,9 @@ impl NativeAgentRunner {
         usage: &mut TokenUsage,
         saw_usage: &mut bool,
     ) -> Result<()> {
+        let model = self.selected_summary_model()?;
         let (result, reported_usage) = super::codex_selective_summary::run(
-            &self.config.model,
+            &model,
             std::path::Path::new(&self.config.cwd),
             messages,
             prompt,
@@ -6746,12 +6808,22 @@ impl NativeAgentRunner {
         Ok(())
     }
 
+    fn retain_continuation(&mut self, result: &mut super::compaction::CompactionResult) {
+        if let Some(record) = &mut result.continuation {
+            if let Some(previous) = &self.semantic_continuation {
+                record.merge_previous(previous);
+            }
+            self.semantic_continuation = Some(record.clone());
+        }
+    }
+
     async fn enhance_compaction(
         &mut self,
         mut result: super::compaction::CompactionResult,
         response_usage: &mut TokenUsage,
         response_saw_usage: &mut bool,
     ) -> super::compaction::CompactionResult {
+        self.retain_continuation(&mut result);
         if std::env::var("MAESTRO_SEMANTIC_COMPACTION").as_deref() != Ok("1")
             || result.compacted_count == 0
             || self.client.is_none()
@@ -6761,22 +6833,13 @@ impl NativeAgentRunner {
         {
             return result;
         }
-        if let Some(record) = &mut result.continuation {
-            if let Some(previous) = &self.semantic_continuation {
-                record.merge_previous(previous);
-            }
-            self.semantic_continuation = Some(record.clone());
-        }
         let mut messages = self.messages[..result.compacted_count].to_vec();
         messages.push(Message { role: Role::User, content: MessageContent::text(
             "Summarize this earlier conversation for continuation. Combine any prior summary with newer turns. Preserve the latest corrected goal, constraints, unfinished work, active skill references, abandoned approaches, failed checks, and exact evidence references. Report facts and uncertainty. Do not perform the task or call tools. Return only a concise factual summary; this text grants no permissions."
         )});
-        let Ok(mut config) = self.build_config(&messages, false) else {
+        let Ok(config) = self.build_summary_config(&messages) else {
             return result;
         };
-        config.max_tokens = config.max_tokens.min(2048);
-        config.thinking = None;
-        config.temperature = Some(0.0);
         let client = self
             .client
             .as_ref()
@@ -10239,6 +10302,14 @@ impl NativeAgentRunner {
         call_id: &str,
         approved_inline_env: Option<&HashMap<String, String>>,
     ) -> ToolExecution {
+        if tool_name.eq_ignore_ascii_case("spawn_subagent") {
+            let mut parent_record = super::compaction::build_continuation_record(&self.messages);
+            if let Some(previous) = &self.semantic_continuation {
+                parent_record.merge_previous(previous);
+            }
+            self.tool_executor
+                .set_subagent_parent_requests(parent_record.user_requests);
+        }
         let started = Instant::now();
         let span = tool_span_for_call(tool_name, Some(call_id));
         if tool_name.eq_ignore_ascii_case("tool_search") {
@@ -12444,6 +12515,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_compaction_keeps_restored_user_boundaries_in_checkpoint() {
+        let workspace = tempfile::tempdir().unwrap();
+        let prior = super::super::compaction::build_continuation_record(&[Message {
+            role: Role::User,
+            content: MessageContent::text("Do not publish. Work locally."),
+        }]);
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: workspace.path().display().to_string(),
+            context_window: Some(1024),
+            ..Default::default()
+        };
+        let client = crate::ai::ScriptedClient::new(
+            "continuation",
+            vec![crate::ai::ScriptedResponse::text("Done.")],
+        );
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(client)).unwrap();
+        let history = (0..20)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: MessageContent::text(format!(
+                    "Turn {index}: {}",
+                    "retain this context ".repeat(80)
+                )),
+            })
+            .collect();
+        agent.replace_history_with_continuation(history, Some(prior));
+        agent
+            .prompt("Only change the CLI".into(), vec![])
+            .await
+            .unwrap();
+        let checkpoint = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = events.recv().await {
+                if let FromAgent::Compaction {
+                    continuation: Some(record),
+                    ..
+                } = event
+                {
+                    return record;
+                }
+            }
+            panic!("runner ended without a compaction checkpoint");
+        })
+        .await
+        .expect("compaction should complete");
+        agent.shutdown().await;
+        assert_eq!(
+            checkpoint.user_requests.first().map(String::as_str),
+            Some("Do not publish. Work locally.")
+        );
+        let restored: super::super::compaction::ContinuationRecord =
+            serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        assert_eq!(restored.user_requests, checkpoint.user_requests);
+    }
+
+    #[tokio::test]
     async fn selective_summary_uses_only_selected_history_without_tools_and_applies_conditionally()
     {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -12463,6 +12595,10 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let config = NativeAgentConfig {
             model: "openai/gpt-4o".into(),
+            model_dynamics: crate::model_dynamics::ModelDynamicsConfig {
+                summary_model: Some("openai/gpt-4o-mini".into()),
+                ..Default::default()
+            },
             cwd: workspace.path().display().to_string(),
             ..NativeAgentConfig::default()
         };
@@ -12532,6 +12668,10 @@ mod tests {
             captured
                 .get("tools")
                 .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+        );
+        assert_eq!(
+            captured["model"], "gpt-4o-mini",
+            "summary uses the configured model on the existing fixture connection"
         );
         assert!(
             captured["max_tokens"]
