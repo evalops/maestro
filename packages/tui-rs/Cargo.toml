@@ -186,7 +186,7 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 wat = "1"
 # Enables `#[tokio::test(start_paused = true)]` for deterministic timeout tests.
 tokio = { workspace = true, features = ["test-util"] }
