@@ -1,0 +1,21 @@
+# Files excluded from public releases.
+# Used by .github/workflows/publish-public.yml to strip internal-only
+# content before pushing to evalops/maestro.
+#
+# One path per line. Supports directory paths (trailing /).
+# Lines starting with # are comments.
+
+# Internal backlog and planning
+todo.md
+
+# Competitive research and analysis
+docs/research/
+docs/upstreams/
+docs/opencode-parity.md
+
+# Internal infrastructure design (unshipped)
+docs/design/SESSION_HUB_DO.md
+
+# This file itself
+.publish-exclude
+.github/workflows/publish-public.yml

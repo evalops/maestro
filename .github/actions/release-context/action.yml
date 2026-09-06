@@ -1,0 +1,172 @@
+name: Release Context
+description: Resolve release tag, version, and package metadata from the checked-out repo.
+
+inputs:
+  requested-version:
+    description: Release version or tag to resolve.
+    required: false
+    default: ""
+  fallback-to-package-version:
+    description: Use the current package.json version when no explicit version is provided.
+    required: false
+    default: "false"
+  create-tag-if-missing:
+    description: Create and push the resolved tag when it does not already exist.
+    required: false
+    default: "false"
+  workspace:
+    description: Directory containing package.json.
+    required: false
+    default: "."
+
+outputs:
+  release_tag:
+    description: Normalized semver tag, including leading v.
+    value: ${{ steps.context.outputs.release_tag }}
+  release_version:
+    description: Semver release version without the leading v.
+    value: ${{ steps.context.outputs.release_version }}
+  package_name:
+    description: Source package name from package.json.
+    value: ${{ steps.context.outputs.package_name }}
+  package_version:
+    description: Current package version from package.json.
+    value: ${{ steps.context.outputs.package_version }}
+  cli_command:
+    description: Declared CLI command from package.json bin map.
+    value: ${{ steps.context.outputs.cli_command }}
+  canonical_package_name:
+    description: Canonical Deixic Code public package name.
+    value: ${{ steps.context.outputs.canonical_package_name }}
+  package_aliases_json:
+    description: JSON array of canonical and retained compatibility package names.
+    value: ${{ steps.context.outputs.package_aliases_json }}
+  tag_exists:
+    description: Whether the resolved tag already exists in git.
+    value: ${{ steps.context.outputs.tag_exists }}
+  tag_target:
+    description: Commit SHA resolved from the existing release tag, when present.
+    value: ${{ steps.context.outputs.tag_target }}
+  tag_matches_head:
+    description: Whether the existing release tag points at the checked-out HEAD commit.
+    value: ${{ steps.context.outputs.tag_matches_head }}
+  package_changed_since_tag:
+    description: Whether package-impacting source inputs changed since the existing release tag.
+    value: ${{ steps.context.outputs.package_changed_since_tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch tags
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      run: git fetch --tags --force
+
+    - id: context
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      env:
+        MAESTRO_RELEASE_REQUESTED_VERSION: ${{ inputs.requested-version }}
+        MAESTRO_RELEASE_FALLBACK_TO_PACKAGE_VERSION: ${{ inputs.fallback-to-package-version }}
+      run: |
+        node --input-type=module <<'EOF' >> "$GITHUB_OUTPUT"
+        import { execFileSync } from "node:child_process";
+        import { pathToFileURL } from "node:url";
+
+        const packageMetadataPath = pathToFileURL(
+          `${process.env.GITHUB_ACTION_PATH}/../../../scripts/package-metadata.js`,
+        );
+        const releaseImpactFilterPath = pathToFileURL(
+          `${process.env.GITHUB_ACTION_PATH}/../../../scripts/release-impact-filter.mjs`,
+        );
+        const { getPackageMetadata } = await import(packageMetadataPath.href);
+        const { packageChangedSinceTag: packageChangedSinceReleaseTag } =
+          await import(releaseImpactFilterPath.href);
+        const metadata = getPackageMetadata();
+        const requestedVersion =
+          (process.env.MAESTRO_RELEASE_REQUESTED_VERSION ?? "").trim();
+        const fallbackToPackageVersion =
+          (process.env.MAESTRO_RELEASE_FALLBACK_TO_PACKAGE_VERSION ?? "false") ===
+          "true";
+        const sourceVersion =
+          requestedVersion || (fallbackToPackageVersion ? metadata.version : "");
+
+        if (!sourceVersion) {
+          throw new Error("No release version provided to release-context.");
+        }
+
+        const releaseTag = sourceVersion.startsWith("v")
+          ? sourceVersion
+          : `v${sourceVersion}`;
+
+        if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) {
+          throw new Error(
+            `Release tag must follow semver (vX.Y.Z), received: ${releaseTag}`,
+          );
+        }
+
+        const releaseVersion = releaseTag.slice(1);
+        if (releaseVersion !== metadata.version) {
+          throw new Error(
+            `package.json version ${metadata.version} does not match release version ${releaseVersion}`,
+          );
+        }
+
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).trim();
+        let tagExists = false;
+        let tagTarget = "";
+        let tagMatchesHead = false;
+        let packageChangedSinceTag = false;
+        try {
+          execFileSync("git", ["rev-parse", `refs/tags/${releaseTag}`], {
+            stdio: "ignore",
+          });
+          tagExists = true;
+        } catch {
+          tagExists = false;
+        }
+        if (tagExists) {
+          tagTarget = execFileSync(
+            "git",
+            ["rev-parse", `refs/tags/${releaseTag}^{commit}`],
+            { encoding: "utf8" },
+          ).trim();
+          tagMatchesHead = tagTarget === headSha;
+        }
+        if (tagExists && !tagMatchesHead) {
+          packageChangedSinceTag = packageChangedSinceReleaseTag({ tagTarget });
+        }
+
+        const outputs = {
+          release_tag: releaseTag,
+          release_version: releaseVersion,
+          package_name: metadata.name,
+          package_version: metadata.version,
+          cli_command: metadata.cliCommand,
+          canonical_package_name: metadata.canonicalPackageName,
+          package_aliases_json: JSON.stringify(metadata.packageAliases),
+          tag_exists: String(tagExists),
+          tag_target: tagTarget,
+          tag_matches_head: String(tagMatchesHead),
+          package_changed_since_tag: String(packageChangedSinceTag),
+        };
+
+        for (const [key, value] of Object.entries(outputs)) {
+          process.stdout.write(`${key}=${value}\n`);
+        }
+        EOF
+
+    - name: Create missing tag
+      if: ${{ inputs.create-tag-if-missing == 'true' && steps.context.outputs.tag_exists != 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      env:
+        RELEASE_TAG: ${{ steps.context.outputs.release_tag }}
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+        git push origin "$RELEASE_TAG"

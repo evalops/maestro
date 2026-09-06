@@ -1,0 +1,157 @@
+[workspace]
+resolver = "2"
+exclude = ["examples/hooks/wasm-plugin"]
+members = [
+    "packages/maestro-rs",
+    "packages/runtime-rs",
+    "packages/coding-acceptance-rs",
+    "packages/scenario-rs",
+    "packages/session-history-rs",
+    "packages/ai-rs",
+    "packages/runtime-gateway-rs",
+    "packages/a2a-ledger-rs",
+    "packages/execpolicy-rs",
+    "packages/tui-rs",
+    "packages/ui-rs",
+    "packages/presentation-rs",
+    "packages/ui-preview-rs",
+    "packages/interaction-rs",
+    "packages/ambient-agent-rs",
+]
+
+[workspace.dependencies]
+textwrap = "0.16"
+anyhow = "1"
+http = "1.4"
+aws-config = { version = "1.10.1", default-features = false, features = [
+    "behavior-version-latest",
+    "credentials-process",
+    "default-https-client",
+    "rt-tokio",
+    "sso",
+] }
+aws-credential-types = "1.3.0"
+aws-sdk-bedrockruntime = { version = "1.139.0", default-features = false, features = [
+    "behavior-version-latest",
+    "default-https-client",
+    "rt-tokio",
+] }
+aws-smithy-types = "1.6.1"
+aws-types = "1.5.0"
+base64 = "0.22"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+ctor = "1.0.11"
+crossterm = "0.29"
+dirs = "6"
+dunce = "1"
+eventsource-stream = "0.2"
+fd-lock = "4"
+futures = "0.3"
+glob = "0.3"
+# CIDR types for the structured sandbox network policy (MIT OR Apache-2.0).
+ipnet = "2.11"
+libc = "0.2"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
+maestro-ai = { path = "packages/ai-rs" }
+maestro-a2a-ledger = { path = "packages/a2a-ledger-rs" }
+maestro-runtime-gateway = { path = "packages/runtime-gateway-rs" }
+maestro-execpolicy = { path = "packages/execpolicy-rs" }
+maestro-runtime = { path = "packages/runtime-rs" }
+maestro-coding-acceptance = { path = "packages/coding-acceptance-rs" }
+maestro-session-history = { path = "packages/session-history-rs" }
+maestro-tui = { path = "packages/tui-rs" }
+maestro-ui = { path = "packages/ui-rs" }
+maestro-presentation = { path = "packages/presentation-rs" }
+unicode-width = "0.2"
+maestro-interaction = { path = "packages/interaction-rs" }
+ratatui = { version = "0.30.2", default-features = false }
+# Shared by maestro-tui and maestro-runtime-gateway; keep both crates on the
+# same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187
+# fix) can't land in one crate's Cargo.toml and silently miss the other.
+pdf-extract = "0.12"
+portable-pty = "0.9"
+prost = "0.14"
+prost-types = "0.14"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false }
+rcgen = { version = "0.14", features = ["x509-parser"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+tempfile = "3"
+time = "0.3"
+tokio = { version = "1" }
+tokio-stream = "0.1"
+tokio-rustls = "0.26"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.32"
+wait-timeout = "0.2"
+x509-parser = "0.18"
+zip = { version = "8", default-features = false, features = ["aes-crypto", "deflate64", "deflate", "lzma", "ppmd", "time", "zstd", "xz"] }
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25.1"
+
+# Keep the canonical release profile deliberately optimized for shipped
+# artifacts. PR validation uses fast-validation below so its compile path does
+# not pay the distribution optimizer's serial codegen cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Fast native validation profile. This retains release-mode code generation,
+# stripping, and panic behavior for a representative smoke binary while
+# disabling the expensive whole-program optimization pass and allowing Cargo
+# to parallelize code generation across units.
+[profile.fast-validation]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# Optional distribution profile for workflows that need debug sidecars
+# (adopted from grok-build). Active release and container paths intentionally
+# use `release`, which remains the optimized stripped shipping profile.
+# Thin LTO and codegen-units = 1 match `release`'s whole-program optimization;
+# debug = 1
+# emits line-table DWARF and strip = false keeps symbols so CI can extract
+# debug sidecars (.debug on Linux, .dSYM on macOS) before stripping
+# post-build. Alpha/beta and stable promotion can reuse the same
+# release-dist binary — promotion is a re-tag, not a rebuild.
+[profile.release-dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = false
+debug = 1
+
+# Line tables preserve useful backtraces without the multi-gigabyte full debug
+# information duplicated by the former independent Cargo roots. incremental
+# (already Cargo's dev default, spelled out explicitly) and a capped
+# codegen-unit count keep the edit-build cycle fast.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+codegen-units = 128
+
+[profile.test]
+debug = "line-tables-only"
+
+# magic-trace needs symbols and frame pointers. Build with:
+#   RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile magic-trace -p maestro-tui
+[profile.magic-trace]
+inherits = "release"
+debug = true
+strip = false
+lto = false
+codegen-units = 16

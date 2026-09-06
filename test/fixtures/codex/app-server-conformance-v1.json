@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "initialize": [
+    {
+      "name": "required-and-optional-capabilities",
+      "result": {
+        "protocolVersion": "2025-01-01",
+        "capabilities": {
+          "methods": [
+            "thread/start",
+            "turn/start",
+            "turn/interrupt",
+            "item/tool/call",
+            "item/agentMessage/delta",
+            "thread/resume",
+            "turn/steer"
+          ],
+          "notifications": [
+            "turn/completed",
+            "item/agentMessage/delta",
+            "item/tool/call"
+          ]
+        }
+      },
+      "expectReady": true,
+      "expectResume": true,
+      "expectSteering": true
+    },
+    {
+      "name": "required-without-optional-capabilities",
+      "result": {
+        "protocolVersion": "2025-01-01",
+        "capabilities": {
+          "methods": [
+            "thread/start",
+            "turn/start",
+            "turn/interrupt",
+            "item/tool/call",
+            "item/agentMessage/delta"
+          ],
+          "notifications": [
+            "turn/completed",
+            "item/agentMessage/delta",
+            "item/tool/call"
+          ]
+        }
+      },
+      "expectReady": true,
+      "expectResume": false,
+      "expectSteering": false
+    },
+    {
+      "name": "missing-required-capability",
+      "result": {
+        "protocolVersion": "2025-01-01",
+        "capabilities": {
+          "methods": [
+            "thread/start",
+            "turn/interrupt",
+            "item/tool/call",
+            "item/agentMessage/delta",
+            "thread/resume"
+          ],
+          "notifications": [
+            "turn/completed",
+            "item/agentMessage/delta",
+            "item/tool/call"
+          ]
+        }
+      },
+      "expectReady": false,
+      "expectResume": true,
+      "expectSteering": false
+    },
+    {
+      "name": "missing-required-terminal-notification",
+      "result": {
+        "protocolVersion": "2025-01-01",
+        "capabilities": {
+          "methods": [
+            "thread/start",
+            "turn/start",
+            "turn/interrupt",
+            "item/tool/call",
+            "item/agentMessage/delta",
+            "thread/resume"
+          ],
+          "notifications": [
+            "item/agentMessage/delta",
+            "item/tool/call"
+          ]
+        }
+      },
+      "expectReady": false,
+      "expectResume": true,
+      "expectSteering": false
+    }
+  ],
+  "notifications": [
+    {
+      "method": "turn/completed",
+      "required": true,
+      "expectKnown": true
+    },
+    {
+      "method": "item/agentMessage/delta",
+      "required": true,
+      "expectKnown": true
+    },
+    {
+      "method": "item/tool/call",
+      "required": true,
+      "expectKnown": true
+    },
+    {
+      "method": "turn/usage",
+      "required": false,
+      "expectKnown": true
+    },
+    {
+      "method": "experimental/optionalNotification",
+      "required": false,
+      "expectKnown": false
+    }
+  ]
+}

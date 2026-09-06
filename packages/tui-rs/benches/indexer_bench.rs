@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --bench indexer_bench
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::files::{FileIndexer, IndexerConfig};
 use std::fs::File;
 use tempfile::TempDir;

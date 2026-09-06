@@ -1,7 +1,7 @@
 //! Safety Hook WASM Plugin
 //!
 //! This is an example WASM plugin that blocks dangerous shell commands.
-//! It demonstrates the WASM hook plugin interface for Composer.
+//! It demonstrates the WASM hook plugin interface for Maestro.
 //!
 //! # Building
 //!
@@ -28,7 +28,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 
 /// Result codes returned by the hook
 #[repr(i32)]
@@ -123,9 +123,8 @@ pub extern "C" fn dealloc_mem(ptr: i32, size: i32) {
 #[no_mangle]
 pub extern "C" fn on_pre_tool_use(input_ptr: i32, input_len: i32) -> i32 {
     // Read input from memory
-    let input_slice = unsafe {
-        std::slice::from_raw_parts(input_ptr as *const u8, input_len as usize)
-    };
+    let input_slice =
+        unsafe { std::slice::from_raw_parts(input_ptr as *const u8, input_len as usize) };
 
     // Parse JSON input
     let input: PreToolUseInput = match serde_json::from_slice(input_slice) {
@@ -199,11 +198,7 @@ pub extern "C" fn get_result(out_ptr: i32, out_len: i32) -> i32 {
     unsafe {
         let len = std::cmp::min(RESULT_BUFFER.len(), out_len as usize);
         if len > 0 {
-            std::ptr::copy_nonoverlapping(
-                RESULT_BUFFER.as_ptr(),
-                out_ptr as *mut u8,
-                len,
-            );
+            std::ptr::copy_nonoverlapping(RESULT_BUFFER.as_ptr(), out_ptr as *mut u8, len);
         }
         len as i32
     }

@@ -49,6 +49,76 @@ Important types:
 | `--session path`| Use a specific JSONL file (absolute or relative) |
 | `--no-session`  | Disable persistence entirely for this run    |
 
+## Secure Transfer
+
+For moving a session family between trusted installations, use the explicit
+signed/encrypted `secure-json` format. It redacts credentials before encryption
+and requires operator-supplied key files; Maestro never stores or uploads those
+keys:
+
+```sh
+maestro sessions export <session-id> session.secure.json \
+  --format secure-json \
+  --encryption-key-file /secure/path/recipient.key \
+  --signing-key-file /secure/path/signer.pk8 \
+  --recipient-key-id workstation-a \
+  --signing-key-id operator-2026-08
+
+maestro sessions import session.secure.json \
+  --encryption-key-file /secure/path/recipient.key \
+  --verify-key-file /secure/path/signer.pub \
+  --recipient-key-id workstation-a
+```
+
+The full envelope, key, redaction, replay, and migration contract is in
+[`secure-session-transfer.md`](protocols/secure-session-transfer.md).
+
+## Hosted Computer handoff
+
+When the active account has a managed hosted Computer connection, a running Computer
+task can freeze a bounded workspace handoff for another same-tenant Computer thread.
+Computer owns the workspace bytes, artifact authorization, immutable storage, and
+SHA-256 package digest; Maestro only selects the source task, destination
+thread, and explicit items:
+
+```sh
+maestro computer handoff create <source-task-id> <target-thread-id> \
+  --file src/lib.rs --include-diff
+maestro computer handoff list <target-thread-id>
+maestro computer handoff read <target-thread-id> <package-id>
+```
+
+The TUI exposes the same controls as `/computer handoff ...`; `/orb` remains a
+compatibility alias. Handoffs are remote
+and tenant-scoped: Maestro does not upload arbitrary dirty local files, copy
+credentials, or create a local shadow package. A missing or changed managed
+Computer owner binding fails closed.
+
+`/handoff` sends work to the default A2A peer and follows the remote task
+without blocking the TUI. The full command remainder is the prompt, so quotes
+are optional:
+
+```text
+/handoff check the release queue and report blockers
+```
+
+Use `/handoff --peer <name> <prompt>` to override the default peer. When the
+selected peer has a configured session identity, the handoff resumes that
+persistent Maestro session. Otherwise it receives a new context-specific
+binding.
+
+When the work needs bytes from an existing hosted Computer task, create and
+attach the Computer-owned package in the same command:
+
+```text
+/handoff --source-task <source-task-id> --target-thread <target-thread-id> \
+  --file src/lib.rs --include-diff -- continue the implementation
+```
+
+The source task ID and target thread ID are explicit because an A2A session ID
+is not a hosted Computer thread ID. The package form fails before sending the
+A2A task if Computer cannot create or validate the package reference.
+
 The TUI also offers `/sessions` to list + load by index. When loading, the agent
 replays the stored messages into its state and restores model/thinking settings.
 

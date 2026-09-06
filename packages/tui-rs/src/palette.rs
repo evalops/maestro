@@ -95,7 +95,13 @@ pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
 /// Convert RGB to the best available color
 #[must_use]
 pub fn best_color(r: u8, g: u8, b: u8) -> Color {
-    match color_level() {
+    color_for_level(r, g, b, color_level())
+}
+
+/// Resolve a color for a supplied capability, including deterministic previews/tests.
+#[must_use]
+pub fn color_for_level(r: u8, g: u8, b: u8, level: ColorLevel) -> Color {
+    match level {
         ColorLevel::TrueColor => Color::Rgb(r, g, b),
         ColorLevel::Indexed => {
             // Find closest xterm 256 color
@@ -142,7 +148,7 @@ pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 
 /// Theme colors
 pub mod theme {
-    use super::{best_color, Color};
+    use super::{Color, best_color};
 
     // Text hierarchy
     #[must_use]

@@ -1,5 +1,8 @@
 # Hooks System Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The hooks system now lives in `packages/tui-rs/src/hooks/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The hooks system allows external programs to intercept, modify, or block agent operations at various lifecycle points. This enables custom workflows, validation, and integrations.
 
 ## Overview
@@ -57,7 +60,33 @@ Hooks provide:
 | `UserPromptSubmit` | When user submits prompt | ✅ | ✅ |
 | `Notification` | On various notifications | ❌ | ❌ |
 | `PreCompact` | Before context compaction | ✅ | ❌ |
-| `PermissionRequest` | When permission needed | ✅ | ✅ |
+| `PermissionRequest` | When permission needed | ✅ | ❌ |
+| `EvalGate` | After a tool call, to score it | ✅ Marks failed | ✅ Context |
+
+`EvalGate` runs immediately after `PostToolUse` on the same tool call and
+receives the same name, arguments, and raw output. It is the place for scoring
+and assertion hooks. Its `block` cannot un-run the tool, so it is reported to
+the model as a failed tool result with the reason appended, rather than as a
+prevented call.
+
+`SessionStart` and `SessionEnd` fire on the real session transitions: starting a
+new session, creating the session file for one, resuming a session, forking, and
+an orderly exit. Both are advisory — their results are logged and cannot stop a
+transition the user has already made.
+
+`SessionEnd` is best-effort. A crash, a `SIGKILL`, or a terminal that goes away
+cannot run it, so do not build cleanup that depends on `SessionEnd` always
+arriving; treat it as a notification, not a guarantee.
+
+`PermissionRequest` runs at the single point that decides whether a tool needs
+approval, after the action firewall and the safety checks have already run
+against the call's arguments. A `block` result denies the call and the user is
+never asked. It cannot modify the input: the checks above it ran against the
+original arguments, so rewriting them here would let a hook route a call around
+them. Use `PreToolUse` to modify tool input.
+
+A failed tool call is reported to `PostToolUseFailure` hooks with
+`hookEventName` set to `PostToolUseFailure`, not `PostToolUse`.
 
 ## Configuration
 
@@ -69,6 +98,35 @@ export MAESTRO_HOOKS_PRE_TOOL_USE="./hooks/pre-tool.sh"
 export MAESTRO_HOOKS_POST_TOOL_USE="./hooks/post-tool.sh"
 export MAESTRO_HOOKS_USER_PROMPT_SUBMIT="./hooks/validate-prompt.sh"
 ```
+
+### Command Hook Process Environment
+
+A command hook is started with these variables set:
+
+| Variable | Meaning |
+| --- | --- |
+| `HOOK_EVENT_NAME` | The event that fired the hook, e.g. `PreToolUse` |
+| `TOOL_NAME` | The tool being invoked; set only for tool events |
+| `INPUT_JSON` | Copy of the JSON payload, set only when it is at most 64 KiB |
+| `INPUT_JSON_OMITTED` | Byte length of the payload when it was too large for `INPUT_JSON`; unset otherwise |
+
+Stdin is the only complete transport for the payload and has no size limit;
+read it (`INPUT=$(cat)`) rather than relying on `INPUT_JSON`. The environment
+copy is bounded because a single environment entry over the operating system
+limit (`MAX_ARG_STRLEN`, 128 KiB on Linux) fails the spawn with `E2BIG`, which
+would stop the hook from running at all.
+
+The payload's top-level fields use the camelCase names in "Hook Input Format"
+below (`toolName`, `toolInput`, `hookEventName`, `durationMs`). The equivalent
+snake_case names (`tool_name`, `tool_input`) are also present because earlier
+builds emitted only those; write new hooks against the camelCase names. Keys
+inside `toolInput` are the tool's own arguments and are passed through
+unchanged.
+
+A command hook runs in its own process group and is killed as a group when it
+exceeds its timeout, so anything it starts is terminated with it. A hook that
+needs a process to outlive it must detach that process from the group itself
+(for example with `setsid`).
 
 ### Configuration File
 
@@ -191,6 +249,39 @@ interface PostToolUseHookInput {
   timestamp: string;
 }
 ```
+
+The payload also carries the flat `tool_output` string and `is_error` boolean
+that external hooks have shipped against. Both spellings describe the same
+result; `toolOutput.isError` is the documented one.
+
+`durationMs` is the wall-clock time of the tool execution itself, excluding the
+hook dispatch that reports it. Two cases report something coarser, and a hook
+that makes decisions on timing should know which it is looking at:
+
+- Tools executed together in a parallel read-only batch report the batch's
+  elapsed time, which is an upper bound on any single call in it.
+- Sub-operations of one tool call, and results supplied by the approval UI
+  rather than executed here, report `0`.
+
+### SessionEnd Input
+
+```typescript
+interface SessionEndHookInput {
+  hookEventName: "SessionEnd";
+  cwd: string;
+  sessionId?: string;
+  transcriptPath?: string;
+  timestamp: string;
+  reason: string;
+  durationMs: number;
+  turnCount: number;
+}
+```
+
+`transcriptPath` is the absolute path to the active native JSONL when the
+session has a persistent writer. Observation-only adapters may copy and redact
+that file, but it is not restore or continuation authority. External hooks also
+receive the compatibility `transcript_path` spelling.
 
 ### UserPromptSubmit Input
 

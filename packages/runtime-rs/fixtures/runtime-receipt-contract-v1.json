@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "evalops.maestro.runtime-receipt.v1",
+  "fields": [
+    "schemaVersion",
+    "kind",
+    "lifecycleState",
+    "runtimeGeneration",
+    "runnerSessionId",
+    "maestroSessionId",
+    "workspaceId",
+    "agentRunId",
+    "model",
+    "provider",
+    "capabilityDigest",
+    "replayCursor",
+    "flushWatermark",
+    "snapshotLineage",
+    "terminal",
+    "errorType"
+  ],
+  "kindValues": [
+    "ready",
+    "restored",
+    "terminal",
+    "failed",
+    "draining",
+    "drained"
+  ],
+  "lifecycleStateValues": [
+    "starting",
+    "identity_bound",
+    "execution_ready",
+    "active",
+    "draining",
+    "drained",
+    "failed"
+  ],
+  "terminalClassificationValues": [
+    "completed",
+    "interrupted",
+    "provider_failed",
+    "fatal",
+    "cancelled",
+    "protocol",
+    "tool",
+    "transient",
+    "non_fatal"
+  ],
+  "rejectsUnknownFields": true,
+  "validation": {
+    "maxStringBytes": 256,
+    "requiresDurableFlush": true,
+    "terminalRequiresClassification": true,
+    "nonTerminalRejectsTerminal": true,
+    "failedRequiresErrorType": true,
+    "nonFailedRejectsErrorType": true,
+    "kindLifecycle": {
+      "ready": ["execution_ready"],
+      "restored": ["execution_ready"],
+      "terminal": ["active"],
+      "failed": ["failed"],
+      "draining": ["draining"],
+      "drained": ["drained"]
+    }
+  }
+}

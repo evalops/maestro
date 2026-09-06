@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 
 use crossterm::event::KeyCode;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[cfg(test)]
 use tokio::sync::Mutex;
 
-use crate::key_hints::{alt, ctrl, shift, KeyBinding};
+use crate::key_hints::{KeyBinding, alt, ctrl, shift};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RustTuiKeybindingAction {
@@ -22,6 +22,7 @@ enum RustTuiKeybindingAction {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RustTuiKeybindingShortcut {
+    CtrlK,
     CtrlP,
     CtrlO,
     CtrlT,
@@ -40,7 +41,7 @@ pub struct RustTuiKeybindingLabels {
 impl Default for RustTuiKeybindingLabels {
     fn default() -> Self {
         Self {
-            command_palette: ctrl(KeyCode::Char('p')).display(),
+            command_palette: ctrl(KeyCode::Char('k')).display(),
             file_search: ctrl(KeyCode::Char('o')).display(),
             toggle_tool_outputs: ctrl(KeyCode::Char('t')).display(),
             edit_last_queued_follow_up: alt(KeyCode::Up).display(),
@@ -151,7 +152,7 @@ pub fn load_rust_tui_keybindings(terminal_name: &str, in_tmux: bool) -> RustTuiK
 pub fn keybindings_config_path() -> PathBuf {
     std::env::var_os("MAESTRO_KEYBINDINGS_FILE")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro").join("keybindings.json")))
+        .or_else(|| crate::path_utils::maestro_home_dir().map(|home| home.join("keybindings.json")))
         .unwrap_or_else(|| PathBuf::from("keybindings.json"))
 }
 
@@ -176,8 +177,8 @@ pub fn summarize_keybindings_config_issues() -> Option<String> {
 #[must_use]
 pub fn is_keybindings_config_path(path: &Path) -> bool {
     let expected = keybindings_config_path();
-    let canonical_expected = expected.canonicalize().unwrap_or(expected.clone());
-    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_expected = dunce::canonicalize(&expected).unwrap_or(expected.clone());
+    let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     canonical_path == canonical_expected
         || path.file_name() == expected.file_name()
         || path.file_name() == canonical_expected.file_name()
@@ -276,6 +277,7 @@ fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
             std::env::var_os("TMUX").is_some(),
         )) {
             RustTuiKeybindingShortcut::CtrlP => "ctrl+p",
+            RustTuiKeybindingShortcut::CtrlK => "ctrl+k",
             RustTuiKeybindingShortcut::CtrlO => "ctrl+o",
             RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
             RustTuiKeybindingShortcut::AltUp => "alt+up",
@@ -283,7 +285,7 @@ fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
         };
 
     HashMap::from([
-        ("command-palette", "ctrl+p"),
+        ("command-palette", "ctrl+k"),
         ("file-search", "ctrl+o"),
         ("toggle-tool-outputs", "ctrl+t"),
         ("edit-last-follow-up", queued_follow_up),
@@ -455,7 +457,7 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
                     severity: "error",
                     message: "Failed to read keybindings.json.".to_string(),
                 }],
-            }
+            };
         }
     };
 
@@ -473,7 +475,7 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
                     severity: "error",
                     message: err.to_string(),
                 }],
-            }
+            };
         }
     };
 
@@ -516,7 +518,14 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
             "toggle-tool-outputs",
             "edit-last-follow-up",
         ],
-        &["ctrl+p", "ctrl+o", "ctrl+t", "alt+up", "shift+left"],
+        &[
+            "ctrl+k",
+            "ctrl+p",
+            "ctrl+o",
+            "ctrl+t",
+            "alt+up",
+            "shift+left",
+        ],
         &mut issues,
     );
 
@@ -569,7 +578,7 @@ fn generate_keybindings_template() -> String {
         "{}\n",
         serde_json::to_string_pretty(&json!({
             "$docs": "https://github.com/evalops/maestro",
-            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Maestro.",
+            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Deixic Code.",
             "version": 1,
             "bindings": bindings,
             "rustBindings": rust_bindings,
@@ -645,7 +654,7 @@ fn default_shortcuts(
     HashMap::from([
         (
             RustTuiKeybindingAction::CommandPalette,
-            RustTuiKeybindingShortcut::CtrlP,
+            RustTuiKeybindingShortcut::CtrlK,
         ),
         (
             RustTuiKeybindingAction::FileSearch,
@@ -723,6 +732,7 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
         .collect::<String>()
         .to_ascii_lowercase();
     match normalized.as_str() {
+        "ctrl+k" => Some(RustTuiKeybindingShortcut::CtrlK),
         "ctrl+p" => Some(RustTuiKeybindingShortcut::CtrlP),
         "ctrl+o" => Some(RustTuiKeybindingShortcut::CtrlO),
         "ctrl+t" => Some(RustTuiKeybindingShortcut::CtrlT),
@@ -734,6 +744,7 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
 
 fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
     match shortcut {
+        RustTuiKeybindingShortcut::CtrlK => ctrl(KeyCode::Char('k')),
         RustTuiKeybindingShortcut::CtrlP => ctrl(KeyCode::Char('p')),
         RustTuiKeybindingShortcut::CtrlO => ctrl(KeyCode::Char('o')),
         RustTuiKeybindingShortcut::CtrlT => ctrl(KeyCode::Char('t')),
@@ -744,6 +755,9 @@ fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
 
 fn shortcut_for_binding(binding: KeyBinding) -> RustTuiKeybindingShortcut {
     match (binding.key, binding.modifiers) {
+        (KeyCode::Char('k'), crossterm::event::KeyModifiers::CONTROL) => {
+            RustTuiKeybindingShortcut::CtrlK
+        }
         (KeyCode::Char('p'), crossterm::event::KeyModifiers::CONTROL) => {
             RustTuiKeybindingShortcut::CtrlP
         }
@@ -824,7 +838,7 @@ mod tests {
 
         let resolved = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
 
-        assert_eq!(resolved.command_palette, ctrl(KeyCode::Char('p')));
+        assert_eq!(resolved.command_palette, ctrl(KeyCode::Char('k')));
         assert_eq!(resolved.file_search, ctrl(KeyCode::Char('o')));
     }
 
@@ -848,5 +862,26 @@ mod tests {
             summarize_keybindings_config_issues_at_path(&path).as_deref(),
             Some("Keyboard shortcuts config has 1 issue. Run /hotkeys validate.")
         );
+    }
+
+    #[test]
+    fn keybindings_path_follows_maestro_home() {
+        let _env_guard = crate::config::test_process_env_lock();
+        let _guard = keybindings_test_env_lock().blocking_lock();
+        let temp = tempdir().expect("tempdir");
+        let previous_file = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");
+        let previous_home = std::env::var_os("MAESTRO_HOME");
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+        std::env::set_var("MAESTRO_HOME", temp.path());
+        let path = keybindings_config_path();
+        match previous_file {
+            Some(value) => std::env::set_var("MAESTRO_KEYBINDINGS_FILE", value),
+            None => std::env::remove_var("MAESTRO_KEYBINDINGS_FILE"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("MAESTRO_HOME", value),
+            None => std::env::remove_var("MAESTRO_HOME"),
+        }
+        assert_eq!(path, temp.path().join("keybindings.json"));
     }
 }

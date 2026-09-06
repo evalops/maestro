@@ -239,7 +239,18 @@ pub struct PostNotification(pub String);
 impl Command for PostNotification {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         // OSC 9 ; message BEL
-        write!(f, "\x1b]9;{}\x07", self.0)
+        //
+        // `self.0` is sanitized here (not at construction) because this is
+        // the actual write boundary: unlike `osc_set_title`, which sanitizes
+        // before building its `String`, `PostNotification` stores the raw
+        // message and only escapes it when it is actually written to the
+        // terminal, so a caller cannot bypass sanitization by writing the
+        // ANSI sequence some other way.
+        write!(
+            f,
+            "\x1b]9;{}\x07",
+            crate::notifications::sanitize_osc_text(&self.0)
+        )
     }
 
     #[cfg(windows)]
@@ -469,6 +480,16 @@ mod tests {
     fn test_post_notification() {
         let cmd = PostNotification("Hello world".to_string());
         assert_eq!(command_to_string(cmd), "\x1b]9;Hello world\x07");
+    }
+
+    #[test]
+    fn test_post_notification_strips_embedded_escape() {
+        // A minimal OSC-0 (set title) sequence embedded in the message.
+        let cmd = PostNotification("hello\x1b]0;pwned\x07world".to_string());
+        let out = command_to_string(cmd);
+        assert_eq!(out, "\x1b]9;hello]0;pwnedworld\x07");
+        assert_eq!(out.matches('\x1b').count(), 1);
+        assert_eq!(out.matches('\x07').count(), 1);
     }
 
     #[test]

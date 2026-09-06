@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "evalops.maestro.release-channels.v1",
+  "manifest": {
+    "schemaVersion": "evalops.maestro.release-channel.v1",
+    "releaseListUrl": "https://api.github.com/repos/evalops/maestro/releases",
+    "releaseAsset": "channel-manifest.json",
+    "legacyPointerBase": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels",
+    "signatureAlgorithm": "ed25519",
+    "signatureEncoding": "base64",
+    "signedPayload": "canonical-json-with-signature-field-removed-and-object-keys-sorted"
+  },
+  "keys": {
+    "stable": {
+      "keyId": "stable-2026-08-0c3df2ac",
+      "state": "active",
+      "publicKeyEncoding": "base64",
+      "publicKey": "IYgvaSwf2E9DioyEZ6Qcp/QMD1xpsjS0JgYluAAt0pE="
+    },
+    "beta": {
+      "keyId": "preview-2026-08-912a0dab",
+      "state": "active",
+      "publicKeyEncoding": "base64",
+      "publicKey": "4DS+odrY7y1PMg7o4s0jY1FkgcPQb8jjdy0Nst05soA="
+    },
+    "alpha": {
+      "keyId": "preview-2026-08-912a0dab",
+      "state": "active",
+      "publicKeyEncoding": "base64",
+      "publicKey": "4DS+odrY7y1PMg7o4s0jY1FkgcPQb8jjdy0Nst05soA="
+    }
+  },
+  "selection": {
+    "environment": "MAESTRO_UPDATE_CHANNEL",
+    "default": "stable",
+    "stable": {
+      "versionPolicy": "stable-semver-only",
+      "fallback": "explicit-legacy-pointer-only"
+    },
+    "beta": {
+      "versionPolicy": "beta-prerelease-semver-only",
+      "fallback": "github-release-channel-manifest"
+    },
+    "alpha": {
+      "versionPolicy": "alpha-prerelease-semver-only",
+      "fallback": "github-release-channel-manifest"
+    }
+  },
+  "publication": {
+    "releaseRepository": "evalops/maestro",
+    "releaseAsset": "channel-manifest.json",
+    "stableSecret": "MAESTRO_STABLE_CHANNEL_PRIVATE_KEY",
+    "prereleaseSecret": "MAESTRO_PREVIEW_CHANNEL_PRIVATE_KEY"
+  }
+}

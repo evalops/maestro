@@ -1,0 +1,123 @@
+{
+	"schemaVersion": "evalops.maestro.scripted-scenario.v1",
+	"id": "read-write-execute",
+	"description": "Scripted scenario executed through the real agent loop: read/search/write tool calls run for real in a hydrated workspace.",
+	"workspaceManifestPath": "workspaces/read-write-execute/workspace-manifest.json",
+	"metadata": {
+		"recordedFrom": "test",
+		"recordedAt": "2026-05-23T00:00:00.000Z",
+		"modelOriginal": "maestro-replay-v1",
+		"toolsExpected": [
+			"read",
+			"search",
+			"write"
+		],
+		"auditEvents": [
+			"maestro.scenario.replay.ready"
+		]
+	},
+	"frames": [
+		{
+			"index": 0,
+			"statements": [
+				{
+					"kind": "text",
+					"text": "I will inspect the hydrated package manifest."
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-read-package-json",
+					"tool": "read",
+					"input": {
+						"path": "package.json"
+					},
+					"expectedResult": "success"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-search-package-manifest",
+					"tool": "search",
+					"input": {
+						"pattern": "maestro-scripted-execute",
+						"paths": "package.json",
+						"outputMode": "content",
+						"literal": true
+					},
+					"expectedResult": "success"
+				}
+			]
+		},
+		{
+			"index": 1,
+			"statements": [
+				{
+					"kind": "text",
+					"text": "I will write the execution evidence artifact."
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-write-executed-artifact",
+					"tool": "write",
+					"input": {
+						"path": "execution-evidence.result.json",
+						"content": "{\"source\":\"scenario-run-execute\",\"executed\":true}\n",
+						"previewDiff": false,
+						"backup": false
+					},
+					"expectedResult": "success"
+				}
+			]
+		},
+		{
+			"index": 2,
+			"statements": [
+				{
+					"kind": "text",
+					"text": "Scripted execute replay completed with real tool calls."
+				},
+				{
+					"kind": "end",
+					"reason": "complete"
+				}
+			]
+		}
+	],
+	"assertions": [
+		{
+			"id": "read-tool-executed",
+			"kind": "tool_called",
+			"tool": "read"
+		},
+		{
+			"id": "search-tool-executed",
+			"kind": "tool_called",
+			"tool": "search"
+		},
+		{
+			"id": "write-tool-executed",
+			"kind": "tool_called",
+			"tool": "write"
+		},
+		{
+			"id": "written-artifact-exists",
+			"kind": "file_exists",
+			"path": "execution-evidence.result.json"
+		},
+		{
+			"id": "written-artifact-contents",
+			"kind": "file_contents",
+			"path": "execution-evidence.result.json",
+			"contains": "scenario-run-execute"
+		},
+		{
+			"id": "bash-tool-not-executed",
+			"kind": "tool_not_called",
+			"tool": "bash"
+		},
+		{
+			"id": "audit-event-tagged",
+			"kind": "audit_event_emitted",
+			"eventType": "maestro.scenario.replay.ready"
+		}
+	]
+}

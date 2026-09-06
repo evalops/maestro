@@ -1,7 +1,18 @@
 # VS Code Extension Architecture
 
-Audience: VS Code extension contributors; read with `ARCHITECTURE_DIAGRAM.md` for core flow.  
+Audience: historical reference only.  
 Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Patterns](patterns/INDEX.md)
+
+> **Historical / removed:** Maestro shipped a VS Code extension (`packages/vscode-extension`,
+> added in #167) backed by a TypeScript web server (`src/web-server.ts`) and a Remote Tool
+> Execution bridge. Both were deleted in the Rust-only runtime migration (#3016, #3017,
+> merged 2026-07-22) along with the rest of the TypeScript agent runtime; no Rust or other
+> replacement was built. There is currently no VS Code extension in this repo — only the
+> unrelated `.vscode/` editor-config directory for contributors' own editors. The only
+> supported IDE integration today is the JetBrains plugin at
+> [`packages/jetbrains-plugin`](../packages/jetbrains-plugin) (Kotlin, not part of the
+> TypeScript purge). Do not treat any path below as live code; this document is kept as a
+> design record in case a VS Code extension is rebuilt on the Rust control plane.
 
 This document outlines the architecture of the Maestro VS Code extension, specifically focusing on its **Client-Server** design and the **Remote Tool Execution** pattern used to bridge the gap between the Agent (Backend) and the VS Code API (Frontend).
 

@@ -21,10 +21,10 @@ class AddToContextAction : AnAction(), DumbAware {
 
         // Show notification
         com.intellij.notification.NotificationGroupManager.getInstance()
-            .getNotificationGroup("Composer Notifications")
+            .getNotificationGroup("Maestro Notifications")
             .createNotification(
                 "Added to Context",
-                "File '${file.name}' added to Maestro context.",
+                "File '${file.name}' added to Deixic Code context.",
                 com.intellij.notification.NotificationType.INFORMATION
             )
             .notify(project)

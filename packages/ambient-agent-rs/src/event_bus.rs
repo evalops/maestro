@@ -6,10 +6,11 @@
 use crate::types::*;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the EventBus
@@ -43,6 +44,7 @@ pub struct EventBusStats {
     pub total_processed: u64,
     pub total_deduplicated: u64,
     pub total_enriched: u64,
+    pub total_evicted_from_memory: u64,
     pub pending_count: usize,
     pub processing_count: usize,
 }
@@ -167,7 +169,7 @@ impl EventBus {
             .filter(|e| e.status == EventStatus::Pending)
             .cloned()
             .collect();
-        pending.sort_by(|a, b| b.priority.cmp(&a.priority));
+        pending.sort_by_key(|event| Reverse(event.priority));
         pending
     }
 
@@ -191,7 +193,7 @@ impl EventBus {
             .filter(|e| e.repo.full_name == repo)
             .cloned()
             .collect();
-        events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        events.sort_by_key(|event| Reverse(event.created_at));
         events.truncate(limit);
         events
     }
@@ -323,26 +325,24 @@ impl EventBus {
 
         // Cleanup events if over limit
         if state.events.len() > self.config.max_in_memory_events {
-            // First, remove completed/skipped events (oldest first)
-            let mut completed: Vec<_> = state
+            // First, remove terminal events (oldest first)
+            let mut terminal: Vec<_> = state
                 .events
                 .iter()
-                .filter(|(_, e)| {
-                    e.status == EventStatus::Completed || e.status == EventStatus::Skipped
-                })
+                .filter(|(_, e)| is_terminal_status(e.status))
                 .map(|(id, e)| (id.clone(), e.created_at))
                 .collect();
 
-            completed.sort_by(|a, b| a.1.cmp(&b.1));
+            terminal.sort_by_key(|event| event.1);
 
             let excess = state
                 .events
                 .len()
                 .saturating_sub(self.config.max_in_memory_events);
-            let to_remove_completed = excess.min(completed.len());
+            let to_remove_terminal = excess.min(terminal.len());
 
-            for (id, _) in completed.into_iter().take(to_remove_completed) {
-                state.events.remove(&id);
+            for (id, _) in terminal.into_iter().take(to_remove_terminal) {
+                remove_event_from_memory(&mut state, &id);
             }
 
             // If still over limit, drop oldest active events to prevent unbounded growth
@@ -350,13 +350,11 @@ impl EventBus {
                 let mut active: Vec<_> = state
                     .events
                     .iter()
-                    .filter(|(_, e)| {
-                        e.status == EventStatus::Pending || e.status == EventStatus::Processing
-                    })
+                    .filter(|(_, e)| is_active_status(e.status))
                     .map(|(id, e)| (id.clone(), e.created_at))
                     .collect();
 
-                active.sort_by(|a, b| a.1.cmp(&b.1));
+                active.sort_by_key(|event| event.1);
 
                 let still_excess = state
                     .events
@@ -364,11 +362,37 @@ impl EventBus {
                     .saturating_sub(self.config.max_in_memory_events);
                 for (id, _) in active.into_iter().take(still_excess) {
                     warn!("Dropping active event {} due to memory pressure", id);
-                    state.events.remove(&id);
+                    remove_event_from_memory(&mut state, &id);
                 }
             }
         }
     }
+}
+
+fn is_terminal_status(status: EventStatus) -> bool {
+    matches!(
+        status,
+        EventStatus::Completed | EventStatus::Failed | EventStatus::Skipped
+    )
+}
+
+fn is_active_status(status: EventStatus) -> bool {
+    matches!(status, EventStatus::Pending | EventStatus::Processing)
+}
+
+fn remove_event_from_memory(state: &mut EventBusState, id: &str) -> Option<EventStatus> {
+    let event = state.events.remove(id)?;
+    match event.status {
+        EventStatus::Pending => {
+            state.stats.pending_count = state.stats.pending_count.saturating_sub(1);
+        }
+        EventStatus::Processing => {
+            state.stats.processing_count = state.stats.processing_count.saturating_sub(1);
+        }
+        _ => {}
+    }
+    state.stats.total_evicted_from_memory += 1;
+    Some(event.status)
 }
 
 /// Compute a hash for deduplication
@@ -380,18 +404,29 @@ fn compute_hash(raw: &RawEvent) -> String {
 
     // Include relevant payload fields but not timestamps
     if let Some(obj) = raw.payload.as_object() {
-        if let Some(number) = obj.get("number") {
-            hasher.update(number.to_string().as_bytes());
-        }
-        if let Some(title) = obj.get("title") {
-            hasher.update(title.to_string().as_bytes());
-        }
-        if let Some(action) = obj.get("action") {
-            hasher.update(action.to_string().as_bytes());
+        hash_payload_identity_fields(&mut hasher, obj);
+        if let Some(target) = obj
+            .get("issue")
+            .or_else(|| obj.get("pull_request"))
+            .and_then(|value| value.as_object())
+        {
+            hash_payload_identity_fields(&mut hasher, target);
         }
     }
 
     hex::encode(hasher.finalize())
+}
+
+fn hash_payload_identity_fields(
+    hasher: &mut Sha256,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) {
+    for key in ["action", "number", "id", "node_id", "title", "html_url"] {
+        if let Some(value) = obj.get(key) {
+            hasher.update(key.as_bytes());
+            hasher.update(value.to_string().as_bytes());
+        }
+    }
 }
 
 /// Generate a unique event ID
@@ -724,6 +759,24 @@ mod tests {
         }
     }
 
+    fn raw_issue(number: u64, title: &str, timestamp: chrono::DateTime<Utc>) -> RawEvent {
+        RawEvent {
+            source: WatcherType::GitHubWebhook,
+            event_type: "issues".to_string(),
+            payload: serde_json::json!({
+                "action": "opened",
+                "issue": {
+                    "number": number,
+                    "title": title,
+                    "body": "Test body",
+                    "labels": ["bug"]
+                }
+            }),
+            timestamp,
+            repo: "test/repo".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_event_emission() {
         setup_test_repo().await;
@@ -735,21 +788,7 @@ mod tests {
 
         let bus = EventBus::new(config);
 
-        let raw = RawEvent {
-            source: WatcherType::GitHubWebhook,
-            event_type: "issues".to_string(),
-            payload: serde_json::json!({
-                "action": "opened",
-                "issue": {
-                    "number": 123,
-                    "title": "Test issue",
-                    "body": "Test body",
-                    "labels": ["bug"]
-                }
-            }),
-            timestamp: Utc::now(),
-            repo: "test/repo".to_string(),
-        };
+        let raw = raw_issue(123, "Test issue", Utc::now());
 
         let event = bus.emit(raw).await;
         assert!(event.is_some());
@@ -792,5 +831,113 @@ mod tests {
         let stats = bus.get_stats().await;
         assert_eq!(stats.total_received, 2);
         assert_eq!(stats.total_deduplicated, 1);
+    }
+
+    #[tokio::test]
+    async fn deduplication_keeps_distinct_nested_issue_numbers() {
+        setup_test_repo().await;
+        let dir = tempdir().unwrap();
+        let config = EventBusConfig {
+            persist_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let bus = EventBus::new(config);
+        let first = bus
+            .emit(raw_issue(201, "First issue", Utc::now()))
+            .await
+            .unwrap();
+        let second = bus
+            .emit(raw_issue(202, "Second issue", Utc::now()))
+            .await
+            .unwrap();
+
+        assert_ne!(first.id, second.id);
+        let stats = bus.get_stats().await;
+        assert_eq!(stats.total_received, 2);
+        assert_eq!(stats.total_deduplicated, 0);
+        assert_eq!(stats.pending_count, 2);
+    }
+
+    #[tokio::test]
+    async fn cleanup_eviction_removes_failed_terminal_events_before_active_events() {
+        setup_test_repo().await;
+        let dir = tempdir().unwrap();
+        let config = EventBusConfig {
+            persist_dir: dir.path().to_path_buf(),
+            max_in_memory_events: 2,
+            ..Default::default()
+        };
+        let bus = EventBus::new(config);
+        let now = Utc::now();
+
+        let failed = bus
+            .emit(raw_issue(1, "Failed terminal event", now))
+            .await
+            .unwrap();
+        let first_pending = bus
+            .emit(raw_issue(
+                2,
+                "First pending event",
+                now + chrono::Duration::seconds(1),
+            ))
+            .await
+            .unwrap();
+        bus.update_status(&failed.id, EventStatus::Failed).await;
+
+        let second_pending = bus
+            .emit(raw_issue(
+                3,
+                "Second pending event",
+                now + chrono::Duration::seconds(2),
+            ))
+            .await
+            .unwrap();
+
+        assert!(bus.get(&failed.id).await.is_none());
+        assert!(bus.get(&first_pending.id).await.is_some());
+        assert!(bus.get(&second_pending.id).await.is_some());
+
+        let stats = bus.get_stats().await;
+        assert_eq!(stats.pending_count, 2);
+        assert_eq!(stats.processing_count, 0);
+        assert_eq!(stats.total_evicted_from_memory, 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_eviction_updates_counts_when_active_events_are_dropped() {
+        setup_test_repo().await;
+        let dir = tempdir().unwrap();
+        let config = EventBusConfig {
+            persist_dir: dir.path().to_path_buf(),
+            max_in_memory_events: 1,
+            ..Default::default()
+        };
+        let bus = EventBus::new(config);
+        let now = Utc::now();
+
+        let processing = bus
+            .emit(raw_issue(10, "Processing event", now))
+            .await
+            .unwrap();
+        bus.update_status(&processing.id, EventStatus::Processing)
+            .await;
+
+        let pending = bus
+            .emit(raw_issue(
+                11,
+                "Pending event",
+                now + chrono::Duration::seconds(1),
+            ))
+            .await
+            .unwrap();
+
+        assert!(bus.get(&processing.id).await.is_none());
+        assert!(bus.get(&pending.id).await.is_some());
+
+        let stats = bus.get_stats().await;
+        assert_eq!(stats.pending_count, 1);
+        assert_eq!(stats.processing_count, 0);
+        assert_eq!(stats.total_evicted_from_memory, 1);
     }
 }

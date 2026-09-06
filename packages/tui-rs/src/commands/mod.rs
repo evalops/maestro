@@ -97,10 +97,16 @@ pub use matcher::{
     ArgCompletion, CommandMatch, InlineCompletion, RichCompletion, SlashCommandMatcher,
     SlashCycleState,
 };
-pub use registry::{build_command_registry, CommandRegistry};
+pub use registry::{
+    CommandRegistry, build_command_registry, build_command_registry_with_extensions,
+    register_exec_commands,
+};
 pub use types::{
-    Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
-    CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, HistoryAction,
-    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
-    ToolHistoryAction, UsageAction,
+    A2aAction, A2aComputerHandoffSelection, AttachAction, BackgroundMonitorAction, Command,
+    CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
+    CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, FooterStyle,
+    GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction, MagicTraceAction,
+    MailboxAction, McpAction, ModalType, OrbAction, PlanReviewAction, PluginsAction, QueueAction,
+    QueueModeKind, QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction,
+    TrustAction, UsageAction, WorkerAction,
 };

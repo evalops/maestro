@@ -51,11 +51,21 @@
 //! A custom panic hook is installed that ensures the terminal is properly restored
 //! even if the application crashes. This prevents leaving the terminal in a broken
 //! state (raw mode, hidden cursor, etc.) which would require manual reset.
+//!
+//! # Crash Handler
+//!
+//! In addition to the panic hook (which only fires for Rust panics),
+//! [`crate::crash_handler`] installs an async-signal-safe SIGSEGV/SIGBUS
+//! handler that records the crash under `~/.composer/crash/` and restores the
+//! terminal from signal-handler context. The release profile uses
+//! `panic = "abort"`, so panics run the hook and then die via SIGABRT; the
+//! signal handler covers the hard-crash paths the hook cannot reach.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::panic;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::{
     cursor,
@@ -69,6 +79,11 @@ use crossterm::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{TerminalOptions, Viewport};
+use uncurses::ansi::color::REQUEST_BACKGROUND_COLOR;
+use uncurses::ansi::mode::{self, Mode};
+use uncurses::ansi::status::REQUEST_LIGHT_DARK_REPORT;
+
+use crate::sync_output::EndSynchronizedUpdate;
 
 /// Global terminal device handle for terminal output.
 ///
@@ -80,6 +95,8 @@ use ratatui::{TerminalOptions, Viewport};
 /// and `Mutex` to provide interior mutability for the restore operation.
 static TTY: std::sync::LazyLock<Mutex<Option<File>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
+/// True only when Maestro changed DEC mode 2031 from reset to set.
+static THEME_REPORTING_ENABLED_BY_MAESTRO: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 const TERMINAL_DEVICE: &str = "CONOUT$";
@@ -173,10 +190,21 @@ pub fn check_tty() -> io::Result<()> {
 /// - Keyboard enhancement flags (if supported)
 /// - Focus change events
 /// - Panic hook to restore terminal on crash
+/// - SIGSEGV/SIGBUS crash handler (records the crash, restores the terminal),
+///   plus a one-line notice if the previous run crashed
 ///
 /// Uses a platform-specific terminal device (`/dev/tty` on Unix, `CONOUT$` on Windows)
 /// so that stdin/stdout can be used for IPC.
 pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
+    // Surface a crash from the previous run before taking over the terminal.
+    // This must run before `crash_handler::install` below, which truncates
+    // the crash blob this check reads.
+    if let Some(crash_dir) = crate::crash_handler::default_crash_dir() {
+        if let Some(report) = crate::crash_handler::check_previous_crash(&crash_dir) {
+            eprintln!("{}", crate::crash_handler::crash_notice(&report));
+        }
+    }
+
     // Open terminal device for I/O
     // This allows us to use stdin/stdout for IPC with TypeScript
     let mut tty = OpenOptions::new()
@@ -189,6 +217,10 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
                 format!("Cannot open {TERMINAL_DEVICE}: {e}"),
             )
         })?;
+
+    // Save the pre-raw-mode termios so the crash handler can restore the
+    // terminal from async-signal-safe context.
+    crate::crash_handler::save_terminal_state(&tty);
 
     // Get terminal size
     let (_width, height) = crossterm::terminal::size()?;
@@ -262,6 +294,13 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
         viewport_height,
     };
 
+    // Install the hard-crash (SIGSEGV/SIGBUS) handler now that the terminal
+    // is configured. The panic hook above covers Rust panics; this covers
+    // crashes the hook cannot intercept.
+    if let Some(crash_dir) = crate::crash_handler::default_crash_dir() {
+        let _ = crate::crash_handler::install(&crash_dir, env!("CARGO_PKG_VERSION"));
+    }
+
     Ok((terminal, capabilities))
 }
 
@@ -308,6 +347,89 @@ pub fn restore() -> io::Result<()> {
     restore_impl()
 }
 
+/// Write raw output (e.g. OSC escape sequences) to the terminal device.
+///
+/// Uses the terminal handle stored during [`init()`]; when the terminal was
+/// never initialized (headless/fallback contexts, unit tests) this is a
+/// no-op so callers never write stray sequences to stdout/stderr.
+pub fn write_raw(data: &str) -> io::Result<()> {
+    let mut guard = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(ref mut tty) = *guard {
+        tty.write_all(data.as_bytes())?;
+        tty.flush()?;
+    }
+    Ok(())
+}
+
+/// Discover the existing light/dark reporting mode and current terminal theme.
+pub(crate) fn initialize_theme_reporting() -> io::Result<()> {
+    write_raw_bytes(&theme_reporting_initialization_sequence()?)
+}
+
+/// Enable live light/dark reports after the terminal reports the mode as reset.
+pub(crate) fn enable_theme_reporting() -> io::Result<()> {
+    write_raw_bytes(&theme_reporting_enable_sequence()?)?;
+    THEME_REPORTING_ENABLED_BY_MAESTRO.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Request the terminal's current light/dark preference and background color.
+pub(crate) fn query_theme() -> io::Result<()> {
+    write_raw_bytes(&theme_query_sequence())
+}
+
+/// Stop live light/dark reports.
+pub(crate) fn disable_theme_reporting() -> io::Result<()> {
+    if !THEME_REPORTING_ENABLED_BY_MAESTRO.swap(false, Ordering::AcqRel) {
+        return Ok(());
+    }
+    if let Err(error) = write_raw_bytes(&theme_reporting_disable_sequence()?) {
+        THEME_REPORTING_ENABLED_BY_MAESTRO.store(true, Ordering::Release);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn theme_reporting_initialization_sequence() -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    mode::write_request_mode(&mut data, Mode::LIGHT_DARK)?;
+    data.extend_from_slice(&theme_query_sequence());
+    Ok(data)
+}
+
+fn theme_reporting_enable_sequence() -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    mode::write_set_mode(&mut data, &[Mode::LIGHT_DARK])?;
+    Ok(data)
+}
+
+fn theme_query_sequence() -> Vec<u8> {
+    let mut data =
+        Vec::with_capacity(REQUEST_LIGHT_DARK_REPORT.len() + REQUEST_BACKGROUND_COLOR.len());
+    data.extend_from_slice(REQUEST_LIGHT_DARK_REPORT);
+    data.extend_from_slice(REQUEST_BACKGROUND_COLOR);
+    data
+}
+
+fn theme_reporting_disable_sequence() -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    mode::write_reset_mode(&mut data, &[Mode::LIGHT_DARK])?;
+    Ok(data)
+}
+
+fn write_raw_bytes(data: &[u8]) -> io::Result<()> {
+    let mut guard = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(ref mut tty) = *guard {
+        tty.write_all(data)?;
+        tty.flush()?;
+    }
+    Ok(())
+}
+
 fn restore_impl() -> io::Result<()> {
     // Get the TTY handle - recover from poisoned lock to ensure terminal cleanup
     let mut guard = TTY
@@ -315,6 +437,14 @@ fn restore_impl() -> io::Result<()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(ref mut tty) = *guard {
+        // Never leave a terminal holding a synchronized frame. Reset live
+        // light/dark reporting only if Maestro enabled it; a parent process
+        // may have entered with mode 2031 already set.
+        let _ = execute!(tty, EndSynchronizedUpdate);
+        if THEME_REPORTING_ENABLED_BY_MAESTRO.swap(false, Ordering::AcqRel) {
+            let _ = mode::write_reset_mode(tty, &[Mode::LIGHT_DARK]);
+        }
+
         // Pop keyboard enhancement flags
         let _ = execute!(tty, PopKeyboardEnhancementFlags);
 
@@ -383,8 +513,39 @@ pub fn calculate_viewport(height: u16) -> (u16, u16) {
     (viewport_top, viewport_height)
 }
 
+/// Recreate the terminal with a new inline viewport height.
+///
+/// ratatui's `Viewport::Inline(height)` fixes the height at construction, so
+/// the only way to grow or shrink the viewport after a terminal resize is to
+/// rebuild the `Terminal` around the same terminal device handle.
+pub fn recreate_with_viewport(viewport_height: u16) -> io::Result<Terminal> {
+    let tty = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "terminal not initialized"))?
+        .try_clone()?;
+    let backend = CrosstermBackend::new(tty);
+    Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    // Note: Terminal tests are tricky because they require an actual TTY
-    // These would typically be integration tests
+    use super::*;
+
+    #[test]
+    fn theme_reporting_discovers_before_enabling_and_queries_both_signals() {
+        assert_eq!(
+            theme_reporting_initialization_sequence().unwrap(),
+            b"\x1b[?2031$p\x1b[?996n\x1b]11;?\x07"
+        );
+        assert_eq!(theme_reporting_enable_sequence().unwrap(), b"\x1b[?2031h");
+        assert_eq!(theme_query_sequence(), b"\x1b[?996n\x1b]11;?\x07");
+        assert_eq!(theme_reporting_disable_sequence().unwrap(), b"\x1b[?2031l");
+    }
 }

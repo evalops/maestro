@@ -1,0 +1,11 @@
+{
+  "name": "theme-picker",
+  "steps": [
+    {"wait": "(?s)Dex.*GPT-4o.*release-planner"},
+    {"text": "/theme"},
+    {"key": "Enter"},
+    {"wait": "Select Theme"},
+    {"text": "dark"},
+    {"wait": "(?s)Select Theme.*dark.*Esc cancel"}
+  ]
+}

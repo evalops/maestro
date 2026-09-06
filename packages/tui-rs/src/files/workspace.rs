@@ -1,10 +1,21 @@
 //! Workspace file discovery
 //!
 //! Lists files in the workspace using ripgrep or find.
+//!
+//! Scans must never block the interactive TUI for long: callers expect
+//! `get_workspace_files` to return quickly even from a large home directory.
+//! External tools are streamed and killed once `max_files` is reached, and a
+//! hard wall-clock timeout aborts runaway walks (e.g. `rg --follow` into huge trees).
 
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Wall-clock budget for an external workspace scan (rg / find).
+/// Interactive startup must stay responsive even when cwd is `$HOME`.
+const WORKSPACE_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A file in the workspace
 #[derive(Debug, Clone)]
@@ -25,6 +36,15 @@ impl WorkspaceFile {
     /// Create from a path relative to the workspace root
     #[must_use]
     pub fn from_path(root: &Path, path: PathBuf) -> Self {
+        let is_dir = path.is_dir();
+        Self::from_path_with_type(root, path, is_dir)
+    }
+
+    pub(super) fn from_file_path(root: &Path, path: PathBuf) -> Self {
+        Self::from_path_with_type(root, path, false)
+    }
+
+    fn from_path_with_type(root: &Path, path: PathBuf, is_dir: bool) -> Self {
         let relative_path = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -37,8 +57,6 @@ impl WorkspaceFile {
             .unwrap_or_default();
 
         let extension = path.extension().map(|e| e.to_string_lossy().to_string());
-
-        let is_dir = path.is_dir();
 
         Self {
             path,
@@ -106,49 +124,104 @@ pub fn get_workspace_files(root: &Path, max_files: usize) -> Vec<WorkspaceFile> 
     manual_traverse(root, max_files)
 }
 
-/// Try to list files using ripgrep
+/// Detach a child from the controlling TTY (grok-build / xai-tty-utils pattern).
+///
+/// While the TUI owns raw mode + `/dev/tty`, any child that can open `/dev/tty`
+/// (or inherits it as a controlling terminal) can corrupt the screen with
+/// capability probes / pager noise. `setsid` gives the child a new session with
+/// no controlling terminal; EPERM falls back to `setpgid` for group isolation.
+#[cfg(unix)]
+fn detach_std_command(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: only setsid/setpgid inside pre_exec (async-signal-safe).
+    unsafe {
+        cmd.pre_exec(|| {
+            // libc setsid; ignore EPERM by falling back to setpgid(0,0)
+            if libc::setsid() == -1 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EPERM) {
+                    let _ = libc::setpgid(0, 0);
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_std_command(_cmd: &mut Command) {}
+
+/// Try to list files using ripgrep.
+///
+/// Streams stdout and stops (killing `rg`) once `max_files` is reached or the
+/// scan exceeds [`WORKSPACE_SCAN_TIMEOUT`]. Does **not** pass `--follow`:
+/// following symlinks from `$HOME` can hang interactive startup indefinitely.
+/// Child is TTY-detached (see [`detach_std_command`]) so it cannot fight the TUI.
 fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
-    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let output = Command::new("rg")
-        .args(["--files", "--hidden", "--follow"])
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut cmd = Command::new("rg");
+    cmd.args(["--files", "--hidden"])
         .args(["--glob", "!.git"])
         .args(["--glob", "!node_modules"])
         .args(["--glob", "!target"])
         .args(["--glob", "!.next"])
         .args(["--glob", "!dist"])
         .args(["--glob", "!build"])
+        .args(["--glob", "!.npm-global"])
+        .args(["--glob", "!.cargo"])
+        .args(["--glob", "!.rustup"])
+        .args(["--glob", "!Library"])
         .current_dir(root)
-        .output()
-        .ok()?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    detach_std_command(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = child.stdout.take()?;
+    let reader = BufReader::new(stdout);
+    let started = Instant::now();
     let mut files = Vec::new();
-    for line in stdout.lines() {
-        if files.len() >= max_files {
+
+    for line in reader.lines() {
+        if files.len() >= max_files || started.elapsed() >= WORKSPACE_SCAN_TIMEOUT {
             break;
         }
-        let path = root.join(line);
-        let canonical = match path.canonicalize() {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Ok(line) = line else {
+            break;
         };
-        if !canonical.starts_with(&root_canonical) {
+        if line.is_empty() {
             continue;
         }
-        files.push(WorkspaceFile::from_path(root, path));
+        let path = root.join(&line);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() {
+            let canonical = match dunce::canonicalize(&path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(&root_canonical) {
+                continue;
+            }
+        }
+        files.push(WorkspaceFile::from_file_path(root, path));
     }
 
-    Some(files)
+    // Stop the walk as soon as we have enough files / hit the budget.
+    // Ignoring errors: the child may already have exited.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if files.is_empty() { None } else { Some(files) }
 }
 
-/// Try to list files using find
+/// Try to list files using find (streamed + timed, same budget as ripgrep).
 fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
-    let output = Command::new("find")
-        .arg(".")
+    let mut cmd = Command::new("find");
+    cmd.arg(".")
         .args(["-type", "f"])
         .args(["-not", "-path", "*/.git/*"])
         .args(["-not", "-path", "*/node_modules/*"])
@@ -156,36 +229,46 @@ fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
         .args(["-not", "-path", "*/.next/*"])
         .args(["-not", "-path", "*/dist/*"])
         .args(["-not", "-path", "*/build/*"])
+        .args(["-not", "-path", "*/.npm-global/*"])
+        .args(["-not", "-path", "*/Library/*"])
         .current_dir(root)
-        .output()
-        .ok()?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    detach_std_command(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
 
-    if !output.status.success() {
-        return None;
+    let stdout = child.stdout.take()?;
+    let reader = BufReader::new(stdout);
+    let started = Instant::now();
+    let mut files = Vec::new();
+
+    for line in reader.lines() {
+        if files.len() >= max_files || started.elapsed() >= WORKSPACE_SCAN_TIMEOUT {
+            break;
+        }
+        let Ok(line) = line else {
+            break;
+        };
+        let line = line.strip_prefix("./").unwrap_or(&line);
+        if line.is_empty() {
+            continue;
+        }
+        let path = root.join(line);
+        files.push(WorkspaceFile::from_file_path(root, path));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<WorkspaceFile> = stdout
-        .lines()
-        .take(max_files)
-        .filter_map(|line| {
-            let line = line.strip_prefix("./").unwrap_or(line);
-            if line.is_empty() {
-                return None;
-            }
-            let path = root.join(line);
-            Some(WorkspaceFile::from_path(root, path))
-        })
-        .collect();
+    let _ = child.kill();
+    let _ = child.wait();
 
-    Some(files)
+    if files.is_empty() { None } else { Some(files) }
 }
 
 /// Manual directory traversal
 fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut visited: HashSet<PathBuf> = HashSet::new();
     visited.insert(root_canonical.clone());
 
@@ -224,7 +307,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
 
             if is_dir {
                 if !skip_dirs.contains(&name.as_str()) && !name.starts_with('.') {
-                    let canonical = match path.canonicalize() {
+                    let canonical = match dunce::canonicalize(&path) {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
@@ -238,7 +321,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                 }
             } else if file_type.is_file() || file_type.is_symlink() {
                 if file_type.is_symlink() {
-                    let canonical = match path.canonicalize() {
+                    let canonical = match dunce::canonicalize(&path) {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
@@ -253,7 +336,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                 } else {
                     root
                 };
-                files.push(WorkspaceFile::from_path(root_for_relative, path));
+                files.push(WorkspaceFile::from_file_path(root_for_relative, path));
             }
         }
     }
@@ -313,6 +396,16 @@ mod tests {
     }
 
     #[test]
+    fn workspace_file_from_file_path_does_not_probe_file_type() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("not-created.rs");
+
+        let wf = WorkspaceFile::from_file_path(dir.path(), file_path);
+
+        assert!(!wf.is_dir);
+    }
+
+    #[test]
     fn get_files_in_temp_dir() {
         let dir = TempDir::new().unwrap();
         File::create(dir.path().join("file1.txt")).unwrap();
@@ -333,9 +426,11 @@ mod tests {
         symlink(outside.path(), &link_path).unwrap();
 
         let files = manual_traverse(dir.path(), 100);
-        assert!(!files
-            .iter()
-            .any(|file| file.relative_path.starts_with("outside_link")));
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.relative_path.starts_with("outside_link"))
+        );
     }
 
     #[cfg(unix)]
@@ -376,9 +471,11 @@ mod tests {
         symlink(&outside_file, &link_path).unwrap();
 
         let files = manual_traverse(dir.path(), 100);
-        assert!(!files
-            .iter()
-            .any(|file| file.relative_path.contains("outside_file.txt")));
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.relative_path.contains("outside_file.txt"))
+        );
     }
 
     #[cfg(unix)]
@@ -393,9 +490,11 @@ mod tests {
         symlink(&outside_file, &link_path).unwrap();
 
         if let Some(files) = try_ripgrep(dir.path(), 100) {
-            assert!(!files
-                .iter()
-                .any(|file| file.relative_path.contains("outside_file.txt")));
+            assert!(
+                !files
+                    .iter()
+                    .any(|file| file.relative_path.contains("outside_file.txt"))
+            );
         }
     }
 }

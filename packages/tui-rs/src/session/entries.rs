@@ -181,7 +181,40 @@
 //! };
 //! ```
 
-use serde::{Deserialize, Serialize};
+use super::wire_format_generated::canonical_stop_reason;
+use crate::agent::{ExecutionReceipt, compaction::ContinuationRecord};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
+
+fn deserialize_tool_result_content<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::String(content) => content,
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                Value::Object(object) => object.get("text").and_then(Value::as_str),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    })
+}
+
+fn serialize_stop_reason<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value.as_deref() {
+        Some(reason) => serializer.serialize_some(canonical_stop_reason(reason)),
+        None => serializer.serialize_none(),
+    }
+}
 
 /// Top-level discriminated union for all session event types.
 ///
@@ -238,6 +271,24 @@ pub enum SessionEntry {
     ///
     /// Recorded when the conversation history is summarized to fit within token limits.
     Compaction(CompactionEntry),
+
+    /// Summary of a branch that was folded back into this timeline.
+    BranchSummary(BranchSummaryEntry),
+
+    /// Extension entry with custom structured data.
+    Custom(CustomEntry),
+
+    /// Hook or extension-authored message included in session context.
+    CustomMessage(CustomMessageEntry),
+
+    /// User-facing label attached to another tree entry.
+    Label(LabelEntry),
+
+    /// Tool-free side question and its answer, excluded from main history.
+    SideQuestion(SideQuestionEntry),
+
+    /// Append-only structured plan review event.
+    PlanReview(PlanReviewEntry),
 }
 
 /// Session initialization parameters (first entry in every session file).
@@ -262,6 +313,10 @@ pub enum SessionEntry {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
+    /// Session schema version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+
     /// Unique session identifier (typically a UUID v4).
     ///
     /// Used to reference this session in commands and file lookups.
@@ -280,25 +335,57 @@ pub struct SessionHeader {
     /// Model identifier in `provider/model-id` format.
     ///
     /// Examples: "anthropic/claude-3-5-sonnet-20241022", "openai/gpt-4"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+
+    /// Optional user-facing subject/title seed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 
     /// Detailed model metadata (provider name, context window, etc.).
     ///
     /// Omitted from JSON if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "modelMetadata", alias = "model_metadata")]
     pub model_metadata: Option<ModelMetadata>,
 
     /// Extended thinking budget level.
     ///
     /// Defaults to `Medium` if not specified in the JSON.
     #[serde(default)]
+    #[serde(rename = "thinkingLevel", alias = "thinking_level")]
     pub thinking_level: ThinkingLevel,
 
     /// Custom system prompt override.
     ///
     /// If provided, replaces the default system prompt. Omitted if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemPrompt", alias = "system_prompt")]
     pub system_prompt: Option<String>,
+
+    /// Prompt service metadata carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "promptMetadata",
+        alias = "prompt_metadata"
+    )]
+    pub prompt_metadata: Option<Box<serde_json::Value>>,
+
+    /// Prompt project-doc manifest carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "promptContextManifest",
+        alias = "prompt_context_manifest"
+    )]
+    pub prompt_context_manifest: Option<Box<serde_json::Value>>,
+
+    /// Unified filesystem and MCP context manifest carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "unifiedContextManifest",
+        alias = "unified_context_manifest"
+    )]
+    pub unified_context_manifest: Option<Box<serde_json::Value>>,
 
     /// List of tools available to the assistant.
     ///
@@ -310,25 +397,39 @@ pub struct SessionHeader {
     ///
     /// Used to track session forks for alternative conversation paths. Omitted if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "branchedFrom", alias = "branched_from")]
     pub branched_from: Option<String>,
+
+    /// Parent session ID for imported or branched sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "parentSession",
+        alias = "parent_session"
+    )]
+    pub parent_session: Option<String>,
 }
 
 /// Model metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     pub provider: String,
+    #[serde(rename = "modelId", alias = "model_id")]
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "providerName", alias = "provider_name")]
     pub provider_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseUrl", alias = "base_url")]
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "contextWindow", alias = "context_window")]
     pub context_window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "maxTokens", alias = "max_tokens")]
     pub max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -429,6 +530,14 @@ impl ThinkingLevel {
 /// A message entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
     pub timestamp: String,
     pub message: AppMessage,
 }
@@ -437,9 +546,9 @@ pub struct MessageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentExtract {
     pub timestamp: String,
-    #[serde(rename = "attachmentId")]
+    #[serde(rename = "attachmentId", alias = "attachment_id")]
     pub attachment_id: String,
-    #[serde(rename = "extractedText")]
+    #[serde(rename = "extractedText", alias = "extracted_text")]
     pub extracted_text: String,
 }
 
@@ -517,7 +626,12 @@ pub enum AppMessage {
         ///
         /// Common values: "`end_turn`", "`max_tokens`", "`stop_sequence`", "`tool_use`".
         /// Omitted if None.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "stopReason",
+            alias = "stop_reason",
+            serialize_with = "serialize_stop_reason",
+            skip_serializing_if = "Option::is_none"
+        )]
         stop_reason: Option<String>,
 
         /// Unix timestamp in milliseconds.
@@ -534,12 +648,15 @@ pub enum AppMessage {
         /// Unique identifier linking this result to the tool call.
         ///
         /// Matches the `id` field from the `ContentBlock::ToolCall`.
+        #[serde(rename = "toolCallId", alias = "tool_call_id")]
         tool_call_id: String,
 
         /// Name of the tool that was executed.
+        #[serde(rename = "toolName", alias = "tool_name")]
         tool_name: String,
 
         /// Tool output (success result or error message).
+        #[serde(deserialize_with = "deserialize_tool_result_content")]
         content: String,
 
         /// Structured tool execution details.
@@ -548,10 +665,14 @@ pub enum AppMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
 
+        /// Typed execution receipt retained for audit and replay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<ExecutionReceipt>,
+
         /// Whether this result represents an error.
         ///
         /// Defaults to false if missing.
-        #[serde(default)]
+        #[serde(rename = "isError", alias = "is_error", default)]
         is_error: bool,
 
         /// Unix timestamp in milliseconds.
@@ -651,22 +772,44 @@ pub enum ContentBlock {
     /// Plain text
     Text { text: String },
     /// Thinking content
+    #[serde(rename = "thinking")]
     Thinking {
+        #[serde(rename = "thinking", alias = "text")]
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "thinkingSignature",
+            alias = "signature",
+            skip_serializing_if = "Option::is_none"
+        )]
         signature: Option<String>,
     },
     /// Tool call
+    #[serde(rename = "toolCall", alias = "tool_call")]
     ToolCall {
         id: String,
         name: String,
-        #[serde(default)]
+        #[serde(rename = "arguments", alias = "args", default)]
         args: serde_json::Value,
+        /// Identity of the tool this call was made against.
+        ///
+        /// Absent on transcripts written before the contract existed; a
+        /// missing contract means the resumed call is dispatched by name
+        /// alone, exactly as it was before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contract: Option<crate::tools::tool_call_contract::ToolCallContract>,
     },
     /// Image (base64)
     Image {
         #[serde(skip_serializing_if = "Option::is_none")]
         source: Option<ImageSource>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(
+            rename = "mimeType",
+            alias = "mime_type",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mime_type: Option<String>,
     },
 }
 
@@ -761,6 +904,7 @@ pub struct TokenCost {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingLevelChange {
     pub timestamp: String,
+    #[serde(rename = "thinkingLevel", alias = "thinking_level")]
     pub thinking_level: ThinkingLevel,
 }
 
@@ -769,7 +913,11 @@ pub struct ThinkingLevelChange {
 pub struct ModelChange {
     pub timestamp: String,
     pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "modelMetadata",
+        alias = "model_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model_metadata: Option<ModelMetadata>,
 }
 
@@ -779,6 +927,26 @@ pub struct SessionMeta {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "resumeSummary",
+        alias = "resume_summary"
+    )]
+    pub resume_summary: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "memoryExtractionHash",
+        alias = "memory_extraction_hash"
+    )]
+    pub memory_extraction_hash: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "archivedAt",
+        alias = "archived_at"
+    )]
+    pub archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -790,14 +958,210 @@ pub struct SessionMeta {
 /// Context compaction entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
     pub timestamp: String,
     pub summary: String,
-    pub first_kept_entry_index: usize,
+    #[serde(
+        rename = "firstKeptEntryId",
+        alias = "first_kept_entry_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_kept_entry_id: Option<String>,
+    #[serde(
+        default,
+        rename = "firstKeptEntryIndex",
+        alias = "first_kept_entry_index",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_kept_entry_index: Option<usize>,
+    #[serde(rename = "tokensBefore", alias = "tokens_before")]
     pub tokens_before: u64,
     #[serde(default)]
     pub auto: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "customInstructions",
+        alias = "custom_instructions",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_instructions: Option<String>,
+    /// Typed continuation state generated from the compacted message slice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ContinuationRecord>,
+}
+
+/// Summary of a previously explored branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchSummaryEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "fromId", alias = "from_id")]
+    pub from_id: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(rename = "fromHook", alias = "from_hook", default)]
+    pub from_hook: bool,
+}
+
+/// Extension-owned structured entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "customType", alias = "custom_type")]
+    pub custom_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Extension-owned message that TypeScript can include in context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomMessageEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "customType", alias = "custom_type")]
+    pub custom_type: String,
+    pub content: MessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(default = "default_true")]
+    pub display: bool,
+}
+
+/// Label attached to a tree entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "targetId", alias = "target_id")]
+    pub target_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A completed tool-free side question.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideQuestionEntry {
+    pub id: String,
+    pub timestamp: String,
+    pub question: String,
+    pub answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// An append-only event in the structured plan review workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanReviewEntry {
+    pub timestamp: String,
+    #[serde(flatten)]
+    pub event: PlanReviewEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum PlanReviewEvent {
+    Comment {
+        id: u64,
+        start_line: usize,
+        end_line: usize,
+        text: String,
+        revision: String,
+        excerpt: String,
+    },
+    Resolve {
+        id: u64,
+    },
+    Reopen {
+        id: u64,
+    },
+}
+
+/// Current state reconstructed from append-only plan review events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanReviewComment {
+    pub id: u64,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub text: String,
+    pub revision: String,
+    pub excerpt: String,
+    pub resolved: bool,
+}
+
+#[must_use]
+pub fn reconstruct_plan_review(events: &[PlanReviewEntry]) -> Vec<PlanReviewComment> {
+    let mut comments = Vec::new();
+    for entry in events {
+        match &entry.event {
+            PlanReviewEvent::Comment {
+                id,
+                start_line,
+                end_line,
+                text,
+                revision,
+                excerpt,
+            } => comments.push(PlanReviewComment {
+                id: *id,
+                start_line: *start_line,
+                end_line: *end_line,
+                text: text.clone(),
+                revision: revision.clone(),
+                excerpt: excerpt.clone(),
+                resolved: false,
+            }),
+            PlanReviewEvent::Resolve { id } => {
+                if let Some(comment) = comments.iter_mut().find(|comment| comment.id == *id) {
+                    comment.resolved = true;
+                }
+            }
+            PlanReviewEvent::Reopen { id } => {
+                if let Some(comment) = comments.iter_mut().find(|comment| comment.id == *id) {
+                    comment.resolved = false;
+                }
+            }
+        }
+    }
+    comments
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Computed session statistics (not serialized to JSONL).
@@ -848,62 +1212,4 @@ impl SessionStats {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_session_header() {
-        let json = r#"{"type":"session","id":"abc123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"anthropic/claude-3","thinking_level":"medium"}"#;
-        let entry: SessionEntry = serde_json::from_str(json).unwrap();
-        match entry {
-            SessionEntry::Session(header) => {
-                assert_eq!(header.id, "abc123");
-                assert_eq!(header.cwd, "/tmp");
-            }
-            _ => panic!("Expected Session entry"),
-        }
-    }
-
-    #[test]
-    fn parse_user_message() {
-        let json = r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{"role":"user","content":"Hello","timestamp":0}}"#;
-        let entry: SessionEntry = serde_json::from_str(json).unwrap();
-        match entry {
-            SessionEntry::Message(msg) => {
-                assert_eq!(msg.message.role(), "user");
-            }
-            _ => panic!("Expected Message entry"),
-        }
-    }
-
-    #[test]
-    fn parse_assistant_message() {
-        let json = r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}],"timestamp":0}}"#;
-        let entry: SessionEntry = serde_json::from_str(json).unwrap();
-        match entry {
-            SessionEntry::Message(msg) => {
-                assert_eq!(msg.message.role(), "assistant");
-                assert_eq!(msg.message.text_content(), "Hi there!");
-            }
-            _ => panic!("Expected Message entry"),
-        }
-    }
-
-    #[test]
-    fn thinking_level_serialize() {
-        assert_eq!(
-            serde_json::to_string(&ThinkingLevel::High).unwrap(),
-            "\"high\""
-        );
-    }
-
-    #[test]
-    fn token_usage_total() {
-        let usage = TokenUsage {
-            input: 100,
-            output: 50,
-            ..Default::default()
-        };
-        assert_eq!(usage.total(), 150);
-    }
-}
+mod tests;

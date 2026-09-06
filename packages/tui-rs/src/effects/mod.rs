@@ -40,19 +40,17 @@
 //!
 //! ```rust,ignore
 //! use maestro_tui::effects::shimmer_spans;
-//! use ratatui::style::Color;
 //!
-//! // Create shimmer effect on text
-//! let text = "Loading...";
-//! let frame = 42;
-//! let spans = shimmer_spans(text, frame, Color::Cyan, Color::Blue);
+//! // Deixic violet sheen (rest between sweeps, soft pulse)
+//! let spans = shimmer_spans("Working");
 //! ```
 //!
 //! # Performance Notes
 //!
-//! - Effects are purely computational - no I/O or allocation per frame
+//! - Effects are purely computational - no I/O per frame
 //! - Frame counters should wrap around (use `wrapping_add` or modulo)
 //! - Spinner arrays are `const` for zero runtime cost
+//! - Idle welcome paints should key off [`shimmer_frame`] (~12 fps)
 //!
 //! # Rust Concepts
 //!
@@ -63,5 +61,9 @@
 mod shimmer;
 mod spinner;
 
-pub use shimmer::shimmer_spans;
-pub use spinner::{braille_spinner, dot_spinner, spinner, BRAILLE_FRAMES, DOT_FRAMES};
+pub use shimmer::{
+    DEIXIC_SOFT, DEIXIC_VIOLET, SHIMMER_FPS, ShimmerConfig, anim_phase_secs,
+    diagonal_shimmer_lines, shimmer_frame, shimmer_line, shimmer_spans, shimmer_spans_at_time,
+    shimmer_spans_with_config, shine_opacity,
+};
+pub use spinner::{BRAILLE_FRAMES, DOT_FRAMES, braille_spinner, dot_spinner, spinner};

@@ -1,5 +1,8 @@
 # OAuth & Authentication Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. No verified Rust equivalent was found for the OAuth provider flows described below. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The authentication system supports multiple providers and methods, including API keys, OAuth flows, and enterprise SSO integration.
 
 ## Overview
@@ -221,6 +224,26 @@ class GitHubCopilotOAuthProvider {
   }
 }
 ```
+
+### Google Installed-App OAuth
+
+Google Gemini CLI and Google Antigravity use installed-app OAuth with PKCE and
+local loopback callbacks. Maestro does not ship Google OAuth client secrets.
+Operators must provide the installed-app client configuration through the
+runtime environment:
+
+```bash
+MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_ID=...
+MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_SECRET=...
+MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_ID=...
+MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_SECRET=...
+```
+
+If the matching client ID or secret is missing, `maestro login
+google-gemini-cli`, `maestro login google-antigravity`, and token refresh fail
+before starting the local callback server or sending a token request. The error
+names the required variables so deployment owners can wire them through the
+normal secret-management path.
 
 ## Local OAuth Server
 

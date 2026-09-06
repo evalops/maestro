@@ -70,5 +70,5 @@ mod search;
 mod workspace;
 
 pub use indexer::{FileIndexer, IndexStatus, IndexerConfig};
-pub use search::{highlight_matches, FileMatch, FileSearch, FileSearchResult};
-pub use workspace::{get_workspace_files, patterns, WorkspaceFile};
+pub use search::{FileMatch, FileSearch, FileSearchResult, highlight_matches};
+pub use workspace::{WorkspaceFile, get_workspace_files, patterns};

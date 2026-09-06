@@ -1,0 +1,23 @@
+{
+  "name": "composer-stash",
+  "steps": [
+    {
+      "wait": "release-planner"
+    },
+    {
+      "text": "Keep this draft for later."
+    },
+    {
+      "key": "C-s"
+    },
+    {
+      "wait": "restore/swap draft"
+    },
+    {
+      "key": "C-s"
+    },
+    {
+      "wait": "Keep this draft for later."
+    }
+  ]
+}

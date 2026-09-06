@@ -16,8 +16,8 @@ The Rust TUI includes a comprehensive hook system for intercepting and modifying
 | Event | When | Can Block | Can Modify |
 |-------|------|-----------|------------|
 | `PreToolUse` | Before tool execution | Yes | Yes (input) |
-| `PostToolUse` | After tool execution | No | Yes (context) |
-| `PostToolUseFailure` | After tool failure | No | No |
+| `PostToolUse` | After successful tool execution | No | Yes (context) |
+| `PostToolUseFailure` | After failed tool execution | No | No |
 | `SessionStart` | Session begins | No | No |
 | `SessionEnd` | Session ends | No | No |
 | `UserPromptSubmit` | User submits prompt | Yes | Yes |
@@ -69,6 +69,7 @@ lua_file = "~/.maestro/hooks/safety.lua"
 # WASM plugin
 [[hooks]]
 event = "PreToolUse"
+required = false # set explicitly for advisory behavior
 wasm = "~/.maestro/plugins/safety.wasm"
 
 # Block long messages
@@ -233,6 +234,11 @@ Return codes:
 - 1: Block
 - 2: Modify input
 - 3: Inject context
+
+Each invocation is bounded by the WASM watchdog and fuel budget, with a 16 MiB
+linear-memory limit, bounded tables/instances, and a 1 MiB result limit.
+Required `PreToolUse` hooks block on resource, timeout, or malformed-result
+failures; hooks configured with `required = false` remain advisory.
 
 Enable with: `cargo build --features wasm`
 

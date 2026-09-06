@@ -33,7 +33,7 @@ export class MemoryClient {
     async store(request) {
         const message = create(StoreRequestSchema, request);
         const payload = await this.#requestJson("/v1/memories", {
-            body: serializeStoreRequest(message),
+            body: serializeStoreRequest(message, request),
             method: "POST",
         });
         return create(StoreResponseSchema, {
@@ -53,7 +53,7 @@ export class MemoryClient {
         const message = create(ListMemoriesRequestSchema, request);
         const payload = await this.#requestJson("/v1/memories", {
             method: "GET",
-            query: buildListQuery(message),
+            query: buildListQuery(message, request),
         });
         return create(ListMemoriesResponseSchema, {
             limit: getIntField(payload, "limit"),
@@ -65,7 +65,7 @@ export class MemoryClient {
     async update(request) {
         const message = create(UpdateMemoryRequestSchema, request);
         const payload = await this.#requestJson(`/v1/memories/${encodeURIComponent(message.id)}`, {
-            body: serializeUpdateRequest(message),
+            body: serializeUpdateRequest(message, request),
             method: "PUT",
         });
         return create(UpdateMemoryResponseSchema, {
@@ -105,7 +105,7 @@ export class MemoryClient {
     async recall(request) {
         const message = create(RecallRequestSchema, request);
         const payload = await this.#requestJson("/v1/memories/recall", {
-            body: serializeRecallRequest(message),
+            body: serializeRecallRequest(message, request),
             method: "POST",
         });
         return create(RecallResponseSchema, {
@@ -117,7 +117,7 @@ export class MemoryClient {
     async recallKnowledge(request) {
         const message = create(RecallKnowledgeRequestSchema, request);
         const payload = await this.#requestJson("/v1/memories/knowledge/recall", {
-            body: serializeRecallKnowledgeRequest(message),
+            body: serializeRecallKnowledgeRequest(message, request),
             method: "POST",
         });
         return create(RecallResponseSchema, {
@@ -130,7 +130,7 @@ export class MemoryClient {
         const message = create(GetOperatingRulesRequestSchema, request);
         const payload = await this.#requestJson("/v1/memories/operating-rules", {
             method: "GET",
-            query: buildOperatingRulesQuery(message),
+            query: buildOperatingRulesQuery(message, request),
         });
         return create(ListMemoriesResponseSchema, {
             limit: getIntField(payload, "limit"),
@@ -178,65 +178,109 @@ export class MemoryClient {
 function normalizeBaseUrl(baseUrl) {
     return baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 }
-function buildListQuery(message) {
+function buildListQuery(message, request) {
     const params = new URLSearchParams();
     appendStringParam(params, "type", serializeMemoryType(message.type));
     appendStringParam(params, "project_id", message.projectId);
     appendStringParam(params, "team_id", message.teamId);
+    appendStringParam(params, "user_id", requestString(request, "userId", "user_id"));
     appendStringParam(params, "repository", message.repository);
     appendStringParam(params, "agent", message.agent);
+    appendStringParam(params, "agent_id", requestString(request, "agentId", "agent_id"));
+    appendStringParam(params, "review_status", requestString(request, "reviewStatus", "review_status"));
+    appendRepeatedStringParam(params, "entity_id", requestStringArray(request, "entityIds", "entity_ids"));
     appendNumberParam(params, "limit", message.limit);
     appendNumberParam(params, "offset", message.offset);
     return params;
 }
-function buildOperatingRulesQuery(message) {
+function buildOperatingRulesQuery(message, request) {
     const params = new URLSearchParams();
     appendStringParam(params, "project_id", message.projectId);
     appendStringParam(params, "team_id", message.teamId);
+    appendStringParam(params, "user_id", requestString(request, "userId", "user_id"));
     appendStringParam(params, "repository", message.repository);
     appendStringParam(params, "agent", message.agent);
+    appendStringParam(params, "agent_id", requestString(request, "agentId", "agent_id"));
+    appendStringParam(params, "review_status", requestString(request, "reviewStatus", "review_status"));
     appendNumberParam(params, "limit", message.limit);
     appendNumberParam(params, "offset", message.offset);
     return params;
 }
-function serializeStoreRequest(message) {
+function serializeStoreRequest(message, request) {
     return compactObject({
         agent: emptyStringToUndefined(message.agent),
+        agent_id: requestString(request, "agentId", "agent_id"),
         content: emptyStringToUndefined(message.content),
+        confidence: requestNumber(request, "confidence"),
+        entity_ids: requestStringArray(request, "entityIds", "entity_ids"),
+        expires_at: requestTimestamp(request, "expiresAt", "expires_at"),
         id: emptyStringToUndefined(message.id),
+        is_policy: requestBoolean(request, "isPolicy", "is_policy"),
+        pinned: requestBoolean(request, "pinned"),
+        proposed_by: requestString(request, "proposedBy", "proposed_by"),
+        proposal_reason: requestString(request, "proposalReason", "proposal_reason"),
         project_id: emptyStringToUndefined(message.projectId),
         repository: emptyStringToUndefined(message.repository),
+        review_status: requestString(request, "reviewStatus", "review_status"),
+        source: requestString(request, "source"),
+        source_references: requestArray(request, "sourceReferences", "source_references"),
+        supersedes_memory_id: requestString(request, "supersedesMemoryId", "supersedes_memory_id"),
         tags: message.tags.length > 0 ? message.tags : undefined,
         team_id: emptyStringToUndefined(message.teamId),
         type: serializeMemoryType(message.type),
+        user_id: requestString(request, "userId", "user_id"),
     });
 }
-function serializeUpdateRequest(message) {
+function serializeUpdateRequest(message, request) {
     return compactObject({
         content: emptyStringToUndefined(message.content),
+        confidence: requestNumber(request, "confidence"),
+        entity_ids: requestStringArray(request, "entityIds", "entity_ids"),
+        expires_at: requestTimestamp(request, "expiresAt", "expires_at"),
+        is_policy: requestBoolean(request, "isPolicy", "is_policy"),
+        pinned: requestBoolean(request, "pinned"),
+        proposed_by: requestString(request, "proposedBy", "proposed_by"),
+        proposal_reason: requestString(request, "proposalReason", "proposal_reason"),
+        review_status: requestString(request, "reviewStatus", "review_status"),
+        source: requestString(request, "source"),
+        source_references: requestArray(request, "sourceReferences", "source_references"),
         tags: message.tags.length > 0 ? message.tags : undefined,
+        type: requestString(request, "type"),
     });
 }
-function serializeRecallRequest(message) {
+function serializeRecallRequest(message, request) {
     return compactObject({
         agent: emptyStringToUndefined(message.agent),
+        agent_id: requestString(request, "agentId", "agent_id"),
+        as_of: requestTimestamp(request, "asOf", "as_of"),
         embedding: message.embedding.length > 0 ? message.embedding : undefined,
+        entity_ids: requestStringArray(request, "entityIds", "entity_ids"),
         limit: message.limit > 0 ? message.limit : undefined,
+        min_similarity: requestNumber(request, "minSimilarity", "min_similarity"),
         project_id: emptyStringToUndefined(message.projectId),
         query: emptyStringToUndefined(message.query),
+        relationship_depth: requestNumber(request, "relationshipDepth", "relationship_depth"),
+        relationship_types: requestStringArray(request, "relationshipTypes", "relationship_types"),
         repository: emptyStringToUndefined(message.repository),
+        review_status: requestString(request, "reviewStatus", "review_status"),
         team_id: emptyStringToUndefined(message.teamId),
+        top_k: requestNumber(request, "topK", "top_k"),
         type: serializeMemoryType(message.type),
+        user_id: requestString(request, "userId", "user_id"),
     });
 }
-function serializeRecallKnowledgeRequest(message) {
+function serializeRecallKnowledgeRequest(message, request) {
     return compactObject({
         agent: emptyStringToUndefined(message.agent),
+        agent_id: requestString(request, "agentId", "agent_id"),
         conditions: message.conditions.length > 0 ? message.conditions : undefined,
         limit: message.limit > 0 ? message.limit : undefined,
         project_id: emptyStringToUndefined(message.projectId),
         repository: emptyStringToUndefined(message.repository),
+        review_status: requestString(request, "reviewStatus", "review_status"),
         team_id: emptyStringToUndefined(message.teamId),
+        top_k: requestNumber(request, "topK", "top_k"),
+        user_id: requestString(request, "userId", "user_id"),
     });
 }
 function deserializeMemory(value) {
@@ -341,6 +385,13 @@ function appendStringParam(params, key, value) {
         params.set(key, value);
     }
 }
+function appendRepeatedStringParam(params, key, values) {
+    for (const value of values ?? []) {
+        if (value) {
+            params.append(key, value);
+        }
+    }
+}
 function appendNumberParam(params, key, value) {
     if (value > 0) {
         params.set(key, String(value));
@@ -399,6 +450,47 @@ function getNumberArray(value) {
         return [];
     }
     return value.filter((entry) => typeof entry === "number" && Number.isFinite(entry));
+}
+function requestRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function requestValue(request, camelKey, snakeKey = camelKey) {
+    const record = requestRecord(request);
+    return record[camelKey] ?? record[snakeKey];
+}
+function requestString(request, camelKey, snakeKey = camelKey) {
+    const value = requestValue(request, camelKey, snakeKey);
+    if (typeof value !== "string") {
+        return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+function requestNumber(request, camelKey, snakeKey = camelKey) {
+    const value = requestValue(request, camelKey, snakeKey);
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+function requestBoolean(request, camelKey, snakeKey = camelKey) {
+    const value = requestValue(request, camelKey, snakeKey);
+    return typeof value === "boolean" ? value : undefined;
+}
+function requestArray(request, camelKey, snakeKey = camelKey) {
+    const value = requestValue(request, camelKey, snakeKey);
+    return Array.isArray(value) && value.length > 0 ? value : undefined;
+}
+function requestStringArray(request, camelKey, snakeKey = camelKey) {
+    const values = requestArray(request, camelKey, snakeKey)?.filter((entry) => typeof entry === "string" && entry.trim().length > 0);
+    return values && values.length > 0 ? values : undefined;
+}
+function requestTimestamp(request, camelKey, snakeKey = camelKey) {
+    const value = requestValue(request, camelKey, snakeKey);
+    if (typeof value === "string") {
+        return value.trim() || undefined;
+    }
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return value.toISOString();
+    }
+    return undefined;
 }
 function asJsonRecord(value, required = true) {
     if (value && typeof value === "object" && !Array.isArray(value)) {

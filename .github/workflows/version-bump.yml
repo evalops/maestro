@@ -1,0 +1,258 @@
+name: version-bump
+
+on:
+  schedule:
+    # Weekly Monday patch release proposal at 09:00 Pacific during daylight time.
+    - cron: "0 16 * * 1"
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Semver bump to prepare"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      base_ref:
+        description: "Base branch to cut the release PR from"
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.base_ref || 'main' }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_BASE_REF: ${{ github.event.inputs.base_ref || 'main' }}
+  RELEASE_BUMP_TYPE: ${{ github.event.inputs.bump_type || 'patch' }}
+
+jobs:
+  version-bump:
+    if: ${{ github.event_name != 'schedule' || github.repository == 'evalops/maestro-internal' }}
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_BASE_REF }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: ./.github/actions/setup-rust
+        with: { toolchain: stable, components: "rustfmt,clippy", cache-group: validation }
+
+      - name: Summarize release cadence
+        env:
+          RELEASE_CADENCE_MODE: ${{ github.event_name == 'schedule' && 'weekly scheduled patch' || 'manual dispatch' }}
+        run: |
+          {
+            echo "## Release cadence"
+            echo
+            echo "- mode: \`${RELEASE_CADENCE_MODE}\`"
+            echo "- base ref: \`${RELEASE_BASE_REF}\`"
+            echo "- bump type: \`${RELEASE_BUMP_TYPE}\`"
+            echo "- public schedule runs are intentionally skipped; internal main remains the source of truth"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - id: release-pr-auth
+        env:
+          RELEASE_PR_APP_ID: ${{ secrets.RELEASE_PR_APP_ID }}
+          RELEASE_PR_APP_PRIVATE_KEY: ${{ secrets.RELEASE_PR_APP_PRIVATE_KEY }}
+          RELEASE_PR_SYNC_TOKEN: ${{ secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RELEASE_PR_APP_ID:-}" && -n "${RELEASE_PR_APP_PRIVATE_KEY:-}" ]]; then
+            echo "mode=app" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "${RELEASE_PR_SYNC_TOKEN:-}" ]]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::Release PR auth is not configured. Configure RELEASE_PR_APP_ID/RELEASE_PR_APP_PRIVATE_KEY or RELEASE_PR_SYNC_TOKEN so generated release branch pushes trigger PR checks."
+          exit 1
+
+      - name: Mint release PR GitHub App token
+        id: release-app-token
+        if: ${{ steps.release-pr-auth.outputs.mode == 'app' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_PR_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - id: release-pr-token
+        env:
+          RELEASE_PR_TOKEN: ${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_PR_TOKEN:-}" ]]; then
+            echo "::error::Release PR auth was configured but no token was produced."
+            exit 1
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - id: version
+        run: |
+          set -euo pipefail
+          release_version="$(node scripts/version.js next "$RELEASE_BUMP_TYPE")"
+          {
+            echo "release_version=$release_version"
+            echo "branch=release/v${release_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: branch
+        env:
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # Fail closed on remote/auth errors: do not treat a failed ls-remote
+          # as "branch absent" (would skip an existing release branch).
+          remote_ref=""
+          if ! remote_ref="$(git ls-remote --heads origin "refs/heads/${RELEASE_BRANCH}")"; then
+            echo "::error::Failed to query release branch $RELEASE_BRANCH from origin."
+            exit 1
+          fi
+          if [[ -n "$remote_ref" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare versioned files
+        env:
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          BRANCH_EXISTS: ${{ steps.branch.outputs.exists }}
+        run: |
+          set -euo pipefail
+          if [[ "$BRANCH_EXISTS" == "true" ]]; then
+            git fetch origin \
+              "${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" \
+              "${RELEASE_BASE_REF}:refs/remotes/origin/${RELEASE_BASE_REF}"
+            git switch -C "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
+            git branch --set-upstream-to="origin/$RELEASE_BRANCH" "$RELEASE_BRANCH"
+            git merge --no-edit "origin/${RELEASE_BASE_REF}"
+            node scripts/version.js set "$RELEASE_VERSION" --release-notes-ref "origin/${RELEASE_BASE_REF}"
+          else
+            npm run "version:${RELEASE_BUMP_TYPE}"
+            git switch -c "$RELEASE_BRANCH"
+          fi
+
+      - name: Format generated release files
+        run: |
+          set -euo pipefail
+          npm run metadata:sync
+
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          requested-version: ${{ steps.version.outputs.release_version }}
+
+      - name: Run release commit validators
+        run: |
+          set -euo pipefail
+          npm run check:rust-only-runtime
+          npm run lint
+          npm run build
+          npm run smoke:release-native-only
+
+      - name: Commit release branch
+        id: commit
+        env:
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          BRANCH_EXISTS: ${{ steps.branch.outputs.exists }}
+          RELEASE_PR_TOKEN: ${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${RELEASE_PR_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if [[ -z "$(git status --porcelain)" ]]; then
+            if [[ "$BRANCH_EXISTS" == "true" ]] && [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$RELEASE_BRANCH")" ]]; then
+              git push origin "$RELEASE_BRANCH"
+              echo "Release branch $RELEASE_BRANCH advanced to current $RELEASE_BASE_REF."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Release branch $RELEASE_BRANCH already up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add .
+          # Generated files already passed the release validators above. Skip the
+          # developer pre-commit hook, whose Semgrep launcher is not installed on
+          # the release runner and would otherwise block the automated commit.
+          git commit --no-verify -m "Release v${RELEASE_VERSION}"
+          if [[ "$BRANCH_EXISTS" == "true" ]]; then
+            git push origin "$RELEASE_BRANCH"
+          else
+            git push --set-upstream origin "$RELEASE_BRANCH"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Extract generated changelog entry
+        id: changelog
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          changelog_path="$RUNNER_TEMP/release-changelog.md"
+          node scripts/release-notes.js latest-entry \
+            --version "$RELEASE_VERSION" \
+            > "$changelog_path"
+          echo "path=$changelog_path" >> "$GITHUB_OUTPUT"
+
+      - name: Open or reuse release PR
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}
+          BASE_REF: ${{ env.RELEASE_BASE_REF }}
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          RELEASE_BUMP_TYPE: ${{ env.RELEASE_BUMP_TYPE }}
+          CHANGELOG_PATH: ${{ steps.changelog.outputs.path }}
+        run: |
+          set -euo pipefail
+          changelog_entry="$(cat "$CHANGELOG_PATH")"
+          # shellcheck disable=SC2016 # Backticks are literal Markdown delimiters in the printf format.
+          printf -v pr_body '## Summary\n\n- prepare release v%s\n- run the %s release cadence from %s\n- update generated metadata, package versions, and CHANGELOG.md\n\n## Changelog\n\n%s\n\n## Test Plan\n\n- Generated by the `version-bump` workflow\n- Changelog generated from commits since the latest reachable semver tag\n- Release branch push and PR updates use release automation credentials so required checks run on the PR head\n\n## Rollback\n\n- Close this generated PR without merging to abandon the proposed release\n- Delete `%s` if the same version should be regenerated from a clean branch' \
+            "$RELEASE_VERSION" "$RELEASE_BUMP_TYPE" "$BASE_REF" "$changelog_entry" "$RELEASE_BRANCH"
+
+          existing_pr_number=$(gh pr list \
+            --base "$BASE_REF" \
+            --head "$RELEASE_BRANCH" \
+            --json number \
+            --jq '.[0].number // ""')
+
+          if [[ -n "$existing_pr_number" ]]; then
+            gh pr edit "$existing_pr_number" \
+              --title "Release v${RELEASE_VERSION}" \
+              --body "$pr_body"
+            existing_pr_url=$(gh pr view "$existing_pr_number" --json url --jq '.url')
+            echo "Release PR already exists and was updated: $existing_pr_url"
+            exit 0
+          fi
+
+          gh pr create \
+            --base "$BASE_REF" \
+            --head "$RELEASE_BRANCH" \
+            --title "Release v${RELEASE_VERSION}" \
+            --body "$pr_body"

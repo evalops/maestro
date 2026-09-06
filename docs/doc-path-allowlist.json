@@ -1,0 +1,1197 @@
+[
+	{
+		"source": "docs/CONTRIBUTOR_RUNBOOK.md",
+		"path": "scripts/guardian.sh",
+		"reason": "[docs/CONTRIBUTOR_RUNBOOK.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/cookbook/skills/README.md",
+		"path": "scripts/README.md",
+		"reason": "[docs/cookbook/skills/README.md] Illustrative generated file-tree example inside a fenced code block (\"scripts/README.md\" under a hypothetical skill package), not a real repo path."
+	},
+	{
+		"source": "docs/CUSTOM_AGENTS.md",
+		"path": "src/agent/plugin-agent-api.ts",
+		"reason": "[docs/CUSTOM_AGENTS.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/AGENT_STATE_MACHINE.md",
+		"path": "src/agent/agent.ts",
+		"reason": "[docs/design/AGENT_STATE_MACHINE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/AGENT_STATE_MACHINE.md",
+		"path": "src/agent/context-manager.ts",
+		"reason": "[docs/design/AGENT_STATE_MACHINE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/AGENT_STATE_MACHINE.md",
+		"path": "src/agent/types.ts",
+		"reason": "[docs/design/AGENT_STATE_MACHINE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/CONTEXT_MANAGEMENT.md",
+		"path": "src/agent/agent.ts",
+		"reason": "[docs/design/CONTEXT_MANAGEMENT.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/CONTEXT_MANAGEMENT.md",
+		"path": "src/agent/context-manager.ts",
+		"reason": "[docs/design/CONTEXT_MANAGEMENT.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/CONTEXT_MANAGEMENT.md",
+		"path": "src/auth/login.ts",
+		"reason": "[docs/design/CONTEXT_MANAGEMENT.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/client.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/distributed-lock-manager.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/encryption.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/key-rotation.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/migrate.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/migrations",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/DATABASE_PERSISTENCE.md",
+		"path": "src/db/settings-encryption.ts",
+		"reason": "[docs/design/DATABASE_PERSISTENCE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/ENTERPRISE_RBAC.md",
+		"path": "src/db/schema.ts",
+		"reason": "[docs/design/ENTERPRISE_RBAC.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/ENTERPRISE_RBAC.md",
+		"path": "src/rbac/permission-evaluator.ts",
+		"reason": "[docs/design/ENTERPRISE_RBAC.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/cli/headless-protocol.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/approval-store.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/client-tools-service.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/handlers/approval.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/handlers/client-tools.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/handlers/headless-sessions.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/headless-connection-manager.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/headless-in-process-host.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/headless-runtime-service.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/headless-server-request-manager.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "src/server/routes.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "test/cli/headless.test.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HEADLESS_CONTROL_PLANE.md",
+		"path": "test/web/headless-sessions.test.ts",
+		"reason": "[docs/design/HEADLESS_CONTROL_PLANE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/config.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/executor.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/notification-hooks.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/output.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/session-integration.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/tool-integration.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/HOOKS_SYSTEM.md",
+		"path": "src/hooks/types.ts",
+		"reason": "[docs/design/HOOKS_SYSTEM.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/bridge.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/client.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/discovery.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/manager.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/schema.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/server.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "src/mcp/types.ts",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "tools/call",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/MCP_INTEGRATION.md",
+		"path": "tools/list",
+		"reason": "[docs/design/MCP_INTEGRATION.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/auth/keychain.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/auth/token-manager.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/auth/totp.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/db/schema.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/db/settings-encryption.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/oauth/anthropic.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/oauth/github-copilot.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/oauth/local-server.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/OAUTH_AUTHENTICATION.md",
+		"path": "src/oauth/openai.ts",
+		"reason": "[docs/design/OAUTH_AUTHENTICATION.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "src/platform/a2a-client.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "src/platform/agent-runtime-client.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "src/server/handlers/headless-sessions.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "src/server/handlers/hosted-runner-drain.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "src/server/hosted-agent-runtime-progress.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "test/platform/a2a-client.test.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "test/platform/agent-runtime-client.test.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "test/server/hosted-agent-runtime-progress.test.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "test/server/hosted-runner-drain.test.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md",
+		"path": "test/web/headless-sessions.test.ts",
+		"reason": "[docs/design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/SAFETY_FIREWALL.md",
+		"path": "src/safety/action-firewall.ts",
+		"reason": "[docs/design/SAFETY_FIREWALL.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/SAFETY_FIREWALL.md",
+		"path": "src/safety/approval-service.ts",
+		"reason": "[docs/design/SAFETY_FIREWALL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/SAFETY_FIREWALL.md",
+		"path": "src/safety/path-containment.ts",
+		"reason": "[docs/design/SAFETY_FIREWALL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/SAFETY_FIREWALL.md",
+		"path": "src/safety/workflow-state.ts",
+		"reason": "[docs/design/SAFETY_FIREWALL.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/SESSION_PERSISTENCE.md",
+		"path": "src/session/manager.ts",
+		"reason": "[docs/design/SESSION_PERSISTENCE.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/TELEMETRY_COST.md",
+		"path": "src/cli-tui/",
+		"reason": "[docs/design/TELEMETRY_COST.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/TELEMETRY_COST.md",
+		"path": "src/cli-tui/commands/cost-handlers.ts",
+		"reason": "[docs/design/TELEMETRY_COST.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/TELEMETRY_COST.md",
+		"path": "src/cli-tui/status/cost-view.ts",
+		"reason": "[docs/design/TELEMETRY_COST.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/TELEMETRY_COST.md",
+		"path": "src/telemetry.ts",
+		"reason": "[docs/design/TELEMETRY_COST.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/design/TOOL_SYSTEM.md",
+		"path": "src/tools/tool-dsl.ts",
+		"reason": "[docs/design/TOOL_SYSTEM.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/TOOL_SYSTEM.md",
+		"path": "src/utils/path-validation.ts",
+		"reason": "[docs/design/TOOL_SYSTEM.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "packages/tui",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui",
+		"reason": "[docs/design/TUI_RENDERING.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/",
+		"reason": "[docs/design/TUI_RENDERING.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/approval/approval-modal.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/commands/command-catalog.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/commands/command-suite-catalog.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/commands/registry.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/footer.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/interrupt-controller.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/modal-manager.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/paste",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/search/file-search.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/session/session-list.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/session/session-switcher.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/smart-autocomplete-provider.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/tool-renderers",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/tui-renderer.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/ui-state.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/utils/commands/command-registry-builder.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/design/TUI_RENDERING.md",
+		"path": "src/cli-tui/utils/commands/slash-hint-bar.ts",
+		"reason": "[docs/design/TUI_RENDERING.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/MCP_GUIDE.md",
+		"path": "tools/list",
+		"reason": "[docs/MCP_GUIDE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/MODELS.md",
+		"path": "src/agent/providers/openai-responses-sdk.ts",
+		"reason": "[docs/MODELS.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/MODELS.md",
+		"path": "src/agent/providers/openai.ts",
+		"reason": "[docs/MODELS.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/MODELS.md",
+		"path": "src/models/registry.ts",
+		"reason": "[docs/MODELS.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/patterns/determinism-boundaries.md",
+		"path": "src/agent/context-manager.ts",
+		"reason": "[docs/patterns/determinism-boundaries.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/determinism-boundaries.md",
+		"path": "src/utils/async.ts",
+		"reason": "[docs/patterns/determinism-boundaries.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/determinism-boundaries.md",
+		"path": "src/utils/clock.ts",
+		"reason": "[docs/patterns/determinism-boundaries.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/event-suppression.md",
+		"path": "src/cli-tui/prompt-queue.ts",
+		"reason": "[docs/patterns/event-suppression.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/agent/context-manager.ts",
+		"reason": "[docs/patterns/INDEX.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/cli-tui",
+		"reason": "[docs/patterns/INDEX.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/platform/agent-runtime-client.ts",
+		"reason": "[docs/patterns/INDEX.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/tools",
+		"reason": "[docs/patterns/INDEX.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/utils/async.ts",
+		"reason": "[docs/patterns/INDEX.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/patterns/INDEX.md",
+		"path": "src/utils/clock.ts",
+		"reason": "[docs/patterns/INDEX.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/patterns/platform-boundary-normalization.md",
+		"path": "src/platform/a2a-client.ts",
+		"reason": "[docs/patterns/platform-boundary-normalization.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/platform-boundary-normalization.md",
+		"path": "src/platform/agent-runtime-client.ts",
+		"reason": "[docs/patterns/platform-boundary-normalization.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/platform-boundary-normalization.md",
+		"path": "src/server/handlers/headless-sessions.ts",
+		"reason": "[docs/patterns/platform-boundary-normalization.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/tui-controller-extraction.md",
+		"path": "src/cli-tui",
+		"reason": "[docs/patterns/tui-controller-extraction.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/patterns/tui-controller-extraction.md",
+		"path": "src/cli-tui/commands/types.ts",
+		"reason": "[docs/patterns/tui-controller-extraction.md] Already carries an established \"Historical / removed\" banner (precedent: PR #2891 TUI removal); paths kept as-written, not live code."
+	},
+	{
+		"source": "docs/patterns/tui-controller-extraction.md",
+		"path": "src/cli-tui/tui-renderer.ts",
+		"reason": "[docs/patterns/tui-controller-extraction.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/PROMPT_QUEUE.md",
+		"path": "src/cli-tui/prompt-queue.ts",
+		"reason": "[docs/PROMPT_QUEUE.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/a2a-fleet-delegation.md",
+		"path": "packages/tui-rs/src/a2a_cli.rs",
+		"reason": "[docs/protocols/a2a-fleet-delegation.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/a2a-fleet-delegation.md",
+		"path": "test/cli-tui/commands/a2a-handlers.test.ts",
+		"reason": "[docs/protocols/a2a-fleet-delegation.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/a2a-fleet-delegation.md",
+		"path": "test/platform/a2a-fleet.test.ts",
+		"reason": "[docs/protocols/a2a-fleet-delegation.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/a2a-fleet-delegation.md",
+		"path": "test/platform/a2a-task-ledger.test.ts",
+		"reason": "[docs/protocols/a2a-fleet-delegation.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "packages/contracts/src/scenario.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "scripts/check-agent-trajectory-fixtures.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "scripts/check-agent-trajectory-inspection-fixtures.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "scripts/check-agent-trajectory-replay-fixtures.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "scripts/check-agent-trajectory-scenario-fixtures.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "scripts/check-agent-trajectory-score-fixtures.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory-inspection.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory-replay.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory-scenarios.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory-scorers.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory-validation.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "src/server/agent-trajectory.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "test/cli/run-command.test.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-trajectory.md",
+		"path": "test/server/agent-trajectory-validation.test.ts",
+		"reason": "[docs/protocols/agent-trajectory.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-workforce-native-event.md",
+		"path": "src/agent/agent.ts",
+		"reason": "[docs/protocols/agent-workforce-native-event.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/agent-workforce-native-event.md",
+		"path": "src/telemetry/agent-workforce-native-event-client.ts",
+		"reason": "[docs/protocols/agent-workforce-native-event.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/agent-workforce-native-event.md",
+		"path": "src/telemetry/agent-workforce-native-event.ts",
+		"reason": "[docs/protocols/agent-workforce-native-event.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "packages/contracts/src/maestro-app-server.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/agent/providers/codex-app-server.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/bin/maestro_hosted_runner.rs",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/codex/compatibility.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/codex/subagent-dispatch-table.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/codex/subagent-workgraph.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/platform/agent-registry-client.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/platform/agent-runtime-client.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/platform/core-services.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/server/handlers/runtime-app-server-ws.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/server/hosted-agent-runtime-progress.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/session/types.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "src/tools/index.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/agent/codex-app-server.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/agent/provider-transport-provider-tools.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/app-server/session-api.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/codex/subagent-dispatch-table.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/codex/subagent-workgraph.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/install/native-dependencies.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/safety/loop-detector.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/scripts/codex-live-smoke.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/server/headless-runtime-service.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/server/hosted-agent-runtime-progress.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/server/hosted-runner-drain.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/server/runtime-app-server-ws.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.json",
+		"path": "test/telemetry/maestro-publisher-conformance-fixture.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.json] Machine-readable manifest for scripts/check-codex-operating-layer-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). Entries with a redundant Rust equivalent already in the same area were removed in this PR; the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "packages/contracts/src/maestro-app-server.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/agent/providers/codex-app-server.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/agent/transport.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/codex/compatibility.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/platform/agent-registry-client.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/platform/agent-runtime-client.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/server/handlers/hosted-runner-drain.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/server/handlers/runtime-app-server-ws.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/server/hosted-agent-runtime-progress.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/server/run-reconstruction.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "src/session/types.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/agent/codex-app-server.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/agent/provider-transport-provider-tools.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/app-server/session-api.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/cli/run-command.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/codex/app-server-client.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/codex/compatibility.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/headless/runtime-conformance.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/install/native-dependencies.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/scripts/codex-operating-layer-conformance.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/scripts/codex-parity-conformance.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/server/hosted-agent-runtime-progress.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/server/hosted-runner-drain.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/server/runtime-app-server-ws.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-operating-layer.md",
+		"path": "test/telemetry/maestro-publisher-conformance-fixture.test.ts",
+		"reason": "[docs/protocols/codex-operating-layer.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "packages/web/src/components/composer-chat.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "src/agent/providers/codex-app-server.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "src/agent/providers/openai-codex-session.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "src/tools/apply-patch.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "src/tools/conductor-client.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "test/headless/protocol-conformance-fixture.test.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "test/headless/runtime-conformance.test.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "test/server/headless-runtime-service.test.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/codex-parity-conformance.json",
+		"path": "test/tools/apply-patch.test.ts",
+		"reason": "[docs/protocols/codex-parity-conformance.json] Machine-readable manifest for scripts/check-codex-parity-conformance.mjs, which is orphaned (not wired into any CI workflow or npm script). One mappable entry was fixed in this PR (codex-auth-provider -> packages/tui-rs/src/codex_app_server.rs); the remaining entries have no verified Rust equivalent. See PR description for the follow-up plan."
+	},
+	{
+		"source": "docs/protocols/headless-conformance.md",
+		"path": "test/headless/protocol-conformance-fixture.test.ts",
+		"reason": "[docs/protocols/headless-conformance.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/headless-conformance.md",
+		"path": "test/headless/runtime-conformance.test.ts",
+		"reason": "[docs/protocols/headless-conformance.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "scripts/generate-maestro-publisher-conformance-fixture.ts",
+		"reason": "[docs/protocols/headless.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/cli/headless-protocol.ts",
+		"reason": "[docs/protocols/headless.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/headless-native-bridge.ts",
+		"reason": "[docs/protocols/headless.md] Historical Node-side hosted/headless implementation removed by the Rust-only runtime migration (#3016, #3017); the status banner and current Rust source-of-truth links identify the replacement boundary."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/headless-runtime-service.ts",
+		"reason": "[docs/protocols/headless.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/native-headless-client.ts",
+		"reason": "[docs/protocols/headless.md] Historical Node-side hosted/headless implementation removed by the Rust-only runtime migration (#3016, #3017); the status banner and current Rust source-of-truth links identify the replacement boundary."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/native-headless-event-adapter.ts",
+		"reason": "[docs/protocols/headless.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/native-memory-noop.ts",
+		"reason": "[docs/protocols/headless.md] Historical Node-side hosted/headless implementation removed by the Rust-only runtime migration (#3016, #3017); the status banner and current Rust source-of-truth links identify the replacement boundary."
+	},
+	{
+		"source": "docs/protocols/headless.md",
+		"path": "src/server/native-memory.ts",
+		"reason": "[docs/protocols/headless.md] Historical Node-side hosted/headless implementation removed by the Rust-only runtime migration (#3016, #3017); the status banner and current Rust source-of-truth links identify the replacement boundary."
+	},
+	{
+		"source": "docs/protocols/hosted-runner-contract.md",
+		"path": "test/headless/runtime-conformance.test.ts",
+		"reason": "[docs/protocols/hosted-runner-contract.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/protocols/rpc-protocol-conformance.md",
+		"path": "src/cli/headless-protocol.ts",
+		"reason": "[docs/protocols/rpc-protocol-conformance.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/SAFETY.md",
+		"path": "src/safety/action-firewall.ts",
+		"reason": "[docs/SAFETY.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/agent/action-approval.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/audit",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/auth/jwt.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/auth/sso.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/db/encryption.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/providers/network-config.ts",
+		"reason": "[docs/THREAT_MODEL.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/rbac/permissions.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/safety/action-firewall.ts",
+		"reason": "[docs/THREAT_MODEL.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/safety/policy.ts",
+		"reason": "[docs/THREAT_MODEL.md] Existing dangling reference explicitly preserved while migrating the prior path-global allowlist to source-scoped exemptions; owner review is still required."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/safety/safe-mode.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/safety/semantic-judge.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/sandbox",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/security/directory-access.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/server/rate-limiter.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/tools/background-tasks.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/tools/webfetch.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/utils/path-validation.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/THREAT_MODEL.md",
+		"path": "src/utils/secret-redactor.ts",
+		"reason": "[docs/THREAT_MODEL.md] Design/reference doc predating the Rust-only runtime migration (#3016, #3017); see the \"Status\" banner in the file for the current Rust equivalent (or an explicit \"not found\" note) before this list of stale paths."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "packages/vscode-extension",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "packages/vscode-extension/src/extension.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "packages/vscode-extension/src/sidebar/composerSidebar.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "src/main.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "src/server/client-tools-service.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "src/tools/vscode.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/VSCODE_ARCHITECTURE.md",
+		"path": "src/web-server.ts",
+		"reason": "[docs/VSCODE_ARCHITECTURE.md] Needs owner review; flagged in the doc-path-drift cleanup PR."
+	},
+	{
+		"source": "docs/SESSIONS.md",
+		"path": "src/lib.rs",
+		"reason": "Illustrative handoff example path supplied by a user, not a path in this repository."
+	},
+	{
+		"source": "docs/protocols/a2a-peer-pairing.md",
+		"path": "src/lib.rs",
+		"reason": "Illustrative handoff example path supplied by a user, not a path in this repository."
+	}
+]

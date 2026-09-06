@@ -26,5 +26,5 @@
 mod pricing;
 mod tracker;
 
-pub use pricing::{ModelPricing, PricingTier, DEFAULT_PRICING};
+pub use pricing::{DEFAULT_PRICING, ModelPricing, PricingTier};
 pub use tracker::{CostAlert, SessionUsage, TurnUsage, UsageExport, UsageStats, UsageTracker};

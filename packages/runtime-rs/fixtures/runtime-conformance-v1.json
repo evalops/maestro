@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "evalops.maestro.runtime-conformance.v1",
+  "profile": "hosted-http-sse-v1",
+  "cases": [
+    "startup_identity_and_readiness",
+    "wrong_session_rejected",
+    "file_search_and_read",
+    "harmless_shell_command",
+    "approval_request_and_resolution",
+    "idempotent_response_replay",
+    "drain_terminal_receipt"
+  ]
+}

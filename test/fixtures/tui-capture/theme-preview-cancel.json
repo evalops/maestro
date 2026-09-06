@@ -1,0 +1,38 @@
+{
+  "name": "theme-preview-cancel",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "light"
+    },
+    {
+      "wait": "\u203a light"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "Select Theme"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)\u203a dark.*current"
+    }
+  ]
+}

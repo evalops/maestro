@@ -64,7 +64,7 @@ impl Default for RetryConfig {
         Self {
             max_retries: 3,
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             backoff_multiplier: 2.0,
             jitter_factor: 0.25,
             respect_retry_after: true,
@@ -73,6 +73,22 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
+    /// Create a bounded retry window for unattended hosted turns.
+    ///
+    /// The interactive default stays short, while hosted work can ride out a
+    /// brief provider or network interruption without replaying the turn.
+    #[must_use]
+    pub fn hosted_outage() -> Self {
+        Self {
+            max_retries: 8,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            jitter_factor: 0.25,
+            respect_retry_after: true,
+        }
+    }
+
     /// Create a config for aggressive retrying (more attempts, shorter delays)
     #[must_use]
     pub fn aggressive() -> Self {
@@ -92,7 +108,7 @@ impl RetryConfig {
         Self {
             max_retries: 2,
             initial_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(120),
+            max_delay: Duration::from_mins(2),
             backoff_multiplier: 3.0,
             jitter_factor: 0.3,
             respect_retry_after: true,
@@ -125,6 +141,9 @@ pub enum ErrorKind {
     AuthFailure,
     /// Invalid request - won't succeed on retry
     InvalidRequest,
+    /// Provider quota or usage window is exhausted. Immediate retries cannot
+    /// succeed until the window resets.
+    QuotaExceeded,
     /// Unknown error - default to not retrying
     Unknown,
 }
@@ -135,11 +154,22 @@ impl ErrorKind {
     pub fn classify(error_message: &str) -> Self {
         let lower = error_message.to_lowercase();
 
+        // Quota windows must not be classified as transient "try again"
+        // because Codex usage-limit copy includes a future reset time.
+        if lower.contains("usage limit")
+            || lower.contains("usagelimitexceeded")
+            || lower.contains("quota exceeded")
+            || lower.contains("quota_exceeded")
+            || lower.contains("hit your usage limit")
+        {
+            return ErrorKind::QuotaExceeded;
+        }
+
         // Check for rate limiting first (most specific)
         if lower.contains("rate limit")
             || lower.contains("rate_limit")
             || lower.contains("too many requests")
-            || lower.contains("429")
+            || Self::contains_http_status_code(&lower, "429")
         {
             // Try to extract retry-after time from message
             let retry_after = Self::extract_retry_after(&lower);
@@ -162,8 +192,8 @@ impl ErrorKind {
             || lower.contains("authentication")
             || lower.contains("invalid api key")
             || lower.contains("invalid_api_key")
-            || lower.contains("401")
-            || lower.contains("403")
+            || Self::contains_http_status_code(&lower, "401")
+            || Self::contains_http_status_code(&lower, "403")
         {
             return ErrorKind::AuthFailure;
         }
@@ -172,23 +202,25 @@ impl ErrorKind {
         if lower.contains("invalid request")
             || lower.contains("bad request")
             || lower.contains("malformed")
-            || lower.contains("400")
+            || Self::contains_http_status_code(&lower, "400")
         {
             return ErrorKind::InvalidRequest;
         }
 
         // Check for transient errors
-        if lower.contains("overloaded")
-            || lower.contains("500")
-            || lower.contains("502")
-            || lower.contains("503")
-            || lower.contains("504")
+        if lower.contains("empty_assistant_response")
+            || lower.contains("overloaded")
+            || Self::contains_http_status_code(&lower, "500")
+            || Self::contains_http_status_code(&lower, "502")
+            || Self::contains_http_status_code(&lower, "503")
+            || Self::contains_http_status_code(&lower, "504")
             || lower.contains("service unavailable")
             || lower.contains("server error")
             || lower.contains("internal error")
             || lower.contains("temporarily")
             || lower.contains("try again")
             || lower.contains("timeout")
+            || lower.contains("timed out")
             || lower.contains("connection")
             || lower.contains("network")
         {
@@ -196,6 +228,73 @@ impl ErrorKind {
         }
 
         ErrorKind::Unknown
+    }
+
+    /// Match a three-digit HTTP status only when it is a standalone status or
+    /// is introduced by an explicit status/error/code label. Parser locations,
+    /// record IDs, and larger numbers are not provider status evidence.
+    fn contains_http_status_code(message: &str, code: &str) -> bool {
+        debug_assert!(code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+
+        message.match_indices(code).any(|(start, _)| {
+            let before = &message[..start];
+            let after = &message[start + code.len()..];
+            if before
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric())
+                || after
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_alphanumeric())
+            {
+                return false;
+            }
+
+            let prefix = before.trim_end_matches(|character: char| {
+                character.is_ascii_whitespace()
+                    || matches!(character, ':' | '=' | '(' | '[' | '{' | '"' | '\'')
+            });
+            if prefix.is_empty() {
+                return true;
+            }
+
+            const STATUS_CONTEXTS: &[&str] = &[
+                "http",
+                "http error",
+                "http status",
+                "http status code",
+                "status",
+                "status code",
+                "status_code",
+                "response status",
+                "response status code",
+                "error",
+                "error code",
+                "code",
+            ];
+            STATUS_CONTEXTS.iter().any(|context| {
+                prefix.strip_suffix(context).is_some_and(|leading| {
+                    leading
+                        .chars()
+                        .next_back()
+                        .is_none_or(|character| !character.is_ascii_alphanumeric())
+                })
+            }) || prefix
+                .split_ascii_whitespace()
+                .next_back()
+                .is_some_and(Self::is_http_version)
+        })
+    }
+
+    fn is_http_version(token: &str) -> bool {
+        token.strip_prefix("http/").is_some_and(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+                && version.bytes().any(|byte| byte.is_ascii_digit())
+        })
     }
 
     /// Extract retry-after duration from error message (if present)
@@ -350,6 +449,9 @@ impl RetryPolicy {
                     ErrorKind::InvalidRequest => {
                         "Invalid request - won't succeed on retry".to_string()
                     }
+                    ErrorKind::QuotaExceeded => {
+                        "Provider usage limit reached - not retrying".to_string()
+                    }
                     ErrorKind::Unknown => "Unknown error - not retrying".to_string(),
                     _ => "Error is not retryable".to_string(),
                 },
@@ -474,14 +576,81 @@ mod tests {
     }
 
     #[test]
+    fn numeric_http_status_tokens_retain_their_error_classification() {
+        let cases = [
+            ("429", ErrorKind::RateLimited { retry_after: None }),
+            (
+                "HTTP status 429",
+                ErrorKind::RateLimited { retry_after: None },
+            ),
+            (
+                "HTTP/1.1 429 Too Many Requests",
+                ErrorKind::RateLimited { retry_after: None },
+            ),
+            ("HTTP 400", ErrorKind::InvalidRequest),
+            ("status code 401", ErrorKind::AuthFailure),
+            ("error 403", ErrorKind::AuthFailure),
+            ("HTTP 500", ErrorKind::Transient),
+            ("HTTP/2 503", ErrorKind::Transient),
+            ("response status 502", ErrorKind::Transient),
+            ("status=503", ErrorKind::Transient),
+            ("error code: 504", ErrorKind::Transient),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                ErrorKind::classify(message),
+                expected,
+                "status-bearing message must retain classification: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn incidental_numeric_fields_are_not_http_status_codes() {
+        for message in [
+            "EOF while parsing a value at line 1 column 429",
+            "schema field 400 is absent",
+            "account 401 was not found",
+            "permission record 403 is stale",
+            "batch 500 was rejected",
+            "row 502 is invalid",
+            "job 503 is pending",
+            "column 504 exceeds width",
+            "embedded 1429 must not match 429",
+            "token 429th is not a status",
+            "HTTP 429x is not a status",
+        ] {
+            let kind = ErrorKind::classify(message);
+            assert_eq!(
+                kind,
+                ErrorKind::Unknown,
+                "incidental digits must not classify as an HTTP status: {message}"
+            );
+            assert!(
+                !kind.is_retryable(),
+                "incidental digits must never trigger retry: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn test_error_kind_classify_transient() {
         let kind = ErrorKind::classify("503 Service Unavailable");
+        assert_eq!(kind, ErrorKind::Transient);
+
+        let kind = ErrorKind::classify(
+            "empty_assistant_response: provider completed without text or tool calls",
+        );
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("Internal server error");
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("Connection timeout");
+        assert_eq!(kind, ErrorKind::Transient);
+
+        let kind = ErrorKind::classify("Failed to send request to OpenAI API: operation timed out");
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("API is overloaded");
@@ -522,7 +691,20 @@ mod tests {
         assert!(!ErrorKind::ContextOverflow.is_retryable());
         assert!(!ErrorKind::AuthFailure.is_retryable());
         assert!(!ErrorKind::InvalidRequest.is_retryable());
+        assert!(!ErrorKind::QuotaExceeded.is_retryable());
         assert!(!ErrorKind::Unknown.is_retryable());
+    }
+
+    #[test]
+    fn usage_limit_copy_is_quota_not_transient_try_again() {
+        let kind = ErrorKind::classify(
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.",
+        );
+        assert_eq!(kind, ErrorKind::QuotaExceeded);
+        assert!(!kind.is_retryable());
+
+        let kind = ErrorKind::classify("Codex turn failed (usageLimitExceeded)");
+        assert_eq!(kind, ErrorKind::QuotaExceeded);
     }
 
     #[test]
@@ -539,7 +721,7 @@ mod tests {
     fn test_extract_retry_after_minutes() {
         let kind = ErrorKind::classify("Rate limit exceeded, please wait 2 minutes");
         if let ErrorKind::RateLimited { retry_after } = kind {
-            assert_eq!(retry_after, Some(Duration::from_secs(120)));
+            assert_eq!(retry_after, Some(Duration::from_mins(2)));
         } else {
             panic!("Expected RateLimited");
         }
@@ -577,6 +759,12 @@ mod tests {
         // Context overflow should not retry
         let decision = policy.should_retry(ErrorKind::ContextOverflow);
         assert!(matches!(decision, RetryDecision::GiveUp { .. }));
+
+        let decision = policy.should_retry(ErrorKind::QuotaExceeded);
+        assert!(matches!(
+            decision,
+            RetryDecision::GiveUp { reason } if reason.contains("usage limit")
+        ));
     }
 
     #[test]
@@ -604,7 +792,7 @@ mod tests {
     fn test_retry_policy_respects_retry_after() {
         let config = RetryConfig {
             respect_retry_after: true,
-            max_delay: Duration::from_secs(120),
+            max_delay: Duration::from_mins(2),
             ..Default::default()
         };
         let mut policy = RetryPolicy::new(config);
@@ -632,7 +820,7 @@ mod tests {
         let mut policy = RetryPolicy::new(config);
 
         let error_kind = ErrorKind::RateLimited {
-            retry_after: Some(Duration::from_secs(120)),
+            retry_after: Some(Duration::from_mins(2)),
         };
         let decision = policy.should_retry(error_kind);
 
@@ -651,7 +839,7 @@ mod tests {
             initial_delay: Duration::from_secs(1),
             backoff_multiplier: 2.0,
             jitter_factor: 0.0, // No jitter for deterministic test
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             respect_retry_after: true,
         };
         let mut policy = RetryPolicy::new(config);
@@ -674,6 +862,11 @@ mod tests {
 
     #[test]
     fn test_retry_config_presets() {
+        let hosted_outage = RetryConfig::hosted_outage();
+        assert_eq!(hosted_outage.max_retries, 8);
+        assert_eq!(hosted_outage.initial_delay, Duration::from_secs(1));
+        assert_eq!(hosted_outage.max_delay, Duration::from_secs(30));
+
         let aggressive = RetryConfig::aggressive();
         assert_eq!(aggressive.max_retries, 5);
         assert!(aggressive.initial_delay < Duration::from_secs(1));
@@ -684,6 +877,21 @@ mod tests {
 
         let no_retry = RetryConfig::no_retry();
         assert_eq!(no_retry.max_retries, 0);
+    }
+
+    #[test]
+    fn hosted_outage_retry_budget_is_bounded() {
+        let mut policy = RetryPolicy::new(RetryConfig::hosted_outage());
+        for expected_attempt in 1..=8 {
+            assert!(matches!(
+                policy.should_retry(ErrorKind::Transient),
+                RetryDecision::Retry { attempt, .. } if attempt == expected_attempt
+            ));
+        }
+        assert!(matches!(
+            policy.should_retry(ErrorKind::Transient),
+            RetryDecision::GiveUp { .. }
+        ));
     }
 
     #[test]

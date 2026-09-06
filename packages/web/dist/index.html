@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deixic Code - AI Coding Assistant</title>
+    <meta name="description" content="Modern web interface for the Deixic Code AI coding assistant with session management and tool integration">
+
+    <script src="/theme-bootstrap.js"></script>
+
+    <!-- Preconnect to API -->
+    <link rel="preconnect" href="http://localhost:8080">
+
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2358a6ff'/></svg>">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            color-scheme: dark;
+
+            /* Codex-inspired warm-neutral dark palette */
+            --bg-primary: #1a1b1d;
+            --bg-secondary: #202123;
+            --bg-deep: #161718;
+            --bg-elevated: #232427;
+            --bg-surface: #26282b;
+            --bg-panel: #2c2e31;
+            --bg-panel-alt: #34373a;
+
+            --text-primary: #ececec;
+            --text-secondary: #b4b4b4;
+            --text-tertiary: #8e8e8e;
+
+            --border-primary: #2a2c2f;
+            --border-secondary: #3a3d42;
+            --border-subtle: #1f2022;
+            --border-hover: #4a4d52;
+
+            /* Refined Accents */
+            --accent-amber: #d4a012;
+            --accent-amber-dim: rgba(212, 160, 18, 0.16);
+            --accent-blue: #4f8cf7;
+            --accent-blue-dim: rgba(79, 140, 247, 0.14);
+            --accent-cyan: #06b6d4;
+            --accent-purple: #8b5cf6;
+            --accent-green: #4ade80;
+            --accent-green-dim: rgba(74, 222, 128, 0.12);
+            --accent-yellow: #f59e0b;
+            --accent-yellow-dim: rgba(245, 158, 11, 0.14);
+            --accent-red: #f87171;
+            --accent-red-dim: rgba(248, 113, 113, 0.14);
+
+            /* Typography */
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+            /* Radii */
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+            --radius-xl: 20px;
+
+            /* Shadows - soft & layered */
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.25);
+            --shadow-md: 0 8px 24px -12px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 24px 48px -16px rgba(0, 0, 0, 0.55), 0 8px 16px -8px rgba(0, 0, 0, 0.35);
+        }
+
+        :root[data-theme="light"] {
+            color-scheme: light;
+
+            --bg-primary: #faf9f7;
+            --bg-secondary: #ffffff;
+            --bg-deep: #f3f2ef;
+            --bg-elevated: #ffffff;
+            --bg-surface: #f5f4f1;
+            --bg-panel: #f1f0ec;
+            --bg-panel-alt: #e7e6e1;
+
+            --text-primary: #18181a;
+            --text-secondary: #4b5563;
+            --text-tertiary: #6b7280;
+
+            --border-primary: #e6e4df;
+            --border-secondary: #d6d4ce;
+            --border-subtle: #efedea;
+            --border-hover: #c1bfb9;
+
+            --accent-amber: #c58a05;
+            --accent-amber-dim: rgba(197, 138, 5, 0.14);
+            --accent-blue: #2563eb;
+            --accent-blue-dim: rgba(37, 99, 235, 0.12);
+            --accent-cyan: #0891b2;
+            --accent-purple: #7c3aed;
+            --accent-green: #059669;
+            --accent-green-dim: rgba(5, 150, 105, 0.12);
+            --accent-yellow: #d97706;
+            --accent-yellow-dim: rgba(217, 119, 6, 0.14);
+            --accent-red: #dc2626;
+            --accent-red-dim: rgba(220, 38, 38, 0.12);
+
+            --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+            --shadow-md: 0 8px 24px -12px rgba(15, 23, 42, 0.16), 0 2px 6px -2px rgba(15, 23, 42, 0.08);
+            --shadow-lg: 0 24px 48px -16px rgba(15, 23, 42, 0.22), 0 8px 16px -8px rgba(15, 23, 42, 0.12);
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            selection-background-color: var(--accent-blue-dim);
+        }
+
+        composer-chat {
+            display: block;
+            width: 100%;
+            height: 100vh;
+        }
+
+        /* Loading screen */
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeOut 0.3s ease-out 0.5s forwards;
+        }
+
+        @keyframes fadeOut {
+            to {
+                opacity: 0;
+                visibility: hidden;
+            }
+        }
+
+        .loading-spinner {
+            width: 32px;
+            height: 32px;
+            border: 2px solid var(--border-secondary);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-bottom: 1rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        /* Minimal scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-secondary);
+            border-radius: 0;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-tertiary);
+        }
+
+        ::selection {
+            background: rgba(88, 166, 255, 0.3);
+            color: var(--text-primary);
+        }
+
+        *:focus {
+            outline: none;
+        }
+
+        *:focus-visible {
+            outline: 1px solid var(--accent-blue);
+            outline-offset: -1px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading screen -->
+    <div class="loading-screen">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Loading Deixic Code...</div>
+    </div>
+
+    <!-- Main app -->
+    <composer-chat
+        api-endpoint="http://localhost:8080"
+        model="claude-sonnet-4-5">
+    </composer-chat>
+
+    <script type="module" src="/composer-web.es.js"></script>
+</body>
+</html>

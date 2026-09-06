@@ -1,5 +1,8 @@
 # Headless Control Plane Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Headless/remote runtime code now lives in `packages/tui-rs/src/headless/` and `packages/runtime-gateway-rs`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This document describes the next architectural step for Maestro's headless and remote runtime stack. It builds on the current `src/server/headless-runtime-service.ts` and Rust remote transport work, and uses OpenAI Codex's `codex-rs/app-server` as a reference point for stronger lifecycle and protocol discipline.
 
 ## Overview
@@ -573,7 +576,6 @@ Likely homes:
 
 ## References
 
-- `docs/research/LEARNINGS_CODEX_APP_SERVER.md`
 - `src/server/headless-runtime-service.ts`
 - `src/server/handlers/headless-sessions.ts`
 - `src/server/approval-store.ts`

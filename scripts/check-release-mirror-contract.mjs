@@ -1,0 +1,199 @@
+#!/usr/bin/env node
+
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const manifestPath = ".github/release-mirror-manifest.json";
+const contractPath = ".github/RELEASE_MIRROR_CONTRACT.md";
+
+const requiredCommandSuiteFiles = [];
+
+const requiredReleaseReplayHelperFiles = [
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-observability-query-contract.js",
+	"scripts/smoke-published-replay-e2e.js",
+	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
+];
+
+const forbiddenExactFiles = [];
+
+const forbiddenReleaseMirrorFileMessages = new Map([
+	[
+		"scripts/validate-public-package-deps.js",
+		"scripts/validate-public-package-deps.js is public-only; do not mirror it from internal.",
+	],
+	[
+		"test/scripts/validate-public-package-deps.test.ts",
+		"test/scripts/validate-public-package-deps.test.ts covers the public-only validator; keep it out of the release mirror manifest.",
+	],
+]);
+
+const forbiddenPrefixes = [];
+
+function fail(errors) {
+	console.error("Release mirror contract check failed:");
+	for (const error of errors) {
+		console.error(`- ${error}`);
+	}
+	process.exit(1);
+}
+
+function readManifest() {
+	try {
+		return JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
+	} catch (error) {
+		throw new Error(
+			`Unable to read ${manifestPath}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+function isRepoRelativePath(path) {
+	return (
+		path.length > 0 &&
+		!path.startsWith("/") &&
+		!path.includes("\\") &&
+		!path.split("/").includes("..")
+	);
+}
+
+function isMirroredYamlPath(path) {
+	return (
+		(path.startsWith(".github/actions/") ||
+			path.startsWith(".github/workflows/")) &&
+		/\.ya?ml$/u.test(path)
+	);
+}
+
+function localActionDependencyPath(usesValue) {
+	const match = /^\.\/\.github\/actions\/([^/\s'"]+)$/u.exec(usesValue);
+	return match ? `.github/actions/${match[1]}/action.yml` : null;
+}
+
+function collectLocalActionDependencies(path) {
+	if (!isMirroredYamlPath(path) || !existsSync(resolve(path))) {
+		return [];
+	}
+
+	const content = readFileSync(resolve(path), "utf8");
+	const dependencies = new Set();
+	const usesPattern =
+		/^\s*-?\s*uses:\s*["']?(\.\/\.github\/actions\/[^"'\s#]+)["']?\s*(?:#.*)?$/gmu;
+
+	for (const match of content.matchAll(usesPattern)) {
+		const dependency = localActionDependencyPath(match[1]);
+		if (dependency) {
+			dependencies.add(dependency);
+		}
+	}
+
+	return [...dependencies];
+}
+
+const errors = [];
+
+if (!existsSync(resolve(contractPath))) {
+	errors.push(`Missing ${contractPath}.`);
+}
+
+let manifest;
+try {
+	manifest = readManifest();
+} catch (error) {
+	fail([error instanceof Error ? error.message : String(error)]);
+}
+
+if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+	errors.push(`${manifestPath} must contain a JSON object.`);
+}
+
+const files = Array.isArray(manifest?.files) ? manifest.files : null;
+if (!files) {
+	errors.push(`${manifestPath} must contain a files array.`);
+}
+
+const seen = new Set();
+for (const [index, file] of (files ?? []).entries()) {
+	if (typeof file !== "string") {
+		errors.push(`files[${index}] must be a string.`);
+		continue;
+	}
+
+	if (!isRepoRelativePath(file)) {
+		errors.push(`Mirrored file must be a repo-relative path: ${file}`);
+	}
+
+	if (seen.has(file)) {
+		errors.push(`Duplicate mirrored file: ${file}`);
+	}
+	seen.add(file);
+
+	if (!existsSync(resolve(file))) {
+		errors.push(`Mirrored source file does not exist: ${file}`);
+	}
+}
+
+for (const file of forbiddenExactFiles) {
+	if (seen.has(file)) {
+		errors.push(
+			`${file} is internal-only; split shared code before mirroring it.`,
+		);
+	}
+}
+
+for (const [file, message] of forbiddenReleaseMirrorFileMessages) {
+	if (seen.has(file)) {
+		errors.push(message);
+	}
+}
+
+for (const file of seen) {
+	for (const prefix of forbiddenPrefixes) {
+		if (file.startsWith(prefix)) {
+			errors.push(
+				`${file} is under an internal-only grouped-command surface.`,
+			);
+		}
+	}
+}
+
+for (const file of seen) {
+	for (const dependency of collectLocalActionDependencies(file)) {
+		if (!seen.has(dependency)) {
+			errors.push(
+				`Missing local action dependency for ${file}: ${dependency}`,
+			);
+		}
+	}
+}
+
+const hasCommandSuiteRuntime = false; // TS TUI command suite removed
+
+if (hasCommandSuiteRuntime) {
+	for (const file of requiredCommandSuiteFiles) {
+		if (!seen.has(file)) {
+			errors.push(`Missing command-suite mirror file: ${file}`);
+		}
+	}
+}
+
+const hasReleaseReplayHelper = [...seen].some((file) =>
+	requiredReleaseReplayHelperFiles.includes(file),
+);
+
+if (hasReleaseReplayHelper) {
+	for (const file of requiredReleaseReplayHelperFiles) {
+		if (!seen.has(file)) {
+			errors.push(`Missing release replay mirror file: ${file}`);
+		}
+	}
+}
+
+if (errors.length > 0) {
+	fail(errors);
+}
+
+console.log("Release mirror contract is valid.");

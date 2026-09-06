@@ -41,6 +41,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::details::WebFetchDetails;
+use super::net_guard;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -110,6 +111,25 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
     &input[..end]
 }
 
+fn normalize_web_fetch_url(input: &str) -> Result<reqwest::Url, String> {
+    let parsed = match reqwest::Url::parse(input) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        Ok(_) if !input.contains("://") => reqwest::Url::parse(&format!("https://{input}"))
+            .map_err(|err| format!("Invalid URL: {err}"))?,
+        Ok(url) => url,
+        Err(parse_err) => {
+            if input.starts_with("http://") || input.starts_with("https://") {
+                return Err(format!("Invalid URL: {parse_err}"));
+            }
+            reqwest::Url::parse(&format!("https://{input}"))
+                .map_err(|err| format!("Invalid URL: {err}"))?
+        }
+    };
+
+    net_guard::validate_fetch_url(&parsed)?;
+    Ok(parsed)
+}
+
 /// Arguments for web fetch execution
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebFetchArgs {
@@ -134,8 +154,8 @@ impl WebFetchTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .user_agent("Mozilla/5.0 (compatible; ComposerAgent/1.0)")
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(net_guard::DEFAULT_USER_AGENT)
             .build();
 
         match client {
@@ -183,36 +203,32 @@ impl WebFetchTool {
             return ToolResult::failure("URL is required");
         }
 
-        let client = match &self.client {
-            Some(client) => client,
-            None => {
-                return self.build_init_error(url, start_time);
-            }
-        };
-
-        // Ensure URL has a scheme
-        let url = if !url.starts_with("http://") && !url.starts_with("https://") {
-            format!("https://{url}")
-        } else {
-            url.to_string()
-        };
+        if self.client.is_none() {
+            return self.build_init_error(url, start_time);
+        }
 
         // Parse and validate URL
-        let parsed_url = match reqwest::Url::parse(&url) {
+        let parsed_url = match normalize_web_fetch_url(url) {
             Ok(u) => u,
             Err(e) => {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Invalid URL: {e}"))
-                    .with_details(details.to_json());
+                return ToolResult::failure(e).with_details(details.to_json());
             }
         };
+        let normalized_url = parsed_url.to_string();
 
-        // Fetch the URL
-        let response = match client.get(parsed_url.clone()).send().await {
+        // Fetch the URL, validating and pinning each hop before connecting.
+        let response = match net_guard::fetch_with_validated_redirects(
+            parsed_url.clone(),
+            std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            net_guard::DEFAULT_USER_AGENT,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(&normalized_url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 return ToolResult::failure(format!("Failed to fetch URL: {e}"))
                     .with_details(details.to_json());
@@ -223,10 +239,10 @@ impl WebFetchTool {
         let status = response.status();
         let final_url = response.url().to_string();
         if !status.is_success() {
-            let mut details = WebFetchDetails::new(&url)
+            let mut details = WebFetchDetails::new(&normalized_url)
                 .with_status(status.as_u16())
                 .with_duration(start_time.elapsed().as_millis() as u64);
-            if final_url != url {
+            if final_url != normalized_url {
                 details = details.with_final_url(&final_url);
             }
             return ToolResult::failure(format!(
@@ -248,7 +264,7 @@ impl WebFetchTool {
         // Check content-length before reading (if provided)
         if let Some(length) = response.content_length() {
             if length as usize > MAX_BODY_SIZE {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(&normalized_url)
                     .with_status(status.as_u16())
                     .with_content_type(&content_type)
                     .with_body_size(length as usize)
@@ -268,7 +284,7 @@ impl WebFetchTool {
                 Ok(bytes) => {
                     let new_size = body_bytes.len() + bytes.len();
                     if new_size > MAX_BODY_SIZE {
-                        let details = WebFetchDetails::new(&url)
+                        let details = WebFetchDetails::new(&normalized_url)
                             .with_status(status.as_u16())
                             .with_content_type(&content_type)
                             .with_body_size(new_size)
@@ -281,7 +297,7 @@ impl WebFetchTool {
                     body_bytes.extend_from_slice(&bytes);
                 }
                 Err(e) => {
-                    let details = WebFetchDetails::new(&url)
+                    let details = WebFetchDetails::new(&normalized_url)
                         .with_status(status.as_u16())
                         .with_content_type(&content_type)
                         .with_duration(start_time.elapsed().as_millis() as u64);
@@ -323,7 +339,7 @@ impl WebFetchTool {
         };
 
         // Build WebFetchDetails
-        let mut details = WebFetchDetails::new(&url)
+        let mut details = WebFetchDetails::new(&normalized_url)
             .with_status(status.as_u16())
             .with_content_type(&content_type)
             .with_body_size(body_bytes.len())
@@ -331,7 +347,7 @@ impl WebFetchTool {
         if truncated {
             details = details.with_truncation();
         }
-        if final_url != url {
+        if final_url != normalized_url {
             details = details.with_final_url(&final_url);
         }
         if let Some(ref prompt) = args.prompt {
@@ -709,6 +725,30 @@ mod tests {
         let normalized = format!("https://{}", url);
         assert_eq!(normalized, "https://example.com");
     }
+
+    #[test]
+    fn test_normalize_rejects_non_http_schemes() {
+        let err = normalize_web_fetch_url("file:///etc/passwd").unwrap_err();
+        assert!(err.contains("Unsupported URL scheme"));
+    }
+
+    #[test]
+    fn test_normalize_allows_scheme_less_host_and_port() {
+        let url = normalize_web_fetch_url("example.com:8080").unwrap();
+        assert_eq!(url.as_str(), "https://example.com:8080/");
+    }
+
+    #[test]
+    fn test_normalize_allows_scheme_less_ipv6_host_and_port() {
+        let url = normalize_web_fetch_url("[2001:db8::1]:8080").unwrap();
+        assert_eq!(url.as_str(), "https://[2001:db8::1]:8080/");
+    }
+
+    // Redirect-target validation, IP-blocklist coverage (including the
+    // CGNAT/Tailscale and IPv4-mapped-IPv6 regression cases), and
+    // `resolve_public_endpoint` literal-address rejection now live in
+    // `super::net_guard::tests` alongside the shared implementation used by
+    // both `web_fetch` and `extract_document`.
 
     #[tokio::test]
     async fn test_execute_empty_url() {

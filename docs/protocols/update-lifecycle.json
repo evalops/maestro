@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "evalops.maestro.update-lifecycle.v1",
+  "commands": {
+    "status": {
+      "usage": "maestro update status [--channel stable|beta|alpha] [--json]",
+      "jsonSchema": {
+        "schemaVersion": "evalops.maestro.update-status.v1",
+        "state": "available|current|failed|unavailable",
+        "channel": "stable|beta|alpha",
+        "activeVersion": "string|null",
+        "currentVersion": "string|null",
+        "latestVersion": "string|null",
+        "installMethod": "release|package|null",
+        "updateSource": "string|null",
+        "channelVerification": {
+          "channel": "stable|beta|alpha",
+          "manifestUrl": "string",
+          "keyId": "string|null",
+          "algorithm": "ed25519|null",
+          "status": "verified|legacyFallback|invalid",
+          "fallback": "string|null",
+          "error": "string|null"
+        },
+        "releaseNotes": "string|null",
+        "releaseReceipt": "object|null",
+        "lastAttempt": "object|null; attempts include trigger=\"startup\"|\"manual\"",
+        "retry": {
+          "windowMs": "integer",
+          "lastAttemptAtMs": "integer|null",
+          "nextAttemptAtMs": "integer|null",
+          "retryAfterMs": "integer|null",
+          "throttled": "boolean"
+        },
+        "verification": "object|null",
+        "historyPath": "string|null",
+        "checkError": "string|null"
+      }
+    },
+    "history": {
+      "usage": "maestro update history [--json]",
+      "jsonSchema": {
+        "schemaVersion": "evalops.maestro.update-history.v1",
+        "historyPath": "string|null",
+        "attempts": "array, newest entries are retained within a maximum of 32"
+      }
+    },
+    "rollback": {
+      "usage": "maestro update rollback [version] [--json]",
+      "jsonSchema": {
+        "schemaVersion": "evalops.maestro.update-status.v1",
+        "status": "rolledBack",
+        "fromVersion": "string",
+        "activeVersion": "string",
+        "attempt": "object|null",
+        "verification": "object|null",
+        "historyError": "string|null; rollback still completed when only bookkeeping failed",
+        "launcherWarning": "string|null; launcher was replaced but parent-directory durability sync reported an error"
+      },
+      "eligibility": [
+        "native release install only",
+        "target is older than the active version",
+        "target has a verified evalops.maestro.install-receipt.v1",
+        "target web archive is retained and matches verification.webSha256",
+        "target binary is retained; extracted web assets may be rebuilt from the verified archive",
+        "optional release metadata must also have a verified checksum when present"
+      ]
+    },
+    "apply": {
+      "usage": "maestro update [--channel stable|beta|alpha] [--check] [--json]",
+      "jsonSchema": {
+        "status": "available|current|updated|failed",
+        "channel": "stable|beta|alpha",
+        "currentVersion": "string",
+        "latestVersion": "string|null",
+        "sourceUrl": "string",
+        "releaseNotes": "string|null",
+        "releaseTag": "string|null",
+        "releaseUrl": "string|null",
+        "releaseReceipt": "object|null",
+        "attemptId": "string|null",
+        "verification": "object|null",
+        "error": "string|null"
+      }
+    }
+  },
+  "persistence": {
+    "historyFile": "update-history.json",
+    "maximumAttempts": 32,
+    "receiptFile": "install-receipt.json",
+    "releaseMetadataFile": "release-metadata.json",
+    "receiptSchema": "evalops.maestro.install-receipt.v1",
+    "releaseMetadataSchema": "evalops.maestro.release-metadata.v1",
+    "releaseReceiptSchema": "evalops.maestro.release-receipt.v1",
+    "channelManifestSchema": "evalops.maestro.release-channel.v1",
+    "channelManifestSignature": "ed25519/base64",
+    "channelManifestSource": {
+      "releaseListUrl": "https://api.github.com/repos/evalops/maestro/releases",
+      "releaseAsset": "channel-manifest.json",
+      "legacyPointerBase": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels"
+    }
+  }
+}

@@ -134,7 +134,12 @@ fn sentence_case(value: &str) -> String {
     }
 }
 
-fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<String> {
+fn summarize_known_tool(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    completed: bool,
+) -> Option<String> {
+    let tense = |past: &'static str, present: &'static str| if completed { past } else { present };
     let normalized = tool_name.trim().to_lowercase();
     let file_path = get_string_arg(
         args,
@@ -158,19 +163,23 @@ fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<St
             short_path_label(file_path.as_deref().unwrap_or("file"))
         )),
         "write" | "append" | "create_file" | "createfile" => Some(format!(
-            "Wrote {}",
+            "{} {}",
+            tense("Wrote", "Write"),
             short_path_label(file_path.as_deref().unwrap_or("file"))
         )),
         "edit" | "multi_edit" | "str_replace_based_edit" | "apply_patch" => Some(format!(
-            "Edited {}",
+            "{} {}",
+            tense("Edited", "Edit"),
             short_path_label(file_path.as_deref().unwrap_or("file"))
         )),
         "delete" | "remove" | "unlink" => Some(format!(
-            "Deleted {}",
+            "{} {}",
+            tense("Deleted", "Delete"),
             short_path_label(file_path.as_deref().unwrap_or("file"))
         )),
         "list" | "ls" => Some(format!(
-            "Listed {}",
+            "{} {}",
+            tense("Listed", "List"),
             short_path_label(
                 directory
                     .as_deref()
@@ -179,25 +188,35 @@ fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<St
             )
         )),
         "glob" => Some(if let Some(pattern) = pattern {
-            format!("Matched {}", quote_label(&pattern, 32))
+            format!(
+                "{} {}",
+                tense("Matched", "Match"),
+                quote_label(&pattern, 32)
+            )
         } else {
             format!(
-                "Scanned {}",
+                "{} {}",
+                tense("Scanned", "Scan"),
                 short_path_label(directory.as_deref().unwrap_or("workspace"))
             )
         }),
         "grep" | "search" | "search_files" => Some(if let Some(pattern) = pattern {
-            format!("Searched for {}", quote_label(&pattern, 32))
+            format!(
+                "{} for {}",
+                tense("Searched", "Search"),
+                quote_label(&pattern, 32)
+            )
         } else {
-            "Searched files".to_string()
+            format!("{} files", tense("Searched", "Search"))
         }),
         "bash" | "shell" | "exec_command" => Some(if let Some(command) = command {
-            format!("Ran {}", truncate_label(&command, 52))
+            format!("{} {}", tense("Ran", "Run"), truncate_label(&command, 52))
         } else {
-            "Ran command".to_string()
+            format!("{} command", tense("Ran", "Run"))
         }),
         "webfetch" | "fetch" | "open" => Some(format!(
-            "Fetched {}",
+            "{} {}",
+            tense("Fetched", "Fetch"),
             short_url_label(
                 url.as_deref()
                     .or(file_path.as_deref())
@@ -205,11 +224,15 @@ fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<St
             )
         )),
         "websearch" | "search_query" => Some(if let Some(pattern) = pattern {
-            format!("Searched web for {}", quote_label(&pattern, 32))
+            format!(
+                "{} web for {}",
+                tense("Searched", "Search"),
+                quote_label(&pattern, 32)
+            )
         } else {
-            "Searched web".to_string()
+            format!("{} web", tense("Searched", "Search"))
         }),
-        "todo" => Some("Updated task list".to_string()),
+        "todo" => Some(format!("{} task list", tense("Updated", "Update"))),
         "batch" => {
             let calls = args
                 .get("tool_uses")
@@ -222,19 +245,23 @@ fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<St
                 );
 
             Some(if calls > 0 {
-                format!("Ran {calls} tool call{}", if calls == 1 { "" } else { "s" })
+                format!(
+                    "{} {calls} tool call{}",
+                    tense("Ran", "Run"),
+                    if calls == 1 { "" } else { "s" }
+                )
             } else {
-                "Ran tool batch".to_string()
+                format!("{} tool batch", tense("Ran", "Run"))
             })
         }
         "background_tasks" => {
             let action = get_string_arg(args, &["action"]);
             Some(match action.as_deref() {
-                Some("start") => "Started background task".to_string(),
-                Some("stop") => "Stopped background task".to_string(),
-                Some("logs") => "Viewed background logs".to_string(),
-                Some("list") => "Listed background tasks".to_string(),
-                _ => "Checked background tasks".to_string(),
+                Some("start") => format!("{} background task", tense("Started", "Start")),
+                Some("stop") => format!("{} background task", tense("Stopped", "Stop")),
+                Some("logs") => format!("{} background logs", tense("Viewed", "View")),
+                Some("list") => format!("{} background tasks", tense("Listed", "List")),
+                _ => format!("{} background tasks", tense("Checked", "Check")),
             })
         }
         _ => None,
@@ -244,7 +271,7 @@ fn summarize_known_tool(tool_name: &str, args: &Map<String, Value>) -> Option<St
 #[must_use]
 pub fn summarize_tool_use(tool_name: &str, args: &Value) -> String {
     if let Some(object) = args.as_object() {
-        if let Some(known) = summarize_known_tool(tool_name, object) {
+        if let Some(known) = summarize_known_tool(tool_name, object, true) {
             return sentence_case(&known);
         }
     }
@@ -255,10 +282,48 @@ pub fn summarize_tool_use(tool_name: &str, args: &Value) -> String {
     ))
 }
 
+/// Describe an action without claiming it has already executed.
+#[must_use]
+pub fn summarize_tool_intent(tool_name: &str, args: &Value) -> String {
+    if let Some(object) = args.as_object() {
+        if let Some(known) = summarize_known_tool(tool_name, object, false) {
+            return sentence_case(&known);
+        }
+    }
+    format!("Run {}", truncate_label(&humanize_tool_name(tool_name), 40))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::summarize_tool_use;
+    use super::{summarize_tool_intent, summarize_tool_use};
     use serde_json::json;
+
+    #[test]
+    fn intent_does_not_claim_pending_actions_have_executed() {
+        for (tool, args, intent, completed) in [
+            (
+                "bash",
+                json!({"command":"printf hello"}),
+                "Run printf hello",
+                "Ran printf hello",
+            ),
+            (
+                "write",
+                json!({"path":"README.md"}),
+                "Write README.md",
+                "Wrote README.md",
+            ),
+            (
+                "delete",
+                json!({"path":"old.txt"}),
+                "Delete old.txt",
+                "Deleted old.txt",
+            ),
+        ] {
+            assert_eq!(summarize_tool_intent(tool, &args), intent);
+            assert_eq!(summarize_tool_use(tool, &args), completed);
+        }
+    }
 
     #[test]
     fn summarizes_file_reads_by_basename() {

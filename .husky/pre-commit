@@ -1,16 +1,22 @@
 #!/bin/sh
-# Note: husky runs hooks with sh, so we exec bash for full functionality
-exec bash -euo pipefail -c '
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
+set -eu
 
-# Keep Rust TUI formatting consistent with CI when Cargo is available.
-if command -v cargo >/dev/null 2>&1; then
-	cargo fmt --manifest-path "$ROOT/packages/tui-rs/Cargo.toml" -- --check
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+if ! command -v cargo >/dev/null 2>&1; then
+	echo "error: cargo is required to commit Maestro changes." >&2
+	exit 1
 fi
 
-# Run Composer Guardian (secrets + CI hygiene) before heavier tasks.
-bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
+for manifest in \
+	packages/maestro-rs/Cargo.toml \
+	packages/runtime-gateway-rs/Cargo.toml \
+	packages/tui-rs/Cargo.toml \
+	packages/ambient-agent-rs/Cargo.toml
+do
+	echo "rustfmt: checking $manifest"
+	cargo fmt --manifest-path "$manifest" -- --check
+done
 
-bun run bun:lint && bun run build && bun run bun:compile
-'
+node scripts/check-rust-only-runtime.mjs

@@ -1,60 +1,121 @@
 name: GHCR Publish
 
+# Image receipts are consumed by the authoritative evalops/k8s runtime lane.
+
 on:
-  pull_request:
   push:
     branches:
       - main
 
+# Main image publishes rewrite the shared `main`/`latest` tags. Cancelling an
+# in-flight push when the next mirror lands leaves incomplete blobs and produces
+# intermittent GHCR 403 / "blob not found" failures.
 concurrency:
-  group: ghcr-publish-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ghcr-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: ghcr.io/evalops/maestro
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
+  publish-image:
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
+    # Internal main-push image builds can take longer than the public mirror on
+    # the private runner because the Rust control-plane layer compiles there.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
+      # Use the org/repo owner as the GHCR username. github.actor can be a bot or
+      # human depending on the merge path; the linked package is org-scoped and
+      # GITHUB_TOKEN package write is granted for the repository, not the actor.
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build image
-        uses: docker/build-push-action@v6
+      # Push immutable sha- tags first so a race on mutable main/latest tags does
+      # not drop the only reference to this build. Then move main/latest.
+      - name: Build and push immutable image tag
+        id: push-sha
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Retag main and latest from the immutable digest
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          SOURCE_SHA: ${{ github.sha }}
+          DIGEST: ${{ steps.push-sha.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::Build/push did not produce an image digest."
+            exit 1
+          fi
+          short_sha="${SOURCE_SHA:0:7}"
+          source_ref="${IMAGE_NAME}@${DIGEST}"
+          # Retries absorb intermittent GHCR intermediary 403s without rebuilding.
+          attempt=1
+          until docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:main" \
+            --tag "${IMAGE_NAME}:latest" \
+            --tag "${IMAGE_NAME}:sha-${short_sha}" \
+            "${source_ref}"; do
+            if [[ "$attempt" -ge 4 ]]; then
+              echo "::error::Failed to retag ${source_ref} after ${attempt} attempts."
+              exit 1
+            fi
+            echo "::warning::GHCR retag attempt ${attempt} failed; retrying..."
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+          echo "Published ${source_ref} as main, latest, and sha-${short_sha}."
+
+      # The receipt is consumed by K8s; keep this dispatch explicit for auditability.
+      - name: Dispatch K8s GitOps image sync
+        env:
+          GH_TOKEN: ${{ secrets.RUNTIME_IMAGE_SYNC_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "::notice::RUNTIME_IMAGE_SYNC_TOKEN is not configured; skipping evalops/k8s image sync dispatch. K8s catch-up remains available."
+            exit 0
+          fi
+
+          image_tag="sha-${SOURCE_SHA:0:7}"
+          gh api \
+            --method POST \
+            repos/evalops/k8s/dispatches \
+            -f event_type=maestro_runtime_image_published \
+            -f "client_payload[source_sha]=${SOURCE_SHA}" \
+            -f "client_payload[image_tag]=${image_tag}"

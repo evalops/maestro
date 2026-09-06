@@ -1,6 +1,6 @@
 //! # Application State Module
 //!
-//! This module manages the central state of the Composer TUI application.
+//! This module manages the central state of the Maestro TUI application.
 //! It contains all mutable data that changes during program execution,
 //! including messages, UI state, and agent status.
 //!
@@ -22,6 +22,8 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::time::{Instant, SystemTime};
 // `Instant` is for measuring elapsed time (monotonic clock - always goes forward)
 // `SystemTime` is wall-clock time (can go backwards if system time changes)
@@ -29,13 +31,14 @@ use std::time::{Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{FromAgent, TokenUsage};
-use crate::kill_ring::{next_word_start, previous_word_start, KillRing};
+use crate::agent::{ExecutionStatus, FromAgent, TokenUsage};
+use crate::kill_ring::{KillRing, next_word_start, previous_word_start};
 use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
-use crate::components::textarea::TextArea;
+use crate::components::message_layout::{MessageLayout, MessageLayoutCache};
+use crate::components::textarea::{PASTE_FOLD_MIN_CHARS, PASTE_FOLD_MIN_LINES, TextArea};
 // Our multi-line text input component
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,6 +123,67 @@ impl Message {
     }
 }
 
+#[cfg(test)]
+mod codex_status_tests {
+    use super::*;
+
+    #[test]
+    fn compact_codex_status_keeps_active_turn_over_metadata() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::CodexSessionState {
+            state: "resumed".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            profile: "work".to_owned(),
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex resumed work thread-abcd")
+        );
+
+        state.handle_agent_message(FromAgent::CodexTurnState {
+            state: "streaming".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            turn_id: Some("turn-1234567890".to_owned()),
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex streaming thread-abcd turn-123456")
+        );
+
+        state.handle_agent_message(FromAgent::CodexCompatibility {
+            protocol_version: "2025-01-01".to_owned(),
+            resume: false,
+            steering: false,
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex streaming thread-abcd turn-123456")
+        );
+    }
+
+    #[test]
+    fn interrupted_codex_status_does_not_lock_out_later_session_state() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::CodexTurnState {
+            state: "interrupted".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            turn_id: Some("turn-1234567890".to_owned()),
+        });
+        state.handle_agent_message(FromAgent::CodexSessionState {
+            state: "reconnecting".to_owned(),
+            thread_id: "thread-fedcba0987654321".to_owned(),
+            profile: "work".to_owned(),
+        });
+
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex reconnecting work thread-fedc")
+        );
+    }
+}
+
 /// Who sent the message.
 ///
 /// # Rust Concepts Used
@@ -147,6 +211,8 @@ pub enum MessageKind {
     Regular,
     System,
     CompactionBoundary,
+    SideQuestion,
+    SideAnswer,
 }
 
 /// State of a tool call.
@@ -190,6 +256,7 @@ pub struct ToolCallState {
 ///    |          |
 ///    v          v
 ///  (rejected)  Failed
+///               Cancelled (Ctrl+C / SIGINT, exit 130)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCallStatus {
@@ -208,6 +275,10 @@ pub enum ToolCallStatus {
     /// Tool execution failed.
     /// Output contains error information.
     Failed,
+
+    /// Tool was cancelled mid-execution (Ctrl+C interrupt).
+    /// Bash reports this as exit code 130 (SIGINT).
+    Cancelled,
 
     /// Tool was blocked by a hook.
     /// A `PreToolUse` hook prevented execution (e.g., safety check).
@@ -233,6 +304,10 @@ pub enum ApprovalMode {
     /// Auto-approve ALL tool calls without asking.
     /// Fast but dangerous - a malicious prompt could run `rm -rf /`.
     /// Only use when you fully trust the conversation.
+    ///
+    /// The single exception: a `bypass_sandbox: true` bash call still asks,
+    /// because waiving the native sandbox must always be an explicit human
+    /// decision (see `ToolExecutor::requires_sandbox_bypass_approval`).
     Yolo,
 
     /// Approve based on tool/command risk (default).
@@ -282,9 +357,12 @@ impl ApprovalMode {
     pub fn parse(s: &str) -> Option<Self> {
         // Convert to lowercase for case-insensitive matching
         match s.to_lowercase().as_str() {
-            "yolo" | "auto" | "trust" => Some(ApprovalMode::Yolo),
-            "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
-            "safe" | "always" | "paranoid" => Some(ApprovalMode::Safe),
+            "yolo" | "trust" | "always-approve" | "always_approve" | "alwaysapprove" => {
+                Some(ApprovalMode::Yolo)
+            }
+            // "auto" ≈ Grok auto (safe tools free, risky may prompt)
+            "auto" | "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
+            "safe" | "ask" | "always" | "paranoid" => Some(ApprovalMode::Safe),
             _ => None, // Unknown mode - return None, not an error
         }
     }
@@ -304,6 +382,50 @@ impl ApprovalMode {
             ApprovalMode::Yolo => ApprovalMode::Selective,
             ApprovalMode::Selective => ApprovalMode::Safe,
             ApprovalMode::Safe => ApprovalMode::Yolo,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERACTION MODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// High-level interaction mode selected with explicit commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InteractionMode {
+    /// Normal agenting with selective approvals
+    #[default]
+    Normal,
+    /// Plan mode: require a todo/plan before mutating tools
+    Plan,
+    /// Always-approve (YOLO) — skip tool approval prompts
+    AlwaysApprove,
+}
+
+impl InteractionMode {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Plan => "plan",
+            Self::AlwaysApprove => "always-approve",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Normal => Self::Plan,
+            Self::Plan => Self::AlwaysApprove,
+            Self::AlwaysApprove => Self::Normal,
+        }
+    }
+
+    #[must_use]
+    pub fn approval_mode(self) -> ApprovalMode {
+        match self {
+            Self::Normal | Self::Plan => ApprovalMode::Selective,
+            Self::AlwaysApprove => ApprovalMode::Yolo,
         }
     }
 }
@@ -365,6 +487,11 @@ impl QueueMode {
 
 /// Main application state.
 ///
+/// Maximum number of alerts retained in [`AppState::alerts`].
+/// Older alerts are dropped first so a flaky provider cannot grow memory
+/// unbounded during a long session.
+pub const MAX_ALERT_HISTORY: usize = 50;
+
 /// This struct holds ALL mutable state for the application. Everything that
 /// can change during program execution lives here. This centralized approach
 /// makes it easy to understand what data exists and how it can change.
@@ -385,6 +512,9 @@ pub struct AppState {
     /// Ordered chronologically (oldest first).
     /// We use `Vec` because we frequently append and iterate, rarely remove.
     pub messages: Vec<Message>,
+
+    /// Exact transcript heights reused across immutable Ratatui render passes.
+    message_layout_cache: RefCell<MessageLayoutCache>,
 
     /// Input text area for composing messages.
     /// Supports multi-line editing with cursor movement.
@@ -415,6 +545,10 @@ pub struct AppState {
     /// Displayed in the status bar for context.
     pub git_branch: Option<String>,
 
+    /// Configured context-window capacity for the active model.
+    /// Used by the session header; absent when the provider did not expose one.
+    pub context_window: Option<u64>,
+
     /// Current session ID for persistence.
     /// Used to resume this conversation later.
     pub session_id: Option<String>,
@@ -432,6 +566,13 @@ pub struct AppState {
     /// Transient messages like "Copied to clipboard".
     pub status: Option<String>,
 
+    /// Live terminal-theme state driven by typed OSC/DEC replies.
+    pub theme_follower: Option<crate::themes::osc11::AutoThemeFollower>,
+    /// Last time the app requested the terminal's current theme.
+    pub last_theme_query: Option<Instant>,
+    /// Whether DEC light/dark reporting is supported by this terminal.
+    pub theme_reporting_available: bool,
+
     /// Scroll offset for the message list.
     /// Higher values scroll further up (show older messages).
     pub scroll_offset: usize,
@@ -441,9 +582,28 @@ pub struct AppState {
     /// Using `HashSet` for O(1) contains/insert/remove operations.
     pub expanded_tool_calls: std::collections::HashSet<String>,
 
+    /// Whether tool-bearing assistant turns render as a single summary row.
+    pub focus_view: bool,
+
+    /// Message IDs whose tool calls remain fully visible while Focus view is on.
+    pub expanded_focus_turns: std::collections::HashSet<String>,
+
+    /// Tool-bearing turn selected for keyboard inspection in Focus view.
+    pub focus_selected_turn: Option<String>,
+
     /// Error message to display.
     /// Shown prominently in the UI when set.
     pub error: Option<String>,
+
+    /// History of alerts (agent/API errors) recorded this session.
+    /// Backs the status-bar `alerts:N` badge and the `/alerts` command so an
+    /// alert is inspectable after it scrolls off or is replaced.
+    /// Bounded to [`MAX_ALERT_HISTORY`] entries (oldest dropped first).
+    pub alerts: VecDeque<String>,
+
+    /// Number of recorded alerts not yet viewed via `/alerts`.
+    /// Drives the status-bar `alerts:N` badge.
+    pub unseen_alerts: usize,
 
     /// Current thinking header (extracted from **Header** in thinking text).
     /// Shown while the model is thinking to indicate what it's working on.
@@ -451,6 +611,7 @@ pub struct AppState {
 
     /// Current thinking level for runtime badges and UI hints.
     pub thinking_level: ThinkingLevel,
+    pub boost_status: crate::model_dynamics::BoostStatus,
 
     /// Full thinking buffer for the current response.
     /// Private because it's only used internally for header extraction.
@@ -467,6 +628,8 @@ pub struct AppState {
     /// Current approval mode for tool execution.
     /// Controls whether tools run automatically or require approval.
     pub approval_mode: ApprovalMode,
+    /// Grok-style interaction mode (Normal / Plan / Always-approve)
+    pub interaction_mode: InteractionMode,
 
     /// Queue mode for steering prompts while running.
     pub steering_mode: QueueMode,
@@ -500,6 +663,16 @@ pub struct AppState {
 
     /// Cached MCP failed server count for runtime badges.
     pub mcp_failed: usize,
+
+    /// Ghost-text suffix for the current slash-command inline completion.
+    /// Rendered dimmed after the cursor; accepted with Right/End at end of input.
+    /// `None` when there is nothing worth suggesting.
+    pub ghost_completion: Option<String>,
+
+    /// Whether an unknown slash command is forwarded to the agent as a prompt.
+    /// Sourced from `tui.slash_command_fallback` in the config; defaults to true
+    /// (the historical behavior).
+    pub unknown_slash_command_fallback: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,7 +714,8 @@ impl AppState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            messages: Vec::new(),      // Empty message list
+            messages: Vec::new(), // Empty message list
+            message_layout_cache: RefCell::new(MessageLayoutCache::default()),
             textarea: TextArea::new(), // Empty input area
             input_width: 1,            // Default width until first render
             input_preferred_col: None,
@@ -551,36 +725,90 @@ impl AppState {
             provider: None,   // No provider yet
             cwd: None,        // No working directory
             git_branch: None, // Not in a git repo (yet)
+            context_window: None,
             session_id: None, // No session yet
             busy: false,      // Not processing
             busy_since: None, // No timer running
             status: None,     // No status message
+            theme_follower: None,
+            last_theme_query: None,
+            theme_reporting_available: false,
             scroll_offset: 0, // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
-            error: None,           // No error
+            focus_view: false,
+            expanded_focus_turns: std::collections::HashSet::new(),
+            focus_selected_turn: None,
+            error: None, // No error
+            alerts: VecDeque::new(),
+            unseen_alerts: 0,
             thinking_header: None, // No thinking in progress
             thinking_level: ThinkingLevel::Off,
+            boost_status: crate::model_dynamics::BoostStatus::Idle,
             thinking_buffer: String::new(),
             zen_mode: false,                        // Full UI by default
-            compact_tool_outputs: false,            // Expanded tool output by default
+            compact_tool_outputs: true, // Short previews; expand individual results on demand
             approval_mode: ApprovalMode::default(), // Selective mode
-            steering_mode: QueueMode::default(),    // Queue steering by default
-            follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
-            queued_prompt_count: 0,                 // No queued prompts
-            queued_steering_count: 0,               // No queued steering prompts
-            queued_follow_up_count: 0,              // No queued follow-up prompts
+            interaction_mode: InteractionMode::default(),
+            steering_mode: QueueMode::default(), // Queue steering by default
+            follow_up_mode: QueueMode::default(), // Queue follow-ups by default
+            queued_prompt_count: 0,              // No queued prompts
+            queued_steering_count: 0,            // No queued steering prompts
+            queued_follow_up_count: 0,           // No queued follow-up prompts
             queued_steering_preview: Vec::new(),
             queued_follow_up_preview: Vec::new(),
             queued_follow_up_edit_binding_label: "Alt+Up".to_string(),
             mcp_connected: 0,
             mcp_tool_count: 0,
             mcp_failed: 0,
+            ghost_completion: None,
+            unknown_slash_command_fallback: true,
         }
     }
 
     /// Update cached input width (inner width of the input box).
     pub fn set_input_width(&mut self, width: u16) {
         self.input_width = width.max(1);
+    }
+
+    /// Record an alert (e.g. an agent/API error) for later inspection.
+    ///
+    /// The full message is retained so `/alerts` can show what the status-bar
+    /// `alerts:N` badge is counting. Bumps `unseen_alerts` until the user
+    /// views the list.
+    pub fn record_alert(&mut self, message: String) {
+        if self.alerts.len() >= MAX_ALERT_HISTORY {
+            self.alerts.pop_front();
+        }
+        self.alerts.push_back(message);
+        self.unseen_alerts = self.unseen_alerts.saturating_add(1);
+    }
+
+    /// Mark all recorded alerts as seen (after `/alerts` lists them).
+    pub fn mark_alerts_seen(&mut self) {
+        self.unseen_alerts = 0;
+    }
+
+    pub(crate) fn prepare_message_layout<F>(
+        &self,
+        width: u16,
+        settings_key: u64,
+        messages: &[&Message],
+        measure: F,
+    ) -> MessageLayout
+    where
+        F: FnMut(usize) -> usize,
+    {
+        self.message_layout_cache.borrow_mut().prepare_messages(
+            width,
+            settings_key,
+            messages,
+            measure,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transcript_layout_measurements(&self) -> usize {
+        self.message_layout_cache.borrow().measurements()
     }
 
     /// Get elapsed time since the agent became busy (in seconds).
@@ -621,6 +849,55 @@ impl AppState {
     /// we add a handler for it.
     pub fn handle_agent_message(&mut self, msg: FromAgent) {
         match msg {
+            // Private durable provider state is not interactive UI state.
+            FromAgent::ConversationSnapshot { .. } => {}
+            // Managed receipts are forwarded to headless consumers but carry
+            // no interactive UI content.
+            FromAgent::ManagedGatewayReceipt { .. } => {}
+            // Accounting only: reported so a caller metering model output can
+            // charge Codex-native operations, which never arrive as `ToolCall`.
+            // It carries no text to display and needs no response.
+            FromAgent::CodexNativeOperation { .. }
+            | FromAgent::CodexNativeDecision { .. }
+            | FromAgent::CodexTransportReceipt { .. } => {}
+            FromAgent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => {
+                self.set_codex_status_if_useful(compact_codex_session_status(
+                    &state, &thread_id, &profile,
+                ));
+            }
+            FromAgent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => {
+                self.status = Some(compact_codex_turn_status(
+                    &state,
+                    &thread_id,
+                    turn_id.as_deref(),
+                ));
+            }
+            FromAgent::CodexUsageState { usage, .. } => {
+                if let Some(usage) = usage {
+                    if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.streaming) {
+                        msg.usage = Some(usage);
+                    }
+                }
+            }
+            FromAgent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => {
+                self.set_codex_status_if_useful(compact_codex_compatibility_status(
+                    &protocol_version,
+                    resume,
+                    steering,
+                ));
+            }
             // Agent is ready with its model info
             FromAgent::Ready { model, provider } => {
                 self.model = Some(model);
@@ -629,6 +906,12 @@ impl AppState {
                 self.busy_since = None;
             }
 
+            FromAgent::BoostChanged { status, thinking } => {
+                self.boost_status = status;
+                if let Some(thinking) = thinking {
+                    self.thinking_level = thinking;
+                }
+            }
             FromAgent::ModelChanged { model, provider } => {
                 self.status = Some(format!("Model: {model}"));
                 self.model = Some(model);
@@ -690,12 +973,28 @@ impl AppState {
                     msg.streaming = false;
                     msg.usage = usage;
                 }
-                self.busy = false;
-                self.busy_since = None;
-
                 // Clear thinking state for next response
                 self.thinking_header = None;
                 self.thinking_buffer.clear();
+            }
+
+            FromAgent::TurnCompleted { .. } | FromAgent::TurnInterrupted { .. } => {
+                self.busy = false;
+                self.busy_since = None;
+            }
+
+            FromAgent::SideQuestionStart { standalone, .. } => {
+                if standalone {
+                    self.busy = true;
+                    self.busy_since.get_or_insert_with(Instant::now);
+                }
+            }
+            FromAgent::SideQuestionChunk { .. } => {}
+            FromAgent::SideQuestionEnd { standalone, .. } => {
+                if standalone {
+                    self.busy = false;
+                    self.busy_since = None;
+                }
             }
 
             // Agent wants to call a tool
@@ -704,6 +1003,7 @@ impl AppState {
                 tool,
                 args,
                 requires_approval,
+                ..
             } => {
                 // Add tool call to the most recent assistant message
                 // `.rev()` iterates in reverse order (newest first)
@@ -746,10 +1046,20 @@ impl AppState {
             }
 
             // Tool finished
-            FromAgent::ToolEnd { call_id, success } => {
+            FromAgent::ToolEnd {
+                call_id,
+                success,
+                receipt,
+                ..
+            } => {
                 self.update_tool_status(
                     &call_id,
-                    if success {
+                    if matches!(
+                        receipt.as_ref().map(|receipt| receipt.status),
+                        Some(ExecutionStatus::Cancelled { .. })
+                    ) {
+                        ToolCallStatus::Cancelled
+                    } else if success {
                         ToolCallStatus::Completed
                     } else {
                         ToolCallStatus::Failed
@@ -776,7 +1086,22 @@ impl AppState {
             }
 
             // Error occurred
-            FromAgent::Error { message, fatal: _ } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+                ..
+            } => {
+                self.record_alert(message.clone());
+                self.error = Some(message);
+                if fatal || terminal {
+                    self.busy = false;
+                    self.busy_since = None;
+                }
+            }
+
+            FromAgent::ProviderError { message, .. } => {
+                self.record_alert(message.clone());
                 self.error = Some(message);
                 self.busy = false;
                 self.busy_since = None;
@@ -831,6 +1156,51 @@ impl AppState {
         }
     }
 
+    /// Mark a tool call as started (executing).
+    ///
+    /// Used when the TUI executes the tool itself on a spawned task: the
+    /// agent never emits `ToolStart` for these calls, so without this the
+    /// transcript row would sit at `Pending` for the whole execution.
+    pub fn start_tool_call(&mut self, call_id: &str) {
+        self.update_tool_status(call_id, ToolCallStatus::Running);
+    }
+
+    /// Mark a tool call as completed and attach its output.
+    pub fn complete_tool_call(&mut self, call_id: &str, output: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in &mut msg.tool_calls {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Completed;
+                    if !output.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push('\n');
+                        }
+                        tc.output.push_str(output);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Mark a tool call as cancelled (Ctrl+C interrupt, exit code 130).
+    pub fn cancel_tool_call(&mut self, call_id: &str, note: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in &mut msg.tool_calls {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Cancelled;
+                    if !note.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push('\n');
+                        }
+                        tc.output.push_str(note);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     /// Mark a tool call as failed with an error note.
     ///
     /// Used when we reject a tool call locally (e.g., user declined approval).
@@ -876,6 +1246,38 @@ impl AppState {
         self.busy = true;
         self.busy_since = Some(Instant::now());
         id
+    }
+
+    /// Add a visually distinct question that is not part of main history.
+    pub fn add_side_question(&mut self, id: String, content: String) {
+        self.messages.push(Message {
+            id,
+            role: MessageRole::User,
+            kind: MessageKind::SideQuestion,
+            content,
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+    }
+
+    /// Add a visually distinct answer that is not part of main history.
+    pub fn add_side_answer(&mut self, id: String, content: String, streaming: bool) {
+        self.messages.push(Message {
+            id,
+            role: MessageRole::Assistant,
+            kind: MessageKind::SideAnswer,
+            content,
+            thinking: String::new(),
+            streaming,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -943,13 +1345,51 @@ impl AppState {
         self.input_preferred_col = None;
     }
 
+    /// Insert pasted text at the cursor position.
+    ///
+    /// Carriage returns are stripped to normalize line endings. The full
+    /// pasted content is always stored (submission stays byte-identical);
+    /// when the paste is large (more than `PASTE_FOLD_MIN_LINES` lines or
+    /// `PASTE_FOLD_MIN_CHARS` bytes) it is folded into a `[Pasted: N lines]`
+    /// chip in the display only.
+    pub fn insert_paste(&mut self, raw: &str) {
+        let pasted: String = raw.chars().filter(|c| *c != '\r').collect();
+        if pasted.is_empty() {
+            return;
+        }
+        self.kill_chain_active = false;
+        self.kill_ring.reset_rotation();
+        let start = self.textarea.cursor();
+        let mut text = self.textarea.text().to_string();
+        text.insert_str(start, &pasted);
+        self.textarea.set_text(&text);
+        let end = start + pasted.len();
+        self.textarea.set_cursor(end);
+        self.input_preferred_col = None;
+        let lines = pasted.matches('\n').count() + 1;
+        if lines > PASTE_FOLD_MIN_LINES || pasted.len() > PASTE_FOLD_MIN_CHARS {
+            self.textarea.add_paste_fold(start..end, lines);
+        }
+    }
+
     /// Delete the character before the cursor (Backspace key).
     ///
-    /// Handles multi-byte UTF-8 characters correctly.
+    /// Handles multi-byte UTF-8 characters correctly. When the cursor is
+    /// right at the end of a folded paste, the whole pasted block is
+    /// deleted as a unit.
     pub fn backspace(&mut self) {
         self.reset_kill_state();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
+            // Unit-delete a folded paste sitting right before the cursor.
+            if let Some(range) = self.textarea.fold_ending_at(cursor) {
+                let mut new_text = self.textarea.text().to_string();
+                new_text.replace_range(range.clone(), "");
+                self.textarea.set_text(&new_text);
+                self.textarea.set_cursor(range.start);
+                self.input_preferred_col = None;
+                return;
+            }
             let text = self.textarea.text();
             // Find the byte length of the previous character
             let prev = text[..cursor]
@@ -1281,6 +1721,13 @@ impl AppState {
         input
     }
 
+    /// Exchange the complete editor, preserving cursor and folded paste content.
+    pub fn swap_input_editor(&mut self, editor: &mut TextArea) {
+        std::mem::swap(&mut self.textarea, editor);
+        self.input_preferred_col = None;
+        self.reset_kill_state();
+    }
+
     /// Set the input text directly (e.g., for command history).
     pub fn set_input(&mut self, text: &str) {
         self.textarea.set_text(text);
@@ -1407,6 +1854,7 @@ impl AppState {
                 thinking_expanded: false,
             },
         );
+        self.prune_focus_turn_state();
     }
 
     /// Toggle whether thinking is expanded for a message.
@@ -1462,6 +1910,122 @@ impl AppState {
             !toggled
         }
     }
+
+    /// Set Focus view explicitly and return the resulting state.
+    pub fn set_focus_view(&mut self, enabled: bool) -> bool {
+        self.focus_view = enabled;
+        self.prune_focus_turn_state();
+        if enabled && self.focus_selected_turn.is_none() {
+            self.focus_selected_turn = self
+                .messages
+                .iter()
+                .rev()
+                .find(|message| !message.tool_calls.is_empty())
+                .map(|message| message.id.clone());
+        }
+        self.focus_view
+    }
+
+    pub fn clear_focus_turn_state(&mut self) {
+        self.expanded_focus_turns.clear();
+        self.focus_selected_turn = None;
+    }
+
+    pub fn prune_focus_turn_state(&mut self) {
+        let available = self
+            .messages
+            .iter()
+            .filter(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.expanded_focus_turns
+            .retain(|message_id| available.contains(message_id.as_str()));
+        if self
+            .focus_selected_turn
+            .as_deref()
+            .is_some_and(|message_id| !available.contains(message_id))
+        {
+            self.focus_selected_turn = None;
+        }
+    }
+
+    pub fn select_previous_focus_turn(&mut self) -> bool {
+        self.move_focus_selection(-1)
+    }
+
+    pub fn select_next_focus_turn(&mut self) -> bool {
+        self.move_focus_selection(1)
+    }
+
+    fn move_focus_selection(&mut self, direction: isize) -> bool {
+        let ids = self
+            .messages
+            .iter()
+            .filter(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.focus_selected_turn = None;
+            return false;
+        }
+        let current = self
+            .focus_selected_turn
+            .as_ref()
+            .and_then(|selected| ids.iter().position(|id| id == selected))
+            .unwrap_or(ids.len() - 1);
+        let next = current
+            .saturating_add_signed(direction)
+            .min(ids.len().saturating_sub(1));
+        self.focus_selected_turn = Some(ids[next].clone());
+        true
+    }
+
+    pub fn toggle_selected_focus_turn(&mut self) -> bool {
+        let Some(message_id) = self.focus_selected_turn.clone() else {
+            return self.toggle_latest_focus_turn();
+        };
+        self.toggle_focus_turn(&message_id);
+        true
+    }
+
+    /// Toggle Focus view and return the resulting state.
+    pub fn toggle_focus_view(&mut self) -> bool {
+        self.set_focus_view(!self.focus_view)
+    }
+
+    /// Toggle full tool rendering for one message while Focus view is enabled.
+    pub fn toggle_focus_turn(&mut self, message_id: &str) {
+        if !self.expanded_focus_turns.remove(message_id) {
+            self.expanded_focus_turns.insert(message_id.to_string());
+        }
+    }
+
+    /// Toggle the most recent turn containing tool calls.
+    pub fn toggle_latest_focus_turn(&mut self) -> bool {
+        let Some(message_id) = self
+            .messages
+            .iter()
+            .rev()
+            .find(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.clone())
+        else {
+            return false;
+        };
+
+        self.toggle_focus_turn(&message_id);
+        true
+    }
+
+    fn set_codex_status_if_useful(&mut self, status: String) {
+        if self
+            .status
+            .as_deref()
+            .is_some_and(is_active_codex_turn_status)
+        {
+            return;
+        }
+        self.status = Some(status);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1497,1164 +2061,129 @@ fn extract_thinking_header(text: &str) -> Option<String> {
     None
 }
 
+fn compact_codex_session_status(state: &str, thread_id: &str, profile: &str) -> String {
+    format!("Codex {state} {profile} {}", short_codex_id(thread_id))
+}
+
+fn compact_codex_turn_status(state: &str, thread_id: &str, turn_id: Option<&str>) -> String {
+    match turn_id {
+        Some(turn_id) => format!(
+            "Codex {state} {} {}",
+            short_codex_id(thread_id),
+            short_codex_id(turn_id)
+        ),
+        None => format!("Codex {state} {}", short_codex_id(thread_id)),
+    }
+}
+
+fn compact_codex_compatibility_status(
+    protocol_version: &str,
+    resume: bool,
+    steering: bool,
+) -> String {
+    let optional = match (resume, steering) {
+        (true, true) => "full",
+        (false, true) => "no-resume",
+        (true, false) => "no-steer",
+        (false, false) => "no-resume/no-steer",
+    };
+    format!("Codex protocol {protocol_version} {optional}")
+}
+
+fn is_active_codex_turn_status(status: &str) -> bool {
+    status.starts_with("Codex accepted ")
+        || status.starts_with("Codex streaming ")
+        || status.starts_with("Codex steering ")
+}
+
+fn short_codex_id(value: &str) -> String {
+    value.chars().take(11).collect()
+}
+
 #[cfg(test)]
-mod tests {
+mod focus_view_tests {
     use super::*;
 
-    // ============================================================
-    // Message and MessageRole Tests
-    // ============================================================
-
-    #[test]
-    fn test_message_role_equality() {
-        assert_eq!(MessageRole::User, MessageRole::User);
-        assert_eq!(MessageRole::Assistant, MessageRole::Assistant);
-        assert_ne!(MessageRole::User, MessageRole::Assistant);
-    }
-
-    #[test]
-    fn test_message_role_copy() {
-        let role = MessageRole::User;
-        let copied = role; // Copy, not move
-        assert_eq!(role, copied);
-    }
-
-    #[test]
-    fn test_tool_call_status_transitions() {
-        assert_eq!(ToolCallStatus::Pending, ToolCallStatus::Pending);
-        assert_ne!(ToolCallStatus::Pending, ToolCallStatus::Running);
-        assert_ne!(ToolCallStatus::Running, ToolCallStatus::Completed);
-        assert_ne!(ToolCallStatus::Completed, ToolCallStatus::Failed);
-    }
-
-    // ============================================================
-    // ApprovalMode Tests
-    // ============================================================
-
-    #[test]
-    fn test_approval_mode_default() {
-        assert_eq!(ApprovalMode::default(), ApprovalMode::Selective);
-    }
-
-    #[test]
-    fn test_approval_mode_parse() {
-        // Yolo mode aliases
-        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("trust"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("YOLO"), Some(ApprovalMode::Yolo)); // case insensitive
-
-        // Selective mode aliases
-        assert_eq!(
-            ApprovalMode::parse("selective"),
-            Some(ApprovalMode::Selective)
-        );
-        assert_eq!(
-            ApprovalMode::parse("default"),
-            Some(ApprovalMode::Selective)
-        );
-        assert_eq!(ApprovalMode::parse("normal"), Some(ApprovalMode::Selective));
-
-        // Safe mode aliases
-        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
-        assert_eq!(ApprovalMode::parse("always"), Some(ApprovalMode::Safe));
-        assert_eq!(ApprovalMode::parse("paranoid"), Some(ApprovalMode::Safe));
-
-        // Invalid
-        assert_eq!(ApprovalMode::parse("invalid"), None);
-        assert_eq!(ApprovalMode::parse(""), None);
-    }
-
-    #[test]
-    fn test_approval_mode_next_cycle() {
-        assert_eq!(ApprovalMode::Yolo.next(), ApprovalMode::Selective);
-        assert_eq!(ApprovalMode::Selective.next(), ApprovalMode::Safe);
-        assert_eq!(ApprovalMode::Safe.next(), ApprovalMode::Yolo);
-    }
-
-    #[test]
-    fn test_approval_mode_label() {
-        assert!(ApprovalMode::Yolo.label().contains("YOLO"));
-        assert!(ApprovalMode::Selective.label().contains("Selective"));
-        assert!(ApprovalMode::Safe.label().contains("Safe"));
-    }
-
-    #[test]
-    fn test_queue_mode_parse() {
-        assert_eq!(QueueMode::parse("all"), Some(QueueMode::All));
-        assert_eq!(QueueMode::parse("one"), Some(QueueMode::One));
-        assert_eq!(QueueMode::parse("single"), Some(QueueMode::One));
-        assert_eq!(QueueMode::parse("unknown"), None);
-    }
-
-    // ============================================================
-    // AppState Creation Tests
-    // ============================================================
-
-    #[test]
-    fn test_app_state_new() {
-        let state = AppState::new();
-        assert!(state.messages.is_empty());
-        assert!(state.model.is_none());
-        assert!(state.provider.is_none());
-        assert!(state.cwd.is_none());
-        assert!(state.git_branch.is_none());
-        assert!(state.session_id.is_none());
-        assert!(!state.busy);
-        assert!(state.busy_since.is_none());
-        assert!(state.status.is_none());
-        assert_eq!(state.scroll_offset, 0);
-        assert!(state.expanded_tool_calls.is_empty());
-        assert!(state.error.is_none());
-        assert!(state.thinking_header.is_none());
-        assert!(!state.zen_mode);
-        assert_eq!(state.approval_mode, ApprovalMode::Selective);
-        assert_eq!(state.steering_mode, QueueMode::All);
-        assert_eq!(state.follow_up_mode, QueueMode::All);
-    }
-
-    #[test]
-    fn test_app_state_default() {
-        let state = AppState::default();
-        assert!(state.messages.is_empty());
-    }
-
-    // ============================================================
-    // Text Input Tests (UTF-8 handling)
-    // ============================================================
-
-    #[test]
-    fn test_insert_char_ascii() {
-        let mut state = AppState::new();
-        state.insert_char('h');
-        state.insert_char('i');
-        assert_eq!(state.input(), "hi");
-        assert_eq!(state.cursor(), 2);
-    }
-
-    #[test]
-    fn test_insert_char_unicode() {
-        let mut state = AppState::new();
-        state.insert_char('こ');
-        state.insert_char('ん');
-        assert_eq!(state.input(), "こん");
-        // Each Japanese char is 3 bytes in UTF-8
-        assert_eq!(state.cursor(), 6);
-    }
-
-    #[test]
-    fn test_insert_char_emoji() {
-        let mut state = AppState::new();
-        state.insert_char('🎉');
-        assert_eq!(state.input(), "🎉");
-        // Emoji is 4 bytes in UTF-8
-        assert_eq!(state.cursor(), 4);
-    }
-
-    #[test]
-    fn test_insert_str() {
-        let mut state = AppState::new();
-        state.insert_str("hello");
-        assert_eq!(state.input(), "hello");
-        assert_eq!(state.cursor(), 5);
-    }
-
-    #[test]
-    fn test_insert_str_unicode() {
-        let mut state = AppState::new();
-        state.insert_str("日本語");
-        assert_eq!(state.input(), "日本語");
-        assert_eq!(state.cursor(), 9); // 3 chars * 3 bytes
-    }
-
-    #[test]
-    fn test_backspace_ascii() {
-        let mut state = AppState::new();
-        state.set_input("hello");
-        state.backspace();
-        assert_eq!(state.input(), "hell");
-        assert_eq!(state.cursor(), 4);
-    }
-
-    #[test]
-    fn test_backspace_unicode() {
-        let mut state = AppState::new();
-        state.set_input("日本語");
-        state.backspace();
-        assert_eq!(state.input(), "日本");
-        assert_eq!(state.cursor(), 6); // 2 remaining chars * 3 bytes
-    }
-
-    #[test]
-    fn test_backspace_emoji() {
-        let mut state = AppState::new();
-        state.set_input("hi🎉");
-        state.backspace();
-        assert_eq!(state.input(), "hi");
-        assert_eq!(state.cursor(), 2);
-    }
-
-    #[test]
-    fn test_backspace_at_start() {
-        let mut state = AppState::new();
-        state.set_input("hi");
-        state.move_home();
-        state.backspace(); // Should do nothing
-        assert_eq!(state.input(), "hi");
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_delete_ascii() {
-        let mut state = AppState::new();
-        state.set_input("hello");
-        state.move_home();
-        state.delete();
-        assert_eq!(state.input(), "ello");
-    }
-
-    #[test]
-    fn test_delete_at_end() {
-        let mut state = AppState::new();
-        state.set_input("hi");
-        state.delete(); // Cursor at end, should do nothing
-        assert_eq!(state.input(), "hi");
-    }
-
-    #[test]
-    fn test_move_left_ascii() {
-        let mut state = AppState::new();
-        state.set_input("abc");
-        state.move_left();
-        assert_eq!(state.cursor(), 2);
-        state.move_left();
-        assert_eq!(state.cursor(), 1);
-    }
-
-    #[test]
-    fn test_move_left_unicode() {
-        let mut state = AppState::new();
-        state.set_input("日本");
-        // Cursor at end (6 bytes)
-        state.move_left();
-        assert_eq!(state.cursor(), 3); // After first char
-        state.move_left();
-        assert_eq!(state.cursor(), 0); // At start
-    }
-
-    #[test]
-    fn test_move_left_at_start() {
-        let mut state = AppState::new();
-        state.set_input("hi");
-        state.move_home();
-        state.move_left(); // Should stay at 0
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_move_right_ascii() {
-        let mut state = AppState::new();
-        state.set_input("abc");
-        state.move_home();
-        state.move_right();
-        assert_eq!(state.cursor(), 1);
-        state.move_right();
-        assert_eq!(state.cursor(), 2);
-    }
-
-    #[test]
-    fn test_move_right_unicode() {
-        let mut state = AppState::new();
-        state.set_input("日本");
-        state.move_home();
-        state.move_right();
-        assert_eq!(state.cursor(), 3); // Past first 3-byte char
-        state.move_right();
-        assert_eq!(state.cursor(), 6); // At end
-    }
-
-    #[test]
-    fn test_move_right_at_end() {
-        let mut state = AppState::new();
-        state.set_input("hi");
-        state.move_right(); // Should stay at end
-        assert_eq!(state.cursor(), 2);
-    }
-
-    #[test]
-    fn test_move_home_end() {
-        let mut state = AppState::new();
-        state.set_input("hello world");
-        assert_eq!(state.cursor(), 11); // At end after set_input
-        state.move_home();
-        assert_eq!(state.cursor(), 0);
-        state.move_end();
-        assert_eq!(state.cursor(), 11);
-    }
-
-    #[test]
-    fn test_move_home_smart_toggle() {
-        let mut state = AppState::new();
-        state.set_input("  hello");
-        state.move_end();
-        state.move_home_smart();
-        assert_eq!(state.cursor(), 2);
-        state.move_home_smart();
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_move_word_left_across_lines() {
-        let mut state = AppState::new();
-        state.set_input("hello\nworld");
-        state.textarea.set_cursor(6); // start of second line
-        state.move_word_left();
-        assert_eq!(state.cursor(), 5); // end of "hello"
-    }
-
-    #[test]
-    fn test_move_word_right_across_lines() {
-        let mut state = AppState::new();
-        state.set_input("hello\nworld");
-        state.textarea.set_cursor(5); // end of first line
-        state.move_word_right();
-        assert_eq!(state.cursor(), 11); // end of "world"
-    }
-
-    #[test]
-    fn test_move_word_left_unicode() {
-        let mut state = AppState::new();
-        state.set_input("hi 🙂 there");
-        state.move_word_left();
-        let text = state.input().to_string();
-        assert_eq!(&text[state.cursor()..], "there");
-        state.move_word_left();
-        assert_eq!(state.cursor(), text.find('🙂').unwrap());
-    }
-
-    #[test]
-    fn test_delete_word_backward() {
-        let mut state = AppState::new();
-        state.set_input("hello world");
-        state.delete_word_backward();
-        assert_eq!(state.input(), "hello ");
-        assert_eq!(state.cursor(), 6);
-    }
-
-    #[test]
-    fn test_delete_to_start_of_line_merges() {
-        let mut state = AppState::new();
-        state.set_input("hello\nworld");
-        state.textarea.set_cursor(6); // start of second line
-        state.delete_to_start_of_line();
-        assert_eq!(state.input(), "helloworld");
-        assert_eq!(state.cursor(), 5);
-    }
-
-    #[test]
-    fn test_yank_kill_ring() {
-        let mut state = AppState::new();
-        state.set_input("hello world");
-        state.delete_word_backward();
-        state.yank_kill_ring();
-        assert_eq!(state.input(), "hello world");
-        assert_eq!(state.cursor(), 11);
-    }
-
-    #[test]
-    fn test_kill_ring_appends_consecutive_kills() {
-        let mut state = AppState::new();
-        state.set_input("hello world test");
-        // Kill "test"
-        state.delete_word_backward();
-        // Consecutive kill should append (prepend for backward kill)
-        state.delete_word_backward();
-        state.yank_kill_ring();
-        assert_eq!(state.input(), "hello world test");
-    }
-
-    #[test]
-    fn test_move_up_down_wrapped_lines() {
-        let mut state = AppState::new();
-        state.set_input_width(5);
-        state.set_input("0123456789");
-        assert_eq!(state.cursor(), 10);
-        state.move_up();
-        assert_eq!(state.cursor(), 5);
-        state.move_down();
-        assert_eq!(state.cursor(), 10);
-    }
-
-    #[test]
-    fn test_take_input() {
-        let mut state = AppState::new();
-        state.set_input("hello");
-        let taken = state.take_input();
-        assert_eq!(taken, "hello");
-        assert_eq!(state.input(), "");
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_set_input_moves_cursor_to_end() {
-        let mut state = AppState::new();
-        state.set_input("hello");
-        assert_eq!(state.cursor(), 5);
-    }
-
-    // ============================================================
-    // Mixed UTF-8 Text Editing Tests
-    // ============================================================
-
-    #[test]
-    fn test_insert_in_middle_of_unicode() {
-        let mut state = AppState::new();
-        state.set_input("日語"); // 6 bytes total
-        state.move_home();
-        state.move_right(); // After first char (position 3)
-        state.insert_char('本'); // Insert in middle
-        assert_eq!(state.input(), "日本語");
-    }
-
-    #[test]
-    fn test_backspace_mixed_content() {
-        let mut state = AppState::new();
-        state.set_input("a日b本c");
-        state.backspace(); // Delete 'c'
-        assert_eq!(state.input(), "a日b本");
-        state.backspace(); // Delete '本'
-        assert_eq!(state.input(), "a日b");
-        state.backspace(); // Delete 'b'
-        assert_eq!(state.input(), "a日");
-    }
-
-    #[test]
-    fn test_cursor_movement_through_mixed_content() {
-        let mut state = AppState::new();
-        state.set_input("a日b"); // 'a' = 1 byte, '日' = 3 bytes, 'b' = 1 byte = 5 bytes total
-        state.move_home();
-        assert_eq!(state.cursor(), 0);
-        state.move_right(); // Past 'a'
-        assert_eq!(state.cursor(), 1);
-        state.move_right(); // Past '日'
-        assert_eq!(state.cursor(), 4);
-        state.move_right(); // Past 'b'
-        assert_eq!(state.cursor(), 5);
-    }
-
-    // ============================================================
-    // Message Management Tests
-    // ============================================================
-
-    #[test]
-    fn test_add_user_message() {
-        let mut state = AppState::new();
-        let id = state.add_user_message("Hello!".to_string());
-
-        assert!(!id.is_empty());
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].content, "Hello!");
-        assert_eq!(state.messages[0].role, MessageRole::User);
-        assert!(!state.messages[0].streaming);
-        assert!(state.busy);
-        assert!(state.busy_since.is_some());
-    }
-
-    #[test]
-    fn test_add_system_message() {
-        let mut state = AppState::new();
-        state.add_system_message("System info".to_string());
-
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].content, "System info");
-        assert_eq!(state.messages[0].role, MessageRole::Assistant);
-        assert_eq!(state.messages[0].kind, MessageKind::System);
-        assert!(!state.messages[0].streaming);
-    }
-
-    #[test]
-    fn test_toggle_thinking() {
-        let mut state = AppState::new();
-        let id = state.add_user_message("test".to_string());
-
-        // Initially not expanded
-        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
-        assert!(!msg.thinking_expanded);
-
-        // Toggle on
-        state.toggle_thinking(&id);
-        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
-        assert!(msg.thinking_expanded);
-
-        // Toggle off
-        state.toggle_thinking(&id);
-        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
-        assert!(!msg.thinking_expanded);
-    }
-
-    #[test]
-    fn test_toggle_thinking_nonexistent_id() {
-        let mut state = AppState::new();
-        state.add_user_message("test".to_string());
-
-        // Should not panic
-        state.toggle_thinking("nonexistent-id");
-    }
-
-    // ============================================================
-    // Scroll Tests
-    // ============================================================
-
-    #[test]
-    fn test_scroll_up() {
-        let mut state = AppState::new();
-        state.scroll_offset = 10;
-        state.scroll_up(3);
-        assert_eq!(state.scroll_offset, 7);
-    }
-
-    #[test]
-    fn test_scroll_up_saturating() {
-        let mut state = AppState::new();
-        state.scroll_offset = 2;
-        state.scroll_up(10); // Should not go below 0
-        assert_eq!(state.scroll_offset, 0);
-    }
-
-    #[test]
-    fn test_scroll_down() {
-        let mut state = AppState::new();
-        state.scroll_down(5);
-        assert_eq!(state.scroll_offset, 5);
-    }
-
-    #[test]
-    fn test_scroll_down_saturating() {
-        let mut state = AppState::new();
-        state.scroll_offset = usize::MAX - 5;
-        state.scroll_down(10); // Should saturate at MAX
-        assert_eq!(state.scroll_offset, usize::MAX);
-    }
-
-    // ============================================================
-    // Tool Call Expansion Tests
-    // ============================================================
-
-    #[test]
-    fn test_toggle_tool_call() {
-        let mut state = AppState::new();
-        let call_id = "call-123";
-
-        // Default: expanded when compact mode is off
-        assert!(state.is_tool_call_expanded(call_id));
-
-        state.toggle_tool_call(call_id);
-        assert!(!state.is_tool_call_expanded(call_id));
-
-        state.toggle_tool_call(call_id);
-        assert!(state.is_tool_call_expanded(call_id));
-
-        // Compact mode flips default to collapsed
-        state.compact_tool_outputs = true;
-        state.expanded_tool_calls.clear();
-        assert!(!state.is_tool_call_expanded(call_id));
-
-        state.toggle_tool_call(call_id);
-        assert!(state.is_tool_call_expanded(call_id));
-    }
-
-    #[test]
-    fn test_multiple_tool_calls_expanded() {
-        let mut state = AppState::new();
-        state.compact_tool_outputs = true;
-
-        state.toggle_tool_call("call-1");
-        state.toggle_tool_call("call-2");
-
-        assert!(state.is_tool_call_expanded("call-1"));
-        assert!(state.is_tool_call_expanded("call-2"));
-        assert!(!state.is_tool_call_expanded("call-3"));
-    }
-
-    // ============================================================
-    // Elapsed Time Tests
-    // ============================================================
-
-    #[test]
-    fn test_elapsed_busy_secs_not_busy() {
-        let state = AppState::new();
-        assert_eq!(state.elapsed_busy_secs(), 0);
-    }
-
-    #[test]
-    fn test_elapsed_busy_secs_when_busy() {
-        let mut state = AppState::new();
-        state.busy = true;
-        state.busy_since = Some(Instant::now());
-        // Should be 0 or very small (just started)
-        assert!(state.elapsed_busy_secs() < 2);
-    }
-
-    #[test]
-    fn test_can_queue_follow_up_shortcut_requires_busy_queueable_non_command_input() {
-        let mut state = AppState::new();
-        state.textarea.set_text("follow-up");
-        assert!(!state.can_queue_follow_up_shortcut());
-
-        state.busy = true;
-        state.follow_up_mode = QueueMode::One;
-        assert!(!state.can_queue_follow_up_shortcut());
-
-        state.follow_up_mode = QueueMode::All;
-        state.textarea.set_text("/help");
-        assert!(!state.can_queue_follow_up_shortcut());
-
-        state.textarea.set_text("!ls");
-        assert!(!state.can_queue_follow_up_shortcut());
-
-        state.textarea.set_text("   ");
-        assert!(!state.can_queue_follow_up_shortcut());
-
-        state.textarea.set_text("follow-up");
-        assert!(state.can_queue_follow_up_shortcut());
-    }
-
-    // ============================================================
-    // Tool Call State Tests
-    // ============================================================
-
-    #[test]
-    fn test_fail_tool_call() {
-        let mut state = AppState::new();
-
-        // Add a message with a tool call
-        state.messages.push(Message {
-            id: "msg-1".to_string(),
+    fn tool_message(id: &str) -> Message {
+        Message {
+            id: id.to_string(),
             role: MessageRole::Assistant,
             kind: MessageKind::Regular,
             content: String::new(),
             thinking: String::new(),
             streaming: false,
             tool_calls: vec![ToolCallState {
-                call_id: "call-1".to_string(),
-                tool: "bash".to_string(),
-                args: serde_json::json!({"command": "ls"}),
-                status: ToolCallStatus::Pending,
+                call_id: format!("call-{id}"),
+                tool: "read".to_string(),
+                args: serde_json::json!({ "file_path": "Cargo.toml" }),
+                status: ToolCallStatus::Completed,
                 output: String::new(),
             }],
             usage: None,
-            timestamp: SystemTime::now(),
+            timestamp: SystemTime::UNIX_EPOCH,
             thinking_expanded: false,
-        });
-
-        state.fail_tool_call("call-1", "User rejected");
-
-        let tc = &state.messages[0].tool_calls[0];
-        assert_eq!(tc.status, ToolCallStatus::Failed);
-        assert!(tc.output.contains("User rejected"));
+        }
     }
 
     #[test]
-    fn test_fail_tool_call_with_existing_output() {
+    fn focus_view_defaults_off_and_toggles_explicitly() {
         let mut state = AppState::new();
 
+        assert!(!state.focus_view);
+        assert!(state.toggle_focus_view());
+        assert!(state.focus_view);
+        assert!(!state.set_focus_view(false));
+    }
+
+    #[test]
+    fn latest_focus_turn_toggle_uses_the_latest_tool_bearing_message() {
+        let mut state = AppState::new();
+        state.messages.push(tool_message("first"));
         state.messages.push(Message {
-            id: "msg-1".to_string(),
+            id: "text-only".to_string(),
             role: MessageRole::Assistant,
             kind: MessageKind::Regular,
-            content: String::new(),
-            thinking: String::new(),
-            streaming: false,
-            tool_calls: vec![ToolCallState {
-                call_id: "call-1".to_string(),
-                tool: "bash".to_string(),
-                args: serde_json::json!({}),
-                status: ToolCallStatus::Running,
-                output: "partial output".to_string(),
-            }],
-            usage: None,
-            timestamp: SystemTime::now(),
-            thinking_expanded: false,
-        });
-
-        state.fail_tool_call("call-1", "Timeout");
-
-        let tc = &state.messages[0].tool_calls[0];
-        assert_eq!(tc.status, ToolCallStatus::Failed);
-        assert!(tc.output.contains("partial output"));
-        assert!(tc.output.contains("Timeout"));
-    }
-
-    #[test]
-    fn test_fail_tool_call_nonexistent() {
-        let mut state = AppState::new();
-        state.add_user_message("test".to_string());
-
-        // Should not panic
-        state.fail_tool_call("nonexistent", "error");
-    }
-
-    // ============================================================
-    // Handle Agent Message Tests
-    // ============================================================
-
-    #[test]
-    fn test_handle_ready_message() {
-        let mut state = AppState::new();
-        state.busy = true;
-
-        state.handle_agent_message(FromAgent::Ready {
-            model: "claude-3".to_string(),
-            provider: "anthropic".to_string(),
-        });
-
-        assert_eq!(state.model, Some("claude-3".to_string()));
-        assert_eq!(state.provider, Some("anthropic".to_string()));
-        assert!(!state.busy);
-    }
-
-    #[test]
-    fn test_handle_response_start() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        assert!(state.busy);
-        assert!(state.busy_since.is_some());
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.messages[0].id, "resp-1");
-        assert_eq!(state.messages[0].role, MessageRole::Assistant);
-        assert!(state.messages[0].streaming);
-    }
-
-    #[test]
-    fn test_handle_response_chunk() {
-        let mut state = AppState::new();
-
-        // Start response first
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        // Add content chunk
-        state.handle_agent_message(FromAgent::ResponseChunk {
-            response_id: "resp-1".to_string(),
-            content: "Hello ".to_string(),
-            is_thinking: false,
-        });
-
-        state.handle_agent_message(FromAgent::ResponseChunk {
-            response_id: "resp-1".to_string(),
-            content: "world!".to_string(),
-            is_thinking: false,
-        });
-
-        assert_eq!(state.messages[0].content, "Hello world!");
-    }
-
-    #[test]
-    fn test_handle_response_chunk_thinking() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ResponseChunk {
-            response_id: "resp-1".to_string(),
-            content: "**Analyzing**".to_string(),
-            is_thinking: true,
-        });
-
-        assert_eq!(state.messages[0].thinking, "**Analyzing**");
-        assert_eq!(state.thinking_header, Some("Analyzing".to_string()));
-    }
-
-    #[test]
-    fn test_handle_response_end() {
-        let mut state = AppState::new();
-        state.busy = true;
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ResponseEnd {
-            response_id: "resp-1".to_string(),
-            usage: None,
-        });
-
-        assert!(!state.messages[0].streaming);
-        assert!(!state.busy);
-        assert!(state.thinking_header.is_none());
-    }
-
-    #[test]
-    fn test_handle_tool_call() {
-        let mut state = AppState::new();
-
-        // Add an assistant message first
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ToolCall {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            args: serde_json::json!({"command": "ls"}),
-            requires_approval: true,
-        });
-
-        assert_eq!(state.messages[0].tool_calls.len(), 1);
-        let tc = &state.messages[0].tool_calls[0];
-        assert_eq!(tc.call_id, "call-1");
-        assert_eq!(tc.tool, "bash");
-        assert_eq!(tc.status, ToolCallStatus::Pending);
-    }
-
-    #[test]
-    fn test_handle_tool_call_no_approval() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ToolCall {
-            call_id: "call-1".to_string(),
-            tool: "read".to_string(),
-            args: serde_json::json!({}),
-            requires_approval: false,
-        });
-
-        let tc = &state.messages[0].tool_calls[0];
-        assert_eq!(tc.status, ToolCallStatus::Running);
-    }
-
-    #[test]
-    fn test_handle_tool_lifecycle() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ToolCall {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            args: serde_json::json!({}),
-            requires_approval: false,
-        });
-
-        // Tool started
-        state.handle_agent_message(FromAgent::ToolStart {
-            call_id: "call-1".to_string(),
-        });
-        assert_eq!(
-            state.messages[0].tool_calls[0].status,
-            ToolCallStatus::Running
-        );
-
-        // Tool output
-        state.handle_agent_message(FromAgent::ToolOutput {
-            call_id: "call-1".to_string(),
-            content: "file1.txt\n".to_string(),
-        });
-        assert!(state.messages[0].tool_calls[0].output.contains("file1.txt"));
-
-        // Tool completed
-        state.handle_agent_message(FromAgent::ToolEnd {
-            call_id: "call-1".to_string(),
-            success: true,
-        });
-        assert_eq!(
-            state.messages[0].tool_calls[0].status,
-            ToolCallStatus::Completed
-        );
-    }
-
-    #[test]
-    fn test_handle_tool_failure() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ToolCall {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            args: serde_json::json!({}),
-            requires_approval: false,
-        });
-
-        state.handle_agent_message(FromAgent::ToolEnd {
-            call_id: "call-1".to_string(),
-            success: false,
-        });
-
-        assert_eq!(
-            state.messages[0].tool_calls[0].status,
-            ToolCallStatus::Failed
-        );
-    }
-
-    #[test]
-    fn test_handle_error() {
-        let mut state = AppState::new();
-        state.busy = true;
-
-        state.handle_agent_message(FromAgent::Error {
-            message: "Connection failed".to_string(),
-            fatal: false,
-        });
-
-        assert_eq!(state.error, Some("Connection failed".to_string()));
-        assert!(!state.busy);
-    }
-
-    #[test]
-    fn test_handle_status() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::Status {
-            message: "Loading...".to_string(),
-        });
-
-        assert_eq!(state.status, Some("Loading...".to_string()));
-    }
-
-    #[test]
-    fn test_handle_session_info() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::SessionInfo {
-            session_id: Some("sess-123".to_string()),
-            cwd: "/home/user".to_string(),
-            git_branch: Some("main".to_string()),
-        });
-
-        assert_eq!(state.session_id, Some("sess-123".to_string()));
-        assert_eq!(state.cwd, Some("/home/user".to_string()));
-        assert_eq!(state.git_branch, Some("main".to_string()));
-    }
-
-    #[test]
-    fn test_handle_batch_events() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::BatchStart { total: 5 });
-        assert!(state.status.as_ref().unwrap().contains('5'));
-
-        state.handle_agent_message(FromAgent::BatchEnd {
-            total: 5,
-            successes: 4,
-            failures: 1,
-        });
-        assert!(state.status.as_ref().unwrap().contains('4'));
-        assert!(state.status.as_ref().unwrap().contains("failed"));
-    }
-
-    #[test]
-    fn test_handle_hook_blocked() {
-        let mut state = AppState::new();
-
-        state.handle_agent_message(FromAgent::ResponseStart {
-            response_id: "resp-1".to_string(),
-        });
-
-        state.handle_agent_message(FromAgent::ToolCall {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            args: serde_json::json!({}),
-            requires_approval: false,
-        });
-
-        state.handle_agent_message(FromAgent::HookBlocked {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            reason: "Blocked by security hook".to_string(),
-        });
-
-        assert_eq!(
-            state.messages[0].tool_calls[0].status,
-            ToolCallStatus::Blocked
-        );
-    }
-
-    // ============================================================
-    // Extract Thinking Header Tests
-    // ============================================================
-
-    #[test]
-    fn test_extract_thinking_header_basic() {
-        let text = "Some text **Header** more text";
-        assert_eq!(extract_thinking_header(text), Some("Header".to_string()));
-    }
-
-    #[test]
-    fn test_extract_thinking_header_multiple() {
-        let text = "**First** some text **Second**";
-        // Should extract the last complete header
-        assert_eq!(extract_thinking_header(text), Some("Second".to_string()));
-    }
-
-    #[test]
-    fn test_extract_thinking_header_none() {
-        assert_eq!(extract_thinking_header("no header here"), None);
-        assert_eq!(extract_thinking_header("**incomplete"), None);
-        assert_eq!(extract_thinking_header(""), None);
-    }
-
-    #[test]
-    fn test_extract_thinking_header_empty() {
-        let text = "**** more";
-        // Empty header between ** ** should not be extracted
-        assert_eq!(extract_thinking_header(text), None);
-    }
-
-    #[test]
-    fn test_extract_thinking_header_long() {
-        let long_header = "a".repeat(150);
-        let text = format!("**{}**", long_header);
-        // Headers > 100 chars are rejected
-        assert_eq!(extract_thinking_header(&text), None);
-    }
-
-    #[test]
-    fn test_extract_thinking_header_multiline() {
-        let text = "**Header\nwith newline**";
-        // Should only take first line
-        assert_eq!(extract_thinking_header(text), Some("Header".to_string()));
-    }
-
-    // ============================================================
-    // Edge Cases and Boundary Tests
-    // ============================================================
-
-    #[test]
-    fn test_empty_input_operations() {
-        let mut state = AppState::new();
-
-        // Operations on empty input should not panic
-        state.backspace();
-        state.delete();
-        state.move_left();
-        state.move_right();
-        state.move_home();
-        state.move_end();
-
-        assert_eq!(state.input(), "");
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_very_long_input() {
-        let mut state = AppState::new();
-        let long_text = "a".repeat(100_000);
-        state.set_input(&long_text);
-
-        assert_eq!(state.input().len(), 100_000);
-        assert_eq!(state.cursor(), 100_000);
-
-        state.move_home();
-        assert_eq!(state.cursor(), 0);
-    }
-
-    #[test]
-    fn test_combining_characters() {
-        let mut state = AppState::new();
-        // é can be composed as e + combining acute accent
-        state.set_input("café");
-        assert_eq!(state.input(), "café");
-
-        // Cursor movement should work
-        state.move_home();
-        state.move_right();
-        state.move_right();
-        state.move_right();
-        state.move_right();
-    }
-
-    #[test]
-    fn test_tool_call_state_clone() {
-        let tc = ToolCallState {
-            call_id: "call-1".to_string(),
-            tool: "bash".to_string(),
-            args: serde_json::json!({"command": "ls"}),
-            status: ToolCallStatus::Completed,
-            output: "output".to_string(),
-        };
-
-        let cloned = tc.clone();
-        assert_eq!(cloned.call_id, tc.call_id);
-        assert_eq!(cloned.status, tc.status);
-    }
-
-    #[test]
-    fn test_message_clone() {
-        let msg = Message {
-            id: "msg-1".to_string(),
-            role: MessageRole::User,
-            kind: MessageKind::Regular,
-            content: "Hello".to_string(),
-            thinking: String::new(),
-            streaming: false,
-            tool_calls: vec![],
-            usage: None,
-            timestamp: SystemTime::now(),
-            thinking_expanded: false,
-        };
-
-        let cloned = msg.clone();
-        assert_eq!(cloned.id, msg.id);
-        assert_eq!(cloned.content, msg.content);
-    }
-
-    #[test]
-    fn test_apply_compaction_replaces_older_transcript_messages() {
-        let mut state = AppState::new();
-        state.add_system_message("System note".to_string());
-        state.add_user_message("User one".to_string());
-        state.add_system_message("Another note".to_string());
-        state.messages.push(Message {
-            id: "assistant-1".to_string(),
-            role: MessageRole::Assistant,
-            kind: MessageKind::Regular,
-            content: "Assistant one".to_string(),
+            content: "Done".to_string(),
             thinking: String::new(),
             streaming: false,
             tool_calls: Vec::new(),
             usage: None,
-            timestamp: SystemTime::now(),
+            timestamp: SystemTime::UNIX_EPOCH,
             thinking_expanded: false,
         });
-        state.add_user_message("User two".to_string());
-        state.messages.push(Message {
-            id: "assistant-2".to_string(),
-            role: MessageRole::Assistant,
-            kind: MessageKind::Regular,
-            content: "Assistant two".to_string(),
-            thinking: String::new(),
-            streaming: false,
-            tool_calls: Vec::new(),
-            usage: None,
-            timestamp: SystemTime::now(),
-            thinking_expanded: false,
-        });
+        state.messages.push(tool_message("latest"));
 
-        state.apply_compaction(
-            "## Conversation Summary\n\n1. **User**: User one".to_string(),
-            2,
-            SystemTime::UNIX_EPOCH,
+        assert!(state.toggle_latest_focus_turn());
+        assert_eq!(
+            state.expanded_focus_turns,
+            std::collections::HashSet::from(["latest".to_string()])
         );
+        assert!(state.toggle_latest_focus_turn());
+        assert!(state.expanded_focus_turns.is_empty());
+    }
 
-        assert_eq!(state.messages.len(), 3);
-        assert!(state.messages[0].is_compaction_boundary());
-        assert_eq!(state.messages[0].timestamp, SystemTime::UNIX_EPOCH);
-        assert_eq!(state.messages[1].content, "User two");
-        assert_eq!(state.messages[2].content, "Assistant two");
+    #[test]
+    fn focus_selection_moves_across_older_turns_and_prunes_removed_messages() {
+        let mut state = AppState::new();
+        state.messages = vec![
+            tool_message("first"),
+            tool_message("second"),
+            tool_message("third"),
+        ];
+
+        state.set_focus_view(true);
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("third"));
+        assert!(state.select_previous_focus_turn());
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("second"));
+        assert!(state.toggle_selected_focus_turn());
+        assert!(state.expanded_focus_turns.contains("second"));
+
+        state.messages.retain(|message| message.id != "second");
+        state.prune_focus_turn_state();
+        assert!(state.focus_selected_turn.is_none());
+        assert!(!state.expanded_focus_turns.contains("second"));
     }
 }
+
+#[cfg(test)]
+mod tests;

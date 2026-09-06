@@ -21,6 +21,10 @@
 //! let json = serde_json::to_value(&details)?;
 //! ```
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 use serde::{Deserialize, Serialize};
 
 /// Detailed information about a bash command execution.
@@ -71,6 +75,25 @@ pub struct BashDetails {
     /// Description provided with the command
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
+    /// Behavior contract version of the tool that produced this result
+    /// (e.g. "current", "legacy-1"). Recorded so session replay can pin the
+    /// same behavior; empty for receipts recorded before tool versioning
+    /// existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+
+    /// Whether output chunks were forwarded while the command was running.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub streamed: bool,
+
+    /// Kernel sandbox denials recorded while the command ran.
+    ///
+    /// Populated only for a failed command that ran under an active sandbox
+    /// policy. Empty on every other path, including when the host has no
+    /// readable denial log; see `crate::sandbox::capture_denies`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sandbox_denials: Vec<crate::sandbox::DenyEvent>,
 }
 
 impl BashDetails {
@@ -91,6 +114,13 @@ impl BashDetails {
     /// Create details for a failed command
     pub fn failed(command: impl Into<String>, exit_code: i32) -> Self {
         Self::new(command, exit_code)
+    }
+
+    /// Attach kernel sandbox denials recorded while the command ran.
+    #[must_use]
+    pub fn with_sandbox_denials(mut self, denials: Vec<crate::sandbox::DenyEvent>) -> Self {
+        self.sandbox_denials = denials;
+        self
     }
 
     /// Create details for a cancelled command
@@ -138,6 +168,13 @@ impl BashDetails {
     /// Add description
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Record the behavior contract version that produced this result
+    #[must_use]
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
         self
     }
 
@@ -343,6 +380,9 @@ impl WriteDetails {
 /// Detailed information about a file edit operation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EditDetails {
+    /// Exact-match failure reported by the local editor, never inferred from output.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_not_found: bool,
     /// Path that was edited
     pub path: String,
 
@@ -1022,6 +1062,14 @@ pub struct BatchDetails {
     /// Individual tool durations in milliseconds (keyed by `call_id`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_durations: Option<std::collections::HashMap<String, u64>>,
+
+    /// Number of parallel tasks that reused the batch executor's cached ToolExecutor
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor_reuse_count: Option<usize>,
+
+    /// Number of calls that had to wait behind the configured concurrency limit
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backpressure_count: Option<usize>,
 }
 
 impl BatchDetails {
@@ -1064,6 +1112,18 @@ impl BatchDetails {
         durations: std::collections::HashMap<String, u64>,
     ) -> Self {
         self.tool_durations = Some(durations);
+        self
+    }
+
+    #[must_use]
+    pub fn with_executor_reuse_count(mut self, count: usize) -> Self {
+        self.executor_reuse_count = Some(count);
+        self
+    }
+
+    #[must_use]
+    pub fn with_backpressure_count(mut self, count: usize) -> Self {
+        self.backpressure_count = Some(count);
         self
     }
 
@@ -1664,6 +1724,7 @@ mod tests {
         assert_eq!(details.duration_ms, Some(1500));
         assert_eq!(details.max_concurrency, Some(4));
         assert!(!details.continued_on_error);
+        assert_eq!(details.backpressure_count, None);
     }
 
     #[test]
@@ -1706,7 +1767,8 @@ mod tests {
         let details = BatchDetails::new(4)
             .with_results(3, 1)
             .with_duration(500)
-            .with_concurrency(2);
+            .with_concurrency(2)
+            .with_backpressure_count(2);
 
         let json = details.to_json();
         assert_eq!(json["total"], 4);
@@ -1714,6 +1776,7 @@ mod tests {
         assert_eq!(json["failures"], 1);
         assert_eq!(json["duration_ms"], 500);
         assert_eq!(json["max_concurrency"], 2);
+        assert_eq!(json["backpressure_count"], 2);
     }
 
     #[test]
@@ -1724,6 +1787,7 @@ mod tests {
             "failures": 1,
             "duration_ms": 1000,
             "max_concurrency": 4,
+            "backpressure_count": 1,
             "continued_on_error": true
         });
 
@@ -1732,6 +1796,7 @@ mod tests {
         assert_eq!(details.successes, 4);
         assert_eq!(details.failures, 1);
         assert_eq!(details.duration_ms, Some(1000));
+        assert_eq!(details.backpressure_count, Some(1));
         assert!(details.continued_on_error);
     }
 

@@ -6,7 +6,6 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
-      - 'bun.lockb'
 
 permissions:
   contents: write
@@ -20,17 +19,21 @@ env:
 
 jobs:
   update-hash:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # The Nix installer creates /nix and system build users when Nix is absent.
+    # Keep this on a hosted runner with passwordless sudo instead of the internal
+    # runner, which intentionally does not allow sudo escalation.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     if: "!contains(github.event.head_commit.message, '[skip nix]')"
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: cachix/install-nix-action@7ac1ec25491415c381d9b62f0657c7a028df52a7 # v24
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
+          enable_kvm: false
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Calculate new hash
@@ -38,24 +41,26 @@ jobs:
         run: |
           # Try to build and capture the error with expected hash
           nix build .# 2>&1 | tee build.log || true
-          
+
           # Extract the expected hash from error message
           EXPECTED_HASH=$(grep -oP 'got:\s+\K[a-zA-Z0-9+/=-]+' build.log | head -n1)
-          
+
           if [ -z "$EXPECTED_HASH" ]; then
             echo "Could not determine hash, skipping"
             exit 0
           fi
-          
-          echo "new_hash=$EXPECTED_HASH" >> $GITHUB_OUTPUT
+
+          echo "new_hash=$EXPECTED_HASH" >> "$GITHUB_OUTPUT"
 
       - name: Commit hash bump
         if: steps.hash.outputs.new_hash != ''
+        env:
+          NEW_HASH: ${{ steps.hash.outputs.new_hash }}
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git checkout -B ci/update-nix-hash
-          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"${{ steps.hash.outputs.new_hash }}\"|" flake.nix
+          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"${NEW_HASH}\"|" flake.nix
           git add flake.nix
           if git diff --cached --quiet; then
             echo "No changes to commit"

@@ -45,6 +45,7 @@
 //! recorder.record_sent(&ToAgentMessage::Prompt {
 //!     content: "Hello!".to_string(),
 //!     attachments: None,
+//!     managed_inference_authorization: None,
 //! })?;
 //!
 //! recorder.flush()?; // Ensure writes are persisted
@@ -81,19 +82,98 @@
 //! For reliability, call `flush()` after important events to ensure data is
 //! persisted to disk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fs_atomic::create_dir_all_synced;
+
 use super::messages::{
-    ActiveFileWatch, ActiveTool, AgentState, FromAgentMessage, InitConfig, PendingApproval,
-    StreamingResponse, ToAgentMessage, TokenUsage,
+    ActiveFileWatch, ActiveTool, AgentState, CodexSubagentContinuityEdge, FromAgentMessage,
+    GovernedClientToolBinding, InitConfig, PendingApproval, ServerRequestType, StreamingResponse,
+    ToAgentMessage, TokenUsage,
 };
+use super::workspace_capabilities::{ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied};
+
+fn workspace_capability_replay_cursor(request: &ApplyWorkspaceCapabilitySet) -> String {
+    format!(
+        "{}:{}",
+        request.activation_generation, request.capability_set_digest
+    )
+}
+
+fn record_sent_workspace_capability(
+    pending: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
+    message: &ToAgentMessage,
+) {
+    if let ToAgentMessage::ApplyWorkspaceCapabilitySet { request } = message {
+        pending.insert(workspace_capability_replay_cursor(request), request.clone());
+    }
+}
+
+fn accept_workspace_capability_receipt(
+    pending: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
+    last_accepted: &mut Option<ApplyWorkspaceCapabilitySet>,
+    receipt: &WorkspaceCapabilitySetApplied,
+) -> bool {
+    let Some(request) = pending.get(&receipt.replay_cursor) else {
+        return false;
+    };
+    let matches = receipt.organization_id == request.organization_id
+        && receipt.workspace_id == request.workspace_id
+        && receipt.runner_session_id == request.runner_session_id
+        && receipt.runtime_generation == request.runtime_generation
+        && receipt.activation_generation == request.activation_generation
+        && receipt.effective_catalog_digest == request.capability_set_digest;
+    if matches {
+        *last_accepted = pending.remove(&receipt.replay_cursor);
+        return true;
+    }
+    false
+}
+
+fn init_config_from_message(message: &ToAgentMessage) -> Option<InitConfig> {
+    match message {
+        ToAgentMessage::Init {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+            history,
+        } => Some(InitConfig {
+            system_prompt: system_prompt.clone(),
+            append_system_prompt: append_system_prompt.clone(),
+            thinking_level: *thinking_level,
+            approval_mode: *approval_mode,
+            history: history.clone(),
+            code_mode: None,
+            tool_grant: None,
+        }),
+        ToAgentMessage::GovernedInit {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+            history,
+            code_mode,
+            tool_grant,
+        } => Some(InitConfig {
+            system_prompt: system_prompt.clone(),
+            append_system_prompt: append_system_prompt.clone(),
+            thinking_level: *thinking_level,
+            approval_mode: *approval_mode,
+            history: history.clone(),
+            code_mode: Some(*code_mode),
+            tool_grant: Some(tool_grant.clone()),
+        }),
+        _ => None,
+    }
+}
 
 /// A recorded session entry (either a sent or received message).
 ///
@@ -133,6 +213,10 @@ pub enum SessionEntry {
         state: Box<AgentStateCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_init: Option<InitConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        semantic_conversation: Option<SemanticConversationCheckpoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_workspace_capability_set: Option<Box<ApplyWorkspaceCapabilitySet>>,
     },
 }
 
@@ -174,6 +258,29 @@ pub struct ActiveToolCheckpoint {
     pub elapsed_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticConversationCheckpoint {
+    protocol_version: String,
+    messages: Vec<maestro_ai::Message>,
+}
+
+/// Atomically replaced latest replay state. The JSONL remains the complete
+/// ordinary-event journal for readers; this sidecar is only the restore anchor
+/// so day-scale resumes do not deserialize historical checkpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplaySidecar {
+    tail_offset: u64,
+    state: AgentStateCheckpoint,
+    last_init: Option<InitConfig>,
+    semantic_conversation: Option<SemanticConversationCheckpoint>,
+    #[serde(default)]
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    #[serde(default)]
+    semantic_conversation_attempt: Option<u32>,
+    #[serde(default)]
+    semantic_processed_queue_ids: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActiveUtilityCommandCheckpoint {
     pub command_id: String,
@@ -205,9 +312,15 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_protocol_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_binding_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_info: Option<super::messages::ClientInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<super::messages::ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_capabilities: Option<super::messages::ServerCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opt_out_notifications: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +352,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
+    pub governed_client_tool_bindings: HashMap<String, GovernedClientToolBinding>,
+    #[serde(default)]
     pub pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
     pub pending_tool_retries: Vec<PendingApproval>,
@@ -247,6 +362,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub active_tools: Vec<ActiveToolCheckpoint>,
     #[serde(default)]
+    pub codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+    #[serde(default)]
     pub active_utility_commands: Vec<ActiveUtilityCommandCheckpoint>,
     #[serde(default)]
     pub active_file_watches: Vec<ActiveFileWatchCheckpoint>,
@@ -254,6 +371,8 @@ pub struct AgentStateCheckpoint {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error_type: Option<super::messages::HeadlessErrorType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,8 +391,11 @@ impl AgentStateCheckpoint {
         Self {
             protocol_version: state.protocol_version.clone(),
             client_protocol_version: state.client_protocol_version.clone(),
+            controller_binding_version: state.controller_binding_version.clone(),
+            controller_binding_sha256: state.controller_binding_sha256.clone(),
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
+            server_capabilities: state.server_capabilities.clone(),
             opt_out_notifications: state.opt_out_notifications.clone(),
             connection_role: state.connection_role,
             connection_count: state.connection_count,
@@ -289,6 +411,7 @@ impl AgentStateCheckpoint {
             current_response: state.current_response.clone(),
             pending_approvals: state.pending_approvals.clone(),
             pending_client_tools: state.pending_client_tools.clone(),
+            governed_client_tool_bindings: state.governed_client_tool_bindings.clone(),
             pending_user_inputs: state.pending_user_inputs.clone(),
             pending_tool_retries: state.pending_tool_retries.clone(),
             tracked_tools: state.tracked_tools.values().cloned().collect(),
@@ -302,6 +425,7 @@ impl AgentStateCheckpoint {
                     elapsed_ms: tool.started.elapsed().as_millis() as u64,
                 })
                 .collect(),
+            codex_subagent_edges: state.codex_subagent_edges.clone(),
             active_utility_commands: state
                 .active_utility_commands
                 .values()
@@ -332,6 +456,7 @@ impl AgentStateCheckpoint {
                 .collect(),
             last_error: state.last_error.clone(),
             last_error_type: state.last_error_type,
+            provider_error_kind: state.provider_error_kind,
             last_status: state.last_status.clone(),
             last_response_duration_ms: state.last_response_duration_ms,
             last_ttft_ms: state.last_ttft_ms,
@@ -345,8 +470,11 @@ impl AgentStateCheckpoint {
         AgentState {
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
+            controller_binding_version: self.controller_binding_version,
+            controller_binding_sha256: self.controller_binding_sha256,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            server_capabilities: self.server_capabilities,
             opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
@@ -362,6 +490,7 @@ impl AgentStateCheckpoint {
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
+            governed_client_tool_bindings: self.governed_client_tool_bindings,
             pending_user_inputs: self.pending_user_inputs,
             pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
@@ -387,6 +516,7 @@ impl AgentStateCheckpoint {
                     )
                 })
                 .collect(),
+            codex_subagent_edges: self.codex_subagent_edges,
             active_utility_commands: self
                 .active_utility_commands
                 .into_iter()
@@ -427,6 +557,7 @@ impl AgentStateCheckpoint {
                 .collect::<HashMap<_, _>>(),
             last_error: self.last_error,
             last_error_type: self.last_error_type,
+            provider_error_kind: self.provider_error_kind,
             last_status: self.last_status,
             last_response_duration_ms: self.last_response_duration_ms,
             last_ttft_ms: self.last_ttft_ms,
@@ -571,6 +702,7 @@ impl SessionMetadata {
 /// recorder.record_sent(&ToAgentMessage::Prompt {
 ///     content: "Hello".to_string(),
 ///     attachments: None,
+///     managed_inference_authorization: None,
 /// })?;
 ///
 /// recorder.flush()?; // Ensure persistence
@@ -587,15 +719,156 @@ pub struct SessionRecorder {
     metadata: SessionMetadata,
     /// Path to metadata file
     metadata_path: PathBuf,
+    /// Atomically overwritten latest replay/semantic anchor.
+    replay_path: PathBuf,
     /// Reconstructed state including optimistic outbound actions.
     replay_state: AgentState,
     /// Last init message seen in the stream.
     last_init: Option<InitConfig>,
+    /// Latest private, sanitized provider conversation checkpoint.
+    semantic_conversation: Option<SemanticConversationCheckpoint>,
+    /// Last request paired with a matching applied receipt.
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    /// Capability requests sent since their matching receipt boundary.
+    pending_workspace_capability_sets: HashMap<String, ApplyWorkspaceCapabilitySet>,
+    /// Attempt identity associated with the latest semantic checkpoint.
+    semantic_conversation_attempt: Option<u32>,
+    /// Explicit prompt queue ids known to be covered by semantic checkpoints.
+    semantic_processed_queue_ids: HashSet<u64>,
     /// Number of entries written since the last checkpoint.
     entries_since_checkpoint: usize,
 }
 
 const CHECKPOINT_INTERVAL: usize = 25;
+
+fn without_ephemeral_managed_authorization(message: &ToAgentMessage) -> ToAgentMessage {
+    let mut durable = message.clone();
+    match &mut durable {
+        ToAgentMessage::Prompt {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::GovernedPrompt {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::Steer {
+            managed_inference_authorization,
+            ..
+        }
+        | ToAgentMessage::GovernedSteer {
+            managed_inference_authorization,
+            ..
+        } => *managed_inference_authorization = None,
+        _ => {}
+    }
+    durable
+}
+
+/// Load `<id>.meta.json`, tolerating a corrupt or torn file left by a crash
+/// mid-write.
+///
+/// A missing file yields fresh default metadata (normal for a brand-new
+/// session). A file that exists but fails to parse is forensic evidence of
+/// real damage (the pre-atomic-write code path here used a direct
+/// `fs::write`, so a `kill -9` mid-write could truncate it); rather than
+/// silently discarding that evidence or hard-failing the caller, the file is
+/// rotated aside (`<id>.meta.json.corrupt.<millis>`) and fresh default
+/// metadata is returned so `resume`/`list_sessions` still see the session
+/// instead of treating it as gone. Only I/O errors (permissions, etc.) are
+/// propagated as hard errors.
+///
+/// The returned flag is `true` when the metadata was reconstructed after
+/// corruption, so callers can rebuild the lost fields from the still-intact
+/// JSONL log via [`rebuild_metadata`].
+fn load_metadata_tolerant(
+    metadata_path: &Path,
+    id: &str,
+) -> std::io::Result<(SessionMetadata, bool)> {
+    if !metadata_path.exists() {
+        return Ok((SessionMetadata::new(id), false));
+    }
+    // Read bytes, not `read_to_string`: a file torn mid-write by a crash
+    // (the whole reason this function tolerates a parse failure) can just
+    // as easily be torn in the middle of a multi-byte UTF-8 character as
+    // in the middle of a JSON token. `read_to_string` would then fail with
+    // `InvalidData` from the `?` above before the tolerant JSON-parsing
+    // branch below ever runs, hard-failing the caller instead of rotating
+    // the file aside and reconstructing defaults like every other kind of
+    // corruption here.
+    let content = fs::read(metadata_path)?;
+    match serde_json::from_slice(&content) {
+        Ok(metadata) => Ok((metadata, false)),
+        Err(err) => {
+            eprintln!(
+                "Corrupt session metadata at {}: {err}. Rotating aside and reconstructing defaults.",
+                metadata_path.display()
+            );
+            crate::fs_atomic::rotate_corrupt_aside(metadata_path);
+            Ok((SessionMetadata::new(id), true))
+        }
+    }
+}
+
+/// Reconstruct metadata by folding the JSONL log entries, mirroring the
+/// incremental updates `record_sent`/`record_received` apply. Used when the
+/// persisted metadata file was corrupt and had to be rotated aside, so the
+/// historical title, model, token totals, and message count are not
+/// permanently reset to defaults.
+fn rebuild_metadata(id: &str, entries: &[SessionEntry]) -> SessionMetadata {
+    let mut metadata = SessionMetadata::new(id);
+    if let Some(first) = entries.first() {
+        metadata.created_at = first.timestamp();
+    }
+    for entry in entries {
+        match entry {
+            SessionEntry::Sent { message, .. } => {
+                if let ToAgentMessage::Prompt { content, .. } = message {
+                    metadata.set_title_from_prompt(content);
+                }
+                metadata.message_count += 1;
+            }
+            SessionEntry::Received { message, .. } => {
+                match message {
+                    FromAgentMessage::Ready {
+                        protocol_version,
+                        model,
+                        provider,
+                        session_id,
+                    } => {
+                        metadata.model = Some(model.clone());
+                        metadata.provider = Some(provider.clone());
+                        metadata.protocol_version = protocol_version.clone();
+                        if session_id.is_some() {
+                            metadata.agent_session_id = session_id.clone();
+                        }
+                    }
+                    FromAgentMessage::SessionInfo {
+                        session_id,
+                        cwd,
+                        git_branch,
+                    } => {
+                        if session_id.is_some() {
+                            metadata.agent_session_id = session_id.clone();
+                        }
+                        metadata.cwd = Some(cwd.clone());
+                        metadata.git_branch = git_branch.clone();
+                    }
+                    FromAgentMessage::ResponseEnd {
+                        usage: Some(usage), ..
+                    } => {
+                        metadata.add_usage(usage);
+                    }
+                    _ => {}
+                }
+                metadata.message_count += 1;
+            }
+            SessionEntry::Checkpoint { .. } => {}
+        }
+        metadata.updated_at = entry.timestamp();
+    }
+    metadata
+}
 
 impl SessionRecorder {
     /// Create a new session recorder
@@ -607,10 +880,11 @@ impl SessionRecorder {
     /// Create a session recorder with a specific ID
     pub fn with_id(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
-        fs::create_dir_all(sessions_dir)?;
+        create_dir_all_synced(sessions_dir)?;
 
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
+        let replay_path = sessions_dir.join(format!("{id}.replay.json"));
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
@@ -623,8 +897,14 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_path,
             replay_state: AgentState::default(),
             last_init: None,
+            semantic_conversation: None,
+            last_workspace_capability_set: None,
+            pending_workspace_capability_sets: HashMap::new(),
+            semantic_conversation_attempt: None,
+            semantic_processed_queue_ids: HashSet::new(),
             entries_since_checkpoint: 0,
         })
     }
@@ -632,23 +912,46 @@ impl SessionRecorder {
     /// Resume an existing session
     pub fn resume(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
+        create_dir_all_synced(sessions_dir)?;
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
+        let replay_path = sessions_dir.join(format!("{id}.replay.json"));
 
         // Load existing metadata
-        let metadata = if metadata_path.exists() {
-            let content = fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&content)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        } else {
-            SessionMetadata::new(id)
-        };
+        let (mut metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
+        let loaded_sidecar = load_replay_sidecar(&replay_path);
+        let semantic_conversation_attempt = loaded_sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.semantic_conversation_attempt);
+        let semantic_processed_queue_ids = loaded_sidecar
+            .as_ref()
+            .map(|sidecar| {
+                sidecar
+                    .semantic_processed_queue_ids
+                    .iter()
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sidecar_replay =
+            loaded_sidecar.and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
+        let reader = if sidecar_replay.is_none() || reconstructed {
+            SessionReader::load(sessions_dir, id).ok()
+        } else {
+            None
+        };
+        if reconstructed {
+            // The corrupt metadata was rotated aside; rebuild what it held
+            // (title, model, usage, counts) from the still-intact JSONL log
+            // so the next flush doesn't permanently reset them to defaults.
+            if let Some(reader) = &reader {
+                metadata = rebuild_metadata(id, reader.entries());
+            }
+        }
+        let replay = sidecar_replay.or_else(|| reader.map(|reader| reader.replay()));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
-        let replay = SessionReader::load(sessions_dir, id)
-            .ok()
-            .map(|reader| reader.replay());
 
         Ok(Self {
             id: id.to_string(),
@@ -656,10 +959,26 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_path,
             replay_state: replay
                 .as_ref()
                 .map_or_else(AgentState::default, |replay| replay.state.clone()),
-            last_init: replay.and_then(|replay| replay.last_init),
+            last_init: replay.as_ref().and_then(|replay| replay.last_init.clone()),
+            last_workspace_capability_set: replay
+                .as_ref()
+                .and_then(|replay| replay.last_workspace_capability_set.clone()),
+            pending_workspace_capability_sets: HashMap::new(),
+            semantic_conversation: replay.and_then(|replay| {
+                replay
+                    .semantic_conversation
+                    .map(|messages| SemanticConversationCheckpoint {
+                        protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                            .to_string(),
+                        messages,
+                    })
+            }),
+            semantic_conversation_attempt,
+            semantic_processed_queue_ids,
             entries_since_checkpoint: 0,
         })
     }
@@ -694,6 +1013,35 @@ impl SessionRecorder {
         self.last_init.as_ref()
     }
 
+    /// Return the current restore-ready session replay snapshot.
+    #[must_use]
+    pub fn replay(&self) -> SessionReplay {
+        SessionReplay {
+            state: self.replay_state.clone(),
+            last_init: self.last_init.clone(),
+            semantic_conversation: self
+                .semantic_conversation
+                .as_ref()
+                .filter(|checkpoint| {
+                    checkpoint.protocol_version
+                        == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                })
+                .map(|checkpoint| checkpoint.messages.clone()),
+            last_workspace_capability_set: self.last_workspace_capability_set.clone(),
+        }
+    }
+
+    /// Return the attempt identity stored with the latest semantic checkpoint.
+    #[must_use]
+    pub(crate) fn semantic_conversation_attempt(&self) -> Option<u32> {
+        self.semantic_conversation_attempt
+    }
+
+    #[must_use]
+    pub(crate) fn semantic_processed_queue_ids(&self) -> &HashSet<u64> {
+        &self.semantic_processed_queue_ids
+    }
+
     /// Replace the reconstructed replay state with a snapshot and persist it.
     pub fn apply_snapshot(
         &mut self,
@@ -714,24 +1062,35 @@ impl SessionRecorder {
         self.maybe_write_checkpoint(true)
     }
 
+    /// Record the newest private provider conversation for the next durable
+    /// checkpoint. The checkpoint payload is sanitized before it reaches disk.
+    pub fn record_semantic_conversation(
+        &mut self,
+        messages: Vec<maestro_ai::Message>,
+    ) -> std::io::Result<()> {
+        self.semantic_conversation = Some(SemanticConversationCheckpoint {
+            protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_string(),
+            messages: portable_redacted_semantic_conversation(&sanitize_semantic_conversation(
+                &messages,
+            ))?,
+        });
+        Ok(())
+    }
+
+    /// Force a durable checkpoint, including any semantic conversation snapshot.
+    pub fn flush_checkpoint(&mut self) -> std::io::Result<()> {
+        self.maybe_write_checkpoint(true)?;
+        self.flush()
+    }
+
     /// Record a sent message
     pub fn record_sent(&mut self, message: &ToAgentMessage) -> std::io::Result<()> {
-        let entry = SessionEntry::sent(message.clone());
+        let entry = SessionEntry::sent(without_ephemeral_managed_authorization(message));
         self.write_entry(&entry)?;
         self.replay_state.handle_sent_message(message);
-        if let ToAgentMessage::Init {
-            system_prompt,
-            append_system_prompt,
-            thinking_level,
-            approval_mode,
-        } = message
-        {
-            self.last_init = Some(InitConfig {
-                system_prompt: system_prompt.clone(),
-                append_system_prompt: append_system_prompt.clone(),
-                thinking_level: *thinking_level,
-                approval_mode: *approval_mode,
-            });
+        record_sent_workspace_capability(&mut self.pending_workspace_capability_sets, message);
+        if let Some(config) = init_config_from_message(message) {
+            self.last_init = Some(config);
         }
         self.entries_since_checkpoint += 1;
         self.maybe_write_checkpoint(false)?;
@@ -748,16 +1107,37 @@ impl SessionRecorder {
 
     /// Record a received message
     pub fn record_received(&mut self, message: &FromAgentMessage) -> std::io::Result<()> {
-        let entry = SessionEntry::received(message.clone());
+        let portable_message = portable_redacted_message(message)?;
+        if let FromAgentMessage::ConversationSnapshot {
+            protocol_version,
+            messages,
+        } = &portable_message
+        {
+            return self.record_conversation_snapshot(protocol_version, messages, None, &[]);
+        }
+        let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
+        let workspace_capability_accepted =
+            if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                accept_workspace_capability_receipt(
+                    &mut self.pending_workspace_capability_sets,
+                    &mut self.last_workspace_capability_set,
+                    receipt,
+                )
+            } else {
+                false
+            };
         let _ = self.replay_state.handle_message(message.clone());
         self.entries_since_checkpoint += 1;
-        self.maybe_write_checkpoint(matches!(
-            message,
-            FromAgentMessage::ResponseEnd { .. }
-                | FromAgentMessage::Error { .. }
-                | FromAgentMessage::Compaction { .. }
-        ))?;
+        self.maybe_write_checkpoint(
+            matches!(
+                message,
+                FromAgentMessage::ResponseEnd { .. }
+                    | FromAgentMessage::Error { .. }
+                    | FromAgentMessage::Compaction { .. }
+                    | FromAgentMessage::ConversationSnapshot { .. }
+            ) || workspace_capability_accepted,
+        )?;
 
         // Update metadata
         match message {
@@ -798,19 +1178,131 @@ impl SessionRecorder {
         Ok(())
     }
 
+    /// Record a received message whose semantic snapshot has already been
+    /// vaulted by the owning session.
+    ///
+    /// Portable transcript export intentionally masks credential references.
+    /// Delegated child checkpoints are different: they must retain the live
+    /// opaque references so an in-process resume can resolve them from the
+    /// child credential scope. Callers must vault the message before using
+    /// this method; non-snapshot messages continue through the portable path.
+    pub fn record_received_preserving_credential_references(
+        &mut self,
+        message: &FromAgentMessage,
+    ) -> std::io::Result<()> {
+        self.record_received_preserving_credential_references_with_snapshot_attempt(message, None)
+    }
+
+    /// Record a received message while atomically associating semantic snapshots
+    /// with the child attempt that produced them.
+    pub(crate) fn record_received_preserving_credential_references_with_snapshot_attempt(
+        &mut self,
+        message: &FromAgentMessage,
+        snapshot_attempt: Option<u32>,
+    ) -> std::io::Result<()> {
+        self.record_received_preserving_credential_references_with_snapshot_metadata(
+            message,
+            snapshot_attempt,
+            &[],
+        )
+    }
+
+    pub(crate) fn record_received_preserving_credential_references_with_snapshot_metadata(
+        &mut self,
+        message: &FromAgentMessage,
+        snapshot_attempt: Option<u32>,
+        processed_queue_ids: &[u64],
+    ) -> std::io::Result<()> {
+        match message {
+            FromAgentMessage::ConversationSnapshot {
+                protocol_version,
+                messages,
+            } => self.record_conversation_snapshot(
+                protocol_version,
+                messages,
+                snapshot_attempt,
+                processed_queue_ids,
+            ),
+            _ => self.record_received(message),
+        }
+    }
+
+    fn record_conversation_snapshot(
+        &mut self,
+        protocol_version: &str,
+        messages: &[maestro_ai::Message],
+        snapshot_attempt: Option<u32>,
+        processed_queue_ids: &[u64],
+    ) -> std::io::Result<()> {
+        self.semantic_conversation_attempt = snapshot_attempt;
+        if protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
+            self.semantic_processed_queue_ids
+                .extend(processed_queue_ids.iter().copied());
+            self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                protocol_version: protocol_version.to_string(),
+                messages: messages.to_vec(),
+            });
+        } else {
+            self.semantic_processed_queue_ids.clear();
+            // A present-but-unsupported version is not a facade-only
+            // snapshot. Clear stale provider history rather than replaying
+            // a transcript with unknown semantics after restart.
+            self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                protocol_version: protocol_version.to_string(),
+                messages: Vec::new(),
+            });
+        }
+        // Semantic snapshots are private checkpoint material, never an
+        // ordinary received event or transcript/SSE payload.
+        self.entries_since_checkpoint += 1;
+        self.maybe_write_checkpoint(true)
+    }
+
     fn maybe_write_checkpoint(&mut self, force: bool) -> std::io::Result<()> {
         if !force && self.entries_since_checkpoint < CHECKPOINT_INTERVAL {
             return Ok(());
         }
 
+        // Publish the new replay state before writing the semantic-free JSONL
+        // checkpoint. If this process dies after either write, the sidecar
+        // still contains the newest semantic boundary and its tail offset
+        // never skips it.
+        self.write_replay_sidecar()?;
         let checkpoint = SessionEntry::Checkpoint {
             timestamp: current_timestamp(),
-            state: Box::new(AgentStateCheckpoint::from_state(&self.replay_state)),
+            state: Box::new(portable_redacted_checkpoint(&self.replay_state)),
             last_init: self.last_init.clone(),
+            // Semantic history lives only in the atomically replaced sidecar;
+            // embedding it in every append-only checkpoint is quadratic.
+            semantic_conversation: None,
+            last_workspace_capability_set: self.last_workspace_capability_set.clone().map(Box::new),
         };
         self.write_entry(&checkpoint)?;
         self.entries_since_checkpoint = 0;
         Ok(())
+    }
+
+    fn write_replay_sidecar(&mut self) -> std::io::Result<()> {
+        self.writer.flush()?;
+        self.writer.get_ref().sync_all()?;
+        let mut semantic_processed_queue_ids = self
+            .semantic_processed_queue_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        semantic_processed_queue_ids.sort_unstable();
+        let sidecar = ReplaySidecar {
+            tail_offset: self.writer.get_ref().metadata()?.len(),
+            state: portable_redacted_checkpoint(&self.replay_state),
+            last_init: self.last_init.clone(),
+            semantic_conversation: self.semantic_conversation.clone(),
+            last_workspace_capability_set: self.last_workspace_capability_set.clone(),
+            semantic_conversation_attempt: self.semantic_conversation_attempt,
+            semantic_processed_queue_ids,
+        };
+        let json = serde_json::to_string(&sidecar)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        crate::fs_atomic::write_atomic(&self.replay_path, json)
     }
 
     /// Write an entry to the JSONL file
@@ -825,6 +1317,15 @@ impl SessionRecorder {
     /// Flush and save metadata
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush()?;
+        // Make the JSONL log itself durable *before* persisting metadata
+        // that describes it (message counts, usage totals, timestamps).
+        // `BufWriter::flush` only transfers bytes to the OS; `save_metadata`
+        // below now goes through `write_atomic`, which does fsync the
+        // metadata file. Without this, a power loss right after `flush()`
+        // returns could keep that durable metadata while losing the very
+        // log entries it describes, leaving metadata durably ahead of the
+        // actual session history on the next load.
+        self.writer.get_ref().sync_all()?;
         self.save_metadata()?;
         Ok(())
     }
@@ -833,9 +1334,119 @@ impl SessionRecorder {
     fn save_metadata(&self) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.metadata)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(&self.metadata_path, json)?;
+        crate::fs_atomic::write_atomic(&self.metadata_path, json)?;
         Ok(())
     }
+}
+
+fn portable_redacted_message(message: &FromAgentMessage) -> std::io::Result<FromAgentMessage> {
+    let mut redacted = message.clone();
+    let args = match &mut redacted {
+        FromAgentMessage::ClientToolRequest { args, .. }
+        | FromAgentMessage::ServerRequest {
+            request_type: ServerRequestType::ClientTool,
+            args,
+            ..
+        } => Some(args),
+        _ => None,
+    };
+    if let Some(args) = args {
+        *args = crate::agent::credential_store::redact_credentials_in_json(args);
+    }
+    if let FromAgentMessage::ConversationSnapshot { messages, .. } = &mut redacted {
+        *messages =
+            portable_redacted_semantic_conversation(&sanitize_semantic_conversation(messages))?;
+    }
+    Ok(redacted)
+}
+
+fn sanitize_semantic_conversation(messages: &[maestro_ai::Message]) -> Vec<maestro_ai::Message> {
+    use maestro_ai::{ContentBlock, Message, MessageContent};
+
+    messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            MessageContent::Text(_) => Some(message.clone()),
+            MessageContent::Blocks(blocks) => {
+                let blocks: Vec<ContentBlock> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { .. } | ContentBlock::ToolUse { .. } => {
+                            Some(block.clone())
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } => Some(ContentBlock::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: "[tool result omitted from checkpoint]".to_owned(),
+                            is_error: *is_error,
+                        }),
+                        ContentBlock::Thinking { .. } | ContentBlock::Image { .. } => None,
+                    })
+                    .collect();
+                (!blocks.is_empty()).then_some(Message {
+                    role: message.role,
+                    content: MessageContent::Blocks(blocks),
+                })
+            }
+        })
+        .collect()
+}
+
+fn portable_redacted_semantic_conversation(
+    messages: &[maestro_ai::Message],
+) -> std::io::Result<Vec<maestro_ai::Message>> {
+    let serialized = serde_json::to_value(messages)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    serde_json::from_value(redact_semantic_checkpoint_value(
+        crate::agent::credential_store::redact_credentials_in_json(&serialized),
+    ))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn redact_semantic_checkpoint_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(redact_semantic_checkpoint_value)
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let sensitive = matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "api_key" | "apikey" | "authorization" | "password" | "secret" | "token"
+                    );
+                    (
+                        key,
+                        if sensitive {
+                            serde_json::Value::String("[REDACTED]".to_string())
+                        } else {
+                            redact_semantic_checkpoint_value(value)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn portable_redacted_checkpoint(state: &AgentState) -> AgentStateCheckpoint {
+    let mut checkpoint = AgentStateCheckpoint::from_state(state);
+    for pending in checkpoint
+        .pending_client_tools
+        .iter_mut()
+        .chain(checkpoint.tracked_tools.iter_mut())
+    {
+        pending.args = crate::agent::credential_store::redact_credentials_in_json(&pending.args);
+    }
+    checkpoint
 }
 
 impl Drop for SessionRecorder {
@@ -894,6 +1505,123 @@ pub struct SessionReplay {
     pub state: AgentState,
     /// Most recent init configuration sent to the headless agent, if any.
     pub last_init: Option<InitConfig>,
+    /// Latest private provider conversation, if the session wrote a semantic
+    /// checkpoint using the supported snapshot protocol.
+    pub semantic_conversation: Option<Vec<maestro_ai::Message>>,
+    /// Last workspace capability set proven accepted by a matching receipt.
+    pub last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+}
+
+fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(metadata)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    crate::fs_atomic::write_atomic(path, json)
+}
+
+fn load_replay_sidecar(path: &Path) -> Option<ReplaySidecar> {
+    let json = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Result<SessionReplay> {
+    let mut state = sidecar.state.into_state();
+    let mut last_init = sidecar.last_init;
+    let mut last_workspace_capability_set = sidecar.last_workspace_capability_set;
+    let mut pending_workspace_capability_sets = HashMap::new();
+    let mut semantic_conversation = sidecar.semantic_conversation.and_then(|checkpoint| {
+        (checkpoint.protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+            .then_some(checkpoint.messages)
+    });
+    if !path.exists() {
+        return Ok(SessionReplay {
+            state,
+            last_init,
+            semantic_conversation,
+            last_workspace_capability_set,
+        });
+    }
+    let mut file = File::open(path)?;
+    if sidecar.tail_offset > file.metadata()?.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "replay sidecar offset exceeds session journal",
+        ));
+    }
+    file.seek(SeekFrom::Start(sidecar.tail_offset))?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
+            apply_replay_entry(
+                &entry,
+                &mut state,
+                &mut last_init,
+                &mut semantic_conversation,
+                &mut last_workspace_capability_set,
+                &mut pending_workspace_capability_sets,
+            );
+        }
+    }
+    Ok(SessionReplay {
+        state,
+        last_init,
+        semantic_conversation,
+        last_workspace_capability_set,
+    })
+}
+
+fn apply_replay_entry(
+    entry: &SessionEntry,
+    state: &mut AgentState,
+    last_init: &mut Option<InitConfig>,
+    semantic_conversation: &mut Option<Vec<maestro_ai::Message>>,
+    last_workspace_capability_set: &mut Option<ApplyWorkspaceCapabilitySet>,
+    pending_workspace_capability_sets: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
+) {
+    match entry {
+        SessionEntry::Sent { message, .. } => {
+            state.handle_sent_message(message);
+            record_sent_workspace_capability(pending_workspace_capability_sets, message);
+            if let Some(config) = init_config_from_message(message) {
+                *last_init = Some(config);
+            }
+        }
+        SessionEntry::Received { message, .. } => {
+            if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                let _ = accept_workspace_capability_receipt(
+                    pending_workspace_capability_sets,
+                    last_workspace_capability_set,
+                    receipt,
+                );
+            }
+            if let FromAgentMessage::ConversationSnapshot {
+                protocol_version,
+                messages,
+            } = message
+            {
+                *semantic_conversation = (protocol_version
+                    == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                    .then_some(messages.clone());
+            }
+            let _ = state.handle_message(message.clone());
+        }
+        SessionEntry::Checkpoint {
+            state: checkpoint,
+            last_init: checkpoint_init,
+            semantic_conversation: checkpoint_conversation,
+            last_workspace_capability_set: checkpoint_capability_set,
+            ..
+        } => {
+            *state = checkpoint.as_ref().clone().into_state();
+            *last_init = checkpoint_init.clone();
+            *last_workspace_capability_set = checkpoint_capability_set.as_deref().cloned();
+            pending_workspace_capability_sets.clear();
+            if let Some(checkpoint) = checkpoint_conversation {
+                *semantic_conversation = (checkpoint.protocol_version
+                    == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                    .then_some(checkpoint.messages.clone());
+            }
+        }
+    }
 }
 
 impl SessionReader {
@@ -904,13 +1632,7 @@ impl SessionReader {
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         // Load metadata
-        let metadata = if metadata_path.exists() {
-            let content = fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&content)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        } else {
-            SessionMetadata::new(id)
-        };
+        let (metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
         // Load entries
         let mut entries = Vec::new();
@@ -930,6 +1652,23 @@ impl SessionReader {
                 }
             }
         }
+
+        // `load_metadata_tolerant` already rotated the corrupt file aside
+        // above but, unlike `SessionRecorder::resume`, this is a read-only
+        // path with no later `flush()` to persist a replacement -- so
+        // without rebuilding and writing one back here, calling this
+        // function directly (rather than through `resume`) would both
+        // discard the title/usage/counts recoverable from these
+        // just-loaded entries (falling back to bare defaults) and leave
+        // the session with no `.meta.json` at all, making it invisible to
+        // a later `list_sessions` scan.
+        let metadata = if reconstructed {
+            let rebuilt = rebuild_metadata(id, &entries);
+            persist_rebuilt_metadata(&metadata_path, &rebuilt)?;
+            rebuilt
+        } else {
+            metadata
+        };
 
         Ok(Self {
             id: id.to_string(),
@@ -1007,20 +1746,46 @@ impl SessionReader {
         self.replay().state
     }
 
-    fn replay_parts(&self) -> (AgentState, Option<InitConfig>) {
+    fn replay_parts(
+        &self,
+    ) -> (
+        AgentState,
+        Option<InitConfig>,
+        Option<Vec<maestro_ai::Message>>,
+        Option<ApplyWorkspaceCapabilitySet>,
+    ) {
         let mut state = AgentState::default();
         let mut last_init = None;
+        let mut semantic_conversation = None;
+        let mut last_workspace_capability_set = None;
+        let mut pending_workspace_capability_sets = HashMap::new();
         let mut start_index = 0;
 
         for (index, entry) in self.entries.iter().enumerate() {
             if let SessionEntry::Checkpoint {
                 state: checkpoint,
                 last_init: checkpoint_init,
+                semantic_conversation: checkpoint_conversation,
+                last_workspace_capability_set: checkpoint_capability_set,
                 ..
             } = entry
             {
                 state = checkpoint.as_ref().clone().into_state();
                 last_init = checkpoint_init.clone();
+                last_workspace_capability_set = checkpoint_capability_set.as_deref().cloned();
+                pending_workspace_capability_sets.clear();
+                match checkpoint_conversation {
+                    Some(checkpoint)
+                        if checkpoint.protocol_version
+                            == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL =>
+                    {
+                        semantic_conversation = Some(checkpoint.messages.clone());
+                    }
+                    Some(_) => semantic_conversation = None,
+                    // A facade-only checkpoint does not supersede a durable
+                    // semantic checkpoint recorded earlier in the same log.
+                    None => {}
+                }
                 start_index = index + 1;
             }
         }
@@ -1029,35 +1794,59 @@ impl SessionReader {
             match entry {
                 SessionEntry::Sent { message, .. } => {
                     state.handle_sent_message(message);
-                    if let ToAgentMessage::Init {
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    } = message
-                    {
-                        last_init = Some(InitConfig {
-                            system_prompt: system_prompt.clone(),
-                            append_system_prompt: append_system_prompt.clone(),
-                            thinking_level: *thinking_level,
-                            approval_mode: *approval_mode,
-                        });
+                    record_sent_workspace_capability(
+                        &mut pending_workspace_capability_sets,
+                        message,
+                    );
+                    if let Some(config) = init_config_from_message(message) {
+                        last_init = Some(config);
                     }
                 }
                 SessionEntry::Received { message, .. } => {
+                    if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = message {
+                        let _ = accept_workspace_capability_receipt(
+                            &mut pending_workspace_capability_sets,
+                            &mut last_workspace_capability_set,
+                            receipt,
+                        );
+                    }
+                    if let FromAgentMessage::ConversationSnapshot {
+                        protocol_version,
+                        messages,
+                    } = message
+                    {
+                        if protocol_version
+                            == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                        {
+                            semantic_conversation = Some(messages.clone());
+                        } else {
+                            semantic_conversation = None;
+                        }
+                    }
                     let _ = state.handle_message(message.clone());
                 }
                 SessionEntry::Checkpoint { .. } => {}
             }
         }
-        (state, last_init)
+        (
+            state,
+            last_init,
+            semantic_conversation,
+            last_workspace_capability_set,
+        )
     }
 
     /// Build a resumable snapshot from the recorded session log.
     #[must_use]
     pub fn replay(&self) -> SessionReplay {
-        let (state, last_init) = self.replay_parts();
-        SessionReplay { state, last_init }
+        let (state, last_init, semantic_conversation, last_workspace_capability_set) =
+            self.replay_parts();
+        SessionReplay {
+            state,
+            last_init,
+            semantic_conversation,
+            last_workspace_capability_set,
+        }
     }
 }
 
@@ -1069,24 +1858,60 @@ pub fn list_sessions(sessions_dir: impl AsRef<Path>) -> std::io::Result<Vec<Sess
     }
 
     let mut sessions = Vec::new();
-    for entry in fs::read_dir(sessions_dir)? {
-        let entry = entry?;
+    // Collect entries up front: a corrupt metadata file is rebuilt and
+    // re-persisted below, and a live directory iterator could observe the
+    // newly written file and list the session twice.
+    let entries = fs::read_dir(sessions_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    for entry in entries {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "json")
             && path
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().ends_with(".meta.json"))
         {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(meta) = serde_json::from_str::<SessionMetadata>(&content) {
-                    sessions.push(meta);
+            // Read bytes, not `read_to_string`: a `.meta.json` torn
+            // mid-write by a crash can be torn in the middle of a
+            // multi-byte UTF-8 character just as easily as in the middle
+            // of a JSON token, and `read_to_string` failing on that would
+            // otherwise skip this whole `if let` block (and, per the
+            // comment below, silently drop the session from the listing)
+            // without ever reaching the same rotate-and-rebuild recovery a
+            // JSON-parse failure already gets.
+            if let Ok(content) = fs::read(&path) {
+                match serde_json::from_slice::<SessionMetadata>(&content) {
+                    Ok(meta) => sessions.push(meta),
+                    Err(err) => {
+                        // Previously this silently dropped the session from
+                        // the listing, making a crash-torn metadata file
+                        // look identical to "session never existed". Rotate
+                        // the corrupt file aside, rebuild the metadata from
+                        // the still-intact JSONL log, and persist the
+                        // reconstruction so the session stays discoverable
+                        // in subsequent listings.
+                        let id = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(|n| n.strip_suffix(".meta.json"))
+                            .unwrap_or("unknown");
+                        eprintln!(
+                            "Corrupt session metadata at {}: {err}. Rotating aside and reconstructing from the JSONL log.",
+                            path.display()
+                        );
+                        crate::fs_atomic::rotate_corrupt_aside(&path);
+                        let meta = match SessionReader::load(sessions_dir, id) {
+                            Ok(reader) => rebuild_metadata(id, reader.entries()),
+                            Err(_) => SessionMetadata::new(id),
+                        };
+                        persist_rebuilt_metadata(&path, &meta)?;
+                        sessions.push(meta);
+                    }
                 }
             }
         }
     }
 
     // Sort by updated_at descending (most recent first)
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
 
     Ok(sessions)
 }
@@ -1103,6 +1928,7 @@ pub fn delete_session(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Resu
     if meta_path.exists() {
         fs::remove_file(&meta_path)?;
     }
+    let _ = crate::tool_output::remove_model_tool_spill_dir(sessions_dir, id);
 
     Ok(())
 }
@@ -1118,7 +1944,474 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{ContentBlock, Message, MessageContent, Role};
+    use crate::headless::{CodeMode, GovernedToolGrant};
     use tempfile::TempDir;
+
+    fn governed_grant_fixture() -> GovernedToolGrant {
+        serde_json::from_value(serde_json::json!({
+            "envelope_version": 2,
+            "grant_id": "grant-reconnect",
+            "grant_version": 8,
+            "issuer": "evalops.platform",
+            "audience": "evalops.maestro",
+            "organization_id": "org-1",
+            "workspace_id": "workspace-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "run_id": "run-1",
+            "runtime_generation": 5,
+            "grant_epoch": 3,
+            "issued_at_ms": 100,
+            "not_before_ms": 100,
+            "expires_at_ms": 10_000,
+            "grant_hash": "sha256:immutable",
+            "signing_key_id": "key-1",
+            "grant_signature": "hmac-sha256:signed",
+            "identity_authorization": {
+                "schemaVersion": "identity.tool_authorization.v1",
+                "organizationId": "org-1",
+                "workspaceId": "workspace-1",
+                "applicationId": "deixic",
+                "subjectId": "user-1",
+                "actorChainDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "decisionId": "decision-1",
+                "authorizationLineageId": "lineage-1",
+                "policyId": "policy-1",
+                "policyVersion": "v1",
+                "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "authorizationFingerprint": "authz_fingerprint_v1_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "capabilityDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "actionDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "audience": "evalops.maestro",
+                "issuedAtMs": 100,
+                "expiresAtMs": 10000,
+                "revocationEpoch": 3
+            },
+            "native_tool_ids": ["read"],
+            "external_tools": []
+        }))
+        .unwrap()
+    }
+
+    fn workspace_capability_request(generation: u64) -> ApplyWorkspaceCapabilitySet {
+        ApplyWorkspaceCapabilitySet {
+            organization_id: "org-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            runner_session_id: "runner-1".to_string(),
+            runtime_generation: 7,
+            activation_generation: generation,
+            workspace_snapshot_digest: format!("sha256:snapshot-{generation}"),
+            workspace_skill_set_digest: format!("sha256:skills-{generation}"),
+            capability_set_digest: format!("sha256:set-{generation}"),
+            workspace_instructions: vec![format!("generation {generation}")],
+            admitted_catalog: Vec::new(),
+            admission_receipt_id: format!("admission-{generation}"),
+        }
+    }
+
+    fn workspace_capability_receipt(
+        request: &ApplyWorkspaceCapabilitySet,
+    ) -> WorkspaceCapabilitySetApplied {
+        WorkspaceCapabilitySetApplied {
+            schema_version: "evalops.maestro.workspace-capability-set.v1".to_string(),
+            organization_id: request.organization_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            runner_session_id: request.runner_session_id.clone(),
+            runtime_generation: request.runtime_generation,
+            activation_generation: request.activation_generation,
+            effective_catalog_digest: request.capability_set_digest.clone(),
+            accepted_entry_digests: Vec::new(),
+            rejected_entries: Vec::new(),
+            replay_cursor: workspace_capability_replay_cursor(request),
+            applied_at: 123,
+            controller_binding_sha256: "sha256:binding".to_string(),
+            provider_prompt_sha256: "sha256:provider-prompt".to_string(),
+            staged_for_next_turn: false,
+            idempotent: false,
+        }
+    }
+
+    #[test]
+    fn session_restart_replays_only_the_last_matching_accepted_capability_set() {
+        let temp = TempDir::new().expect("session root");
+        let mut recorder = SessionRecorder::new(temp.path()).expect("session recorder");
+        let session_id = recorder.id().to_string();
+        let accepted = workspace_capability_request(1);
+        recorder
+            .record_sent(&ToAgentMessage::ApplyWorkspaceCapabilitySet {
+                request: accepted.clone(),
+            })
+            .expect("record accepted candidate");
+
+        let mut mismatched = workspace_capability_receipt(&accepted);
+        mismatched.organization_id = "org-wrong".to_string();
+        recorder
+            .record_received(&FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: mismatched,
+            })
+            .expect("record mismatched receipt");
+        recorder
+            .record_received(&FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: workspace_capability_receipt(&accepted),
+            })
+            .expect("record matching receipt");
+
+        recorder
+            .record_sent(&ToAgentMessage::ApplyWorkspaceCapabilitySet {
+                request: workspace_capability_request(2),
+            })
+            .expect("record unacknowledged successor");
+        recorder.flush().expect("flush journal");
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(temp.path(), &session_id)
+            .expect("resume recorder")
+            .replay();
+        assert_eq!(replay.last_workspace_capability_set, Some(accepted));
+    }
+
+    #[test]
+    fn governed_init_grant_identity_survives_session_replay() {
+        let temp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(temp.path()).unwrap();
+        let session_id = recorder.id().to_string();
+        let grant = governed_grant_fixture();
+        recorder
+            .record_sent(&ToAgentMessage::GovernedInit {
+                system_prompt: None,
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+                code_mode: CodeMode::GovernedCode,
+                tool_grant: grant.clone(),
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let replay = SessionReader::load(temp.path(), &session_id)
+            .unwrap()
+            .replay();
+        let restored = replay
+            .last_init
+            .and_then(|init| init.tool_grant)
+            .expect("governed grant restored");
+        assert_eq!(restored.identity(), grant.identity());
+        assert_eq!(restored, grant);
+    }
+
+    #[test]
+    fn managed_inference_authorization_crosses_wire_but_not_session_journals() {
+        let temp = TempDir::new().expect("session root");
+        let mut recorder = SessionRecorder::new(temp.path()).expect("session recorder");
+        let session_id = recorder.id().to_string();
+        let message = ToAgentMessage::Prompt {
+            content: "managed prompt".to_string(),
+            attachments: None,
+            managed_inference_authorization: Some(
+                crate::agent::ManagedInferenceAuthorization::new("signed-capability-marker"),
+            ),
+        };
+
+        let wire = serde_json::to_string(&message).expect("serialize transport message");
+        assert!(wire.contains("managed_inference_authorization"));
+        assert!(wire.contains("signed-capability-marker"));
+
+        recorder.record_sent(&message).expect("record sent message");
+        recorder.flush_checkpoint().expect("flush session state");
+        drop(recorder);
+
+        for path in [
+            temp.path().join(format!("{session_id}.jsonl")),
+            temp.path().join(format!("{session_id}.replay.json")),
+        ] {
+            let durable = fs::read_to_string(path).expect("read durable session data");
+            assert!(!durable.contains("managed_inference_authorization"));
+            assert!(!durable.contains("signed-capability-marker"));
+        }
+    }
+
+    fn semantic_tool_pair_fixture() -> Vec<Message> {
+        vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("inspect the workspace".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "tool-call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({ "command": "pwd" }),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-call-1".to_string(),
+                    content: "/workspace".to_string(),
+                    is_error: None,
+                }]),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("The workspace is ready.".to_string()),
+            },
+        ]
+    }
+
+    fn credential_tool_fixture() -> Vec<Message> {
+        vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tool-call-1".to_string(),
+                name: "http".to_string(),
+                input: serde_json::json!({ "api_key": "sk-secret-value" }),
+            }]),
+        }]
+    }
+
+    #[test]
+    fn test_session_replay_restores_semantic_provider_conversation_with_tool_pairs() {
+        let tmp = TempDir::new().unwrap();
+        let messages = semantic_tool_pair_fixture();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_semantic_snapshot_checkpoint_redacts_credentials() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        recorder
+            .record_semantic_conversation(credential_tool_fixture())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        let jsonl = std::fs::read_to_string(recorder.path()).unwrap();
+        let sidecar =
+            std::fs::read_to_string(tmp.path().join(format!("{}.replay.json", recorder.id())))
+                .unwrap();
+        assert!(!jsonl.contains("sk-secret-value"));
+        assert!(!jsonl.contains("tool-call-1"));
+        assert!(!sidecar.contains("sk-secret-value"));
+        assert!(sidecar.contains("[REDACTED]"));
+        assert!(sidecar.contains("tool-call-1"));
+    }
+
+    #[test]
+    fn received_semantic_snapshot_is_checkpoint_only_and_strips_private_content() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_received(&FromAgentMessage::ConversationSnapshot {
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_owned(),
+                messages: vec![
+                    Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Blocks(vec![
+                            ContentBlock::Thinking {
+                                thinking: "secret reasoning".to_owned(),
+                                signature: None,
+                            },
+                            ContentBlock::ToolUse {
+                                id: "call-private".to_owned(),
+                                name: "read".to_owned(),
+                                input: serde_json::json!({}),
+                            },
+                        ]),
+                    },
+                    Message {
+                        role: Role::User,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id: "call-private".to_owned(),
+                            content: "private tool output".to_owned(),
+                            is_error: None,
+                        }]),
+                    },
+                ],
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(tmp.path(), &id).unwrap();
+        assert!(reader.received_messages().is_empty());
+        let jsonl = fs::read_to_string(tmp.path().join(format!("{id}.jsonl"))).unwrap();
+        let sidecar = fs::read_to_string(tmp.path().join(format!("{id}.replay.json"))).unwrap();
+        assert!(!jsonl.contains("secret reasoning"));
+        assert!(!jsonl.contains("private tool output"));
+        assert!(!jsonl.contains("call-private"));
+        assert!(!sidecar.contains("secret reasoning"));
+        assert!(!sidecar.contains("private tool output"));
+        assert!(sidecar.contains("call-private"));
+    }
+
+    #[test]
+    fn unsupported_semantic_checkpoint_clears_stale_provider_history() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_semantic_conversation(semantic_tool_pair_fixture())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ConversationSnapshot {
+                protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
+                messages: vec![],
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        assert!(
+            SessionReader::load(tmp.path(), &id)
+                .unwrap()
+                .replay()
+                .semantic_conversation
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn replay_sidecar_bounds_semantic_persistence_as_history_grows() {
+        fn persisted_bytes(turns: usize) -> u64 {
+            let tmp = TempDir::new().unwrap();
+            let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+            let id = recorder.id().to_owned();
+            for turn in 0..turns {
+                let messages = (0..=turn)
+                    .map(|index| Message {
+                        role: Role::User,
+                        content: MessageContent::Text(format!("turn-{index}: {}", "x".repeat(256))),
+                    })
+                    .collect();
+                recorder.record_semantic_conversation(messages).unwrap();
+                recorder.flush_checkpoint().unwrap();
+            }
+            let journal = fs::metadata(recorder.path()).unwrap().len();
+            let sidecar = fs::metadata(tmp.path().join(format!("{id}.replay.json")))
+                .unwrap()
+                .len();
+            let journal_text = fs::read_to_string(recorder.path()).unwrap();
+            assert!(
+                !journal_text.contains("semantic_conversation"),
+                "semantic history must not be duplicated in append-only checkpoints"
+            );
+            journal + sidecar
+        }
+
+        let eight_turns = persisted_bytes(8);
+        let sixteen_turns = persisted_bytes(16);
+        assert!(
+            sixteen_turns < eight_turns * 3,
+            "latest-sidecar persistence should grow linearly, not quadratically: {eight_turns} -> {sixteen_turns}"
+        );
+    }
+
+    #[test]
+    fn resume_uses_latest_sidecar_anchor_and_applies_only_the_tail() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("historical init".to_owned()),
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+            })
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        for index in 0..10 {
+            recorder
+                .record_received(&FromAgentMessage::Status {
+                    message: format!("historical status {index}"),
+                })
+                .unwrap();
+        }
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("tail init".to_owned()),
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            replay.last_init.and_then(|init| init.system_prompt),
+            Some("tail init".to_owned())
+        );
+    }
+
+    #[test]
+    fn sidecar_publish_before_checkpoint_preserves_new_semantic_snapshot_on_interruption() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        let messages = semantic_tool_pair_fixture();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+
+        // Simulate termination after the pre-checkpoint atomic publication and
+        // before the semantic-free journal checkpoint can be appended.
+        recorder.write_replay_sidecar().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
+
+    #[test]
+    fn restore_manifest_uses_checkpoint_after_process_death() {
+        let tmp = TempDir::new().unwrap();
+        let messages = semantic_tool_pair_fixture();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        // A later facade-only snapshot is the state saved in a drain manifest;
+        // it must not erase the durable provider checkpoint before restart.
+        recorder
+            .apply_snapshot(AgentState::default(), None)
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
 
     #[test]
     fn test_session_record_and_load() {
@@ -1134,6 +2427,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Hello, world!".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
 
@@ -1168,6 +2462,90 @@ mod tests {
     }
 
     #[test]
+    fn recorder_entry_points_create_missing_session_directories() {
+        let tmp = TempDir::new().unwrap();
+        let new_sessions = tmp.path().join("new").join("sessions");
+        let resumed_sessions = tmp.path().join("resumed").join("sessions");
+
+        let new_recorder = SessionRecorder::with_id(&new_sessions, "new-session").unwrap();
+        assert!(new_sessions.is_dir());
+        assert!(new_recorder.path().exists());
+
+        let resumed_recorder =
+            SessionRecorder::resume(&resumed_sessions, "resumed-session").unwrap();
+        assert!(resumed_sessions.is_dir());
+        assert!(resumed_recorder.path().exists());
+    }
+
+    #[test]
+    fn received_executable_args_are_portable_redacted_before_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+        let client_secret = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
+        let server_secret = "correct-horse-battery-staple";
+
+        let mut recorder = SessionRecorder::with_id(sessions_dir, "redacted-session").unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ClientToolRequest {
+                call_id: "client-call".to_string(),
+                tool_execution_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({
+                    "command": format!(
+                        "curl -H 'Authorization: Bearer {client_secret}' example.test"
+                    )
+                }),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ServerRequest {
+                request_id: "server-request".to_string(),
+                request_type: ServerRequestType::ClientTool,
+                call_id: "server-call".to_string(),
+                tool_execution_id: None,
+                tool: "http".to_string(),
+                args: serde_json::json!({
+                    "payload": format!("password={server_secret}"),
+                }),
+                reason: "execute on client".to_string(),
+                started_at_ms: None,
+            })
+            .unwrap();
+
+        let live_args = serde_json::to_string(&recorder.replay_state().pending_client_tools)
+            .expect("serialize live pending client tools");
+        assert!(live_args.contains(client_secret));
+        assert!(live_args.contains(server_secret));
+        recorder.maybe_write_checkpoint(true).unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let jsonl =
+            fs::read_to_string(sessions_dir.join("redacted-session.jsonl")).expect("read JSONL");
+        assert!(!jsonl.contains(client_secret), "{jsonl}");
+        assert!(!jsonl.contains(server_secret), "{jsonl}");
+        assert!(
+            jsonl.contains("[REDACTED:token:portable-export]"),
+            "{jsonl}"
+        );
+        assert!(
+            jsonl.contains("[REDACTED:password:portable-export]"),
+            "{jsonl}"
+        );
+
+        let reader = SessionReader::load(sessions_dir, "redacted-session").unwrap();
+        let recorded =
+            serde_json::to_string(reader.received_messages().as_slice()).expect("serialize replay");
+        let replayed = serde_json::to_string(&reader.replay_state().pending_client_tools)
+            .expect("replay state");
+        for persisted in [&recorded, &replayed] {
+            assert!(!persisted.contains(client_secret), "{persisted}");
+            assert!(!persisted.contains(server_secret), "{persisted}");
+            assert!(persisted.contains("[REDACTED:"), "{persisted}");
+        }
+    }
+
+    #[test]
     fn test_session_reader_replay_restores_state_and_init() {
         let tmp = TempDir::new().unwrap();
         let sessions_dir = tmp.path();
@@ -1181,6 +2559,7 @@ mod tests {
                 append_system_prompt: Some("Stay concise".to_string()),
                 thinking_level: Some(super::super::messages::ThinkingLevel::High),
                 approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+                history: None,
             })
             .unwrap();
 
@@ -1214,6 +2593,7 @@ mod tests {
         recorder
             .record_received(&FromAgentMessage::ToolCall {
                 call_id: "call_1".to_string(),
+                tool_execution_id: None,
                 tool: "bash".to_string(),
                 args: serde_json::json!({ "cmd": "git status" }),
                 requires_approval: true,
@@ -1255,6 +2635,9 @@ mod tests {
                 append_system_prompt: Some("Stay concise".to_string()),
                 thinking_level: Some(super::super::messages::ThinkingLevel::High),
                 approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+                history: None,
+                code_mode: None,
+                tool_grant: None,
             })
         );
         assert_eq!(replay.state.protocol_version.as_deref(), Some("2026-03-30"));
@@ -1305,12 +2688,14 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Low),
                 approval_mode: Some(super::super::messages::ApprovalMode::Auto),
+                history: None,
             })
             .unwrap();
         recorder
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Hello".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder
@@ -1319,6 +2704,7 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
                 approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+                history: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -1332,6 +2718,9 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
                 approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+                history: None,
+                code_mode: None,
+                tool_grant: None,
             })
         );
     }
@@ -1346,6 +2735,7 @@ mod tests {
         r1.record_sent(&ToAgentMessage::Prompt {
             content: "First session".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .unwrap();
         r1.flush().unwrap();
@@ -1354,6 +2744,7 @@ mod tests {
         r2.record_sent(&ToAgentMessage::Prompt {
             content: "Second session".to_string(),
             attachments: None,
+            managed_inference_authorization: None,
         })
         .unwrap();
         r2.flush().unwrap();
@@ -1375,6 +2766,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Test".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -1383,6 +2775,9 @@ mod tests {
         // Verify files exist
         assert!(sessions_dir.join(format!("{}.jsonl", id)).exists());
         assert!(sessions_dir.join(format!("{}.meta.json", id)).exists());
+        let spill_dir = sessions_dir.join("tool-output").join(&id);
+        fs::create_dir_all(&spill_dir).unwrap();
+        fs::write(spill_dir.join("large.txt"), "output").unwrap();
 
         // Delete the session
         delete_session(sessions_dir, &id).unwrap();
@@ -1390,6 +2785,23 @@ mod tests {
         // Verify files are gone
         assert!(!sessions_dir.join(format!("{}.jsonl", id)).exists());
         assert!(!sessions_dir.join(format!("{}.meta.json", id)).exists());
+        assert!(!spill_dir.exists());
+    }
+
+    #[test]
+    fn delete_session_succeeds_when_post_commit_spill_cleanup_fails() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+        let id = "spill-cleanup-failure";
+        fs::write(sessions_dir.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        fs::write(sessions_dir.join(format!("{id}.meta.json")), "{}").unwrap();
+        fs::write(sessions_dir.join("tool-output"), "blocks spill directory").unwrap();
+
+        delete_session(sessions_dir, id).expect("transcript deletion is the commit point");
+
+        assert!(!sessions_dir.join(format!("{id}.jsonl")).exists());
+        assert!(!sessions_dir.join(format!("{id}.meta.json")).exists());
+        assert!(sessions_dir.join("tool-output").exists());
     }
 
     #[test]
@@ -1404,6 +2816,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "First message".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -1415,6 +2828,7 @@ mod tests {
             .record_sent(&ToAgentMessage::Prompt {
                 content: "Second message".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -1423,6 +2837,295 @@ mod tests {
         // Load and verify
         let reader = SessionReader::load(sessions_dir, &id).unwrap();
         assert_eq!(reader.prompts().len(), 2);
+    }
+
+    /// Regression test for a torn `.meta.json`: before the fix, both
+    /// `SessionRecorder::resume` and `SessionReader::load` hard-failed with
+    /// an `InvalidData` IO error on a corrupt metadata file, even though the
+    /// JSONL log (the actual conversation history) was fully intact. A user
+    /// hitting a crash right as metadata flushed would be unable to resume
+    /// a session that was otherwise perfectly recoverable.
+    #[test]
+    fn resume_tolerates_corrupt_metadata_instead_of_hard_failing() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Before the crash".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // Simulate a crash mid-`fs::write` of the metadata file: truncated,
+        // invalid JSON.
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        // resume() must succeed rather than propagating a parse error.
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id)
+            .expect("resume must tolerate corrupt metadata, not hard-fail");
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "After the resume".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // The corrupt file must be preserved as forensic evidence, not
+        // silently overwritten in place.
+        let rotated: Vec<_> = fs::read_dir(sessions_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".meta.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            rotated.len(),
+            1,
+            "corrupt metadata should be rotated aside, not discarded"
+        );
+
+        // The conversation history survived the crash even though metadata
+        // did not: both prompts (before and after) must still be present.
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.prompts().len(), 2);
+
+        // list_sessions must not hide a session just because its metadata
+        // was corrupt -- that would make a crash look identical to the
+        // session never having existed.
+        let sessions = list_sessions(sessions_dir).unwrap();
+        assert!(sessions.iter().any(|meta| meta.id == id));
+    }
+
+    /// Regression test: a `.meta.json` torn mid-write can just as easily be
+    /// torn in the middle of a multi-byte UTF-8 character as in the middle
+    /// of a JSON token. Before the fix, `load_metadata_tolerant` used
+    /// `fs::read_to_string`, which failed with `InvalidData` before the
+    /// tolerant JSON-parsing branch (exercised by
+    /// `resume_tolerates_corrupt_metadata_instead_of_hard_failing` above)
+    /// ever ran -- so this exact kind of corruption still hard-failed
+    /// `resume` and silently dropped the session from `list_sessions`,
+    /// even though the equivalent ASCII-corruption case was already fixed.
+    #[test]
+    fn resume_and_list_sessions_tolerate_invalid_utf8_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Before the crash".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // Simulate a crash mid-write torn in the middle of a multi-byte
+        // UTF-8 character: a valid JSON prefix followed by a lone
+        // continuation byte, which is invalid UTF-8 on its own.
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        let mut torn = br#"{"id":"partial","title":"caf"#.to_vec();
+        torn.push(0xE9); // incomplete multi-byte sequence, not valid UTF-8
+        fs::write(&meta_path, &torn).unwrap();
+        assert!(
+            std::str::from_utf8(&torn).is_err(),
+            "test fixture must actually be invalid UTF-8"
+        );
+
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id)
+            .expect("resume must tolerate invalid-UTF-8 metadata, not hard-fail");
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "After the resume".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let rotated: Vec<_> = fs::read_dir(sessions_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".meta.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            rotated.len(),
+            1,
+            "invalid-UTF-8 metadata should be rotated aside, not discarded"
+        );
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.prompts().len(), 2);
+
+        let sessions = list_sessions(sessions_dir).unwrap();
+        assert!(sessions.iter().any(|meta| meta.id == id));
+    }
+
+    /// When corrupt metadata is rotated aside on resume, the lost fields
+    /// (title, message count) are rebuilt from the still-intact JSONL log
+    /// instead of being permanently reset to defaults on the next flush.
+    #[test]
+    fn resume_rebuilds_corrupt_metadata_from_jsonl_log() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Recovered title".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id).unwrap();
+        assert_eq!(
+            recorder.metadata().title.as_deref(),
+            Some("Recovered title"),
+            "title must be rebuilt from the JSONL log, not reset"
+        );
+        assert_eq!(recorder.metadata().message_count, 1);
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.metadata().title.as_deref(), Some("Recovered title"));
+    }
+
+    /// Regression test: calling `SessionReader::load` directly (not through
+    /// `SessionRecorder::resume`) on a session with corrupt metadata must
+    /// also rebuild the lost fields from the JSONL log, not silently reset
+    /// them to defaults -- and must persist that rebuild, since this
+    /// read-only path has no later `flush()` to do so, and without it a
+    /// later `list_sessions` scan would find no `.meta.json` for this
+    /// session at all (it was rotated aside above, with nothing to replace
+    /// it) and treat a fully recoverable session as if it never existed.
+    #[test]
+    fn direct_session_reader_load_rebuilds_and_persists_corrupt_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Loaded directly".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let reader = SessionReader::load(sessions_dir, &id)
+            .expect("load must tolerate corrupt metadata, not hard-fail");
+        assert_eq!(
+            reader.metadata().title.as_deref(),
+            Some("Loaded directly"),
+            "title must be rebuilt from the JSONL log via a direct load, not reset"
+        );
+        assert_eq!(reader.metadata().message_count, 1);
+
+        // The rebuild must be persisted, not just returned in memory: a
+        // later listing has to be able to find this session again.
+        assert!(
+            meta_path.exists(),
+            "rebuilt metadata must be persisted after a direct load, not left absent"
+        );
+        let sessions = list_sessions(sessions_dir).unwrap();
+        let found = sessions
+            .iter()
+            .find(|meta| meta.id == id)
+            .expect("session must still be discoverable after a direct load rebuilt its metadata");
+        assert_eq!(found.title.as_deref(), Some("Loaded directly"));
+    }
+
+    #[test]
+    fn rebuilt_metadata_persistence_errors_are_propagated() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("session.meta.json");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("occupied"), "keep").unwrap();
+
+        let metadata = SessionMetadata::new("session");
+        let err = persist_rebuilt_metadata(&target, &metadata)
+            .expect_err("replacing a non-empty directory must fail");
+
+        assert!(
+            !err.to_string().is_empty(),
+            "the replacement error must reach the caller"
+        );
+        assert!(target.join("occupied").exists());
+    }
+
+    /// After `list_sessions` rotates a corrupt metadata file aside, it
+    /// persists the rebuilt metadata so subsequent listings keep showing
+    /// the session instead of hiding it (no `.meta.json` left to match).
+    #[test]
+    fn list_sessions_persists_rebuilt_metadata_after_rotation() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Still here".to_string(),
+                attachments: None,
+                managed_inference_authorization: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let first = list_sessions(sessions_dir).unwrap();
+        assert!(first.iter().any(|meta| meta.id == id));
+        assert!(
+            meta_path.exists(),
+            "rebuilt metadata must be persisted after rotation"
+        );
+
+        let second = list_sessions(sessions_dir).unwrap();
+        let meta = second
+            .iter()
+            .find(|meta| meta.id == id)
+            .expect("session must stay discoverable in subsequent listings");
+        assert_eq!(meta.title.as_deref(), Some("Still here"));
+        assert_eq!(meta.message_count, 1);
     }
 
     #[test]

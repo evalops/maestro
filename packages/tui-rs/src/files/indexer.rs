@@ -300,7 +300,7 @@ impl FileIndexer {
                 } else if path.is_file() {
                     if self.should_include(&path) {
                         if self.try_reserve_file_slot() {
-                            vec![WorkspaceFile::from_path(&root, path)]
+                            vec![WorkspaceFile::from_file_path(&root, path)]
                         } else {
                             Vec::new()
                         }
@@ -379,7 +379,7 @@ impl FileIndexer {
         } else if path.is_file() {
             if self.should_include(&path) {
                 if self.try_reserve_file_slot() {
-                    vec![WorkspaceFile::from_path(root, path)]
+                    vec![WorkspaceFile::from_file_path(root, path)]
                 } else {
                     Vec::new()
                 }
@@ -396,7 +396,7 @@ impl FileIndexer {
             return None;
         }
 
-        let canonical = match root.canonicalize() {
+        let canonical = match dunce::canonicalize(root) {
             Ok(path) => path,
             Err(_) => return None,
         };
@@ -415,7 +415,7 @@ impl FileIndexer {
             return true;
         };
 
-        let canonical = match path.canonicalize() {
+        let canonical = match dunce::canonicalize(path) {
             Ok(p) => p,
             Err(_) => return false,
         };
@@ -538,9 +538,11 @@ mod tests {
         let files = indexer.get_files(dir.path());
 
         // Should not include node_modules files
-        assert!(!files
-            .iter()
-            .any(|f| f.relative_path.contains("node_modules")));
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.relative_path.contains("node_modules"))
+        );
     }
 
     #[test]

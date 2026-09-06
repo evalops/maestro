@@ -11,14 +11,15 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 	readPackageJson,
+	shouldManagePackageLock,
 	syncInternalDependencies,
 	verifyAlignedVersions,
 	writePackageJson,
 } from "./workspace-utils.js";
 
-function main() {
+async function main() {
 	const rootPkg = loadRootPackage();
-	const workspacePkgs = getWorkspacePackages(rootPkg);
+	const workspacePkgs = await getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
 	const targetVersion = rootPkg.version;
 
@@ -51,8 +52,12 @@ function main() {
 			writePackageJson(pkg.path, pkg.data);
 		}
 
-		execSync("npm install --package-lock-only", { stdio: "inherit" });
-		console.log("📦 Updated package-lock.json");
+		if (shouldManagePackageLock(rootPkg)) {
+			execSync("npm install --package-lock-only", { stdio: "inherit" });
+			console.log("📦 Updated package-lock.json");
+		} else {
+			console.log("📦 Skipped package-lock.json update for workspace-only repo");
+		}
 	} catch (error) {
 		console.error("⚠️  Version sync failed, restoring package.json files");
 		for (const backup of backups) {

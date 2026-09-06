@@ -1,4 +1,4 @@
-# Composer Hooks Configuration
+# Maestro Hooks Configuration
 #
 # Place this file at:
 #   ~/.composer/hooks.toml     (global)
@@ -16,7 +16,6 @@
 #   - lua              - Inline Lua script
 #   - lua_file         - Path to Lua script
 #   - wasm             - Path to WASM plugin
-#   - typescript       - Path to TypeScript hook (IPC)
 
 [settings]
 # Master switch to enable/disable all hooks
@@ -114,6 +113,7 @@ return { continue = true }
 # [[hooks]]
 # event = "PreToolUse"
 # description = "WASM safety plugin"
+# required = true # default for PreToolUse WASM policies; set false for advisory
 # wasm = "~/.composer/plugins/safety.wasm"
 
 # ============================================================================
@@ -123,4 +123,3 @@ return { continue = true }
 # [[hooks]]
 # event = "PreToolUse"
 # description = "TypeScript integration"
-# typescript = "~/.composer/hooks/custom.ts"

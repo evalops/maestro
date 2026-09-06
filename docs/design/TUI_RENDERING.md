@@ -1,6 +1,14 @@
 # TUI Rendering Engine Design
 
-The Terminal UI (TUI) is the largest codebase in Maestro (~919KB, 147 files), providing an interactive terminal experience with streaming responses, tool visualizations, and modal dialogs.
+> **Historical document:** Describes the removed TypeScript TUI (`src/cli-tui`,
+> `packages/tui` / `@evalops/tui`), deleted in PR #2891. For the **current**
+> interactive UI, see [TUI Architecture](../TUI_ARCHITECTURE.md) and
+> [`packages/tui-rs/ARCHITECTURE.md`](../../packages/tui-rs/ARCHITECTURE.md).
+> Do not treat paths like `src/cli-tui/...` below as live code.
+
+The Terminal UI (TUI) was historically the largest TypeScript surface in Maestro
+(~919KB, 147 files), providing an interactive terminal experience with streaming
+responses, tool visualizations, and modal dialogs.
 
 ## Overview
 
@@ -367,22 +375,26 @@ class ApprovalModal implements Modal {
 ### Command Registry
 
 ```typescript
-// src/cli-tui/utils/commands/command-registry-builder.ts
-interface Command {
-  name: string;
-  description: string;
-  aliases?: string[];
-  handler: (args: string[]) => Promise<void>;
-}
+// src/cli-tui/commands/command-catalog.ts
+withArgs("run", "run", {
+  description: "Run a package script",
+  usage: "/run <script> [args]",
+  tags: ["utility"],
+});
 
-const commands: Command[] = [
-  { name: "clear", description: "Clear conversation", handler: clearHandler },
-  { name: "model", description: "Switch model", handler: modelHandler },
-  { name: "session", description: "Session management", handler: sessionHandler },
-  { name: "help", description: "Show help", handler: helpHandler },
-  // ... many more
-];
+// src/cli-tui/commands/command-suite-catalog.ts
+{
+  name: "ss",
+  description: "Session management",
+  usage: "/ss [new|clear|list|load <id>|branch <n>|tree|export|share]",
+  subcommands: SESSION_SUBCOMMANDS,
+}
 ```
+
+`src/cli-tui/commands/registry.ts` assembles catalog entries, command-suite
+entries, aliases, completions, and help behavior into executable slash-command
+entries. `src/cli-tui/utils/commands/command-registry-builder.ts` remains a
+compatibility wrapper for TUI wiring and tests.
 
 ### Autocomplete Provider
 

@@ -221,8 +221,8 @@ fn test_metrics_tracking() {
     system.execute_pre_tool_use("Write", "2", &serde_json::json!({}));
     system.execute_pre_tool_use("Bash", "3", &serde_json::json!({ "command": "ls" }));
 
-    system.execute_post_tool_use("Read", "1", &serde_json::json!({}), "content", false);
-    system.execute_post_tool_use("Write", "2", &serde_json::json!({}), "ok", false);
+    system.execute_post_tool_use("Read", "1", &serde_json::json!({}), "content", false, 0);
+    system.execute_post_tool_use("Write", "2", &serde_json::json!({}), "ok", false, 0);
 
     let metrics = system.metrics();
     assert_eq!(metrics.pre_tool_use_count, 3);
@@ -300,11 +300,10 @@ fn test_hook_stats_total() {
         native_hooks: 2,
         lua_scripts: 3,
         wasm_plugins: 1,
-        typescript_hooks: 4,
         enabled: true,
     };
 
-    assert_eq!(stats.total(), 10);
+    assert_eq!(stats.total(), 6);
 }
 
 #[test]
@@ -451,7 +450,7 @@ fn test_wasm_result_code_conversion() {
 }
 
 // ============================================================================
-// Async Tests (for IPC bridge)
+// Async Tests
 // ============================================================================
 
 #[tokio::test]
@@ -463,24 +462,6 @@ async fn test_async_pre_tool_use() {
         .await;
 
     assert!(matches!(result, HookResult::Continue));
-}
-
-#[tokio::test]
-async fn test_async_with_bridge_start() {
-    let mut system = IntegratedHookSystem::load_from_config("/tmp");
-
-    // Start bridge (may fail if Node.js not available, which is fine)
-    let _ = system.start_bridge().await;
-
-    // Should still work even if bridge fails
-    let result = system
-        .execute_pre_tool_use_async("Read", "1", &serde_json::json!({}))
-        .await;
-
-    assert!(matches!(result, HookResult::Continue));
-
-    // Stop bridge
-    let _ = system.stop_bridge().await;
 }
 
 // ============================================================================
@@ -865,6 +846,7 @@ fn test_registry_post_tool_use_hook() {
         tool_input: serde_json::json!({"command": "ls"}),
         tool_output: "file1.txt\nfile2.txt".to_string(),
         is_error: false,
+        duration_ms: 0,
     };
 
     let result = registry.execute_post_tool_use(&input);
@@ -902,6 +884,10 @@ fn test_registry_post_message_hook() {
         hook_event_name: "PostMessage".to_string(),
         cwd: "/tmp".to_string(),
         session_id: None,
+        transcript_path: None,
+        transcript_size_before: None,
+        organization_id: None,
+        workspace_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         response: "Here is my response...".to_string(),
         input_tokens: 1000,
@@ -945,6 +931,8 @@ fn test_registry_session_start_hook() {
         session_id: Some("sess_123".to_string()),
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         source: "cli".to_string(),
+        organization_id: None,
+        workspace_id: None,
     };
     assert!(matches!(
         registry.execute_session_start(&cli_input),
@@ -958,6 +946,8 @@ fn test_registry_session_start_hook() {
         session_id: Some("sess_456".to_string()),
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         source: "api".to_string(),
+        organization_id: None,
+        workspace_id: None,
     };
     assert!(matches!(
         registry.execute_session_start(&api_input),
@@ -989,6 +979,9 @@ fn test_registry_session_end_hook() {
         hook_event_name: "SessionEnd".to_string(),
         cwd: "/tmp".to_string(),
         session_id: Some("sess_123".to_string()),
+        transcript_path: None,
+        organization_id: None,
+        workspace_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         reason: "user_quit".to_string(),
         duration_ms: 60000,
@@ -1286,7 +1279,7 @@ fn test_integrated_system_all_events_when_disabled() {
         HookResult::Continue
     ));
     assert!(matches!(
-        system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false),
+        system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false, 0),
         HookResult::Continue
     ));
     assert!(matches!(
@@ -1352,7 +1345,7 @@ fn test_integrated_system_metrics_comprehensive() {
     // Execute various hooks
     system.execute_pre_tool_use("Bash", "1", &serde_json::json!({}));
     system.execute_pre_tool_use("Read", "2", &serde_json::json!({}));
-    system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false);
+    system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false, 0);
 
     let metrics = system.metrics();
     assert_eq!(metrics.pre_tool_use_count, 2);
@@ -1393,7 +1386,6 @@ fn test_integrated_system_stats() {
     let _ = stats.native_hooks;
     let _ = stats.lua_scripts;
     let _ = stats.wasm_plugins;
-    let _ = stats.typescript_hooks;
 }
 
 #[test]

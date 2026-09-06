@@ -6,7 +6,8 @@
 use crate::agent::{FromAgent, TokenUsage};
 use crate::telemetry::{
     ApprovalMode, CanonicalTurnEvent, ErrorDetails, FeatureFlags, ModelInfo, SandboxMode,
-    TailSamplingConfig, TokenUsage as TelemetryTokenUsage, TurnCollector, TurnStatus,
+    TailSamplingConfig, TelemetryIdentityScope, TokenUsage as TelemetryTokenUsage, TurnCollector,
+    TurnStatus,
 };
 
 /// Configuration for turn tracking.
@@ -33,6 +34,10 @@ pub struct TurnTrackerContext {
     pub context_source_count: u32,
     /// Feature flags
     pub features: FeatureFlags,
+    /// Identity tenant scope verified before the model turn. This stays on the
+    /// canonical event only so the private first-party outbox can reject a
+    /// retry under a different signed-in tenant.
+    pub identity_scope: Option<TelemetryIdentityScope>,
 }
 
 /// Tracks agent turns and emits canonical wide events.
@@ -41,8 +46,10 @@ pub struct TurnTracker {
     context: TurnTrackerContext,
     turn_number: u32,
     current_turn: Option<TurnCollector>,
+    current_identity_scope: Option<TelemetryIdentityScope>,
     current_response_id: Option<String>,
     accumulated_usage: Option<TokenUsage>,
+    cost_complete: bool,
 }
 
 impl TurnTracker {
@@ -54,8 +61,10 @@ impl TurnTracker {
             context: TurnTrackerContext::default(),
             turn_number: 0,
             current_turn: None,
+            current_identity_scope: None,
             current_response_id: None,
             accumulated_usage: None,
+            cost_complete: true,
         }
     }
 
@@ -72,6 +81,12 @@ impl TurnTracker {
         self.context.model = Some(model);
     }
 
+    /// Update the verified Identity scope used by turns that start after this
+    /// point. A running turn retains the scope captured at `ResponseStart`.
+    pub fn set_identity_scope(&mut self, identity_scope: Option<TelemetryIdentityScope>) {
+        self.context.identity_scope = identity_scope;
+    }
+
     /// Get the current turn number.
     #[must_use]
     pub fn turn_number(&self) -> u32 {
@@ -81,8 +96,34 @@ impl TurnTracker {
     /// Handle an agent event. Returns the canonical event if a turn completed.
     pub fn handle_event(&mut self, event: &FromAgent) -> Option<CanonicalTurnEvent> {
         match event {
+            FromAgent::BoostChanged { status, .. } => {
+                use crate::model_dynamics::BoostStatus;
+                let features = &mut self.context.features;
+                match status {
+                    BoostStatus::Suggested => features.boost_suggested = true,
+                    BoostStatus::Pending => features.boost_requested = true,
+                    BoostStatus::Active => features.boost_applied = true,
+                    BoostStatus::Idle => return None,
+                }
+                if let Some(turn) = &mut self.current_turn {
+                    turn.set_features(features.clone());
+                }
+                None
+            }
+            FromAgent::Ready { model, provider } | FromAgent::ModelChanged { model, provider } => {
+                self.set_model(ModelInfo {
+                    id: model.clone(),
+                    provider: provider.clone(),
+                    thinking_level: crate::telemetry::ThinkingLevel::Off,
+                });
+                None
+            }
             FromAgent::ResponseStart { response_id } => {
-                self.start_turn(response_id.clone());
+                if self.current_turn.is_none() {
+                    self.start_turn(response_id.clone());
+                } else {
+                    self.current_response_id = Some(response_id.clone());
+                }
                 // Record LLM start time
                 if let Some(ref mut turn) = self.current_turn {
                     turn.record_llm_start();
@@ -117,17 +158,58 @@ impl TurnTracker {
                 None
             }
             FromAgent::ResponseEnd { usage, .. } => {
-                // Record LLM end time before completing the turn
+                // A provider response can be followed by tools and another
+                // model call. Record its timing/usage without declaring the
+                // enclosing native turn successful.
                 if let Some(ref mut turn) = self.current_turn {
                     turn.record_llm_end();
                 }
-                self.accumulated_usage = usage.clone();
-                self.end_turn(TurnStatus::Success, None)
+                self.cost_complete &= usage.as_ref().and_then(|usage| usage.cost).is_some();
+                if let Some(usage) = usage {
+                    if let Some(total) = self.accumulated_usage.as_mut() {
+                        total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+                        total.output_tokens =
+                            total.output_tokens.saturating_add(usage.output_tokens);
+                        total.cache_read_tokens = total
+                            .cache_read_tokens
+                            .saturating_add(usage.cache_read_tokens);
+                        total.cache_write_tokens = total
+                            .cache_write_tokens
+                            .saturating_add(usage.cache_write_tokens);
+                        total.cost = match (total.cost, usage.cost) {
+                            (Some(previous), Some(current)) => Some(previous + current),
+                            (previous, current) => previous.or(current),
+                        };
+                    } else {
+                        self.accumulated_usage = Some(usage.clone());
+                    }
+                }
+                None
             }
-            FromAgent::Error { message, fatal } => {
+            FromAgent::TurnCompleted { .. } => self.end_turn(TurnStatus::Success, None),
+            FromAgent::TurnInterrupted { reason, .. } => self.end_turn(
+                TurnStatus::Error,
+                Some(ErrorDetails {
+                    category: Some("interrupted".to_string()),
+                    message: Some(reason.clone()),
+                }),
+            ),
+            FromAgent::CodexUsageState {
+                usage: Some(usage), ..
+            } => {
+                self.cost_complete = usage.cost.is_some();
+                self.accumulated_usage = Some(usage.clone());
+                None
+            }
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+                ..
+            } => {
                 // Only end turn on fatal errors. Non-fatal errors are informational
                 // (e.g., "Attachment blocked", "Attachment too large") and the turn continues.
-                if *fatal {
+                if *fatal || *terminal {
                     self.end_turn(
                         TurnStatus::Error,
                         Some(ErrorDetails {
@@ -139,6 +221,13 @@ impl TurnTracker {
                     None
                 }
             }
+            FromAgent::ProviderError { kind, message } => self.end_turn(
+                TurnStatus::Error,
+                Some(ErrorDetails {
+                    category: Some(format!("provider_{kind:?}").to_ascii_lowercase()),
+                    message: Some(message.clone()),
+                }),
+            ),
             FromAgent::Status { .. } => {
                 // Status messages are informational (e.g., "Rate limit. Retrying in 1.5s...")
                 // and shouldn't end the turn. Rate limiting is handled by ResponseEnd or Error.
@@ -151,7 +240,9 @@ impl TurnTracker {
     fn start_turn(&mut self, response_id: String) {
         self.turn_number += 1;
         self.accumulated_usage = None;
+        self.cost_complete = true;
         self.current_response_id = Some(response_id);
+        self.current_identity_scope = self.context.identity_scope.clone();
 
         let mut turn = TurnCollector::new(
             &self.config.session_id,
@@ -179,7 +270,13 @@ impl TurnTracker {
         status: TurnStatus,
         error_details: Option<ErrorDetails>,
     ) -> Option<CanonicalTurnEvent> {
+        // Reset at the task terminal event, not at model restoration: an
+        // unavailable boost may restore Idle before the first response starts.
+        self.context.features.boost_suggested = false;
+        self.context.features.boost_requested = false;
+        self.context.features.boost_applied = false;
         let turn = self.current_turn.take()?;
+        let identity_scope = self.current_identity_scope.take();
         self.current_response_id = None;
 
         // Convert token usage
@@ -201,7 +298,14 @@ impl TurnTracker {
             .and_then(|u| u.cost)
             .unwrap_or(0.0);
 
-        Some(turn.complete(status, tokens, cost_usd, error_details, None))
+        let mut event = turn.complete(status, tokens, cost_usd, error_details, None);
+        event.reported_cost_usd = self
+            .accumulated_usage
+            .as_ref()
+            .and_then(|usage| usage.cost)
+            .filter(|_| self.cost_complete);
+        event.identity_scope = identity_scope;
+        Some(event)
     }
 }
 
@@ -230,6 +334,7 @@ mod tests {
             tool: "bash".to_string(),
             args: serde_json::json!({"command": "ls"}),
             requires_approval: false,
+            approval_inline_env: None,
         });
         assert!(event.is_none());
 
@@ -237,6 +342,8 @@ mod tests {
         let event = tracker.handle_event(&FromAgent::ToolEnd {
             call_id: "call-1".to_string(),
             success: true,
+            result: None,
+            receipt: None,
         });
         assert!(event.is_none());
 
@@ -251,10 +358,219 @@ mod tests {
                 cost: Some(0.01),
             }),
         });
+        assert!(event.is_none(), "model response end is not a turn terminal");
+        let event = tracker.handle_event(&FromAgent::TurnCompleted {
+            response_id: "done".to_string(),
+            coding_completion: None,
+            coding_child_records: Vec::new(),
+        });
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.turn_number, 1);
         assert_eq!(event.status, TurnStatus::Success);
         assert_eq!(event.tool_count, 1);
+    }
+
+    #[test]
+    fn response_end_then_provider_error_records_error_not_success() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "provider-error-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        assert!(
+            tracker
+                .handle_event(&FromAgent::ResponseStart {
+                    response_id: "resp-1".to_string(),
+                })
+                .is_none()
+        );
+        assert!(
+            tracker
+                .handle_event(&FromAgent::ResponseEnd {
+                    response_id: "resp-1".to_string(),
+                    usage: None,
+                })
+                .is_none()
+        );
+
+        let event = tracker
+            .handle_event(&FromAgent::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::TransientProtocol,
+                message: "missing terminal event".to_string(),
+            })
+            .expect("provider terminal should end telemetry turn");
+        assert_eq!(event.status, TurnStatus::Error);
+        assert_eq!(
+            event.error_message.as_deref(),
+            Some("missing terminal event")
+        );
+    }
+
+    #[test]
+    fn successful_multi_response_turn_accumulates_usage_until_turn_terminal() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "multi-response-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+        for (response_id, input_tokens, output_tokens, cost) in
+            [("resp-1", 10, 4, 0.01), ("resp-2", 20, 6, 0.02)]
+        {
+            if response_id == "resp-2" {
+                assert!(
+                    tracker
+                        .handle_event(&FromAgent::ResponseStart {
+                            response_id: response_id.to_string(),
+                        })
+                        .is_none()
+                );
+                assert_eq!(tracker.turn_number(), 1);
+            }
+            assert!(
+                tracker
+                    .handle_event(&FromAgent::ResponseEnd {
+                        response_id: response_id.to_string(),
+                        usage: Some(TokenUsage {
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
+                            cost: Some(cost),
+                        }),
+                    })
+                    .is_none()
+            );
+        }
+
+        let event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "done".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
+            })
+            .expect("explicit terminal should complete telemetry turn");
+        assert_eq!(event.tokens.input, 30);
+        assert_eq!(event.tokens.output, 10);
+        assert!((event.cost_usd - 0.03).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn turn_keeps_the_identity_scope_verified_at_response_start() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "identity-scope-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        let origin_scope = TelemetryIdentityScope::new("org-a", Some("workspace-a"))
+            .expect("complete origin scope");
+        let switched_scope = TelemetryIdentityScope::new("org-b", Some("workspace-b"))
+            .expect("complete switched scope");
+
+        tracker.set_identity_scope(Some(origin_scope.clone()));
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "origin-response".to_string(),
+        });
+        tracker.set_identity_scope(Some(switched_scope.clone()));
+        let origin_event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "origin-complete".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
+            })
+            .expect("origin turn completion");
+        assert_eq!(origin_event.identity_scope, Some(origin_scope));
+
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "switched-response".to_string(),
+        });
+        let switched_event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "switched-complete".to_string(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
+            })
+            .expect("switched turn completion");
+        assert_eq!(switched_event.identity_scope, Some(switched_scope));
+    }
+}
+
+#[cfg(test)]
+mod boost_tests {
+    use super::*;
+    #[test]
+    fn boost_measurements_survive_restore_and_partial_cost_is_unavailable() {
+        use crate::model_dynamics::BoostStatus;
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "boost-test".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::BoostChanged {
+            status: BoostStatus::Pending,
+            thinking: None,
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "one".into(),
+        });
+        tracker.handle_event(&FromAgent::BoostChanged {
+            status: BoostStatus::Suggested,
+            thinking: None,
+        });
+        tracker.handle_event(&FromAgent::BoostChanged {
+            status: BoostStatus::Active,
+            thinking: None,
+        });
+        for cost in [Some(0.01), None] {
+            tracker.handle_event(&FromAgent::ResponseEnd {
+                response_id: "one".into(),
+                usage: Some(TokenUsage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost,
+                }),
+            });
+        }
+        tracker.handle_event(&FromAgent::BoostChanged {
+            status: BoostStatus::Idle,
+            thinking: None,
+        });
+        let event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "one".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
+            })
+            .unwrap();
+        let exported = event.external_projection();
+        assert!(exported.boost_requested && exported.boost_suggested && exported.boost_applied);
+        assert!(exported.reported_cost_usd.is_none());
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "two".into(),
+        });
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "two".into(),
+            usage: Some(TokenUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost: Some(0.02),
+            }),
+        });
+        let event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "two".into(),
+                coding_completion: None,
+                coding_child_records: Vec::new(),
+            })
+            .unwrap();
+        assert!(
+            !event.features.boost_applied
+                && !event.features.boost_requested
+                && !event.features.boost_suggested
+        );
+        assert_eq!(event.reported_cost_usd, Some(0.02));
     }
 }

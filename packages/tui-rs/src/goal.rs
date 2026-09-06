@@ -1,0 +1,1041 @@
+//! Interactive goal mode (Codex-aligned).
+//!
+//! One structured objective per session, with optional auto-continue while
+//! the agent is idle.
+//!
+//! **Completion is declared by the same worker model** via the `update_goal`
+//! tool (`complete` | `blocked`), matching OpenAI Codex
+//! (`codex-rs/ext/goal` + `update_goal`). There is no second-model call after
+//! each turn. The TUI reloads goal state from disk after turns and continues
+//! only while status is still `active`.
+//!
+//! `max_turns` is a safety circuit-breaker (default 50) only.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+
+/// Safety circuit-breaker: max auto-continue submissions if the judge keeps
+/// saying "continue". Not the primary completion measure.
+pub const DEFAULT_MAX_AUTO_CONTINUES: u32 = 50;
+pub const MAX_GOAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Lifecycle state for a user goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    /// Driver may auto-continue while the agent is idle.
+    #[default]
+    Active,
+    /// User paused; no auto-continue.
+    Paused,
+    /// Needs external input or is impossible under current constraints.
+    Blocked,
+    /// Terminal success; cleared after status display.
+    Complete,
+}
+
+impl GoalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
+            Self::Complete => "complete",
+        }
+    }
+
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::Active => "goal:active",
+            Self::Paused => "goal:paused",
+            Self::Blocked => "goal:blocked",
+            Self::Complete => "goal:done",
+        }
+    }
+}
+
+/// A single session goal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Goal {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub success_criteria: Option<String>,
+    pub status: GoalStatus,
+    #[serde(default)]
+    pub block_reason: Option<String>,
+    pub created_at_unix: u64,
+    pub updated_at_unix: u64,
+    /// When true (default for active goals), the TUI re-submits a continuation
+    /// prompt when the agent becomes idle.
+    #[serde(default = "default_true")]
+    pub auto_continue: bool,
+    /// Safety cap on auto-continue submissions (circuit-breaker only).
+    /// Primary stop is `update_goal` complete|blocked from the worker.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    /// How many auto-continue prompts have already been submitted.
+    #[serde(default)]
+    pub auto_continue_count: u32,
+    /// Last status note (circuit-breaker, budget, or tool reason) for status.
+    #[serde(default)]
+    pub last_judge_reason: Option<String>,
+    /// Optional token budget (Codex-style). When set, auto-continue stops once
+    /// `tokens_used` reaches this value.
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    /// Tokens accounted to this goal (sum of turn input+output while active).
+    #[serde(default)]
+    pub tokens_used: u64,
+    /// Optional wall-clock cap for autonomous continuation.
+    #[serde(default)]
+    pub max_duration_secs: Option<u64>,
+    /// Timestamp at which this goal's current active window began.
+    #[serde(default)]
+    pub started_at_unix: Option<u64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_turns() -> u32 {
+    DEFAULT_MAX_AUTO_CONTINUES
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn new_id() -> String {
+    let full = uuid::Uuid::new_v4().to_string();
+    format!("g-{}", &full[..8])
+}
+
+/// In-memory goal holder with optional disk persistence under `~/.maestro/goals.json`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalStore {
+    #[serde(default)]
+    pub current: Option<Goal>,
+    /// When `None`, mutations stay in-memory only (unit tests / ephemeral stores).
+    #[serde(skip)]
+    persist_path: Option<PathBuf>,
+}
+
+impl GoalStore {
+    pub fn load_default() -> Self {
+        let path = default_path();
+        let mut store = load_from_path(&path).unwrap_or_default();
+        store.persist_path = Some(path);
+        store
+    }
+
+    /// Load goals for a new process and demote any leftover `active` goal.
+    ///
+    /// Do not use this mid-session: tool paths call [`load_default`] so they
+    /// never pause a live goal while the TUI is running.
+    pub fn load_for_process_start() -> Self {
+        let mut store = Self::load_default();
+        // Kimi-style: a process restart cannot continue the prior active turn.
+        let _ = store.demote_active_for_process_restart();
+        store
+    }
+
+    /// If the current goal is `active`, mark it `paused` and persist.
+    ///
+    /// Returns `true` when a demotion was written. Called on process start
+    /// (and available for tests).
+    pub fn demote_active_for_process_restart(&mut self) -> Result<bool> {
+        let previous = self.current.clone();
+        let Some(goal) = self.current.as_mut() else {
+            return Ok(false);
+        };
+        if goal.status != GoalStatus::Active {
+            return Ok(false);
+        }
+        goal.status = GoalStatus::Paused;
+        goal.auto_continue = false;
+        goal.last_judge_reason =
+            Some("paused on process restart (resume with /goal resume)".to_string());
+        goal.updated_at_unix = now_unix();
+        self.save_with_rollback(previous)?;
+        Ok(true)
+    }
+
+    /// Drop the current goal so a forked session does not inherit it.
+    /// Returns the cleared goal id if any.
+    pub fn clear_for_session_fork(&mut self) -> Result<Option<String>> {
+        let id = self.current.as_ref().map(|g| g.id.clone());
+        if id.is_some() {
+            let previous = self.current.clone();
+            self.current = None;
+            self.save_with_rollback(previous)?;
+        }
+        Ok(id)
+    }
+
+    pub fn save_default(&self) -> Result<()> {
+        let Some(path) = &self.persist_path else {
+            return Ok(());
+        };
+        save_to_path(self, path)
+    }
+
+    /// Persist a goal mutation without leaving memory out of sync with disk.
+    ///
+    /// Goal tools and the TUI can observe the same store through different
+    /// paths. An atomic write can report an error after its rename, so first
+    /// reconcile from disk and only fall back to the previous goal when the
+    /// persisted state cannot be read.
+    fn save_with_rollback(&mut self, previous: Option<Goal>) -> Result<()> {
+        if let Err(error) = self.save_default() {
+            self.current = self.reconcile_after_save_error(previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reconcile_after_save_error(&self, previous: Option<Goal>) -> Option<Goal> {
+        let Some(path) = &self.persist_path else {
+            return previous;
+        };
+
+        let recovered = match fs::symlink_metadata(path) {
+            Ok(_) => load_from_path(path).ok().map(|store| store.current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        };
+        recovered.unwrap_or(previous)
+    }
+
+    pub fn status_line(&self) -> Option<String> {
+        self.current.as_ref().map(|g| {
+            // Keep the badge short so the status bar does not collide with the
+            // right-side queue/term badges on narrow terminals (80 cols).
+            const PREVIEW_CHARS: usize = 18;
+            let preview: String = g.text.chars().take(PREVIEW_CHARS).collect();
+            let ellipsis = if g.text.chars().count() > PREVIEW_CHARS {
+                "…"
+            } else {
+                ""
+            };
+            let turns = if g.auto_continue {
+                format!(" n={}", g.auto_continue_count)
+            } else {
+                String::new()
+            };
+            let budget = match g.token_budget {
+                Some(b) => format!(" tok={}/{}", g.tokens_used, b),
+                None if g.tokens_used > 0 => format!(" tok={}", g.tokens_used),
+                None => String::new(),
+            };
+            format!("{}{turns}{budget} {preview}{ellipsis}", g.status.badge())
+        })
+    }
+
+    pub fn create(
+        &mut self,
+        text: impl Into<String>,
+        success_criteria: Option<String>,
+        replace: bool,
+        max_turns: Option<u32>,
+        token_budget: Option<u64>,
+    ) -> Result<&Goal> {
+        self.create_with_limits(
+            text,
+            success_criteria,
+            replace,
+            max_turns,
+            token_budget,
+            None,
+        )
+    }
+
+    pub fn create_with_limits(
+        &mut self,
+        text: impl Into<String>,
+        success_criteria: Option<String>,
+        replace: bool,
+        max_turns: Option<u32>,
+        token_budget: Option<u64>,
+        max_duration_secs: Option<u64>,
+    ) -> Result<&Goal> {
+        let text = text.into().trim().to_string();
+        if text.is_empty() {
+            bail!("goal text must not be empty");
+        }
+        if text.chars().count() > 2_000 {
+            bail!("goal text is too long (max 2000 characters)");
+        }
+        if let Some(existing) = &self.current {
+            if !replace
+                && matches!(
+                    existing.status,
+                    GoalStatus::Active | GoalStatus::Paused | GoalStatus::Blocked
+                )
+            {
+                bail!(
+                    "a goal is already {} ({}); use /goal replace <text> or /goal complete first",
+                    existing.status.as_str(),
+                    existing.id
+                );
+            }
+        }
+        let max_turns = max_turns.unwrap_or(DEFAULT_MAX_AUTO_CONTINUES).max(1);
+        if let Some(budget) = token_budget {
+            if budget == 0 {
+                bail!("token budget must be at least 1 when set");
+            }
+        }
+        if let Some(duration) = max_duration_secs {
+            if duration == 0 || duration > MAX_GOAL_DURATION_SECS {
+                bail!("goal max duration must be between 1 and {MAX_GOAL_DURATION_SECS} seconds");
+            }
+        }
+        let now = now_unix();
+        let previous = self.current.clone();
+        self.current = Some(Goal {
+            id: new_id(),
+            text,
+            success_criteria,
+            status: GoalStatus::Active,
+            block_reason: None,
+            created_at_unix: now,
+            updated_at_unix: now,
+            auto_continue: true,
+            max_turns,
+            auto_continue_count: 0,
+            last_judge_reason: None,
+            token_budget,
+            tokens_used: 0,
+            max_duration_secs,
+            started_at_unix: Some(now),
+        });
+        self.save_with_rollback(previous)?;
+        Ok(self.current.as_ref().expect("just set"))
+    }
+
+    pub fn pause(&mut self) -> Result<&Goal> {
+        self.transition(GoalStatus::Paused, None)
+    }
+
+    pub fn resume(&mut self) -> Result<&Goal> {
+        let previous = self.current.clone();
+        let goal = self.current.as_mut().context("no current goal")?;
+        if matches!(goal.status, GoalStatus::Complete) {
+            bail!("cannot resume a completed goal; create a new one");
+        }
+        goal.status = GoalStatus::Active;
+        goal.block_reason = None;
+        goal.auto_continue = true;
+        // Resume resets the auto-continue budget so operators can continue work.
+        goal.auto_continue_count = 0;
+        goal.started_at_unix = Some(now_unix());
+        goal.updated_at_unix = now_unix();
+        self.save_with_rollback(previous)?;
+        Ok(self.current.as_ref().expect("just set"))
+    }
+
+    pub fn block(&mut self, reason: Option<String>) -> Result<&Goal> {
+        self.transition(GoalStatus::Blocked, reason)
+    }
+
+    pub fn complete(&mut self) -> Result<Goal> {
+        // Keep the goal record with status `complete` (do not clear `current`).
+        // Clearing used to race with mid-turn `account_tokens`, which rewrote a
+        // stale Active snapshot over the tool's disk write.
+        let previous = self.current.clone();
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.status = GoalStatus::Complete;
+        goal.auto_continue = false;
+        goal.block_reason = None;
+        goal.updated_at_unix = now_unix();
+        self.save_with_rollback(previous)?;
+        Ok(self.current.clone().expect("just completed"))
+    }
+
+    pub fn clear(&mut self) -> Result<Option<Goal>> {
+        let previous = self.current.clone();
+        let prev = self.current.take();
+        self.save_with_rollback(previous)?;
+        Ok(prev)
+    }
+
+    pub fn set_auto_continue(&mut self, enabled: bool) -> Result<&Goal> {
+        let previous = self.current.clone();
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.auto_continue = enabled;
+        if enabled {
+            // Re-enable with a fresh budget so `/goal auto on` is usable after
+            // a max-turns stop.
+            goal.auto_continue_count = 0;
+            goal.started_at_unix = Some(now_unix());
+        }
+        goal.updated_at_unix = now_unix();
+        self.save_with_rollback(previous)?;
+        Ok(self.current.as_ref().expect("just set"))
+    }
+
+    /// Record that an auto-continue prompt was submitted. Disables further
+    /// auto-continue when the safety `max_turns` circuit-breaker is reached.
+    /// Returns `true` if the cap was just hit.
+    pub fn note_auto_continue_submitted(&mut self) -> Result<bool> {
+        // Reload first: never clobber a mid-turn `update_goal` complete/blocked.
+        if self.persist_path.is_some() {
+            self.reload_from_disk();
+        }
+        let previous = self.current.clone();
+        let goal = self.current.as_mut().context("no current goal")?;
+        if goal.status != GoalStatus::Active {
+            // Terminal / paused goals must not be rewritten as Active.
+            return Ok(true);
+        }
+        goal.auto_continue_count = goal.auto_continue_count.saturating_add(1);
+        goal.updated_at_unix = now_unix();
+        let hit_cap = goal.auto_continue_count >= goal.max_turns;
+        if hit_cap {
+            goal.auto_continue = false;
+            goal.last_judge_reason = Some(format!(
+                "safety circuit-breaker: auto-continue hit max_turns={}",
+                goal.max_turns
+            ));
+        }
+        self.save_with_rollback(previous)?;
+        Ok(hit_cap)
+    }
+
+    /// Tokens that should count against a goal `--token-budget`.
+    ///
+    /// Counts non-cached input + output. Cached prompt tokens are excluded so
+    /// multi-step tool loops do not burn the budget on repeated cheap cache
+    /// hits. When a provider reports `cache_read` as a **subset** of
+    /// `input_tokens` (OpenAI Chat Completions style), the cached portion is
+    /// subtracted. When `input_tokens` is already exclusive of cache
+    /// (Anthropic style, where cache can exceed uncached input), `input` is
+    /// used as-is and cache is not added.
+    pub fn billable_tokens(input_tokens: u64, output_tokens: u64, cache_read_tokens: u64) -> u64 {
+        let non_cached_input = if cache_read_tokens > 0 && cache_read_tokens <= input_tokens {
+            // OpenAI: prompt_tokens includes cached_tokens as a subset.
+            input_tokens.saturating_sub(cache_read_tokens)
+        } else {
+            // Anthropic / exclusive input: cache is reported separately.
+            input_tokens
+        };
+        non_cached_input.saturating_add(output_tokens)
+    }
+
+    /// Account tokens for the latest worker turn. Returns `true` if a token
+    /// budget was just exhausted (auto-continue disabled).
+    pub fn account_tokens(&mut self, turn_tokens: u64) -> Result<bool> {
+        if turn_tokens == 0 {
+            return Ok(false);
+        }
+        // `update_goal` writes the same goals.json mid-turn. Reload so a stale
+        // in-memory Active snapshot cannot overwrite complete/blocked.
+        if self.persist_path.is_some() {
+            self.reload_from_disk();
+        }
+        let previous = self.current.clone();
+        let Some(goal) = self.current.as_mut() else {
+            return Ok(false);
+        };
+        if goal.status != GoalStatus::Active {
+            return Ok(false);
+        }
+        goal.tokens_used = goal.tokens_used.saturating_add(turn_tokens);
+        goal.updated_at_unix = now_unix();
+        let hit = goal
+            .token_budget
+            .is_some_and(|budget| goal.tokens_used >= budget);
+        if hit {
+            goal.auto_continue = false;
+            goal.last_judge_reason = Some(format!(
+                "token budget exhausted: used {} of {}",
+                goal.tokens_used,
+                goal.token_budget.unwrap_or(0)
+            ));
+        }
+        self.save_with_rollback(previous)?;
+        Ok(hit)
+    }
+
+    /// Disable continuation when the wall-clock budget has elapsed.
+    /// Returns the reason when this call changed the goal.
+    pub fn enforce_limits(&mut self) -> Result<Option<String>> {
+        let Some(goal) = self.current.as_ref() else {
+            return Ok(None);
+        };
+        if goal.status != GoalStatus::Active || !goal.auto_continue {
+            return Ok(None);
+        }
+        let Some(max_duration) = goal.max_duration_secs else {
+            return Ok(None);
+        };
+        let elapsed =
+            now_unix().saturating_sub(goal.started_at_unix.unwrap_or(goal.created_at_unix));
+        if elapsed < max_duration {
+            return Ok(None);
+        }
+        let reason = format!("wall-clock budget exhausted: elapsed {elapsed}s of {max_duration}s");
+        let previous = self.current.clone();
+        if let Some(goal) = self.current.as_mut() {
+            goal.auto_continue = false;
+            goal.last_judge_reason = Some(reason.clone());
+            goal.updated_at_unix = now_unix();
+        }
+        self.save_with_rollback(previous)?;
+        Ok(Some(reason))
+    }
+
+    /// Whether the TUI should submit a continuation prompt now.
+    pub fn should_auto_continue(&self) -> bool {
+        self.current.as_ref().is_some_and(|g| {
+            g.status == GoalStatus::Active
+                && g.auto_continue
+                && g.auto_continue_count < g.max_turns
+                && g.token_budget.is_none_or(|budget| g.tokens_used < budget)
+                && g.max_duration_secs.is_none_or(|max| {
+                    now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix)) < max
+                })
+        })
+    }
+
+    /// True when get_goal / update_goal should be offered to the model.
+    pub fn tools_visible(&self) -> bool {
+        self.current.as_ref().is_some_and(|g| {
+            matches!(
+                g.status,
+                GoalStatus::Active | GoalStatus::Paused | GoalStatus::Blocked
+            )
+        })
+    }
+
+    /// Reload from disk so agent `update_goal` tool mutations are visible.
+    pub fn reload_from_disk(&mut self) {
+        let path = self.persist_path.clone().unwrap_or_else(default_path);
+        if let Ok(mut loaded) = load_from_path(&path) {
+            loaded.persist_path = self.persist_path.clone().or(Some(path));
+            *self = loaded;
+        }
+    }
+
+    /// Prompt text injected when auto-continuing an active goal (Codex-style).
+    pub fn continuation_prompt(&self) -> Option<String> {
+        let g = self.current.as_ref()?;
+        if !self.should_auto_continue() {
+            return None;
+        }
+        // Keep this short: it is re-injected every auto-continue turn and was
+        // burning thousands of tokens per turn during bugbash.
+        let mut prompt = format!(
+            "Continue the active goal {id}.\n\
+             Objective: {text}\n\
+             Turns {n}/{max}.",
+            id = g.id,
+            text = g.text,
+            n = g.auto_continue_count,
+            max = g.max_turns
+        );
+        if let Some(budget) = g.token_budget {
+            let remaining = budget.saturating_sub(g.tokens_used);
+            prompt.push_str(&format!(
+                " Tokens {}/{} ({} left).",
+                g.tokens_used, budget, remaining
+            ));
+        }
+        if let Some(max_duration) = g.max_duration_secs {
+            let elapsed = now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix));
+            prompt.push_str(&format!(
+                " Wall time {elapsed}/{}s ({}s left).",
+                max_duration,
+                max_duration.saturating_sub(elapsed)
+            ));
+        }
+        if let Some(criteria) = &g.success_criteria {
+            prompt.push_str(&format!(" Success criteria: {criteria}."));
+        }
+        prompt.push_str(
+            " Make concrete progress. When evidence proves every requirement, \
+             call update_goal status=complete. If blocked after repeated failures, \
+             call update_goal status=blocked with reason. Do not stop without update_goal.",
+        );
+        Some(prompt)
+    }
+
+    pub fn report(&self) -> String {
+        match &self.current {
+            None => "No active goal. Create one with `/goal create <text>`.".to_string(),
+            Some(g) => {
+                let budget_line = match g.token_budget {
+                    Some(b) => format!("**Tokens:** {} / {b}\n", g.tokens_used),
+                    None => format!("**Tokens used:** {}\n", g.tokens_used),
+                };
+                let mut out = format!(
+                    "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({} turns; safety max {})\n\
+                     {budget_line}\
+                     **Completion:** worker calls `update_goal` complete|blocked (same model; Codex-style)\n\n{}\n",
+                    g.id,
+                    g.status.as_str(),
+                    if g.auto_continue { "on" } else { "off" },
+                    g.auto_continue_count,
+                    g.max_turns,
+                    g.text
+                );
+                if let Some(c) = &g.success_criteria {
+                    out.push_str(&format!("\n**Success criteria:** {c}\n"));
+                }
+                if let Some(r) = &g.block_reason {
+                    out.push_str(&format!("\n**Block reason:** {r}\n"));
+                }
+                if let Some(j) = &g.last_judge_reason {
+                    out.push_str(&format!("\n**Note:** {j}\n"));
+                }
+                if let Some(max_duration) = g.max_duration_secs {
+                    let elapsed =
+                        now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix));
+                    out.push_str(&format!(
+                        "\n**Wall-clock budget:** {elapsed} / {max_duration} seconds\n"
+                    ));
+                }
+                out.push_str(
+                    "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n\
+                     Agent tools: `get_goal`, `update_goal` (visible only while a goal exists).\n\
+                     Create flags: `--max-turns N` (safety), `--token-budget N` (Codex-style budget), `--max-duration-secs N` (wall-clock budget).\n",
+                );
+                out
+            }
+        }
+    }
+
+    fn transition(&mut self, status: GoalStatus, block_reason: Option<String>) -> Result<&Goal> {
+        let previous = self.current.clone();
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.status = status;
+        goal.block_reason = block_reason;
+        if status != GoalStatus::Active {
+            goal.auto_continue = false;
+        }
+        goal.updated_at_unix = now_unix();
+        self.save_with_rollback(previous)?;
+        Ok(self.current.as_ref().expect("just set"))
+    }
+}
+
+fn default_path() -> PathBuf {
+    crate::path_utils::maestro_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("goals.json")
+}
+
+fn load_from_path(path: &Path) -> Result<GoalStore> {
+    if !path.exists() {
+        return Ok(GoalStore::default());
+    }
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let store: GoalStore = serde_json::from_str(&raw).context("parse goals.json")?;
+    Ok(store)
+}
+
+fn save_to_path(store: &GoalStore, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let raw = serde_json::to_string_pretty(store).context("serialize goals")?;
+    crate::fs_atomic::write_atomic(path, raw.as_bytes()).context("write goals.json")?;
+    Ok(())
+}
+
+/// Strip goal create flags from text.
+/// Returns `(remaining_text, max_turns, token_budget)`.
+pub fn strip_goal_flags(raw: &str) -> Result<(String, Option<u32>, Option<u64>), String> {
+    let (text, max_turns, token_budget, _) = strip_goal_flags_with_duration(raw)?;
+    Ok((text, max_turns, token_budget))
+}
+
+/// Strip goal create flags, including the optional wall-clock budget.
+/// Returns `(remaining_text, max_turns, token_budget, max_duration_secs)`.
+pub type GoalFlagsWithDuration = (String, Option<u32>, Option<u64>, Option<u64>);
+
+pub fn strip_goal_flags_with_duration(raw: &str) -> Result<GoalFlagsWithDuration, String> {
+    let mut max_turns = None;
+    let mut token_budget = None;
+    let mut max_duration_secs = None;
+    let mut out = Vec::new();
+    let mut parts = raw.split_whitespace().peekable();
+    while let Some(part) = parts.next() {
+        if let Some(value) = part.strip_prefix("--max-turns=") {
+            max_turns = Some(parse_max_turns(value)?);
+            continue;
+        }
+        if part == "--max-turns" || part == "-n" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --max-turns <N>".to_string())?;
+            max_turns = Some(parse_max_turns(value)?);
+            continue;
+        }
+        if let Some(value) = part.strip_prefix("--token-budget=") {
+            token_budget = Some(parse_token_budget(value)?);
+            continue;
+        }
+        if part == "--token-budget" || part == "--budget" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --token-budget <N>".to_string())?;
+            token_budget = Some(parse_token_budget(value)?);
+            continue;
+        }
+        if let Some(value) = part.strip_prefix("--max-duration-secs=") {
+            max_duration_secs = Some(parse_duration_secs(value)?);
+            continue;
+        }
+        if part == "--max-duration-secs" || part == "--time-budget" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --max-duration-secs <N>".to_string())?;
+            max_duration_secs = Some(parse_duration_secs(value)?);
+            continue;
+        }
+        out.push(part);
+    }
+    Ok((out.join(" "), max_turns, token_budget, max_duration_secs))
+}
+
+/// Back-compat wrapper.
+pub fn strip_max_turns_flag(raw: &str) -> Result<(String, Option<u32>), String> {
+    let (text, max_turns, _) = strip_goal_flags(raw)?;
+    Ok((text, max_turns))
+}
+
+fn parse_max_turns(raw: &str) -> Result<u32, String> {
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("invalid --max-turns value '{raw}' (expected positive integer)"))?;
+    if n == 0 {
+        return Err("--max-turns must be at least 1".to_string());
+    }
+    if n > 100 {
+        return Err("--max-turns must be at most 100".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_token_budget(raw: &str) -> Result<u64, String> {
+    let n: u64 = raw
+        .parse()
+        .map_err(|_| format!("invalid --token-budget value '{raw}' (expected positive integer)"))?;
+    if n == 0 {
+        return Err("--token-budget must be at least 1".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_duration_secs(raw: &str) -> Result<u64, String> {
+    let n: u64 = raw.parse().map_err(|_| {
+        format!("invalid --max-duration-secs value '{raw}' (expected positive integer)")
+    })?;
+    if n == 0 || n > MAX_GOAL_DURATION_SECS {
+        return Err(format!(
+            "--max-duration-secs must be between 1 and {MAX_GOAL_DURATION_SECS}"
+        ));
+    }
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_pause_resume_complete() {
+        let mut store = GoalStore::default();
+        store
+            .create(
+                "Ship the release",
+                Some("tag exists".into()),
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(store.should_auto_continue());
+        store.pause().unwrap();
+        assert!(!store.should_auto_continue());
+        store.resume().unwrap();
+        assert!(store.should_auto_continue());
+        let done = store.complete().unwrap();
+        assert_eq!(done.status, GoalStatus::Complete);
+        assert_eq!(
+            store.current.as_ref().map(|g| g.status),
+            Some(GoalStatus::Complete)
+        );
+        assert!(!store.should_auto_continue());
+        assert!(!store.tools_visible());
+    }
+
+    #[test]
+    fn demote_active_for_process_restart_persists_paused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+        let mut store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        store
+            .create("keep working", None, false, None, None)
+            .unwrap();
+        assert_eq!(store.current.as_ref().unwrap().status, GoalStatus::Active);
+        assert!(store.demote_active_for_process_restart().unwrap());
+        assert_eq!(store.current.as_ref().unwrap().status, GoalStatus::Paused);
+        assert!(!store.current.as_ref().unwrap().auto_continue);
+        assert!(
+            store
+                .current
+                .as_ref()
+                .unwrap()
+                .last_judge_reason
+                .as_ref()
+                .unwrap()
+                .contains("process restart")
+        );
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded.current.as_ref().unwrap().status,
+            GoalStatus::Paused
+        );
+    }
+
+    #[test]
+    fn clear_for_session_fork_drops_goal() {
+        let mut store = GoalStore::default();
+        store.create("x", None, false, None, None).unwrap();
+        let id = store.clear_for_session_fork().unwrap();
+        assert!(id.is_some());
+        assert!(store.current.is_none());
+    }
+
+    #[test]
+    fn failed_persistence_preserves_goal_visibility() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("not-a-directory");
+        fs::write(&blocker, b"not a directory").unwrap();
+
+        let mut store = GoalStore::default();
+        store
+            .create("keep working", None, false, None, None)
+            .unwrap();
+        store.persist_path = Some(blocker.join("goals.json"));
+
+        assert!(store.complete().is_err());
+        assert_eq!(
+            store.current.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Active)
+        );
+        assert!(store.tools_visible());
+
+        assert!(store.clear().is_err());
+        assert_eq!(
+            store.current.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Active)
+        );
+        assert!(store.tools_visible());
+    }
+
+    #[test]
+    fn failed_persistence_prefers_published_disk_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+
+        let mut disk_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        disk_store
+            .create("published goal", None, false, None, None)
+            .unwrap();
+        disk_store.complete().unwrap();
+
+        let mut memory_store = GoalStore::default();
+        memory_store
+            .create("stale active goal", None, false, None, None)
+            .unwrap();
+        memory_store.persist_path = Some(path);
+        let recovered = memory_store.reconcile_after_save_error(memory_store.current.clone());
+
+        assert_eq!(
+            recovered.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Complete)
+        );
+    }
+
+    #[test]
+    fn refuses_second_goal_without_replace() {
+        let mut store = GoalStore::default();
+        store.create("first", None, false, None, None).unwrap();
+        let err = store.create("second", None, false, None, None).unwrap_err();
+        assert!(err.to_string().contains("already"));
+        store.create("second", None, true, None, None).unwrap();
+        assert_eq!(store.current.as_ref().unwrap().text, "second");
+    }
+
+    #[test]
+    fn continuation_prompt_only_when_active() {
+        let mut store = GoalStore::default();
+        store
+            .create("do the thing", None, false, None, None)
+            .unwrap();
+        assert!(
+            store
+                .continuation_prompt()
+                .unwrap()
+                .contains("do the thing")
+        );
+        store.pause().unwrap();
+        assert!(store.continuation_prompt().is_none());
+    }
+
+    #[test]
+    fn safety_max_turns_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store.create("ship it", None, false, Some(2), None).unwrap();
+        assert!(store.should_auto_continue());
+        assert!(!store.note_auto_continue_submitted().unwrap());
+        assert!(store.should_auto_continue());
+        assert!(store.note_auto_continue_submitted().unwrap());
+        assert!(!store.should_auto_continue());
+        assert_eq!(store.current.as_ref().unwrap().auto_continue_count, 2);
+        assert!(!store.current.as_ref().unwrap().auto_continue);
+        assert!(
+            store
+                .current
+                .as_ref()
+                .unwrap()
+                .last_judge_reason
+                .as_ref()
+                .unwrap()
+                .contains("safety")
+        );
+    }
+
+    #[test]
+    fn token_budget_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store
+            .create("ship it", None, false, None, Some(100))
+            .unwrap();
+        assert!(store.should_auto_continue());
+        assert!(!store.account_tokens(40).unwrap());
+        assert!(store.should_auto_continue());
+        assert!(store.account_tokens(70).unwrap());
+        assert!(!store.should_auto_continue());
+        assert_eq!(store.current.as_ref().unwrap().tokens_used, 110);
+    }
+
+    #[test]
+    fn wall_clock_budget_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store
+            .create_with_limits("ship it", None, false, None, None, Some(1))
+            .unwrap();
+        store.current.as_mut().unwrap().started_at_unix = Some(now_unix().saturating_sub(2));
+        let reason = store.enforce_limits().unwrap().expect("budget reason");
+        assert!(reason.contains("wall-clock budget"));
+        assert!(!store.should_auto_continue());
+    }
+
+    #[test]
+    fn billable_tokens_excludes_openai_style_cache_subset() {
+        // prompt=10_000 of which 8_000 cached → 2_000 new input + 100 output
+        assert_eq!(GoalStore::billable_tokens(10_000, 100, 8_000), 2_100);
+    }
+
+    #[test]
+    fn billable_tokens_keeps_anthropic_style_exclusive_input() {
+        // uncached input 500, cache hit 9_000, output 50 → 550
+        assert_eq!(GoalStore::billable_tokens(500, 50, 9_000), 550);
+    }
+
+    #[test]
+    fn billable_tokens_without_cache() {
+        assert_eq!(GoalStore::billable_tokens(1_000, 200, 0), 1_200);
+    }
+
+    #[test]
+    fn account_tokens_does_not_clobber_mid_turn_complete() {
+        // Regression: worker `update_goal` complete writes goals.json; a later
+        // ResponseEnd must not save a stale Active snapshot over it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+        let mut app_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        app_store
+            .create("finish the file", None, false, None, Some(50_000))
+            .unwrap();
+        assert_eq!(
+            app_store.current.as_ref().unwrap().status,
+            GoalStatus::Active
+        );
+
+        // Simulate agent tool path: load same file, complete, save.
+        let mut tool_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..load_from_path(&path).unwrap()
+        };
+        tool_store.complete().unwrap();
+        assert_eq!(
+            tool_store.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+
+        // Stale in-memory Active must not overwrite complete when accounting.
+        assert!(!app_store.account_tokens(1_200).unwrap());
+        assert_eq!(
+            app_store.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+        // Tokens are not added after terminal status.
+        assert_eq!(reloaded.current.as_ref().unwrap().tokens_used, 0);
+    }
+
+    #[test]
+    fn tools_visible_only_with_goal() {
+        let mut store = GoalStore::default();
+        assert!(!store.tools_visible());
+        store.create("x", None, false, None, None).unwrap();
+        assert!(store.tools_visible());
+        store.complete().unwrap();
+        assert!(!store.tools_visible());
+    }
+
+    #[test]
+    fn strip_goal_flags_parses() {
+        let (text, n, b) =
+            strip_goal_flags("--max-turns 3 --token-budget 5000 Ship the thing").unwrap();
+        assert_eq!(text, "Ship the thing");
+        assert_eq!(n, Some(3));
+        assert_eq!(b, Some(5000));
+        let (text, _, _, duration) =
+            strip_goal_flags_with_duration("--max-duration-secs 120 Ship the thing").unwrap();
+        assert_eq!(text, "Ship the thing");
+        assert_eq!(duration, Some(120));
+        let (text, n) = strip_max_turns_flag("Ship --max-turns=5 release").unwrap();
+        assert_eq!(text, "Ship release");
+        assert_eq!(n, Some(5));
+    }
+}

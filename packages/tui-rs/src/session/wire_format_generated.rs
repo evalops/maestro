@@ -1,0 +1,208 @@
+// Native session wire-format contract.
+// Keep additions backward compatible with persisted session data.
+#![allow(dead_code)]
+
+pub const SESSION_WIRE_FORMAT_VERSION: &str = "session-wire-format.v1";
+
+pub const SESSION_HEADER_FIELDS: &[&str] = &[
+    "type",
+    "version",
+    "id",
+    "timestamp",
+    "cwd",
+    "subject",
+    "model",
+    "modelMetadata",
+    "thinkingLevel",
+    "systemPrompt",
+    "promptMetadata",
+    "promptContextManifest",
+    "unifiedContextManifest",
+    "tools",
+    "branchedFrom",
+    "parentSession",
+];
+
+pub const STOP_REASON_ALIASES: &[(&str, &str)] = &[
+    ("tool_use", "toolUse"),
+    ("tool_calls", "toolUse"),
+    ("max_tokens", "length"),
+    ("end_turn", "stop"),
+    ("stop_sequence", "stop"),
+];
+
+pub const CONTENT_BLOCK_TYPE_ALIASES: &[(&str, &str)] = &[("tool_call", "toolCall")];
+
+pub const CONTENT_BLOCK_FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
+    ("toolCall", &[("args", "arguments")]),
+    (
+        "thinking",
+        &[("text", "thinking"), ("signature", "thinkingSignature")],
+    ),
+];
+
+pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "modelMetadata",
+        &[
+            ("model_id", "modelId"),
+            ("provider_name", "providerName"),
+            ("base_url", "baseUrl"),
+            ("context_window", "contextWindow"),
+            ("max_tokens", "maxTokens"),
+        ],
+    ),
+    (
+        "session",
+        &[
+            ("model_metadata", "modelMetadata"),
+            ("thinking_level", "thinkingLevel"),
+            ("system_prompt", "systemPrompt"),
+            ("prompt_metadata", "promptMetadata"),
+            ("prompt_context_manifest", "promptContextManifest"),
+            ("unified_context_manifest", "unifiedContextManifest"),
+            ("branched_from", "branchedFrom"),
+            ("parent_session", "parentSession"),
+        ],
+    ),
+    (
+        "sessionMeta",
+        &[
+            ("resume_summary", "resumeSummary"),
+            ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
+        ],
+    ),
+    (
+        "attachmentExtract",
+        &[
+            ("attachment_id", "attachmentId"),
+            ("extracted_text", "extractedText"),
+        ],
+    ),
+    ("assistantMessage", &[("stop_reason", "stopReason")]),
+    (
+        "toolResultMessage",
+        &[
+            ("tool_call_id", "toolCallId"),
+            ("tool_name", "toolName"),
+            ("is_error", "isError"),
+        ],
+    ),
+    (
+        "thinkingLevelChange",
+        &[("thinking_level", "thinkingLevel")],
+    ),
+    ("modelChange", &[("model_metadata", "modelMetadata")]),
+    (
+        "compaction",
+        &[
+            ("first_kept_entry_id", "firstKeptEntryId"),
+            ("first_kept_entry_index", "firstKeptEntryIndex"),
+            ("tokens_before", "tokensBefore"),
+            ("custom_instructions", "customInstructions"),
+        ],
+    ),
+    (
+        "branchSummary",
+        &[("from_id", "fromId"), ("from_hook", "fromHook")],
+    ),
+    ("custom", &[("custom_type", "customType")]),
+    ("customMessage", &[("custom_type", "customType")]),
+    ("label", &[("target_id", "targetId")]),
+];
+
+pub const COMPACTION_CONTEXT_ENTRY_TYPES: &[&str] =
+    &["message", "custom_message", "branch_summary"];
+
+pub const COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES: &[&str] = &["toolResult"];
+
+#[must_use]
+pub fn canonical_stop_reason(reason: &str) -> &str {
+    match reason {
+        "tool_use" => "toolUse",
+        "tool_calls" => "toolUse",
+        "max_tokens" => "length",
+        "end_turn" => "stop",
+        "stop_sequence" => "stop",
+        other => other,
+    }
+}
+
+#[must_use]
+pub fn canonical_content_block_type(block_type: &str) -> &str {
+    match block_type {
+        "tool_call" => "toolCall",
+        other => other,
+    }
+}
+
+#[must_use]
+pub fn content_block_field_aliases(block_type: &str) -> &'static [(&'static str, &'static str)] {
+    match block_type {
+        "toolCall" => &[("args", "arguments")],
+        "thinking" => &[("text", "thinking"), ("signature", "thinkingSignature")],
+        _ => &[],
+    }
+}
+
+#[must_use]
+pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
+    match section {
+        "modelMetadata" => &[
+            ("model_id", "modelId"),
+            ("provider_name", "providerName"),
+            ("base_url", "baseUrl"),
+            ("context_window", "contextWindow"),
+            ("max_tokens", "maxTokens"),
+        ],
+        "session" => &[
+            ("model_metadata", "modelMetadata"),
+            ("thinking_level", "thinkingLevel"),
+            ("system_prompt", "systemPrompt"),
+            ("prompt_metadata", "promptMetadata"),
+            ("prompt_context_manifest", "promptContextManifest"),
+            ("unified_context_manifest", "unifiedContextManifest"),
+            ("branched_from", "branchedFrom"),
+            ("parent_session", "parentSession"),
+        ],
+        "sessionMeta" => &[
+            ("resume_summary", "resumeSummary"),
+            ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
+        ],
+        "attachmentExtract" => &[
+            ("attachment_id", "attachmentId"),
+            ("extracted_text", "extractedText"),
+        ],
+        "assistantMessage" => &[("stop_reason", "stopReason")],
+        "toolResultMessage" => &[
+            ("tool_call_id", "toolCallId"),
+            ("tool_name", "toolName"),
+            ("is_error", "isError"),
+        ],
+        "thinkingLevelChange" => &[("thinking_level", "thinkingLevel")],
+        "modelChange" => &[("model_metadata", "modelMetadata")],
+        "compaction" => &[
+            ("first_kept_entry_id", "firstKeptEntryId"),
+            ("first_kept_entry_index", "firstKeptEntryIndex"),
+            ("tokens_before", "tokensBefore"),
+            ("custom_instructions", "customInstructions"),
+        ],
+        "branchSummary" => &[("from_id", "fromId"), ("from_hook", "fromHook")],
+        "custom" => &[("custom_type", "customType")],
+        "customMessage" => &[("custom_type", "customType")],
+        "label" => &[("target_id", "targetId")],
+        _ => &[],
+    }
+}
+
+#[must_use]
+pub fn is_compaction_context_entry_type(entry_type: &str) -> bool {
+    matches!(entry_type, "message" | "custom_message" | "branch_summary")
+}
+
+#[must_use]
+pub fn is_compaction_context_excluded_message_role(role: &str) -> bool {
+    matches!(role, "toolResult")
+}

@@ -6,8 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use crate::lsp::{self, LspDiagnostic};
 use crate::tools::resolve_shell_config;
@@ -29,6 +32,13 @@ struct SafeModeConfig {
 }
 
 static PLAN_SATISFIED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
+static PLAN_MODE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PLAN_MODE: Cell<bool> = const { Cell::new(false) };
+}
 
 static SAFE_MODE_CONFIG: std::sync::LazyLock<Mutex<SafeModeConfig>> =
     std::sync::LazyLock::new(|| {
@@ -62,6 +72,66 @@ pub fn set_plan_satisfied(value: bool) {
     PLAN_SATISFIED.store(value, Ordering::Relaxed);
 }
 
+/// Enable/disable Grok-style plan mode (require plan before mutating tools).
+pub fn set_plan_mode(enabled: bool) {
+    #[cfg(test)]
+    {
+        TEST_PLAN_MODE.with(|flag| flag.set(enabled));
+        if enabled {
+            set_plan_satisfied(false);
+        }
+    }
+    #[cfg(not(test))]
+    {
+        PLAN_MODE.store(enabled, Ordering::Relaxed);
+        if enabled {
+            // Entering plan mode requires a fresh plan before mutations.
+            set_plan_satisfied(false);
+            // Badge + external readers use this env flag.
+            // SAFETY: process-local UI flag; single-threaded write on mode toggle.
+            std::env::set_var("MAESTRO_PLAN_MODE", "1");
+        } else {
+            std::env::remove_var("MAESTRO_PLAN_MODE");
+        }
+    }
+}
+
+/// Return true if plan mode is enabled.
+#[must_use]
+pub fn is_plan_mode() -> bool {
+    #[cfg(test)]
+    {
+        TEST_PLAN_MODE.with(Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        PLAN_MODE.load(Ordering::Relaxed)
+            || std::env::var("MAESTRO_PLAN_MODE").ok().as_deref() == Some("1")
+    }
+}
+
+/// Restore plan mode when a unit test finishes, including on panic.
+#[cfg(test)]
+pub(crate) struct PlanModeOverride {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl PlanModeOverride {
+    pub(crate) fn enable() -> Self {
+        let previous = is_plan_mode();
+        set_plan_mode(true);
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for PlanModeOverride {
+    fn drop(&mut self) {
+        set_plan_mode(self.previous);
+    }
+}
+
 /// Return true if safe mode is enabled.
 pub fn is_safe_mode_enabled() -> bool {
     SAFE_MODE_CONFIG
@@ -76,7 +146,8 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
         .lock()
         .map_err(|_| "Safe mode config unavailable".to_string())?;
 
-    if !cfg.enabled || !cfg.require_plan {
+    let plan_mode = is_plan_mode();
+    if !(plan_mode || (cfg.enabled && cfg.require_plan)) {
         return Ok(());
     }
 
@@ -85,7 +156,7 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
     }
 
     Err(format!(
-        "Safe mode requires a plan before executing {tool_name}. Create or update a todo checklist first."
+        "Plan mode requires a plan before executing {tool_name}. Create or update a todo checklist first (or leave plan mode with /plan off)."
     ))
 }
 

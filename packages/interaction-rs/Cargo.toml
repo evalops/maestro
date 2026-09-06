@@ -1,0 +1,6 @@
+[package]
+name = "maestro-interaction"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Deterministic interaction state, typed actions, and replay for native applications"

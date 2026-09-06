@@ -56,7 +56,11 @@ pub fn braille_spinner(start_time: Option<Instant>) -> Span<'static> {
     Span::styled(
         BRAILLE_FRAMES[frame_idx],
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Rgb(
+                crate::shimmer::DEIXIC_VIOLET.0,
+                crate::shimmer::DEIXIC_VIOLET.1,
+                crate::shimmer::DEIXIC_VIOLET.2,
+            ))
             .add_modifier(Modifier::BOLD),
     )
 }

@@ -1,424 +1,102 @@
-# Maestro Enterprise
+# Deixic Code Enterprise
 
-Updated: 2025-12-02
+Updated: 2026-08-17
 
-Audience: operators/security teams evaluating multi-tenant deployments.  
-Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Models](MODELS.md) · [Sessions](SESSIONS.md)
+Audience: operators deploying Deixic Code against EvalOps Platform, or locally with
+bring-your-own-key (BYOK) provider credentials.
 
-## Executive Summary
+Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Threat model](THREAT_MODEL.md)
 
-Maestro Enterprise adds the controls required for regulated and security-conscious environments:
+## Product rule
 
-- **Isolation**: Multi-tenant organizations with full resource separation
-- **Fine-grained RBAC**: Permission checks at API, tool-execution, and directory-resolution layers
-- **Real-time guardrails**: PII detection, directory allowlists, model approvals, spend limits—all enforced before execution
-- **Auditability**: Complete activity logs with PII-safe redaction
-- **Clean migration path**: Move from single-user JSONL to enterprise DB with one command
+Deixic Code has two credential modes. A process must be in one of them before a
+model turn starts.
 
-No hidden state. No ambient authority. Every action is gated, logged, and attributable.
+| Mode | How it is selected | Inference | Secrets |
+| --- | --- | --- | --- |
+| Platform | `maestro evalops login` or `MAESTRO_EVALOPS_ACCESS_TOKEN` + `MAESTRO_EVALOPS_ORG_ID` | `llm-gateway` with a `provider_ref` | Org keys live in Platform `keys`. Deixic Code does not unwrap them. |
+| BYOK | No identity session, plus one usable local connection | Direct vendor APIs | Local keyring, env, file, 1Password, or delegated provider login. |
 
----
+There is no Deixic Code-owned password, user table, or RBAC implementation. Human
+login, org membership, and permission checks belong to Platform `identity`.
+Managed provider credentials belong to Platform `keys`. Managed inference
+belongs to `llm-gateway`.
 
-## Deployment Model
+Platform mode ignores local provider keys. It does not fall back to
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` when `llm-gateway` or `identity` is
+unavailable. Sign out and complete BYOK if you need a local path.
 
-Maestro is **stateless at the application layer**. All persistent state lives in the database:
+## First-run
 
-| State Type | Storage | Notes |
-|------------|---------|-------|
-| Sessions & messages | PostgreSQL | Replaces JSONL files |
-| Audit logs | PostgreSQL | Partitionable by month |
-| User/org/role data | PostgreSQL | RBAC source of truth |
-| Permissions cache | In-memory | 5-min TTL, auto-cleared on changes |
-| Directory rules cache | In-memory | 5-min TTL, auto-cleared on changes |
-
-**Scaling**: Add Maestro instances behind a load balancer. No sticky sessions required. All instances read/write the same database.
-
-**Request capacity**: A single Maestro instance handles 100+ req/s for typical API operations. Audit log writes are async and batched. For orgs with >50 concurrent users, consider read replicas for audit queries.
-
----
-
-## RBAC Permission System
-
-### Enforcement Points
-
-Permission checks occur at three layers:
-
-1. **API layer**: Every authenticated request validates `resource:action` against the user's role
-2. **Tool execution layer**: Before any tool runs, permissions are re-checked with the specific resource context
-3. **Directory resolver**: File paths are validated against org/user access rules before any read/write/execute
-
-A request must pass all three checks. Failure at any layer is logged and returns a 403.
-
-### Built-in Roles
-
-| Role | Permissions | Typical Use |
-|------|-------------|-------------|
-| `org_owner` | `*:*` on all resources | Billing owner, full control |
-| `org_admin` | Manage sessions, models, configs; read users; view audit | Engineering lead |
-| `org_member` | Own sessions, execute approved models, use tools | Developer |
-| `org_viewer` | Read-only on sessions, models, configs | Stakeholder, auditor |
-
-### Resources and Actions
-
-**Resources**: `sessions`, `models`, `users`, `orgs`, `audit`, `config`, `tools`, `api_keys`, `roles`, `directories`
-
-**Actions**: `read`, `write`, `delete`, `execute`, `admin`, `*` (wildcard)
-
-### Custom Roles
-
-Organizations can create custom roles with any permission combination:
-
-```bash
-curl -X POST /api/roles \
-  -d '{"name": "ml_engineer", "permissions": ["models:*", "sessions:write", "tools:execute"]}'
+```sh
+maestro setup
 ```
 
----
+The command offers two choices:
 
-## Directory Access Control
+1. Sign in to EvalOps (`maestro evalops login` or `maestro setup --platform`)
+2. Use your own API key (`maestro connections add` or `maestro setup --byok`)
 
-### Enforcement Scope
+`maestro doctor` reports `credential_mode`. The process is not ready until that
+check passes.
 
-Directory rules apply to **any file path referenced by any tool**—not just the working directory. Before a tool executes:
+## Platform mode
 
-1. All paths in the tool's parameters are resolved to absolute paths
-2. Each path is checked against the org's directory rules (highest priority wins)
-3. If any path is denied, the entire tool call is rejected
+`identity` at `https://identity.evalops.dev` is the only issuer.
 
-This covers: `bash` commands, `read`/`write` tools, `git` operations, file searches, and any MCP tool that references paths.
+- CLI login is the existing PKCE loopback flow in `packages/tui-rs/src/init_cli.rs`.
+- The stored session carries access token, refresh token, `organization_id`,
+  and the selected `provider_ref`.
+- Model calls use the `evalops` provider in `packages/ai-rs` and go to
+  `https://llm-gateway.evalops.dev/v1`.
+- `maestro connections` lists and selects org provider refs. `add` uploads a
+  key to `POST /v1/provider-refs` and does not keep the secret locally.
+- The runtime gateway verifies identity JWTs against JWKS or
+  `MAESTRO_JWT_SECRET`. `AuthContext` carries `subject`, `organization_id`,
+  `workspace_id`, `scopes`, and `source`.
 
-### Rule Structure
+Canonical env vars:
 
-```typescript
-{
-  pattern: "/app/src/**",    // Glob pattern (minimatch syntax)
-  isAllowed: true,           // Allow or deny
-  priority: 100,             // Higher = evaluated first
-  roleIds: ["role-id"],      // Optional: restrict to specific roles
-  description: "App source"  // For audit/admin UI
-}
+```sh
+MAESTRO_EVALOPS_ACCESS_TOKEN=
+MAESTRO_EVALOPS_ORG_ID=
+MAESTRO_EVALOPS_WORKSPACE_ID=
+MAESTRO_KEYS_URL=https://keys.evalops.dev
+MAESTRO_EVALOPS_BASE_URL=https://llm-gateway.evalops.dev/v1
 ```
 
-### Default Rules (seeded for new orgs)
+Legacy aliases such as `EVALOPS_TOKEN` and `MAESTRO_ENTERPRISE_ORG_ID` are not
+read.
 
-| Pattern | Allow/Deny | Priority | Purpose |
-|---------|------------|----------|---------|
-| `$HOME/**` | Allow | 100 | User workspace |
-| `/tmp/**` | Allow | 90 | Temp files |
-| `/etc/**` | Deny | 200 | System config |
-| `/sys/**`, `/proc/**` | Deny | 200 | Kernel interfaces |
-| `**/node_modules/**` | Deny | 50 | Dependencies |
-| `**/.git/**` | Deny | 50 | Git internals |
+## BYOK mode
 
-### Example: Restrict to Project Directory
+No identity session. No `llm-gateway`. A usable local connection is required.
 
-```bash
-# Deny everything by default
-curl -X POST /api/directory-rules \
-  -d '{"pattern": "/**", "isAllowed": false, "priority": 1}'
-
-# Allow only the project
-curl -X POST /api/directory-rules \
-  -d '{"pattern": "/home/dev/myproject/**", "isAllowed": true, "priority": 100}'
+```sh
+maestro connections add anthropic-api-key work --secret-stdin
+maestro connections add openai-api-key work --from-1password op://vault/item/key
+maestro codex login
 ```
 
----
+The runtime gateway stays loopback-open, or uses `MAESTRO_WEB_API_KEY` for a
+non-loopback bind. That key authenticates health and non-tenant process routes;
+production session and chat routes additionally require tenant-bearing JWT or
+trusted-proxy identity. It is not a provider key.
 
-## PII Detection Pipeline
+## Runtime-gateway authentication
 
-PII detection runs at multiple points in the request lifecycle:
+See [Threat model](THREAT_MODEL.md). Supported authenticators:
 
-| Stage | What's Checked | Action on Detection |
-|-------|----------------|---------------------|
-| **Message intake** | User prompts, assistant responses | Log detection, optionally block |
-| **Tool parameters** | Bash commands, file contents, API payloads | Redact before execution logging |
-| **Audit logging** | All logged content | Redact before write |
-| **Session storage** | Messages persisted to DB | Configurable: redact or flag |
+- `MAESTRO_WEB_API_KEY` (static process key; non-tenant routes only in production)
+- identity JWT (`MAESTRO_JWT_SECRET` or `MAESTRO_JWT_JWKS_URL`)
+- trusted-proxy adapter (`MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN` plus identity headers)
+- HMAC session cookie derived from a prior successful auth
+- loopback development with no auth configured
 
-### Built-in Patterns
+`MAESTRO_AUTH_SHARED_SECRET` is removed.
 
-- Email addresses, phone numbers (US)
-- SSN, credit card numbers (Luhn-validated)
-- API keys (AWS, GitHub, generic)
-- JWT tokens, private keys (PEM)
-- Database connection strings
-- Passwords in config files
+## What this file used to claim
 
-### Custom Patterns
-
-```typescript
-detector.addPatternFromString(
-  "employee_id",
-  /EMP-\d{6}/g,
-  "[EMPLOYEE_ID]",
-  "Internal employee IDs"
-);
-```
-
-### Configuration
-
-```bash
-MAESTRO_PII_ENABLED=true           # Enable detection
-MAESTRO_PII_BLOCK_ON_DETECT=false  # Block requests with PII (vs. redact and continue)
-MAESTRO_PII_LOG_DETECTIONS=true    # Audit log PII events
-```
-
----
-
-## Model Approval & Spend Controls
-
-### Approval Workflow
-
-Models must be explicitly approved before use:
-
-```bash
-curl -X POST /api/model-approvals \
-  -d '{
-    "modelId": "claude-opus-4-6",
-    "status": "approved",
-    "tokenLimit": 1000000,
-    "spendLimitCents": 5000,
-    "allowedRoles": ["org_admin", "org_member"]
-  }'
-```
-
-### Real-time Gating
-
-**Executions are blocked before dispatch** when:
-
-- Model is not approved for the org
-- User's role is not in `allowedRoles`
-- User has exceeded their token quota
-- User has exceeded per-model spend limit
-- Org has exceeded aggregate spend limit
-
-The check happens synchronously before the LLM request is sent. No partial execution.
-
-### Quota Structure
-
-| Level | Configurable Limits |
-|-------|---------------------|
-| Organization | Total tokens/month, total spend/month |
-| User | Tokens/month, spend/month |
-| Per-model | Tokens/request, spend/request |
-
----
-
-## Audit Logging
-
-### What Gets Logged
-
-| Category | Events |
-|----------|--------|
-| Authentication | Login, logout, token refresh, failed attempts |
-| Sessions | Create, read, update, delete, share |
-| Tool execution | Command, parameters (redacted), result status, duration |
-| Model calls | Model ID, token counts, latency, cost |
-| Admin actions | Role changes, user invites, org settings |
-| Security events | Permission denials, PII detections, quota blocks |
-
-### Log Schema
-
-```typescript
-{
-  id: "uuid",
-  orgId: "uuid",
-  userId: "uuid",
-  sessionId: "uuid | null",
-  action: "tool.bash.execute",
-  resource: "sessions/abc123",
-  details: { /* redacted metadata */ },
-  ipAddress: "192.168.1.1",
-  userAgent: "...",
-  createdAt: "2025-01-15T10:30:00Z"
-}
-```
-
-### Retention & Export
-
-```bash
-MAESTRO_AUDIT_RETENTION_DAYS=90  # Auto-delete after 90 days
-```
-
-```bash
-# Export for compliance
-curl -X GET "/api/audit/export?format=csv&startDate=2025-01-01"
-```
-
----
-
-## Alerting System
-
-### Alert Types
-
-| Type | Trigger | Default Severity |
-|------|---------|------------------|
-| `token_quota_warning` | 80% of quota used | medium |
-| `token_quota_exceeded` | 100% of quota used | high |
-| `spend_limit_exceeded` | Spend limit reached | high |
-| `pii_detected` | PII in session content | medium |
-| `permission_denial_spike` | >10 denials in 5 min | high |
-| `auth_failure_spike` | >5 failed logins in 5 min | critical |
-
-### Deduplication
-
-Alerts are deduplicated using a **time-window + pattern** rule:
-
-- Same alert type + same user + same resource = dedupe for 15 minutes
-- Same alert type + same org (no specific user) = dedupe for 5 minutes
-
-This prevents alert storms while ensuring distinct incidents are reported.
-
-### Webhook Configuration
-
-```typescript
-settings: {
-  alertWebhooks: ["https://hooks.slack.com/..."],
-  alertEmailRecipients: ["security@company.com"],
-  alertMinSeverity: "medium"  // Don't send "info" or "low"
-}
-```
-
----
-
-## Authentication
-
-### Current: JWT + Password
-
-- Passwords hashed with bcrypt (cost factor 12)
-- Access tokens: 24h expiry (configurable)
-- Refresh tokens: 7d expiry
-- API keys: Hashed, prefix-only display
-
-### Planned: SSO/OIDC
-
-SSO integration is on the roadmap. The auth layer is designed for pluggable providers:
-
-```typescript
-// Future API (not yet implemented)
-MAESTRO_AUTH_PROVIDER=oidc
-MAESTRO_OIDC_ISSUER=https://login.company.com
-MAESTRO_OIDC_CLIENT_ID=...
-MAESTRO_OIDC_CLIENT_SECRET=...
-```
-
-Current JWT auth will remain available for service accounts and CLI access.
-
----
-
-## Migration from Single-User Mode
-
-### File-based Defaults (Single-User)
-
-In single-user mode, Maestro stores sessions in `~/.maestro/agent/sessions/` as JSONL files. This is the default for CLI installations.
-
-### Enterprise Equivalents
-
-| Single-User | Enterprise |
-|-------------|------------|
-| `~/.maestro/agent/sessions/*.jsonl` | `sessions` + `session_messages` tables |
-| `~/.maestro/config.json` | `organizations.settings` + `org_memberships` |
-| No auth | JWT + RBAC |
-| No audit | `audit_logs` table |
-
-### Migration Command
-
-```bash
-# Migrate all JSONL sessions to database
-bun run migrate:sessions --user-email admin@company.com --org-name "My Company"
-```
-
-This preserves: message history, favorites, summaries, model selections, timestamps.
-
----
-
-## Environment Variables
-
-### Required for Enterprise
-
-```bash
-MAESTRO_MULTI_TENANT=true
-MAESTRO_DATABASE_URL=postgresql://host/maestro?user=user&password=pass
-MAESTRO_JWT_SECRET=$(openssl rand -hex 32)
-```
-
-### Optional
-
-```bash
-MAESTRO_DATABASE_TYPE=postgres          # or 'sqlite' for dev
-MAESTRO_JWT_EXPIRY=24h
-MAESTRO_AUDIT_ENABLED=true
-MAESTRO_AUDIT_RETENTION_DAYS=90
-MAESTRO_PII_ENABLED=true
-MAESTRO_PII_BLOCK_ON_DETECT=false
-```
-
----
-
-## Architecture Details
-
-### Database Schema
-
-Core tables:
-
-- `organizations` - Tenant with settings JSON
-- `users` - Accounts (email, password hash, metadata)
-- `org_memberships` - User ↔ Org ↔ Role relationship, quotas
-- `roles` - System and custom roles
-- `permissions` - Resource:action definitions
-- `role_permissions` - Role ↔ Permission mapping
-- `sessions` - Chat sessions
-- `session_messages` - Individual messages
-- `audit_logs` - Activity records
-- `model_approvals` - Per-org model policies
-- `directory_access_rules` - Path ACLs
-- `api_keys` - Hashed API keys
-- `alerts` - Generated alerts
-
-### Technology Stack
-
-- **ORM**: Drizzle ORM (type-safe, zero runtime overhead)
-- **Database**: PostgreSQL (production), SQLite (dev/testing)
-- **Auth**: JWT (jsonwebtoken), bcrypt
-- **Path matching**: minimatch
-- **PII detection**: Regex with Luhn validation for credit cards
-
----
-
-## Troubleshooting
-
-### "Permission denied" errors
-
-```bash
-# Check user's effective permissions
-curl -X GET /api/auth/me -H "Authorization: Bearer $TOKEN"
-
-# Check recent denial events
-curl -X GET "/api/audit/logs?action=permission.denied&limit=10"
-```
-
-### Quota/spend blocks
-
-```bash
-# Check current usage
-curl -X GET /api/usage/quota
-
-# Check org-wide summary (admin only)
-curl -X GET /api/usage/summary
-```
-
-### Directory access denied
-
-```bash
-# List active rules for debugging
-curl -X GET /api/directory-rules
-
-# Check why a specific path was denied (returns matched rule)
-curl -X POST /api/directory-rules/check -d '{"path": "/etc/passwd"}'
-```
-
----
-
-## Support
-
-For enterprise support, email support@evalops.dev or open an issue on [GitHub](https://github.com/evalops/maestro/issues).
+Earlier revisions described a Deixic Code-local password, bcrypt, Drizzle, and
+RBAC schema. That stack is not implemented and must not be added. Use
+Platform `identity` for org roles and `keys` for provider credentials.

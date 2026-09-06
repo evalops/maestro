@@ -1,0 +1,141 @@
+name: public-source-provenance
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] this job never checks out or executes pull-request code
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: public-source-provenance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  require-internal-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check mirrored-source provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HEAD_REF" == sync/* ]]; then
+            if [[ "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
+              echo "::error::Generated public sync PRs must come from ${REPOSITORY}, not ${HEAD_REPOSITORY}."
+              exit 1
+            fi
+
+            case "$HEAD_REF" in
+              sync/public-release-mirror|sync/release-mirror)
+                ;;
+              *)
+                echo "::error::Unexpected generated sync branch '${HEAD_REF}'. Expected sync/public-release-mirror or sync/release-mirror."
+                exit 1
+                ;;
+            esac
+
+            if ! grep -Eiq "sync-public-release-mirror" <<< "${PR_BODY:-}"; then
+              echo "::error::Generated public sync PR is missing sync-public-release-mirror provenance in its body."
+              exit 1
+            fi
+
+            if ! grep -Eiq "internal source SHA: \`?[0-9a-f]{40}\`?" <<< "${PR_BODY:-}"; then
+              echo "::error::Generated public sync PR is missing the internal source SHA."
+              exit 1
+            fi
+
+            if [[ "$HEAD_REF" == "sync/public-release-mirror" ]]; then
+              if ! grep -Eiq "Source-of-truth status|Public Mirror Drift Audit" <<< "${PR_BODY:-}"; then
+                echo "::error::Generated public-tree sync PR is missing source-of-truth status details."
+                exit 1
+              fi
+              if ! grep -Eiq "public-only commits since last generated sync" <<< "${PR_BODY:-}"; then
+                echo "::error::Generated public-tree sync PR is missing public-only commit accounting."
+                exit 1
+              fi
+            fi
+
+            echo "Generated public sync provenance found."
+            exit 0
+          fi
+
+          mapfile -t changed_files < <(
+            gh api --paginate "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[].filename"
+          )
+
+          mirrored_files=()
+          for file_path in "${changed_files[@]}"; do
+            case "$file_path" in
+              .github/actionlint.yaml|\
+              .github/workflows/*|\
+              .github/release-mirror-manifest.json|\
+              .github/public-release-mirror.exclude|\
+              docs/release-ops.md|\
+              docs/internal/*|\
+              scripts/configure-npm-trusted-publisher.mjs|\
+              scripts/deprecate-release.js|\
+              scripts/smoke-registry-install.js|\
+              scripts/validate-public-package-deps.js)
+                continue
+                ;;
+            esac
+            mirrored_files+=("$file_path")
+          done
+
+          if [[ "${#mirrored_files[@]}" -eq 0 ]]; then
+            echo "No mirrored source files changed."
+            exit 0
+          fi
+
+          if grep -Eiq "(https://github[.]com/evalops/(mono|maestro-internal)/pull/[0-9]+|evalops/(mono|maestro-internal)#[0-9]+|maestro-internal#[0-9]+)" <<< "${PR_BODY:-}"; then
+            echo "Mirrored source provenance link found."
+            exit 0
+          fi
+
+          marker="<!-- public-source-provenance -->"
+          file_list="$(printf -- "- %s\n" "${mirrored_files[@]}" | head -n 25)"
+          if [[ "${#mirrored_files[@]}" -gt 25 ]]; then
+            file_list="$(printf "%s\n- ... %d more" "$file_list" "$((${#mirrored_files[@]} - 25))")"
+          fi
+
+          # shellcheck disable=SC2016 # Backticks are literal Markdown delimiters in the printf format.
+          printf -v comment_body '%s\nThis PR changes mirrored Maestro source files in the public repo, but it does not link the matching private source-of-truth PR.\n\nLink the matching evalops/mono source PR (legacy maestro-internal links remain accepted), then re-run the check:\n\n- `https://github.com/evalops/mono/pull/<number>`\n- `evalops/mono#<number>`\n- `maestro-internal#<number>`\n\nMirrored files touched:\n\n%s' \
+            "$marker" "$file_list"
+
+          existing_comment_id="$(
+            gh api "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id" |
+              head -n 1
+          )"
+
+          if [[ -n "$existing_comment_id" ]]; then
+            gh api \
+              --method PATCH \
+              "/repos/${REPOSITORY}/issues/comments/${existing_comment_id}" \
+              -f body="$comment_body" >/dev/null
+          else
+            gh api \
+              --method POST \
+              "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -f body="$comment_body" >/dev/null
+          fi
+
+          echo "::error::Public PRs that touch mirrored source must link the matching evalops/mono source PR."
+          exit 1

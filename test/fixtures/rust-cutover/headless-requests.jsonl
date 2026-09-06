@@ -1,0 +1,17 @@
+{"schemaVersion":1,"name":"hello","message":{"type":"hello","protocol_version":"2026-08-08","client_info":{"name":"cutover-fixture","version":"1"},"role":"controller"}}
+{"schemaVersion":1,"name":"init","message":{"type":"init","system_prompt":"system","append_system_prompt":"append","thinking_level":"medium","approval_mode":"prompt","history":[{"role":"user","content":"prior"}]}}
+{"schemaVersion":1,"name":"prompt","message":{"type":"prompt","content":"hello","attachments":["README.md"]}}
+{"schemaVersion":1,"name":"interrupt","message":{"type":"interrupt"}}
+{"schemaVersion":1,"name":"tool_response","message":{"type":"tool_response","call_id":"call-1","approved":true,"result":{"success":true,"output":"approved"}}}
+{"schemaVersion":1,"name":"client_tool_result","message":{"type":"client_tool_result","call_id":"call-2","content":[{"type":"text","text":"done"}],"is_error":false}}
+{"schemaVersion":1,"name":"server_request_response","message":{"type":"server_request_response","request_id":"request-1","request_type":"approval","approved":true}}
+{"schemaVersion":1,"name":"utility_command_start","message":{"type":"utility_command_start","command_id":"command-1","command":"pwd","cwd":"/workspace","env":{"TERM":"xterm-256color"},"shell_mode":"shell","terminal_mode":"pty","allow_stdin":true,"columns":120,"rows":40}}
+{"schemaVersion":1,"name":"utility_command_terminate","message":{"type":"utility_command_terminate","command_id":"command-1","force":false}}
+{"schemaVersion":1,"name":"utility_command_stdin","message":{"type":"utility_command_stdin","command_id":"command-1","content":"input\n","eof":false}}
+{"schemaVersion":1,"name":"utility_command_resize","message":{"type":"utility_command_resize","command_id":"command-1","columns":100,"rows":30}}
+{"schemaVersion":1,"name":"utility_file_search","message":{"type":"utility_file_search","search_id":"search-1","query":"*.rs","cwd":"/workspace","limit":20}}
+{"schemaVersion":1,"name":"utility_file_read","message":{"type":"utility_file_read","read_id":"read-1","path":"Cargo.toml","cwd":"/workspace","offset":0,"limit":200}}
+{"schemaVersion":1,"name":"utility_file_watch_start","message":{"type":"utility_file_watch_start","watch_id":"watch-1","root_dir":"/workspace","include_patterns":["**/*.rs"],"exclude_patterns":["target/**"],"debounce_ms":50}}
+{"schemaVersion":1,"name":"utility_file_watch_stop","message":{"type":"utility_file_watch_stop","watch_id":"watch-1"}}
+{"schemaVersion":1,"name":"cancel","message":{"type":"cancel"}}
+{"schemaVersion":1,"name":"shutdown","message":{"type":"shutdown"}}

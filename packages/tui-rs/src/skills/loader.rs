@@ -66,6 +66,7 @@
 //! }
 //! ```
 
+use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
 use crate::skills::{SkillDefinition, SkillSource};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -110,7 +111,9 @@ pub enum SkillLoadError {
     },
 
     /// Unexpected fields in frontmatter
-    #[error("Unexpected fields in '{path}': {fields}. Only name, description, license, compatibility, allowed-tools, metadata are allowed.")]
+    #[error(
+        "Unexpected fields in '{path}': {fields}. Only name, description, license, compatibility, allowed-tools, metadata are allowed."
+    )]
     UnexpectedFields { path: PathBuf, fields: String },
 }
 
@@ -121,11 +124,21 @@ const ALLOWED_FIELDS: &[&str] = &[
     "license",
     "compatibility",
     "allowed-tools",
+    "argument-hint",
+    "builtin-tools",
+    "mode",
+    "isolatedContext",
     "metadata",
     "tags",
     "author",
     "version",
     "triggers",
+    "user-invocable",
+    "argument-hint",
+    "when-to-use",
+    "disable-model-invocation",
+    "model",
+    "effort",
 ];
 
 /// YAML frontmatter structure for skill files (per Agent Skills spec)
@@ -145,7 +158,10 @@ struct SkillFrontmatter {
 
     /// Space-delimited list of allowed tools (optional, experimental)
     #[serde(rename = "allowed-tools")]
-    allowed_tools: Option<String>,
+    allowed_tools: Option<serde_yaml::Value>,
+
+    #[serde(rename = "builtin-tools")]
+    builtin_tools: Option<serde_yaml::Value>,
 
     /// Additional metadata key-value pairs (optional)
     #[serde(default)]
@@ -166,6 +182,64 @@ struct SkillFrontmatter {
     /// Legacy triggers (optional)
     #[serde(default)]
     triggers: Option<Vec<String>>,
+    #[serde(rename = "user-invocable", default)]
+    user_invocable: Option<bool>,
+    #[serde(rename = "argument-hint")]
+    argument_hint: Option<String>,
+    #[serde(rename = "when-to-use")]
+    when_to_use: Option<String>,
+    #[serde(rename = "disable-model-invocation")]
+    disable_model_invocation: Option<bool>,
+    model: Option<String>,
+    mode: Option<String>,
+    #[serde(rename = "isolatedContext")]
+    isolated_context: Option<serde_yaml::Value>,
+    effort: Option<String>,
+}
+
+fn string_list_value(
+    value: Option<&serde_yaml::Value>,
+    field: &str,
+    path: &Path,
+) -> Result<Vec<String>, SkillLoadError> {
+    match value {
+        Some(serde_yaml::Value::String(value)) => Ok(value
+            .split_whitespace()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Some(serde_yaml::Value::Sequence(values)) => Ok(values
+            .iter()
+            .map(|value| {
+                value.as_str().ok_or_else(|| SkillLoadError::InvalidSkill {
+                    path: path.to_path_buf(),
+                    message: format!("{field} must be a string or a list of strings"),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        None => Ok(Vec::new()),
+        Some(_) => Err(SkillLoadError::InvalidSkill {
+            path: path.to_path_buf(),
+            message: format!("{field} must be a string or a list of strings"),
+        }),
+    }
+}
+
+fn boolean_value(value: Option<&serde_yaml::Value>) -> Option<bool> {
+    match value {
+        Some(serde_yaml::Value::Bool(value)) => Some(*value),
+        Some(serde_yaml::Value::String(value)) if value.eq_ignore_ascii_case("true") => Some(true),
+        Some(serde_yaml::Value::String(value)) if value.eq_ignore_ascii_case("false") => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Result of loading a skill file
@@ -188,15 +262,26 @@ pub struct SkillResources {
     pub scripts_dir: Option<PathBuf>,
     /// Path to references directory if it exists
     pub references_dir: Option<PathBuf>,
+    /// Singular Agent Core reference directory if it exists
+    pub reference_dir: Option<PathBuf>,
     /// Path to assets directory if it exists
     pub assets_dir: Option<PathBuf>,
+    /// Toolbox protocol executable directory if it exists
+    pub toolbox_dir: Option<PathBuf>,
+    /// Bundled MCP configuration if it exists
+    pub mcp_json_path: Option<PathBuf>,
 }
 
 impl SkillResources {
     /// Check if the skill has any resources
     #[must_use]
     pub fn has_resources(&self) -> bool {
-        self.scripts_dir.is_some() || self.references_dir.is_some() || self.assets_dir.is_some()
+        self.scripts_dir.is_some()
+            || self.references_dir.is_some()
+            || self.reference_dir.is_some()
+            || self.assets_dir.is_some()
+            || self.toolbox_dir.is_some()
+            || self.mcp_json_path.is_some()
     }
 }
 
@@ -256,40 +341,101 @@ impl LoadedSkill {
 /// Loader for filesystem-based skills following the Agent Skills spec
 #[derive(Debug)]
 pub struct SkillLoader {
-    /// Directories to search for skills
+    /// Directories to search for skills (low → high priority)
     search_paths: Vec<PathBuf>,
     /// Cached system skills directory (resolved once at construction)
     system_skills_dir: Option<PathBuf>,
-    /// Cached user skills directory (resolved once at construction)
-    user_skills_dir: Option<PathBuf>,
+    /// Cached user skills directories (resolved once at construction)
+    user_skills_dirs: Vec<PathBuf>,
+    /// Skill directories contributed by discovered plugins
+    plugin_skills_dirs: Vec<PathBuf>,
 }
 
 impl SkillLoader {
-    /// Create a new skill loader with default search paths
+    /// Create a new skill loader with default search paths.
+    ///
+    /// Project-scoped skill directories (`.agents/skills`, `.composer/skills`,
+    /// `.maestro/skills`, all resolved relative to the current process
+    /// working directory) are repository-controlled. They are only searched
+    /// when the workspace is marked trusted in *global* config, so a
+    /// repository cannot grant itself trust (see
+    /// `crate::config::workspace_trusted_in_global_config`).
     #[must_use]
     pub fn new() -> Self {
+        let workspace_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_trusted = crate::config::workspace_trusted_in_global_config(&workspace_dir);
+        Self::new_with_trust(&workspace_dir, workspace_trusted)
+    }
+
+    /// Returns the project-scoped skill directories that `new()` would
+    /// search, in priority order (used both for the trust gate and to
+    /// report an "untrusted workspace" notice to callers).
+    #[must_use]
+    fn project_skill_dirs(workspace_dir: &Path) -> [PathBuf; 3] {
+        [
+            workspace_dir.join(".agents").join("skills"),
+            workspace_dir.join(".composer").join("skills"),
+            workspace_dir.join(".maestro").join("skills"),
+        ]
+    }
+
+    /// Returns `true` when any project-scoped skill directory exists under
+    /// `workspace_dir`. Used to decide whether an "untrusted workspace"
+    /// notice is worth showing; does not itself gate loading.
+    #[must_use]
+    pub fn has_project_skill_dirs(workspace_dir: &Path) -> bool {
+        Self::project_skill_dirs(workspace_dir)
+            .iter()
+            .any(|dir| dir.is_dir())
+    }
+
+    /// Core of [`Self::new`] with the trust decision injected.
+    ///
+    /// Split out so tests can exercise both the trusted and untrusted paths
+    /// deterministically without mutating the real process `$HOME`.
+    fn new_with_trust(workspace_dir: &Path, workspace_trusted: bool) -> Self {
         let mut search_paths = Vec::new();
+        let mut user_skills_dirs = Vec::new();
 
         let system_skills_dir = Self::find_system_skills_dir();
-        let user_skills_dir = dirs::home_dir().map(|h| h.join(".composer").join("skills"));
 
-        // Add system skills directory (bundled with the package, lowest priority)
         if let Some(ref system_dir) = system_skills_dir {
             search_paths.push(system_dir.clone());
         }
 
-        // Add global user skills directory
-        if let Some(ref user_dir) = user_skills_dir {
-            search_paths.push(user_dir.clone());
+        if let Some(dir) = legacy_composer_home_dir().map(|h| h.join("skills")) {
+            user_skills_dirs.push(dir.clone());
+            search_paths.push(dir);
+        }
+        if let Some(dir) = maestro_home_dir().map(|h| h.join("skills")) {
+            user_skills_dirs.push(dir.clone());
+            search_paths.push(dir);
         }
 
-        // Add project-specific skills directory (highest priority)
-        search_paths.push(PathBuf::from(".composer").join("skills"));
+        for (dir, user_scope) in crate::skill_package_cli::configured_skill_search_paths() {
+            if user_scope {
+                user_skills_dirs.push(dir.clone());
+            }
+            search_paths.push(dir);
+        }
+
+        let project_dirs = Self::project_skill_dirs(workspace_dir);
+        if workspace_trusted {
+            search_paths.extend(project_dirs);
+        } else if project_dirs.iter().any(|dir| dir.is_dir()) {
+            eprintln!(
+                "[skills] Skipped untrusted project skill directories under {}: set \
+                 projects.\"<workspace>\".trust_level = \"trusted\" in global config \
+                 (~/.composer/config.toml) to enable them",
+                workspace_dir.display()
+            );
+        }
 
         Self {
             search_paths,
             system_skills_dir,
-            user_skills_dir,
+            user_skills_dirs,
+            plugin_skills_dirs: Vec::new(),
         }
     }
 
@@ -325,13 +471,38 @@ impl SkillLoader {
         Self {
             search_paths: paths,
             system_skills_dir: None,
-            user_skills_dir: None,
+            user_skills_dirs: Vec::new(),
+            plugin_skills_dirs: Vec::new(),
         }
     }
 
     /// Add a search path
     pub fn add_search_path(&mut self, path: PathBuf) {
         self.search_paths.push(path);
+    }
+
+    /// Add a plugin skill directory (tagged as [`SkillSource::Plugin`]).
+    ///
+    /// Appended after default paths so plugin skills can override same-named
+    /// skills from lower-priority locations when loaded via `load_all_with_paths`.
+    pub fn add_plugin_search_path(&mut self, path: PathBuf) {
+        self.plugin_skills_dirs.push(path.clone());
+        self.search_paths.push(path);
+    }
+
+    /// Add multiple plugin skill directories.
+    #[must_use]
+    pub fn with_plugin_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        for path in paths {
+            self.add_plugin_search_path(path);
+        }
+        self
+    }
+
+    /// Create a loader that includes skill directories from a plugin registry.
+    #[must_use]
+    pub fn with_plugins(plugins: &crate::plugins::PluginRegistry) -> Self {
+        Self::new().with_plugin_paths(plugins.skill_dirs())
     }
 
     /// Get the search paths
@@ -432,12 +603,16 @@ impl SkillLoader {
                 return SkillSource::System;
             }
         }
-        if let Some(ref user_dir) = self.user_skills_dir {
+        for plugin_dir in &self.plugin_skills_dirs {
+            if dir.starts_with(plugin_dir) {
+                return SkillSource::Plugin;
+            }
+        }
+        for user_dir in &self.user_skills_dirs {
             if dir.starts_with(user_dir) {
                 return SkillSource::User;
             }
         }
-        // Default: project-level skills (.composer/skills/)
         SkillSource::Project
     }
 
@@ -501,6 +676,10 @@ impl SkillLoader {
                     None
                 }
             },
+            reference_dir: {
+                let p = skill_dir.join("reference");
+                (p.exists() && p.is_dir()).then_some(p)
+            },
             assets_dir: {
                 let p = skill_dir.join("assets");
                 if p.exists() && p.is_dir() {
@@ -508,6 +687,14 @@ impl SkillLoader {
                 } else {
                     None
                 }
+            },
+            toolbox_dir: {
+                let p = skill_dir.join("toolbox");
+                (p.exists() && p.is_dir()).then_some(p)
+            },
+            mcp_json_path: {
+                let p = skill_dir.join("mcp.json");
+                (p.exists() && p.is_file()).then_some(p)
             },
         };
 
@@ -621,16 +808,17 @@ impl SkillLoader {
         }
 
         // Parse allowed-tools (space-delimited)
-        let tools: Vec<String> = frontmatter
-            .allowed_tools
-            .map(|t| t.split_whitespace().map(String::from).collect())
-            .unwrap_or_default();
+        let tools = string_list_value(frontmatter.allowed_tools.as_ref(), "allowed-tools", path)?;
+        let builtin_tools =
+            string_list_value(frontmatter.builtin_tools.as_ref(), "builtin-tools", path)?;
 
         // Build the skill definition
         let mut skill = SkillDefinition::new(&frontmatter.name, &frontmatter.name)
             .with_description(&frontmatter.description)
             .with_source(source)
             .with_tools(tools);
+
+        skill.user_invocable = frontmatter.user_invocable.unwrap_or(true);
 
         // Set metadata
         skill.metadata = frontmatter.metadata;
@@ -647,6 +835,49 @@ impl SkillLoader {
             skill
                 .metadata
                 .insert("compatibility".to_string(), serde_json::json!(compat));
+        }
+
+        if let Some(hint) = frontmatter.argument_hint {
+            skill
+                .metadata
+                .insert("argument-hint".to_string(), serde_json::json!(hint));
+        }
+        if let Some(when_to_use) = frontmatter.when_to_use {
+            skill
+                .metadata
+                .insert("when-to-use".to_string(), serde_json::json!(when_to_use));
+        }
+        if let Some(disable) = frontmatter.disable_model_invocation {
+            skill.metadata.insert(
+                "disable-model-invocation".to_string(),
+                serde_json::json!(disable),
+            );
+        }
+        if let Some(model) = frontmatter.model {
+            skill
+                .metadata
+                .insert("model".to_string(), serde_json::json!(model));
+        }
+        if let Some(mode) = frontmatter.mode {
+            skill
+                .metadata
+                .insert("mode".to_string(), serde_json::json!(mode));
+        }
+        if !builtin_tools.is_empty() {
+            skill.metadata.insert(
+                "builtin-tools".to_string(),
+                serde_json::json!(builtin_tools),
+            );
+        }
+        if let Some(isolated) = boolean_value(frontmatter.isolated_context.as_ref()) {
+            skill
+                .metadata
+                .insert("isolatedContext".to_string(), serde_json::json!(isolated));
+        }
+        if let Some(effort) = frontmatter.effort {
+            skill
+                .metadata
+                .insert("effort".to_string(), serde_json::json!(effort));
         }
 
         // Legacy fields (tags/author/version/triggers)
@@ -727,16 +958,21 @@ impl SkillLoader {
     /// Load skills returning both successful loads and errors
     #[must_use]
     pub fn load_all_with_paths(&self) -> (Vec<LoadedSkill>, Vec<SkillLoadError>) {
-        let mut skills = Vec::new();
+        let mut by_name: HashMap<String, LoadedSkill> = HashMap::new();
         let mut errors = Vec::new();
 
         for result in self.load_all() {
             match result {
-                Ok(skill) => skills.push(skill),
+                Ok(skill) => {
+                    let key = skill.definition.name.to_lowercase();
+                    by_name.insert(key, skill);
+                }
                 Err(e) => errors.push(e),
             }
         }
 
+        let mut skills: Vec<_> = by_name.into_values().collect();
+        skills.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
         (skills, errors)
     }
 }
@@ -757,39 +993,14 @@ impl SkillLoader {
 /// </skill>
 /// </available_skills>
 /// ```
+///
+/// This renders the catalog with no size limit. The system-prompt path uses
+/// [`crate::skills::catalog_budget::apply_skill_catalog_budget`] instead, which
+/// bounds the catalog at a share of the model's context window; both render
+/// through the same helper so the block's shape cannot drift.
 #[must_use]
 pub fn skills_to_prompt(skills: &[LoadedSkill]) -> String {
-    if skills.is_empty() {
-        return "<available_skills>\n</available_skills>".to_string();
-    }
-
-    let mut output = String::from("<available_skills>\n");
-
-    for skill in skills {
-        let def = &skill.definition;
-        // Escape XML special characters
-        let name = html_escape(&def.name);
-        let description = html_escape(&def.description);
-        let location = html_escape(&skill.source_path.display().to_string());
-
-        output.push_str("<skill>\n");
-        output.push_str(&format!("  <name>{name}</name>\n"));
-        output.push_str(&format!("  <description>{description}</description>\n"));
-        output.push_str(&format!("  <location>{location}</location>\n"));
-        output.push_str("</skill>\n");
-    }
-
-    output.push_str("</available_skills>");
-    output
-}
-
-/// Escape HTML/XML special characters
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    crate::skills::catalog_budget::render_full_catalog(skills)
 }
 
 impl Default for SkillLoader {
@@ -818,6 +1029,90 @@ mod tests {
         assert!(!loader.search_paths.is_empty());
     }
 
+    // ── Trust gate (repo-controlled `.composer/skills`, `.maestro/skills`,
+    // `.agents/skills`) ────────────────────────────────────────────────────
+
+    /// Regression test for the trust-gate fix: an untrusted workspace's
+    /// project-scoped skill directories must not be searched at all, so a
+    /// hostile `SKILL.md` (whose `allowed-tools` frontmatter can
+    /// pre-approve tool calls) never loads. Before the fix, `SkillLoader`
+    /// had no trust check at all.
+    #[test]
+    fn test_untrusted_workspace_skips_project_skill_dirs() {
+        let workspace = TempDir::new().unwrap();
+        let skill_dir = workspace
+            .path()
+            .join(".composer")
+            .join("skills")
+            .join("evil");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: evil\ndescription: hostile skill\n---\nDo bad things.\n",
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new_with_trust(workspace.path(), false);
+        assert!(
+            loader
+                .search_paths()
+                .iter()
+                .all(|p| !p.starts_with(workspace.path())),
+            "untrusted workspace must not search project-scoped skill dirs"
+        );
+
+        // Don't assert `load_all()` is fully empty: the test machine's real
+        // system/user skill dirs (unaffected by this gate) may legitimately
+        // contain skills. Assert the specific hostile skill isn't among them.
+        let results = loader.load_all();
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.as_ref().is_ok_and(|s| s.definition.name == "evil")),
+            "untrusted project skill must not be discovered"
+        );
+    }
+
+    #[test]
+    fn test_trusted_workspace_searches_project_skill_dirs() {
+        let workspace = TempDir::new().unwrap();
+        let skill_dir = workspace
+            .path()
+            .join(".composer")
+            .join("skills")
+            .join("good");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: good\ndescription: trusted skill\n---\nBe helpful.\n",
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new_with_trust(workspace.path(), true);
+        assert!(
+            loader
+                .search_paths()
+                .iter()
+                .any(|p| p.starts_with(workspace.path()))
+        );
+
+        let results = loader.load_all();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.as_ref().is_ok_and(|s| s.definition.name == "good")),
+            "trusted project skill must be discovered"
+        );
+    }
+
+    #[test]
+    fn test_has_project_skill_dirs() {
+        let workspace = TempDir::new().unwrap();
+        assert!(!SkillLoader::has_project_skill_dirs(workspace.path()));
+        fs::create_dir_all(workspace.path().join(".maestro").join("skills")).unwrap();
+        assert!(SkillLoader::has_project_skill_dirs(workspace.path()));
+    }
+
     #[test]
     fn test_loader_with_custom_paths() {
         let paths = vec![PathBuf::from("/custom/path")];
@@ -831,6 +1126,26 @@ mod tests {
         let initial_count = loader.search_paths.len();
         loader.add_search_path(PathBuf::from("/new/path"));
         assert_eq!(loader.search_paths.len(), initial_count + 1);
+    }
+
+    #[test]
+    fn test_loader_plugin_search_path_marks_plugin_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_root = temp_dir.path().join("skills");
+        let skill_dir = skills_root.join("plugin-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: plugin-skill\ndescription: From a plugin package\n---\n# Plugin skill\n",
+        )
+        .unwrap();
+
+        let loader = SkillLoader::with_paths(Vec::new()).with_plugin_paths(vec![skills_root]);
+        let results = loader.load_all();
+        assert_eq!(results.len(), 1);
+        let loaded = results[0].as_ref().expect("skill should load");
+        assert_eq!(loaded.definition.name, "plugin-skill");
+        assert_eq!(loaded.definition.source, SkillSource::Plugin);
     }
 
     #[test]
@@ -855,11 +1170,13 @@ This is the system prompt for the test skill.
         assert_eq!(skill.description, "A test skill for testing purposes");
         assert_eq!(skill.provided_tools, vec!["read", "write"]);
         assert!(skill.system_prompt_additions.is_some());
-        assert!(skill
-            .system_prompt_additions
-            .as_ref()
-            .unwrap()
-            .contains("Test Instructions"));
+        assert!(
+            skill
+                .system_prompt_additions
+                .as_ref()
+                .unwrap()
+                .contains("Test Instructions")
+        );
     }
 
     #[test]
@@ -1697,6 +2014,7 @@ description: Description for {}
 
     #[test]
     fn test_html_escape() {
+        use crate::skills::catalog_budget::html_escape;
         assert_eq!(html_escape("hello"), "hello");
         assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#39;");
         assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");
@@ -1820,6 +2138,51 @@ Content.
         assert_eq!(
             skill.metadata.get("license"),
             Some(&serde_json::json!("MIT"))
+        );
+    }
+
+    #[test]
+    fn mixed_type_tool_lists_are_rejected() {
+        let content = r"---
+name: mixed-tools
+description: Use when testing native tool list validation
+allowed-tools:
+  - read
+  - 123
+---
+Body.
+";
+        let loader = SkillLoader::new();
+        let result = loader.parse_skill_content(content, Path::new("SKILL.md"), SkillSource::User);
+        assert!(matches!(result, Err(SkillLoadError::InvalidSkill { .. })));
+    }
+
+    #[test]
+    fn agent_core_resource_directories_are_discovered() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("resource-skill");
+        fs::create_dir_all(skill_dir.join("reference")).unwrap();
+        fs::create_dir_all(skill_dir.join("toolbox")).unwrap();
+        fs::write(skill_dir.join("mcp.json"), "{}").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: resource-skill\ndescription: Use when testing resource discovery\n---\nBody.\n",
+        )
+        .unwrap();
+        let loaded = SkillLoader::with_paths(Vec::new())
+            .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::Project)
+            .unwrap();
+        assert_eq!(
+            loaded.resources.reference_dir,
+            Some(skill_dir.join("reference"))
+        );
+        assert_eq!(
+            loaded.resources.toolbox_dir,
+            Some(skill_dir.join("toolbox"))
+        );
+        assert_eq!(
+            loaded.resources.mcp_json_path,
+            Some(skill_dir.join("mcp.json"))
         );
     }
 

@@ -1,13 +1,15 @@
 //! LSP diagnostics bridge
 //!
-//! Provides optional access to the TypeScript LSP CLI (`dist/lsp/cli.js`) so the
-//! Rust TUI can surface diagnostics and enforce safe-mode gates.
+//! Speaks Language Server Protocol JSON-RPC directly over stdio so the native
+//! runtime can surface diagnostics and enforce safe-mode gates without a bridge.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspPosition {
@@ -127,54 +129,6 @@ pub fn blocking_severity() -> u8 {
     LSP_CONFIG.blocking_severity
 }
 
-fn resolve_cli_path(cwd: &Path) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("MAESTRO_LSP_CLI") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    let mut roots = Vec::new();
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    roots.push(cwd.to_path_buf());
-
-    for root in roots {
-        let mut cursor = Some(root.as_path());
-        for _ in 0..10 {
-            if let Some(path) = cursor {
-                let direct = path.join("dist").join("lsp").join("cli.js");
-                if direct.exists() {
-                    return Some(direct);
-                }
-                let node_modules = path
-                    .join("node_modules")
-                    .join("@evalops")
-                    .join("composer")
-                    .join("dist")
-                    .join("lsp")
-                    .join("cli.js");
-                if node_modules.exists() {
-                    return Some(node_modules);
-                }
-                cursor = path.parent();
-            } else {
-                break;
-            }
-        }
-    }
-
-    None
-}
-
-fn resolve_runtime() -> String {
-    std::env::var("MAESTRO_LSP_RUNTIME").unwrap_or_else(|_| "node".to_string())
-}
-
 fn normalize_path(cwd: &Path, raw: &str) -> PathBuf {
     let path = Path::new(raw);
     let path = if path.is_absolute() {
@@ -182,87 +136,347 @@ fn normalize_path(cwd: &Path, raw: &str) -> PathBuf {
     } else {
         cwd.join(path)
     };
-    std::fs::canonicalize(&path).unwrap_or(path)
+    dunce::canonicalize(&path).unwrap_or(path)
 }
 
-async fn run_cli_diagnostics(
-    cwd: &Path,
-    path: Option<&Path>,
-) -> Result<HashMap<String, Vec<LspDiagnostic>>, String> {
-    let Some(cli_path) = resolve_cli_path(cwd) else {
-        return Ok(HashMap::new());
+#[derive(Debug, Clone)]
+struct NativeServerSpec {
+    command: String,
+    args: Vec<String>,
+    language_id: &'static str,
+}
+
+fn native_server_for_path(path: &Path) -> Result<NativeServerSpec, String> {
+    if let Ok(value) = std::env::var("MAESTRO_LSP_COMMAND") {
+        let parts = shlex::split(&value)
+            .ok_or_else(|| "MAESTRO_LSP_COMMAND contains invalid shell quoting".to_string())?;
+        let (command, args) = parts
+            .split_first()
+            .ok_or_else(|| "MAESTRO_LSP_COMMAND is empty".to_string())?;
+        return Ok(NativeServerSpec {
+            command: command.clone(),
+            args: args.to_vec(),
+            language_id: language_id(path),
+        });
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let (command, args) = match extension {
+        "rs" => ("rust-analyzer", vec![]),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+            ("typescript-language-server", vec!["--stdio"])
+        }
+        "py" | "pyi" => ("pyright-langserver", vec!["--stdio"]),
+        "go" => ("gopls", vec![]),
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" => ("clangd", vec![]),
+        "java" => ("jdtls", vec![]),
+        _ => {
+            return Err(format!(
+                "no native language server configured for {}",
+                path.display()
+            ));
+        }
     };
-
-    let runtime = resolve_runtime();
-    let mut command = Command::new(runtime);
-    command.arg(cli_path).arg("diagnostics");
-    if let Some(path) = path {
-        command.arg(path);
-    }
-    let output = command
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run LSP diagnostics: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "LSP diagnostics command failed (status {:?}): {}",
-            output.status.code(),
-            stderr.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let map: HashMap<String, Vec<LspDiagnostic>> = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse LSP diagnostics: {e}"))?;
-    Ok(map)
+    Ok(NativeServerSpec {
+        command: command.to_string(),
+        args: args.into_iter().map(str::to_string).collect(),
+        language_id: language_id(path),
+    })
 }
 
-async fn run_cli_locations(
+fn language_id(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+    {
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "typescriptreact",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "javascriptreact",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" => "cpp",
+        "java" => "java",
+        _ => "plaintext",
+    }
+}
+
+struct NativeLspSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+}
+
+impl NativeLspSession {
+    async fn start(cwd: &Path, path: &Path) -> Result<(Self, String), String> {
+        let spec = native_server_for_path(path)?;
+        let mut child = Command::new(&spec.command)
+            .args(&spec.args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "failed to start native LSP server {}: {error}",
+                    spec.command
+                )
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "LSP stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "LSP stdout unavailable".to_string())?;
+        let mut session = Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            next_id: 1,
+        };
+        let root_uri = path_to_uri(cwd)?;
+        session
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "processId": std::process::id(),
+                    "rootUri": root_uri,
+                    "capabilities": {
+                        "textDocument": { "publishDiagnostics": { "relatedInformation": true } }
+                    },
+                    "clientInfo": { "name": "maestro", "version": env!("CARGO_PKG_VERSION") }
+                }),
+            )
+            .await?;
+        session.notify("initialized", serde_json::json!({})).await?;
+        let uri = path_to_uri(path)?;
+        let text = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|error| format!("failed to read LSP document {}: {error}", path.display()))?;
+        session
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": spec.language_id,
+                        "version": 1,
+                        "text": text
+                    }
+                }),
+            )
+            .await?;
+        Ok((session, uri))
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        }))
+        .await?;
+        loop {
+            let message = self.read().await?;
+            if message.get("id").and_then(Value::as_u64) == Some(id)
+                && (message.get("result").is_some() || message.get("error").is_some())
+            {
+                if let Some(error) = message.get("error") {
+                    return Err(format!("LSP {method} request failed: {error}"));
+                }
+                return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+            }
+            self.respond_to_server_request(&message).await?;
+        }
+    }
+
+    async fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        self.write(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        }))
+        .await
+    }
+
+    async fn next_notification(&mut self) -> Result<Value, String> {
+        loop {
+            let message = self.read().await?;
+            if message.get("method").is_some() && message.get("id").is_none() {
+                return Ok(message);
+            }
+            self.respond_to_server_request(&message).await?;
+        }
+    }
+
+    async fn respond_to_server_request(&mut self, message: &Value) -> Result<(), String> {
+        if message.get("method").is_some() {
+            if let Some(id) = message.get("id") {
+                self.write(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": Value::Null
+                }))
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn write(&mut self, message: &Value) -> Result<(), String> {
+        let payload = serde_json::to_vec(message)
+            .map_err(|error| format!("failed to serialize LSP message: {error}"))?;
+        self.stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n", payload.len()).as_bytes())
+            .await
+            .map_err(|error| format!("failed to write LSP message: {error}"))?;
+        self.stdin
+            .write_all(&payload)
+            .await
+            .map_err(|error| format!("failed to write LSP payload: {error}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| format!("failed to flush LSP message: {error}"))
+    }
+
+    async fn read(&mut self) -> Result<Value, String> {
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            let count = self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|error| format!("failed to read LSP header: {error}"))?;
+            if count == 0 {
+                return Err("native LSP server closed stdout".to_string());
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = Some(
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .map_err(|error| format!("invalid LSP content length: {error}"))?,
+                    );
+                }
+            }
+        }
+        let length =
+            content_length.ok_or_else(|| "LSP message omitted Content-Length".to_string())?;
+        let mut payload = vec![0_u8; length];
+        self.stdout
+            .read_exact(&mut payload)
+            .await
+            .map_err(|error| format!("failed to read LSP payload: {error}"))?;
+        serde_json::from_slice(&payload).map_err(|error| format!("invalid LSP JSON: {error}"))
+    }
+
+    async fn stop(mut self) {
+        let _ = self.notify("exit", Value::Null).await;
+        let _ = self.child.kill().await;
+    }
+}
+
+fn path_to_uri(path: &Path) -> Result<String, String> {
+    url::Url::from_file_path(path)
+        .map(String::from)
+        .map_err(|()| format!("cannot convert path to file URI: {}", path.display()))
+}
+
+async fn native_diagnostics(cwd: &Path, path: &Path) -> Result<Vec<LspDiagnostic>, String> {
+    let (mut session, uri) = NativeLspSession::start(cwd, path).await?;
+    let diagnostics = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let message = session.next_notification().await?;
+            if message.get("method").and_then(Value::as_str)
+                != Some("textDocument/publishDiagnostics")
+            {
+                continue;
+            }
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            if params.get("uri").and_then(Value::as_str) != Some(uri.as_str()) {
+                continue;
+            }
+            return serde_json::from_value::<Vec<LspDiagnostic>>(
+                params
+                    .get("diagnostics")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
+            .map_err(|error| format!("invalid LSP diagnostics: {error}"));
+        }
+    })
+    .await
+    .unwrap_or(Ok(Vec::new()));
+    session.stop().await;
+    diagnostics
+}
+
+async fn native_locations(
     cwd: &Path,
-    command_name: &str,
+    method: &str,
     path: &Path,
     line: u32,
     character: u32,
     include_declaration: Option<bool>,
 ) -> Result<Vec<LspLocation>, String> {
-    let Some(cli_path) = resolve_cli_path(cwd) else {
-        return Ok(Vec::new());
+    let (mut session, uri) = NativeLspSession::start(cwd, path).await?;
+    let mut params = serde_json::json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line, "character": character }
+    });
+    if let Some(include_declaration) = include_declaration {
+        params["context"] = serde_json::json!({ "includeDeclaration": include_declaration });
+    }
+    let result = session.request(method, params).await;
+    session.stop().await;
+    normalize_locations(result?)
+}
+
+fn normalize_locations(result: Value) -> Result<Vec<LspLocation>, String> {
+    let values = if result.is_null() {
+        Vec::new()
+    } else if let Some(values) = result.as_array() {
+        values.clone()
+    } else {
+        vec![result]
     };
-
-    let runtime = resolve_runtime();
-    let mut command = Command::new(runtime);
-    command
-        .arg(cli_path)
-        .arg(command_name)
-        .arg(path)
-        .arg(line.to_string())
-        .arg(character.to_string());
-    if let Some(include) = include_declaration {
-        command.arg(if include { "true" } else { "false" });
-    }
-
-    let output = command
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run LSP {command_name}: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "LSP {command_name} command failed (status {:?}): {}",
-            output.status.code(),
-            stderr.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let locations: Vec<LspLocation> = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse LSP {command_name} output: {e}"))?;
-    Ok(locations)
+    values
+        .into_iter()
+        .filter_map(|value| {
+            if value.get("targetUri").is_some() {
+                Some(serde_json::json!({
+                    "uri": value.get("targetUri"),
+                    "range": value.get("targetRange")
+                }))
+            } else if value.get("uri").is_some() {
+                Some(value)
+            } else {
+                None
+            }
+        })
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| format!("invalid LSP location: {error}"))
+        })
+        .collect()
 }
 
 pub async fn collect_diagnostics_for_paths(
@@ -282,10 +496,11 @@ pub async fn collect_diagnostics_for_paths(
         if !seen.insert(normalized.clone()) {
             continue;
         }
-        let map = run_cli_diagnostics(cwd_path, Some(&normalized)).await?;
-        for (file, diagnostics) in map {
-            combined.entry(file).or_default().extend(diagnostics);
-        }
+        let diagnostics = native_diagnostics(cwd_path, &normalized).await?;
+        combined
+            .entry(normalized.to_string_lossy().into_owned())
+            .or_default()
+            .extend(diagnostics);
     }
 
     Ok(combined)
@@ -299,7 +514,16 @@ pub async fn collect_workspace_diagnostics(
     }
 
     let cwd_path = Path::new(cwd);
-    run_cli_diagnostics(cwd_path, None).await
+    let files = crate::files::get_workspace_files(cwd_path, 200)
+        .into_iter()
+        .map(|file| cwd_path.join(file.relative_path))
+        .filter(|path| native_server_for_path(path).is_ok())
+        .collect::<Vec<_>>();
+    let paths = files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    collect_diagnostics_for_paths(cwd, &paths).await
 }
 
 pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagnostic>, String> {
@@ -309,17 +533,7 @@ pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagno
 
     let cwd_path = Path::new(cwd);
     let normalized = normalize_path(cwd_path, path);
-    let map = run_cli_diagnostics(cwd_path, Some(&normalized)).await?;
-
-    if let Some(entries) = map.get(&normalized.to_string_lossy().to_string()) {
-        return Ok(entries.clone());
-    }
-
-    if let Some(entries) = map.get(path) {
-        return Ok(entries.clone());
-    }
-
-    Ok(Vec::new())
+    native_diagnostics(cwd_path, &normalized).await
 }
 
 pub async fn definition_for_position(
@@ -334,7 +548,15 @@ pub async fn definition_for_position(
 
     let cwd_path = Path::new(cwd);
     let normalized = normalize_path(cwd_path, path);
-    run_cli_locations(cwd_path, "definition", &normalized, line, character, None).await
+    native_locations(
+        cwd_path,
+        "textDocument/definition",
+        &normalized,
+        line,
+        character,
+        None,
+    )
+    .await
 }
 
 pub async fn references_for_position(
@@ -350,9 +572,9 @@ pub async fn references_for_position(
 
     let cwd_path = Path::new(cwd);
     let normalized = normalize_path(cwd_path, path);
-    run_cli_locations(
+    native_locations(
         cwd_path,
-        "references",
+        "textDocument/references",
         &normalized,
         line,
         character,

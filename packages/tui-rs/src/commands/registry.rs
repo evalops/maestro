@@ -74,10 +74,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
-    CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
-    ToolHistoryAction, UsageAction,
+    A2aAction, A2aComputerHandoffSelection, ArgumentValue, AttachAction, BackgroundMonitorAction,
+    Command, CommandAction, CommandArgument, CommandCategory, CommandContext, CommandError,
+    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HarnessAction,
+    HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction, ModalType, OrbAction,
+    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection, RlmAction,
+    SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -177,6 +179,16 @@ impl CommandRegistry {
     /// ```
     pub fn register(&mut self, command: Command) {
         let name = command.name.clone();
+        assert!(
+            self.get(&name).is_none(),
+            "duplicate command registration: {name}"
+        );
+        for alias in &command.aliases {
+            assert!(
+                self.get(alias).is_none(),
+                "duplicate command alias registration: {alias} (on {name})"
+            );
+        }
         let cmd = Arc::new(command);
 
         // Register aliases pointing to primary name
@@ -185,6 +197,21 @@ impl CommandRegistry {
         }
 
         self.commands.insert(name, cmd);
+    }
+
+    /// Register a command only if its primary name and aliases are free.
+    /// Built-ins always win when this is used after `build_command_registry`.
+    pub fn register_if_absent(&mut self, command: Command) -> bool {
+        if self.get(&command.name).is_some() {
+            return false;
+        }
+        for alias in &command.aliases {
+            if self.get(alias).is_some() {
+                return false;
+            }
+        }
+        self.register(command);
+        true
     }
 
     /// Get a command by name or alias
@@ -233,10 +260,102 @@ impl CommandRegistry {
         None
     }
 
+    /// Resolve a mistyped command name when it is within edit distance 1 of
+    /// exactly one command name or alias (e.g. `quti` -> `quit`).
+    ///
+    /// This is the last-resort rescue before an unknown slash command falls
+    /// through to the agent as a prompt: a single-character typo should not
+    /// turn into a paid LLM call.
+    ///
+    /// Inputs shorter than 3 characters never match — at that length a
+    /// distance-1 match is more likely to be a different intent than a typo.
+    ///
+    /// # Returns
+    ///
+    /// Same contract as [`Self::resolve_unique_prefix`]: `Ok(Some(cmd))` for a
+    /// unique rescue, `Ok(None)` when nothing is close enough, and
+    /// `Err(candidates)` when more than one command is within edit distance 1.
+    pub fn resolve_typo(&self, typed: &str) -> Result<Option<Arc<Command>>, Vec<String>> {
+        let typed = typed.to_lowercase();
+        if typed.chars().count() < 3 {
+            return Ok(None);
+        }
+
+        let mut matches: Vec<Arc<Command>> = Vec::new();
+        for cmd in self.commands.values() {
+            let name_hit = edit_distance(&typed, &cmd.name.to_lowercase()) <= 1;
+            let alias_hit = cmd
+                .aliases
+                .iter()
+                .any(|alias| edit_distance(&typed, &alias.to_lowercase()) <= 1);
+            if name_hit || alias_hit {
+                matches.push(Arc::clone(cmd));
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => {
+                let mut names: Vec<String> = matches.iter().map(|cmd| cmd.name.clone()).collect();
+                names.sort_unstable();
+                Err(names)
+            }
+        }
+    }
+
     /// Get all commands
     #[must_use]
     pub fn all(&self) -> Vec<Arc<Command>> {
         self.commands.values().cloned().collect()
+    }
+
+    /// Resolve a partial command name when it is an unambiguous prefix of
+    /// exactly one command name or alias (e.g. `qui` -> `quit`).
+    ///
+    /// Used to make bare `Enter` on a partial slash command do what the user
+    /// means instead of erroring (or leaking the partial command to the agent
+    /// as a prompt).
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(cmd))`: exactly one command matches the prefix
+    /// - `Ok(None)`: no command name or alias starts with `partial`
+    /// - `Err(candidates)`: the prefix is ambiguous; `candidates` is the
+    ///   sorted list of matching canonical command names for display
+    ///
+    /// Exact matches should be resolved via [`Self::get`] first; this method
+    /// only considers proper prefixes and is case-insensitive.
+    pub fn resolve_unique_prefix(
+        &self,
+        partial: &str,
+    ) -> Result<Option<Arc<Command>>, Vec<String>> {
+        let partial = partial.to_lowercase();
+        if partial.is_empty() {
+            return Ok(None);
+        }
+
+        let mut matches: Vec<Arc<Command>> = Vec::new();
+        for cmd in self.commands.values() {
+            let name_hit = cmd.name.to_lowercase().starts_with(&partial);
+            let alias_hit = cmd
+                .aliases
+                .iter()
+                .any(|alias| alias.to_lowercase().starts_with(&partial));
+            if name_hit || alias_hit {
+                matches.push(Arc::clone(cmd));
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => {
+                let mut names: Vec<String> = matches.iter().map(|cmd| cmd.name.clone()).collect();
+                names.sort_unstable();
+                Err(names)
+            }
+        }
     }
 
     /// Get all command names (including aliases)
@@ -321,7 +440,8 @@ impl CommandRegistry {
             return Err(CommandError::new("Commands must start with /"));
         }
 
-        let input_without_slash = &input[1..];
+        // Tolerate accidental double-slash from completion bugs (`//help`) or paste.
+        let input_without_slash = input.trim_start_matches('/');
 
         // Split into command and args
         let mut parts = input_without_slash.splitn(2, char::is_whitespace);
@@ -333,6 +453,10 @@ impl CommandRegistry {
             CommandError::new(format!("Unknown command: /{command_name}"))
                 .with_hint("Type /help to see available commands")
         })?;
+
+        if command.name == "help" && !raw_args.is_empty() {
+            return self.help_for_command(&raw_args);
+        }
 
         // Parse arguments
         let args = parse_arguments(&raw_args, &command.arguments)?;
@@ -352,6 +476,35 @@ impl CommandRegistry {
         command.execute(&ctx)
     }
 
+    fn help_for_command(&self, query: &str) -> CommandResult {
+        let name = query
+            .split_whitespace()
+            .next()
+            .unwrap_or(query)
+            .trim_start_matches('/');
+        let command = self.get(name).ok_or_else(|| {
+            CommandError::new(format!("No help available for /{name}"))
+                .with_hint("Type /help to see available commands")
+        })?;
+        let mut lines = vec![format!("/{} — {}", command.name, command.description)];
+        if !command.aliases.is_empty() {
+            let aliases = command
+                .aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("Aliases: {aliases}"));
+        }
+        if !command.usage.is_empty() {
+            lines.push(format!("Usage: {}", command.usage));
+        }
+        if !command.subcommands.is_empty() {
+            lines.push(format!("Subcommands: {}", command.subcommands.join(", ")));
+        }
+        Ok(CommandOutput::Message(lines.join("\n")))
+    }
+
     /// Get the number of commands
     #[must_use]
     pub fn len(&self) -> usize {
@@ -369,6 +522,56 @@ impl Default for CommandRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Edit distance between two strings, counted in characters.
+///
+/// Optimal string alignment distance: Levenshtein plus adjacent-character
+/// transpositions at cost 1, since swapped neighbors ("quti") are the most
+/// common typo on a keyboard. Used for typo rescue of slash commands; inputs
+/// are command names, so strings stay short and the O(n*m) cost is negligible.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+
+    let mut d = vec![vec![usize::MAX; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+
+    d[n][m]
+}
+
+/// Parse a `/loop` interval: `30s`, `5m`, `1h`, or a bare number of minutes.
+/// Returns seconds; minimum 10s to avoid tight re-fire loops.
+fn parse_loop_interval(text: &str) -> Option<u64> {
+    let (digits, unit_secs) = match text.chars().last() {
+        Some('s') => (&text[..text.len() - 1], 1),
+        Some('m') => (&text[..text.len() - 1], 60),
+        Some('h') => (&text[..text.len() - 1], 3600),
+        _ => (text, 60),
+    };
+    let value: u64 = digits.parse().ok()?;
+    if value == 0 {
+        return None;
+    }
+    Some((value * unit_secs).max(10))
 }
 
 /// Parse argument string into typed values
@@ -468,6 +671,150 @@ fn tokenize_command_args(raw: &str) -> Vec<String> {
     shlex::split(raw).unwrap_or_else(|| raw.split_whitespace().map(str::to_string).collect())
 }
 
+fn parse_orb_action(raw: &str) -> Result<OrbAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let subcommand = tokens
+        .first()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "list".to_string());
+    match subcommand.as_str() {
+        "list" | "ls" => {
+            if tokens.len() > 1 {
+                return Err(CommandError::new("Usage: /computer list"));
+            }
+            Ok(OrbAction::List)
+        }
+        "status" => parse_orb_id(&tokens, OrbAction::Status, "/computer status <task-id>"),
+        "pause" => parse_orb_id(&tokens, OrbAction::Pause, "/computer pause <task-id>"),
+        "resume" => parse_orb_id(&tokens, OrbAction::Resume, "/computer resume <task-id>"),
+        "cancel" => parse_orb_id(&tokens, OrbAction::Cancel, "/computer cancel <task-id>"),
+        "collect" => parse_orb_id(&tokens, OrbAction::Collect, "/computer collect <task-id>"),
+        "followup" | "follow-up" => {
+            if tokens.len() < 3 {
+                return Err(CommandError::new(
+                    "Usage: /computer followup <task-id> <prompt>",
+                ));
+            }
+            Ok(OrbAction::Followup {
+                id: tokens[1].clone(),
+                prompt: tokens[2..].join(" "),
+            })
+        }
+        "handoff" => parse_orb_handoff_action(&tokens[1..]),
+        "help" | "?" => Err(CommandError::new(
+            "Usage: /computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>|handoff create|list|read ...]",
+        )),
+        other => Err(CommandError::new(format!(
+            "Unknown Computer subcommand: {other}"
+        ))),
+    }
+}
+
+fn parse_orb_id<T>(
+    tokens: &[String],
+    constructor: fn(String) -> T,
+    usage: &str,
+) -> Result<T, CommandError> {
+    if tokens.len() != 2 || tokens[1].trim().is_empty() {
+        return Err(CommandError::new(format!("Usage: {usage}")));
+    }
+    Ok(constructor(tokens[1].clone()))
+}
+
+fn parse_orb_handoff_action(tokens: &[String]) -> Result<OrbAction, CommandError> {
+    let Some(operation) = tokens.first().map(|value| value.to_ascii_lowercase()) else {
+        return Err(CommandError::new(
+            "Usage: /computer handoff create|list|read ...",
+        ));
+    };
+    match operation.as_str() {
+        "list" | "ls" => {
+            if tokens.len() != 2 || tokens[1].trim().is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /computer handoff list <target-thread-id>",
+                ));
+            }
+            Ok(OrbAction::HandoffList {
+                target_thread_id: tokens[1].clone(),
+            })
+        }
+        "read" => {
+            if tokens.len() != 3 || tokens[1].trim().is_empty() || tokens[2].trim().is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /computer handoff read <target-thread-id> <package-id>",
+                ));
+            }
+            Ok(OrbAction::HandoffRead {
+                target_thread_id: tokens[1].clone(),
+                package_id: tokens[2].clone(),
+            })
+        }
+        "create" | "capture" => parse_orb_handoff_create(&tokens[1..]),
+        other => Err(CommandError::new(format!(
+            "Unknown handoff subcommand: {other}"
+        ))),
+    }
+}
+
+fn parse_orb_handoff_create(tokens: &[String]) -> Result<OrbAction, CommandError> {
+    let usage = "Usage: /computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]";
+    if tokens.len() < 2 || tokens[0].trim().is_empty() || tokens[1].trim().is_empty() {
+        return Err(CommandError::new(usage));
+    }
+    let source_id = tokens[0].clone();
+    let target_thread_id = tokens[1].clone();
+    let mut files = Vec::new();
+    let mut artifact_ids = Vec::new();
+    let mut include_diff = false;
+    let mut index = 2;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token == "--include-diff" {
+            include_diff = true;
+        } else if token == "--file" || token == "--artifact" {
+            let Some(value) = tokens
+                .get(index + 1)
+                .filter(|value| !value.trim().is_empty())
+            else {
+                return Err(CommandError::new(format!("{token} requires a value")));
+            };
+            if token == "--file" {
+                files.push(value.clone());
+            } else {
+                artifact_ids.push(value.clone());
+            }
+            index += 1;
+        } else if let Some(value) = token.strip_prefix("--file=") {
+            if value.trim().is_empty() {
+                return Err(CommandError::new("--file requires a value"));
+            }
+            files.push(value.to_string());
+        } else if let Some(value) = token.strip_prefix("--artifact=") {
+            if value.trim().is_empty() {
+                return Err(CommandError::new("--artifact requires a value"));
+            }
+            artifact_ids.push(value.to_string());
+        } else {
+            return Err(CommandError::new(format!(
+                "Unknown handoff create argument '{token}'"
+            )));
+        }
+        index += 1;
+    }
+    if files.is_empty() && artifact_ids.is_empty() && !include_diff {
+        return Err(CommandError::new(
+            "handoff create requires --file, --artifact, or --include-diff",
+        ));
+    }
+    Ok(OrbAction::HandoffCreate {
+        source_id,
+        target_thread_id,
+        files,
+        artifact_ids,
+        include_diff,
+    })
+}
+
 fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
     let tokens = tokenize_command_args(raw);
     let server = tokens.get(1).cloned();
@@ -503,6 +850,351 @@ fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
     })
 }
 
+fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let subcommand = tokens
+        .first()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    match subcommand.as_str() {
+        "" | "help" => Ok(A2aAction::Help),
+        "fleet" => Ok(A2aAction::Fleet),
+        "peers" | "list" => Ok(A2aAction::Peers),
+        "tasks" => Ok(A2aAction::Tasks {
+            peer: first_a2a_positional(&tokens, 1),
+            include_work_graph: has_a2a_flag(&tokens, "--work-graph"),
+        }),
+        "coordinate" => {
+            let reply_index = tokens.iter().position(|value| value == "--reply");
+            let peer = first_a2a_positional(
+                reply_index
+                    .map(|index| &tokens[..index])
+                    .unwrap_or_else(|| tokens.as_slice()),
+                1,
+            );
+            let include_work_graph = has_a2a_flag(&tokens, "--work-graph");
+            let reply = reply_index.map(|index| {
+                tokens
+                    .get(index + 1..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .take_while(|value| !value.starts_with("--"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
+            let reply = reply.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+            Ok(A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            })
+        }
+        "accept" => {
+            let code = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
+            Ok(A2aAction::Accept { code: code.clone() })
+        }
+        "register" | "publish" => Ok(A2aAction::Register {
+            agent_id: a2a_flag_value(&tokens, "--agent-id"),
+            public_url: a2a_flag_value(&tokens, "--url")
+                .or_else(|| a2a_flag_value(&tokens, "--public-url")),
+            heartbeat_only: has_a2a_flag(&tokens, "--heartbeat-only"),
+        }),
+        "delegate" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a delegate <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a delegate <peer> <text>"));
+            }
+            Ok(A2aAction::Delegate {
+                peer: peer.clone(),
+                text,
+            })
+        }
+        "reply" | "continue" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let task_id = tokens
+                .get(2)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let text = tokens.get(3..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"));
+            }
+            Ok(A2aAction::Reply {
+                peer: peer.clone(),
+                task_id: task_id.clone(),
+                text,
+            })
+        }
+        "send" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a send <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a send <peer> <text>"));
+            }
+            Ok(A2aAction::Send {
+                peer: peer.clone(),
+                text,
+            })
+        }
+        _ => Err(CommandError::new(format!("Unknown A2A subcommand: {subcommand}")).with_hint(
+            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
+        )),
+    }
+}
+
+fn parse_handoff_action(raw: &str) -> Result<A2aAction, CommandError> {
+    const USAGE: &str = "Usage: /handoff <prompt> | /handoff [--peer <name>] [Computer package options] -- <prompt>";
+
+    let tokens = tokenize_command_args(raw);
+    let mut peer = None;
+    let mut source_task_id = None;
+    let mut target_thread_id = None;
+    let mut files = Vec::new();
+    let mut artifact_ids = Vec::new();
+    let mut include_diff = false;
+    let mut prompt_start = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token == "--" {
+            prompt_start = Some(index + 1);
+            break;
+        }
+        if !token.starts_with("--") {
+            prompt_start = Some(index);
+            break;
+        }
+        if token == "--include-diff" {
+            include_diff = true;
+            index += 1;
+            continue;
+        }
+
+        let (flag, inline_value) = token
+            .split_once('=')
+            .map_or((token.as_str(), None), |(flag, value)| (flag, Some(value)));
+        if !matches!(
+            flag,
+            "--peer" | "--source-task" | "--target-thread" | "--file" | "--artifact"
+        ) {
+            return Err(
+                CommandError::new(format!("Unknown /handoff argument '{token}'")).with_hint(USAGE),
+            );
+        }
+        let value = match inline_value {
+            Some(value) if !value.trim().is_empty() => value.to_string(),
+            Some(_) => return Err(CommandError::new(format!("{flag} requires a value"))),
+            None => {
+                let Some(value) = tokens
+                    .get(index + 1)
+                    .filter(|value| !value.trim().is_empty() && !value.starts_with("--"))
+                else {
+                    return Err(CommandError::new(format!("{flag} requires a value")));
+                };
+                index += 1;
+                value.clone()
+            }
+        };
+        match flag {
+            "--peer" => peer = Some(value),
+            "--source-task" => source_task_id = Some(value),
+            "--target-thread" => target_thread_id = Some(value),
+            "--file" => files.push(value),
+            "--artifact" => artifact_ids.push(value),
+            _ => unreachable!("validated handoff flag"),
+        }
+        index += 1;
+    }
+
+    let text = prompt_start
+        .and_then(|start| tokens.get(start..))
+        .unwrap_or(&[])
+        .join(" ");
+    if text.trim().is_empty() {
+        return Err(CommandError::new(USAGE));
+    }
+
+    let has_package_argument = source_task_id.is_some()
+        || target_thread_id.is_some()
+        || !files.is_empty()
+        || !artifact_ids.is_empty()
+        || include_diff;
+    let computer_package = if has_package_argument {
+        let Some(source_task_id) = source_task_id else {
+            return Err(
+                CommandError::new("Computer package handoff requires --source-task")
+                    .with_hint(USAGE),
+            );
+        };
+        let Some(target_thread_id) = target_thread_id else {
+            return Err(
+                CommandError::new("Computer package handoff requires --target-thread")
+                    .with_hint(USAGE),
+            );
+        };
+        if files.is_empty() && artifact_ids.is_empty() && !include_diff {
+            return Err(CommandError::new(
+                "Computer package handoff requires --file, --artifact, or --include-diff",
+            )
+            .with_hint(USAGE));
+        }
+        Some(A2aComputerHandoffSelection {
+            source_task_id,
+            target_thread_id,
+            files,
+            artifact_ids,
+            include_diff,
+        })
+    } else {
+        None
+    };
+
+    Ok(A2aAction::Handoff {
+        peer,
+        text,
+        computer_package,
+    })
+}
+
+fn has_a2a_flag(tokens: &[String], flag: &str) -> bool {
+    tokens.iter().any(|value| value == flag)
+}
+
+fn first_a2a_positional(tokens: &[String], start: usize) -> Option<String> {
+    let mut index = start;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token.starts_with("--") {
+            if a2a_value_flag(token) && !token.contains('=') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return Some(token.clone());
+    }
+    None
+}
+
+fn a2a_flag_value(tokens: &[String], flag: &str) -> Option<String> {
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some((token_flag, value)) = token.split_once('=') {
+            if token_flag == flag {
+                let value = value.trim();
+                return (!value.is_empty()).then(|| value.to_string());
+            }
+        }
+        if token == flag {
+            let value = tokens.get(index + 1)?.trim();
+            return (!value.is_empty() && !value.starts_with("--")).then(|| value.to_string());
+        }
+    }
+    None
+}
+
+fn a2a_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "--registry"
+            | "--tasks"
+            | "--timeout-ms"
+            | "--interval-ms"
+            | "--max-wait-ms"
+            | "--role"
+            | "--cwd"
+            | "--agent-card-url"
+            | "--agent-id"
+            | "--capabilities"
+            | "--description"
+            | "--internal-url"
+            | "--name"
+            | "--owner-id"
+            | "--protocol-version"
+            | "--public-url"
+            | "--security-schemes"
+            | "--status"
+            | "--surface"
+            | "--surface-types"
+            | "--type"
+            | "--url"
+            | "--workspace-id"
+    )
+}
+
+fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandError> {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    if let Some(&first) = tokens.first() {
+        if first == "files" || first == "checkpoints" {
+            if tokens.len() > 1 {
+                return Err(CommandError::new(usage));
+            }
+            return Ok(if first == "files" {
+                SessionAction::RewindFiles
+            } else {
+                SessionAction::ListCheckpoints
+            });
+        }
+    }
+    let mut turns = None;
+    let mut dry_run = false;
+    let mut both = false;
+    for arg in tokens {
+        match arg {
+            "--dry-run" => dry_run = true,
+            "--files" => both = true,
+            _ if turns.is_none() => {
+                turns = Some(arg.parse::<usize>().map_err(|_| CommandError::new(usage))?);
+            }
+            _ => return Err(CommandError::new(usage)),
+        }
+    }
+    let turns = turns.unwrap_or(1);
+    if turns == 0 {
+        return Err(CommandError::new("Rewind count must be >= 1"));
+    }
+    Ok(if both {
+        SessionAction::RewindBoth { turns, dry_run }
+    } else {
+        SessionAction::Rewind { turns, dry_run }
+    })
+}
+
+fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
+    let (start, end) = raw
+        .split_once('-')
+        .or_else(|| raw.split_once(':'))
+        .unwrap_or((raw, raw));
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
+    let end = end
+        .parse::<usize>()
+        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
+    if start == 0 || end < start {
+        return Err(CommandError::new(
+            "Plan comment range must be positive and ordered",
+        ));
+    }
+    Ok((start, end))
+}
+
 /// Build the default command registry with all built-in commands
 ///
 /// Constructs and returns a fully populated `CommandRegistry` containing all
@@ -516,7 +1208,7 @@ fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
 /// - **UI**: clear, theme, zen, copy, footer
 /// - **Session**: session, sessions, continue, resume
 /// - **Config**: model, thinking, approvals
-/// - **Context**: compact, memory, plan
+/// - **Context**: compact, context, memory, plan
 /// - **Tools**: tools, mcp
 /// - **Diagnostics**: status, diag, version
 /// - **Safety**: approvals
@@ -560,15 +1252,10 @@ pub fn build_command_registry() -> CommandRegistry {
             "help",
             "Show available commands",
             CommandCategory::Navigation,
-            Box::new(|ctx| {
-                if ctx.raw_args.is_empty() {
-                    Ok(CommandOutput::OpenModal(ModalType::Help))
-                } else {
-                    Ok(CommandOutput::Message(format!(
-                        "Help for command: {}",
-                        ctx.raw_args
-                    )))
-                }
+            Box::new(|_| {
+                // `/help [command]` is handled in `CommandRegistry::execute` so
+                // the handler can look up sibling commands.
+                Ok(CommandOutput::OpenModal(ModalType::Help))
             }),
         )
         .alias("h")
@@ -645,15 +1332,241 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/hotkeys [show|path|init|validate]"),
     );
 
-    // Clear command
+    // Clear / new session (Grok-style: /new and /clear start fresh)
     registry.register(
         Command::new(
             "clear",
-            "Clear the screen",
-            CommandCategory::Ui,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ClearMessages))),
+            "Start a new session (clear transcript)",
+            CommandCategory::Session,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::New,
+                )))
+            }),
         )
-        .alias("cls"),
+        .alias("cls")
+        .alias("new"),
+    );
+
+    // Fork session
+    registry.register(
+        Command::new(
+            "fork",
+            "Fork the conversation into a new session branch",
+            CommandCategory::Session,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::Fork,
+                )))
+            }),
+        )
+        .usage("/fork"),
+    );
+
+    // Rewind turns
+    registry.register(
+        Command::new(
+            "rewind",
+            "Remove the last N user turns, or restore files from a checkpoint",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    parse_rewind_args(
+                        &ctx.raw_args,
+                        "Usage: /rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints",
+                    )?,
+                )))
+            }),
+        )
+        .alias("undo")
+        .usage("/rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints"),
+    );
+
+    registry.register(
+        Command::new(
+            "btw",
+            "Ask a tool-free side question outside main history",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                let question = ctx.raw_args.trim();
+                if question.is_empty() {
+                    return Err(CommandError::new("Usage: /btw <question>"));
+                }
+                Ok(CommandOutput::Action(CommandAction::SideQuestion(
+                    question.to_string(),
+                )))
+            }),
+        )
+        .usage("/btw <question>"),
+    );
+
+    registry.register(
+        Command::new(
+            "workflow",
+            "Run and control durable budgeted workflows",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                use crate::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
+
+                let store = WorkflowStore::for_workspace(std::path::Path::new(&ctx.cwd));
+                let mut parts = ctx.raw_args.split_whitespace();
+                let action = parts.next().unwrap_or("list");
+                let render = |runs: Vec<WorkflowRun>| {
+                    if runs.is_empty() {
+                        return "No workflow runs.".to_string();
+                    }
+                    runs.into_iter()
+                        .map(|run| {
+                            format!(
+                                "{}  {:?}  {}@{}  agents {}/{}  tokens {}/{}",
+                                &run.id[..8.min(run.id.len())],
+                                run.status,
+                                run.spec.name,
+                                run.spec.version,
+                                run.agents_started,
+                                run.spec.max_agents,
+                                run.tokens_used,
+                                run.spec.token_budget,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                match action {
+                    "list" | "status" => store
+                        .list()
+                        .map(render)
+                        .map(CommandOutput::Message)
+                        .map_err(CommandError::new),
+                    "run" | "start" => {
+                        let path = parts
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /workflow run <spec.json>"))?;
+                        let bytes = std::fs::read(path).map_err(|error| {
+                            CommandError::new(format!("Failed to read workflow spec: {error}"))
+                        })?;
+                        let spec: WorkflowSpec =
+                            serde_json::from_slice(&bytes).map_err(|error| {
+                                CommandError::new(format!("Invalid workflow spec: {error}"))
+                            })?;
+                        let run = WorkflowRun::start(spec, serde_json::json!({}))
+                            .map_err(CommandError::new)?;
+                        store.append(&run).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Started workflow {} ({})",
+                            run.spec.name, run.id
+                        )))
+                    }
+                    "pause" | "resume" | "stop" => {
+                        let id = parts.next().ok_or_else(|| {
+                            CommandError::new(format!("Usage: /workflow {action} <run-id>"))
+                        })?;
+                        let mut run = store.get(id).map_err(CommandError::new)?;
+                        match action {
+                            "pause" => run.pause(),
+                            "resume" => {
+                                let sha = run.spec_sha.clone();
+                                let args = run.args.clone();
+                                run.resume(&sha, &args)
+                            }
+                            "stop" => run.stop(Some("stopped from TUI".to_string())),
+                            _ => unreachable!(),
+                        }
+                        .map_err(CommandError::new)?;
+                        store.append(&run).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Workflow {} is {:?}",
+                            run.id, run.status
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]",
+                    )),
+                }
+            }),
+        )
+        .alias("workflows")
+        .usage("/workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]"),
+    );
+
+    registry.register(
+        Command::new(
+            "decision",
+            "List, answer, or cancel background decisions",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                use crate::pending_decisions::PendingDecisionStore;
+
+                let store = PendingDecisionStore::default_store();
+                let mut fields = ctx.raw_args.trim().splitn(3, char::is_whitespace);
+                let action = fields
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("list");
+                match action {
+                    "list" | "status" => {
+                        let decisions = store.list().map_err(CommandError::new)?;
+                        if decisions.is_empty() {
+                            return Ok(CommandOutput::Message(
+                                "No background decisions.".to_string(),
+                            ));
+                        }
+                        Ok(CommandOutput::Message(
+                            decisions
+                                .into_iter()
+                                .map(|decision| {
+                                    format!(
+                                        "{}  {:?}{}",
+                                        &decision.id[..8.min(decision.id.len())],
+                                        decision.effective_status(),
+                                        decision
+                                            .answer
+                                            .as_deref()
+                                            .map(|answer| format!("  {answer}"))
+                                            .unwrap_or_default(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        ))
+                    }
+                    "answer" => {
+                        let id = fields.next().ok_or_else(|| {
+                            CommandError::new("Usage: /decision answer <id> <answer>")
+                        })?;
+                        let answer = fields.next().ok_or_else(|| {
+                            CommandError::new("Usage: /decision answer <id> <answer>")
+                        })?;
+                        let mut decision = store.get(id).map_err(CommandError::new)?;
+                        decision
+                            .answer(answer.to_string())
+                            .map_err(CommandError::new)?;
+                        store.append(&decision).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Action(CommandAction::Steer(format!(
+                            "Background decision {} was answered: {}",
+                            decision.id, answer
+                        ))))
+                    }
+                    "cancel" => {
+                        let id = fields
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /decision cancel <id>"))?;
+                        let mut decision = store.get(id).map_err(CommandError::new)?;
+                        decision.cancel().map_err(CommandError::new)?;
+                        store.append(&decision).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Cancelled background decision {}",
+                            decision.id
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /decision [list|answer <id> <answer>|cancel <id>]",
+                    )),
+                }
+            }),
+        )
+        .alias("decisions")
+        .usage("/decision [list|answer <id> <answer>|cancel <id>]"),
     );
 
     // Quit command
@@ -715,6 +1628,35 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
     ));
 
+    // A2A peer pairing command
+    registry.register(
+        Command::new(
+            "a2a",
+            "Pair, inspect, and delegate to A2A peer agents",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::A2a(parse_a2a_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
+    );
+
+    registry.register(
+        Command::new(
+            "handoff",
+            "Hand work to the default peer and follow its response",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::A2a(
+                    parse_handoff_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .usage("/handoff <prompt> (use --peer <name> to override the default)"),
+    );
+
     // Queue command
     registry.register(
         Command::new(
@@ -744,9 +1686,39 @@ pub fn build_command_registry() -> CommandRegistry {
                     )));
                 }
 
+                if action.eq_ignore_ascii_case("move") || action.eq_ignore_ascii_case("send") {
+                    let raw_id = parts.next().ok_or_else(|| {
+                        if action.eq_ignore_ascii_case("send") {
+                            CommandError::new("Usage: /queue send <id>")
+                        } else {
+                            CommandError::new("Usage: /queue move <id> <up|down>")
+                        }
+                    })?;
+                    let trimmed = raw_id.trim_start_matches('#');
+                    let id = trimmed.parse::<u64>().map_err(|_| {
+                        CommandError::new("Queue id must be a number (e.g. /queue send 12)")
+                    })?;
+                    let direction = if action.eq_ignore_ascii_case("send") {
+                        QueueMoveDirection::Now
+                    } else {
+                        match parts.next().map(str::to_ascii_lowercase).as_deref() {
+                            Some("up") => QueueMoveDirection::Up,
+                            Some("down") => QueueMoveDirection::Down,
+                            _ => {
+                                return Err(CommandError::new(
+                                    "Usage: /queue move <id> <up|down>",
+                                ));
+                            }
+                        }
+                    };
+                    return Ok(CommandOutput::Action(CommandAction::Queue(
+                        QueueAction::Move { id, direction },
+                    )));
+                }
+
                 if action != "mode" {
                     return Err(CommandError::new(
-                        "Usage: /queue [list|cancel <id>|mode [steer|followup] <one|all>]",
+                        "Usage: /queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]",
                     ));
                 }
 
@@ -789,7 +1761,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/queue [list|cancel <id>|mode [steer|followup] <one|all>]"),
+        .usage("/queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]"),
     );
 
     // Steer command
@@ -838,18 +1810,49 @@ pub fn build_command_registry() -> CommandRegistry {
             "Change AI model",
             CommandCategory::Config,
             Box::new(|ctx| {
-                if ctx.raw_args.is_empty() {
-                    Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
-                } else {
-                    Ok(CommandOutput::Action(CommandAction::SetModel(
+                let mut parts = ctx.raw_args.split_whitespace();
+                match (parts.next(), parts.next()) {
+                    (None, _) => Ok(CommandOutput::OpenModal(ModalType::ModelSelector)),
+                    (Some("default"), Some(model)) => Ok(CommandOutput::Action(
+                        CommandAction::SetDefaultModel(model.to_string()),
+                    )),
+                    (Some("default"), None) => {
+                        Err(CommandError::new("Usage: /model default <name>"))
+                    }
+                    _ => Ok(CommandOutput::Action(CommandAction::SetModel(
                         ctx.raw_args.clone(),
-                    )))
+                    ))),
                 }
             }),
         )
         .alias("m")
         .arg(CommandArgument::string("name", "Model name"))
-        .usage("/model [name]"),
+        .usage("/model [name | default <name>]"),
+    );
+
+    // Rubber duck review command
+    registry.register(
+        Command::new(
+            "rubber-duck",
+            "Review uncommitted changes with a different model (second opinion)",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let model = ctx.raw_args.trim();
+                Ok(CommandOutput::Action(CommandAction::RubberDuck {
+                    model: if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.to_string())
+                    },
+                }))
+            }),
+        )
+        .alias("duck")
+        .arg(CommandArgument::string(
+            "model",
+            "Model to review with (defaults to another provider's model)",
+        ))
+        .usage("/rubber-duck [model]"),
     );
 
     // Session commands
@@ -869,15 +1872,78 @@ pub fn build_command_registry() -> CommandRegistry {
                     "cleanup" | "prune" => Ok(CommandOutput::Action(CommandAction::Session(
                         SessionAction::Cleanup,
                     ))),
-                    _ => Ok(CommandOutput::Message("Current session info".to_string())),
+                    "new" | "clear" => Ok(CommandOutput::Action(CommandAction::Session(
+                        SessionAction::New,
+                    ))),
+                    "fork" => Ok(CommandOutput::Action(CommandAction::Session(
+                        SessionAction::Fork,
+                    ))),
+                    "rewind" | "undo" => Ok(CommandOutput::Action(CommandAction::Session(
+                        parse_rewind_args(
+                            ctx.raw_args
+                                .strip_prefix(ctx.raw_args.split_whitespace().next().unwrap_or(""))
+                                .unwrap_or("")
+                                .trim(),
+                            "Usage: /session rewind [n] [--dry-run] [--files] | /session rewind files | /session rewind checkpoints",
+                        )?,
+                    ))),
+                    "info" | "status" | "" => {
+                        Ok(CommandOutput::Action(CommandAction::Session(
+                            SessionAction::Status,
+                        )))
+                    }
+                    _ => Ok(CommandOutput::Message(
+                        "Usage: /session [status|info|new|clear|fork|rewind|cleanup]".to_string(),
+                    )),
                 }
             }),
         )
         .alias("ss")
-        .usage("/session [info|new|clear|list|load|export|cleanup]")
+        .usage("/session [status|info|new|clear|list|load|export|cleanup|fork|rewind]")
         .group(vec![
-            "info", "new", "clear", "list", "load", "export", "cleanup",
+            "status", "info", "new", "clear", "list", "load", "export", "cleanup", "fork",
+            "rewind",
         ]),
+    );
+
+    // Workspace trust (global config only)
+    registry.register(
+        Command::new(
+            "trust",
+            "Grant or revoke trust so project skills/plugins/hooks can load",
+            CommandCategory::Safety,
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let action = match sub.as_str() {
+                    "" | "status" | "show" => crate::commands::TrustAction::Status,
+                    "grant" | "on" | "yes" | "true" => crate::commands::TrustAction::Grant,
+                    "revoke" | "off" | "no" | "false" => crate::commands::TrustAction::Revoke,
+                    _ => {
+                        return Ok(CommandOutput::Message(
+                            "Usage: /trust [status|grant|revoke]".to_string(),
+                        ));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::Trust(action)))
+            }),
+        )
+        .usage("/trust [status|grant|revoke]"),
+    );
+
+    // Sandbox status
+    registry.register(
+        Command::new(
+            "sandbox",
+            "Show the interactive sandbox policy for this session",
+            CommandCategory::Safety,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowSandbox))),
+        )
+        .usage("/sandbox"),
     );
 
     registry.register(Command::new(
@@ -886,6 +1952,98 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Session,
         Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
     ));
+
+    registry.register(Command::new(
+        "operations",
+        "Inspect recent persisted tool executions",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Operations))),
+    ));
+
+    registry.register(
+        Command::new(
+            "monitor",
+            "Monitor output from an existing background task",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                let (action, rest) = raw
+                    .split_once(char::is_whitespace)
+                    .map_or((raw, ""), |(action, rest)| (action, rest.trim_start()));
+                match action {
+                    "" | "list" => Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                        BackgroundMonitorAction::List,
+                    ))),
+                    "add" => {
+                        let (task_id, pattern) =
+                            rest.split_once(char::is_whitespace).ok_or_else(|| {
+                                CommandError::new("Usage: /monitor add <task-id> <regex>")
+                            })?;
+                        Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                            BackgroundMonitorAction::Add {
+                                task_id: task_id.to_string(),
+                                pattern: pattern.trim_start().to_string(),
+                            },
+                        )))
+                    }
+                    "remove" | "rm" => {
+                        if rest.is_empty() {
+                            return Err(CommandError::new("Usage: /monitor remove <monitor-id>"));
+                        }
+                        Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                            BackgroundMonitorAction::Remove {
+                                monitor_id: rest.to_string(),
+                            },
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /monitor [list|add <task-id> <regex>|remove <monitor-id>]",
+                    )),
+                }
+            }),
+        )
+        .usage("/monitor [list|add <task-id> <regex>|remove <monitor-id>]")
+        .group(vec!["list", "add", "remove"]),
+    );
+
+    registry.register(
+        Command::new(
+            "loop",
+            "Re-run a prompt on an interval",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Status)));
+                }
+                if raw == "stop" {
+                    return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Stop)));
+                }
+                let (interval_text, prompt) = raw
+                    .split_once(char::is_whitespace)
+                    .ok_or_else(|| {
+                        CommandError::new("Usage: /loop [stop|<interval> <prompt>]")
+                    })?;
+                let prompt = prompt.trim();
+                if prompt.is_empty() {
+                    return Err(CommandError::new(
+                        "Usage: /loop [stop|<interval> <prompt>]",
+                    ));
+                }
+                let interval_secs = parse_loop_interval(interval_text).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "Invalid interval '{interval_text}' (try 30s, 5m, 1h, or minutes as a bare number)"
+                    ))
+                })?;
+                Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Start {
+                    interval_secs,
+                    prompt: prompt.to_string(),
+                })))
+            }),
+        )
+        .usage("/loop [stop|<interval> <prompt>]")
+        .group(vec!["stop"]),
+    );
 
     registry.register(Command::new(
         "files",
@@ -899,6 +2057,13 @@ pub fn build_command_registry() -> CommandRegistry {
         "Open command palette",
         CommandCategory::Navigation,
         Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::CommandPalette))),
+    ));
+
+    registry.register(Command::new(
+        "summarize",
+        "Summarize from or through a chosen turn into a saved conversation",
+        CommandCategory::Context,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::SummarizeConversation))),
     ));
 
     // Compact command
@@ -951,6 +2116,17 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/approvals [yolo|selective|safe]"),
     );
 
+    registry.register(
+        Command::new(
+            "boost",
+            "Give this task more intelligence",
+            CommandCategory::Config,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::Boost))),
+        )
+        .alias("b")
+        .usage("/boost"),
+    );
+
     // Thinking level command
     registry.register(
         Command::new(
@@ -994,11 +2170,73 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "context",
-            "Show context summary",
+            "Show context usage or audit the effective prompt surface",
             CommandCategory::Context,
-            Box::new(|ctx| Ok(CommandOutput::Message(build_diag_context(ctx)))),
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::ShowContext));
+                }
+                let args = raw.split_whitespace().collect::<Vec<_>>();
+                if let [operation @ ("exclude" | "include"), name] = args.as_slice() {
+                    return Ok(CommandOutput::Action(CommandAction::SetContextTool {
+                        name: (*name).to_string(),
+                        excluded: *operation == "exclude",
+                    }));
+                }
+                match raw {
+                    "audit" => Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                        json: false,
+                    })),
+                    "audit --json" | "audit -j" => {
+                        Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                            json: true,
+                        }))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /context [audit [--json] | exclude TOOL | include TOOL]",
+                    )),
+                }
+            }),
         )
-        .usage("/context"),
+        .usage("/context [audit [--json] | exclude TOOL | include TOOL]"),
+    );
+
+    registry.register(
+        Command::new(
+            "focus",
+            "Collapse tool-heavy turns into one live summary",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let value = match ctx.raw_args.trim().to_ascii_lowercase().as_str() {
+                    "" | "toggle" => None,
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => return Err(CommandError::new("Usage: /focus [on|off|toggle]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::SetFocus(value)))
+            }),
+        )
+        .usage("/focus [on|off|toggle]"),
+    );
+
+    registry.register(
+        Command::new(
+            "prompt-audit",
+            "Audit prompt provenance without exposing prompt content",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let json = match ctx.raw_args.trim() {
+                    "" => false,
+                    "--json" | "-j" => true,
+                    _ => return Err(CommandError::new("Usage: /prompt-audit [--json]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                    json,
+                }))
+            }),
+        )
+        .usage("/prompt-audit [--json]"),
     );
 
     // Limits command
@@ -1139,6 +2377,33 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/git [status|diff <path>|review]"),
     );
 
+    registry.register(
+        Command::new(
+            "setup",
+            "Sign in to EvalOps or add a local API key",
+            CommandCategory::Config,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Setup))),
+        )
+        .usage("/setup"),
+    );
+
+    registry.register(
+        Command::new(
+            "init",
+            "Scaffold AGENTS.md for this project",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let tokens: Vec<&str> = ctx.raw_args.split_whitespace().collect();
+                let force = tokens.iter().any(|arg| *arg == "--force" || *arg == "-f");
+                if !tokens.iter().all(|arg| *arg == "--force" || *arg == "-f") {
+                    return Err(CommandError::new("Usage: /init [--force]"));
+                }
+                Ok(CommandOutput::Action(CommandAction::Init { force }))
+            }),
+        )
+        .usage("/init [--force]"),
+    );
+
     // Status command
     registry.register(
         Command::new(
@@ -1149,6 +2414,14 @@ pub fn build_command_registry() -> CommandRegistry {
         )
         .alias("health"),
     );
+
+    // Alerts command
+    registry.register(Command::new(
+        "alerts",
+        "List recorded alerts (agent/API errors)",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowAlerts))),
+    ));
 
     // Stats command
     registry.register(Command::new(
@@ -1200,21 +2473,85 @@ pub fn build_command_registry() -> CommandRegistry {
         .group(vec!["status", "stats", "about", "context", "mcp"]),
     );
 
+    // Jane Street magic-trace (Linux/Intel PT) — https://github.com/janestreet/magic-trace
+    registry.register(
+        Command::new(
+            "magic-trace",
+            "Fire magic-trace stop indicator or toggle slow-frame snapshots",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let action = match sub.as_str() {
+                    "" | "stop" | "snap" | "snapshot" => crate::commands::MagicTraceAction::Stop,
+                    "on" | "enable" | "slow" => crate::commands::MagicTraceAction::EnableSlowFrame,
+                    "off" | "disable" => crate::commands::MagicTraceAction::DisableSlowFrame,
+                    "status" | "help" | "?" => crate::commands::MagicTraceAction::Status,
+                    _ => {
+                        return Err(CommandError::new(
+                            "Usage: /magic-trace [stop|on|off|status]",
+                        ));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::MagicTrace(action)))
+            }),
+        )
+        .alias("mt")
+        .usage("/magic-trace [stop|on|off|status]"),
+    );
+
     // Tools command
     registry.register(
         Command::new(
             "tools",
-            "Tool management",
+            "List built-in tools (and MCP via /mcp)",
             CommandCategory::Tools,
-            Box::new(|_| Ok(CommandOutput::Message("Available tools...".to_string()))),
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("list")
+                    .to_lowercase();
+                match sub.as_str() {
+                    "list" | "" => Ok(CommandOutput::Action(CommandAction::ShowTools)),
+                    "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
+                    "lsp" => Ok(CommandOutput::Message(
+                        "LSP: set lsp.enabled in config; diagnostics can surface on write tools."
+                            .to_string(),
+                    )),
+                    _ => Err(CommandError::new("Usage: /tools [list|mcp|lsp]")),
+                }
+            }),
         )
-        .group(vec!["list", "mcp", "lsp"]),
+        .group(vec!["list", "mcp", "lsp"])
+        .usage("/tools [list|mcp|lsp]"),
     );
+
+    // Hosted Computer command. `/orb` remains a compatibility alias.
+    registry.register(Command::new(
+        "computer",
+        "Control durable hosted Computer tasks without exposing MCP internals",
+        CommandCategory::Tools,
+        Box::new(|ctx| {
+            Ok(CommandOutput::Action(CommandAction::Orb(parse_orb_action(
+                &ctx.raw_args,
+            )?)))
+        }),
+    ).alias("orb").group(vec![
+        "list", "status", "followup", "pause", "resume", "cancel", "collect",
+    ]).usage(
+        "/computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>]",
+    ));
 
     // MCP command
     registry.register(Command::new(
         "mcp",
-        "Show MCP server status and configuration",
+        "Open the MCP server manager",
         CommandCategory::Tools,
         Box::new(|ctx| {
             let raw = ctx.raw_args.trim();
@@ -1226,15 +2563,14 @@ pub fn build_command_registry() -> CommandRegistry {
 
             let action = match subcommand.as_str() {
                 "" => McpAction::Status,
+                "config" => McpAction::Configure {
+                    args: tokens.into_iter().skip(1).collect(),
+                },
                 "resources" => {
                     let server = tokens.get(1).cloned();
                     let uri = if server.is_some() {
                         let rest = tokens.iter().skip(2).cloned().collect::<Vec<_>>().join(" ");
-                        if rest.is_empty() {
-                            None
-                        } else {
-                            Some(rest)
-                        }
+                        if rest.is_empty() { None } else { Some(rest) }
                     } else {
                         None
                     };
@@ -1244,12 +2580,29 @@ pub fn build_command_registry() -> CommandRegistry {
                 other => {
                     return Err(
                         CommandError::new(format!("Unknown mcp subcommand: {other}"))
-                            .with_hint("Available: resources, prompts"),
+                            .with_hint("Available: config, resources, prompts"),
                     );
                 }
             };
 
             Ok(CommandOutput::Action(CommandAction::Mcp(action)))
+        }),
+    ));
+
+    registry.register(Command::new(
+        "mcp-config",
+        "Open or script the MCP server manager",
+        CommandCategory::Tools,
+        Box::new(|ctx| {
+            let raw = ctx.raw_args.trim();
+            if raw.is_empty() || raw.eq_ignore_ascii_case("wizard") {
+                return Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status)));
+            }
+            Ok(CommandOutput::Action(CommandAction::Mcp(
+                McpAction::Configure {
+                    args: tokenize_command_args(raw),
+                },
+            )))
         }),
     ));
 
@@ -1298,7 +2651,7 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Diagnostics,
             Box::new(|_| {
                 Ok(CommandOutput::Message(format!(
-                    "Maestro TUI v{}",
+                    "Deixic Code v{}",
                     env!("CARGO_PKG_VERSION")
                 )))
             }),
@@ -1306,65 +2659,364 @@ pub fn build_command_registry() -> CommandRegistry {
         .alias("v"),
     );
 
-    // Zen mode
-    registry.register(Command::new(
-        "zen",
-        "Toggle zen mode (minimal UI)",
-        CommandCategory::Ui,
-        Box::new(|_| Ok(CommandOutput::Message("Toggling zen mode".to_string()))),
-    ));
+    registry.register(
+        Command::new(
+            "dex",
+            "Dex appearance, reactions, recap, and preferences",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let setting = ctx.get_string("setting").unwrap_or(ctx.raw_args.trim());
+                if crate::dex_actions::contains(setting) {
+                    Ok(CommandOutput::Action(CommandAction::SetDexPresentation(
+                        setting.to_owned(),
+                    )))
+                } else {
+                    Err(CommandError::new("Unknown Dex action; use /dex for help"))
+                }
+            }),
+        )
+        .arg(CommandArgument::choice(
+            "setting",
+            crate::dex_actions::help(),
+            crate::dex_actions::command_ids(),
+        ))
+        .usage(format!(
+            "/dex [{}]",
+            crate::dex_actions::command_ids().join("|")
+        )),
+    );
 
     // Footer command
     registry.register(
         Command::new(
             "footer",
-            "Change footer style",
+            "Change status-bar footer style (rich|solo|history|clear)",
             CommandCategory::Ui,
             Box::new(|ctx| {
-                let style = ctx.get_string("style").unwrap_or("ensemble");
-                Ok(CommandOutput::Message(format!("Footer style: {style}")))
+                let raw = ctx
+                    .get_string("style")
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let t = ctx.raw_args.trim();
+                        (!t.is_empty()).then(|| t.to_string())
+                    })
+                    .unwrap_or_else(|| "rich".to_string());
+                let style = FooterStyle::parse(&raw).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "Unknown footer style '{raw}'. Use: rich, solo, history, clear"
+                    ))
+                })?;
+                Ok(CommandOutput::Action(CommandAction::SetFooterStyle(style)))
             }),
         )
         .arg(CommandArgument::choice(
             "style",
             "Footer style",
-            vec!["ensemble", "solo", "history", "clear"],
+            vec!["rich", "solo", "history", "clear"],
         ))
-        .usage("/footer [ensemble|solo|history|clear]"),
+        .usage("/footer [rich|solo|history|clear]"),
     );
+
+    // Goal mode (Kimi-inspired structured objective + auto-continue)
+    registry.register(
+        Command::new(
+            "goal",
+            "Structured goal mode: create, pause, block, complete, auto-continue",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Goal(parse_goal_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage(
+            "/goal [status|create [--max-turns N] [--token-budget N] [--max-duration-secs N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
+        ),
+    );
+
+    // Continual harness (Prime Agent-inspired durable refinement records).
+    registry.register(
+        Command::new(
+            "harness",
+            "Manage durable prompt, memory, skill, and subagent context",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Harness(
+                    parse_harness_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .alias("refine")
+        .usage(
+            "/harness [status|list|review|propose <scope> <kind> <name> <content> --evidence <text>|add <scope> <kind> <name> <content> [--evidence <text>]|update <id> <content>|delete <id>|apply <proposal-id>|reject <proposal-id> [note]|rollback <revision>]",
+        ),
+    );
+
+    // RLM-style named context variables.
+    registry.register(
+        Command::new(
+            "rlm",
+            "Compose prompts from persistent named context variables",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Rlm(parse_rlm_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage("/rlm [list|set <name> <value> [--description <text>]|append <name> <value>|render <template>|clear <name>]"),
+    );
+
+    // Durable messages for parent and delegated agent sessions.
+    registry.register(
+        Command::new(
+            "mailbox",
+            "Send and acknowledge durable messages between agent sessions",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Mailbox(
+                    parse_mailbox_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .usage(
+            "/mailbox [list|send <recipient> <message>|read <id>|ack <id>|approve <id>|compact]",
+        ),
+    );
+
+    // Attach path (image/video) for multimodal next prompt
+    registry.register(
+        Command::new(
+            "attach",
+            "Queue local files for the next prompt (add|list|clear|remove)",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty()
+                    || raw.eq_ignore_ascii_case("list")
+                    || raw.eq_ignore_ascii_case("ls")
+                {
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::List,
+                    )));
+                }
+                if raw.eq_ignore_ascii_case("clear") || raw.eq_ignore_ascii_case("reset") {
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::Clear,
+                    )));
+                }
+                let mut parts = raw.split_whitespace();
+                let first = parts.next().unwrap_or("");
+                if first.eq_ignore_ascii_case("remove")
+                    || first.eq_ignore_ascii_case("rm")
+                    || first.eq_ignore_ascii_case("drop")
+                    || first.eq_ignore_ascii_case("detach")
+                {
+                    let index = parts
+                        .next()
+                        .ok_or_else(|| CommandError::new("Usage: /attach remove <1-based-index>"))?
+                        .parse::<usize>()
+                        .map_err(|_| CommandError::new("Usage: /attach remove <1-based-index>"))?;
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::Remove { index },
+                    )));
+                }
+                let path = raw
+                    .strip_prefix("add ")
+                    .or_else(|| raw.strip_prefix("add\t"))
+                    .unwrap_or(raw)
+                    .trim();
+                if path.is_empty() {
+                    return Err(CommandError::new(
+                        "Usage: /attach <path> | /attach list | /attach clear | /attach remove <n>",
+                    ));
+                }
+                Ok(CommandOutput::Action(CommandAction::Attach(
+                    AttachAction::Add(path.to_string()),
+                )))
+            }),
+        )
+        .usage("/attach <path|list|clear|remove <n>>"),
+    );
+
+    registry.register(Command::new(
+        "workers", "Inspect, redirect, cancel, or resume existing workers", CommandCategory::Tools,
+        Box::new(|ctx| {
+            use super::types::WorkerAction;
+            let raw = ctx.raw_args.trim();
+            let (verb, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+            let rest = rest.trim();
+            let action = match verb {
+                "" | "list" if rest.is_empty() => WorkerAction::List,
+                "inspect" | "cancel" if !rest.is_empty() && !rest.contains(char::is_whitespace) => {
+                    if verb == "inspect" { WorkerAction::Inspect(rest.into()) } else { WorkerAction::Cancel(rest.into()) }
+                }
+                "steer" | "resume" => {
+                    let (id, message) = rest.split_once(char::is_whitespace)
+                        .filter(|(id, message)| !id.is_empty() && !message.trim().is_empty())
+                        .ok_or_else(|| CommandError::new("Provide a worker id and a message."))?;
+                    if verb == "steer" { WorkerAction::Steer { agent_ref: id.into(), message: message.trim().into() } }
+                    else { WorkerAction::Resume { id: id.into(), message: message.trim().into() } }
+                }
+                _ => return Err(CommandError::new("Usage: /workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]")),
+            };
+            Ok(CommandOutput::Action(CommandAction::Worker(action)))
+        }),
+    ).usage("/workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]"));
 
     // Memory commands
     registry.register(
         Command::new(
             "memory",
-            "Cross-session memory",
+            "Review, save, edit, or forget scoped memory; show account status",
             CommandCategory::Context,
-            Box::new(|_| Ok(CommandOutput::Message("Memory management...".to_string()))),
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::ShowMemory));
+                }
+                let (action, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+                let mapped = match action {
+                    "list" => "list".to_string(),
+                    "review" => "review".to_string(),
+                    "save" => format!("apply {rest}"),
+                    "edit" => format!("update {rest}"),
+                    "forget" => format!("delete {rest}"),
+                    "reject" => format!("reject {rest}"),
+                    _ => return Err(CommandError::new("Usage: /memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::Harness(parse_harness_action(&mapped)?)))
+            }),
         )
-        .group(vec!["save", "search", "list", "delete", "stats"]),
+        .group(vec!["list", "review", "save", "edit", "forget", "reject"])
+        .usage("/memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]"),
     );
 
-    // Plan command
+    // Plan mode (Grok-style: plan.md + approve)
+    registry.register(
+        Command::new(
+            "plan",
+            "Plan mode: explore + write plan.md only until approved",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                let mut parts = raw.split_whitespace();
+                let subcommand = parts.next().unwrap_or("").to_lowercase();
+                match subcommand.as_str() {
+                    "" | "on" | "true" | "1" => {
+                        Ok(CommandOutput::Action(CommandAction::SetPlanMode(true)))
+                    }
+                    "off" | "false" | "0" => {
+                        Ok(CommandOutput::Action(CommandAction::SetPlanMode(false)))
+                    }
+                    "approve" | "accept" | "done" => {
+                        Ok(CommandOutput::Action(CommandAction::ApprovePlan))
+                    }
+                    "view" | "show" => Ok(CommandOutput::Action(CommandAction::ViewPlan)),
+                    "comments" | "list" => Ok(CommandOutput::Action(CommandAction::PlanReview(
+                        PlanReviewAction::List,
+                    ))),
+                    "comment" => {
+                        let range = parts.next().ok_or_else(|| {
+                            CommandError::new("Usage: /plan comment <line|start-end> <text>")
+                        })?;
+                        let (start_line, end_line) = parse_plan_range(range)?;
+                        let text = parts.collect::<Vec<_>>().join(" ");
+                        if text.is_empty() {
+                            return Err(CommandError::new(
+                                "Usage: /plan comment <line|start-end> <text>",
+                            ));
+                        }
+                        Ok(CommandOutput::Action(CommandAction::PlanReview(
+                            PlanReviewAction::Comment {
+                                start_line,
+                                end_line,
+                                text,
+                            },
+                        )))
+                    }
+                    "resolve" | "reopen" => {
+                        let id = parts
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /plan resolve|reopen <id>"))?
+                            .trim_start_matches('#')
+                            .parse::<u64>()
+                            .map_err(|_| CommandError::new("Plan comment id must be a number"))?;
+                        let action = if subcommand == "resolve" {
+                            PlanReviewAction::Resolve { id }
+                        } else {
+                            PlanReviewAction::Reopen { id }
+                        };
+                        Ok(CommandOutput::Action(CommandAction::PlanReview(action)))
+                    }
+                    _ => Err(CommandError::new("Usage: /plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]")),
+                }
+            }),
+        )
+        .usage("/plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]"),
+    );
+
+    registry.register(
+        Command::new(
+            "view-plan",
+            "Show the current session plan.md",
+            CommandCategory::Context,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ViewPlan))),
+        )
+        .alias("show-plan")
+        .alias("plan-view")
+        .usage("/view-plan"),
+    );
+
+    // Grok-style permission shortcuts
+    registry.register(
+        Command::new(
+            "always-approve",
+            "Auto-approve all tool executions (YOLO)",
+            CommandCategory::Safety,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                    "yolo".to_string(),
+                )))
+            }),
+        )
+        .alias("yolo"),
+    );
     registry.register(Command::new(
-        "plan",
-        "View saved plans",
-        CommandCategory::Context,
-        Box::new(|_| Ok(CommandOutput::Message("Saved plans...".to_string()))),
+        "auto",
+        "Selective approvals (safe tools free, risky prompt)",
+        CommandCategory::Safety,
+        Box::new(|_| {
+            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                "selective".to_string(),
+            )))
+        }),
+    ));
+    registry.register(Command::new(
+        "ask",
+        "Require approval for all tools",
+        CommandCategory::Safety,
+        Box::new(|_| {
+            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                "safe".to_string(),
+            )))
+        }),
     ));
 
     // Continue command
     registry.register(
         Command::new(
             "continue",
-            "Continue previous session",
+            "Continue the most recent session for this workspace",
             CommandCategory::Session,
             Box::new(|_| {
-                Ok(CommandOutput::Message(
-                    "Continuing previous session...".to_string(),
-                ))
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::Continue,
+                )))
             }),
         )
-        .alias("c"),
+        .alias("c")
+        .usage("/continue"),
     );
 
     // Resume command
@@ -1408,6 +3060,19 @@ pub fn build_command_registry() -> CommandRegistry {
             vec!["summary", "detailed", "reset"],
         ))
         .usage("/cost [summary|detailed|reset]"),
+    );
+
+    registry.register(
+        Command::new(
+            "bug",
+            "Draft, review, or send a product bug report",
+            CommandCategory::Session,
+            Box::new(|ctx| Ok(CommandOutput::Action(CommandAction::BugReport(
+                if ctx.raw_args.trim().is_empty() && ctx.command_name == "bug" { "compose".into() } else { ctx.raw_args.clone() }
+            )))),
+        )
+        .alias("feedback")
+        .usage("/bug [description|queue|draft <text>|expected <text>|repro <steps>|review|send|export|dismiss|diagnostics on|off]"),
     );
 
     // Export command
@@ -1594,7 +3259,540 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
     );
 
+    // Plugins command
+    registry.register(
+        Command::new(
+            "plugins",
+            "List plugins, marketplace catalog, install/reload",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let raw_args = ctx.raw_args.trim();
+                let raw_parts: Vec<&str> = raw_args.split_whitespace().collect();
+                let raw_sub = raw_parts.first().copied().unwrap_or("");
+                let sub = raw_sub.to_lowercase();
+
+                let action = match sub.as_str() {
+                    "" | "list" => PluginsAction::List,
+                    "reload" | "refresh" => PluginsAction::Reload,
+                    "marketplace" | "market" | "catalog" => {
+                        let rest: Vec<&str> = raw_parts.iter().skip(1).copied().collect();
+                        match rest.first().map(|s| s.to_ascii_lowercase()).as_deref() {
+                            None | Some("list" | "ls") => PluginsAction::MarketplaceList,
+                            Some("install") => {
+                                let id = rest.get(1).copied().unwrap_or("").trim();
+                                if id.is_empty() {
+                                    return Err(CommandError::new(
+                                        "Usage: /plugins marketplace install <id> [--trust]",
+                                    ));
+                                }
+                                let trust = rest
+                                    .iter()
+                                    .any(|a| a.eq_ignore_ascii_case("--trust") || *a == "-t");
+                                PluginsAction::MarketplaceInstall {
+                                    id: id.to_string(),
+                                    trust,
+                                }
+                            }
+                            Some(other) => {
+                                return Err(CommandError::new(format!(
+                                    "Unknown marketplace subcommand: {other}"
+                                ))
+                                .with_hint(
+                                    "Usage: /plugins marketplace [list|install <id> [--trust]]",
+                                ));
+                            }
+                        }
+                    }
+                    "info" | "show" => {
+                        let name = raw_parts
+                            .iter()
+                            .skip(1)
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let name = name.trim();
+                        if name.is_empty() {
+                            return Err(CommandError::new("Plugin name required")
+                                .with_hint("Usage: /plugins info <plugin-name>"));
+                        }
+                        PluginsAction::Info(name.to_string())
+                    }
+                    _ => {
+                        // Treat bare name as info lookup: `/plugins team-tools`
+                        PluginsAction::Info(raw_sub.to_string())
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::Plugins(action)))
+            }),
+        )
+        .alias("plugin")
+        .arg(CommandArgument::string(
+            "action",
+            "list|info|reload|marketplace or plugin name",
+        ))
+        .usage("/plugins [list|info|reload|marketplace [list|install <id> [--trust]]]"),
+    );
+
     registry
+}
+
+fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return Ok(GoalAction::Status);
+    }
+    let mut parts = trimmed.split_whitespace();
+    let sub = parts.next().unwrap_or("").to_ascii_lowercase();
+    let rest = parts.collect::<Vec<_>>().join(" ");
+    match sub.as_str() {
+        "create" | "set" | "start" => {
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
+                ));
+            }
+            Ok(GoalAction::Create {
+                text,
+                replace: false,
+                criteria: None,
+                max_turns,
+                token_budget,
+                max_duration_secs,
+            })
+        }
+        "replace" => {
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal replace [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
+                ));
+            }
+            Ok(GoalAction::Create {
+                text,
+                replace: true,
+                criteria: None,
+                max_turns,
+                token_budget,
+                max_duration_secs,
+            })
+        }
+        "pause" => Ok(GoalAction::Pause),
+        "resume" | "continue" => Ok(GoalAction::Resume),
+        "block" => Ok(GoalAction::Block {
+            reason: (!rest.is_empty()).then_some(rest),
+        }),
+        "complete" | "done" => Ok(GoalAction::Complete),
+        "clear" | "cancel" => Ok(GoalAction::Clear),
+        "auto" => {
+            let flag = rest.trim().to_ascii_lowercase();
+            let enabled = match flag.as_str() {
+                "on" | "true" | "1" | "enable" | "enabled" => true,
+                "off" | "false" | "0" | "disable" | "disabled" => false,
+                _ => {
+                    return Err(CommandError::new("Usage: /goal auto on|off"));
+                }
+            };
+            Ok(GoalAction::AutoContinue { enabled })
+        }
+        // Bare text → create without replace (may include flags).
+        _ => {
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(trimmed).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
+                ));
+            }
+            Ok(GoalAction::Create {
+                text,
+                replace: false,
+                criteria: None,
+                token_budget,
+                max_turns,
+                max_duration_secs,
+            })
+        }
+    }
+}
+
+fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return Ok(HarnessAction::Status);
+    }
+    if trimmed.eq_ignore_ascii_case("list") {
+        return Ok(HarnessAction::List);
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "review" | "proposals" => Ok(HarnessAction::Review),
+        "propose" | "suggest" => {
+            let mut fields = rest.splitn(4, char::is_whitespace);
+            let scope = fields.next().unwrap_or_default();
+            let kind = fields.next().unwrap_or_default();
+            let name = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /refine propose <scope> <kind> <name> <content> --evidence <text>",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            let Some(evidence) = evidence else {
+                return Err(CommandError::new(
+                    "Refinement proposals require --evidence <text>.",
+                ));
+            };
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Refinement content is required before --evidence.",
+                ));
+            }
+            Ok(HarnessAction::Propose {
+                scope: scope.to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                content,
+                evidence,
+            })
+        }
+        "add" | "create" => {
+            let mut fields = rest.splitn(4, char::is_whitespace);
+            let scope = fields.next().unwrap_or_default();
+            let kind = fields.next().unwrap_or_default();
+            let name = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /harness add <scope> <kind> <name> <content> [--evidence <text>]",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Harness content is required before --evidence",
+                ));
+            }
+            Ok(HarnessAction::Add {
+                scope: scope.to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                content,
+                evidence,
+            })
+        }
+        "update" | "set" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let id = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if id.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /harness update <id> <content> [--evidence <text>]",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Harness content is required before --evidence",
+                ));
+            }
+            Ok(HarnessAction::Update {
+                id: id.to_string(),
+                content,
+                evidence,
+            })
+        }
+        "delete" | "remove" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /harness delete <id>"));
+            }
+            Ok(HarnessAction::Delete(rest.to_string()))
+        }
+        "apply" | "accept" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /refine apply <proposal-id>"));
+            }
+            Ok(HarnessAction::Apply(rest.to_string()))
+        }
+        "reject" | "decline" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let id = fields.next().unwrap_or_default();
+            let note = fields
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            if id.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /refine reject <proposal-id> [note]",
+                ));
+            }
+            Ok(HarnessAction::Reject {
+                id: id.to_string(),
+                note,
+            })
+        }
+        "rollback" | "restore" => {
+            let revision = rest.parse::<u64>().map_err(|_| {
+                CommandError::new("Usage: /harness rollback <revision> (revision must be numeric)")
+            })?;
+            Ok(HarnessAction::Rollback(revision))
+        }
+        _ => Err(CommandError::new(format!(
+            "Unknown harness action '{subcommand}'. Use status, list, review, propose, add, update, apply, reject, delete, or rollback."
+        ))),
+    }
+}
+
+fn split_harness_evidence(content: &str) -> (String, Option<String>) {
+    let Some((content, evidence)) = content.split_once(" --evidence ") else {
+        return (content.trim().to_string(), None);
+    };
+    let evidence = evidence.trim();
+    (
+        content.trim().to_string(),
+        (!evidence.is_empty()).then(|| evidence.to_string()),
+    )
+}
+
+fn parse_rlm_action(raw: &str) -> Result<RlmAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return Ok(RlmAction::List);
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "set" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let name = fields.next().unwrap_or_default();
+            let value = fields.next().unwrap_or_default().trim();
+            let (value, description) = split_rlm_description(value);
+            if name.is_empty() || value.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /rlm set <name> <value> [--description <text>]",
+                ));
+            }
+            Ok(RlmAction::Set {
+                name: name.to_string(),
+                value,
+                description,
+            })
+        }
+        "append" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let name = fields.next().unwrap_or_default();
+            let value = fields.next().unwrap_or_default().trim();
+            if name.is_empty() || value.is_empty() {
+                return Err(CommandError::new("Usage: /rlm append <name> <value>"));
+            }
+            Ok(RlmAction::Append {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+        }
+        "render" | "expand" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /rlm render <template>"));
+            }
+            Ok(RlmAction::Render(rest.to_string()))
+        }
+        "clear" | "delete" | "remove" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /rlm clear <name>"));
+            }
+            Ok(RlmAction::Clear(rest.to_string()))
+        }
+        _ => Err(CommandError::new(
+            "Usage: /rlm list|set|append|render|clear",
+        )),
+    }
+}
+
+fn split_rlm_description(value: &str) -> (String, Option<String>) {
+    let Some((value, description)) = value.split_once(" --description ") else {
+        return (value.trim().to_string(), None);
+    };
+    let description = description.trim();
+    (
+        value.trim().to_string(),
+        (!description.is_empty()).then(|| description.to_string()),
+    )
+}
+
+fn parse_mailbox_action(raw: &str) -> Result<MailboxAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return Ok(MailboxAction::List);
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "send" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let recipient = fields.next().unwrap_or_default();
+            let body = fields.next().unwrap_or_default().trim();
+            if recipient.is_empty() || body.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /mailbox send <recipient> <message>",
+                ));
+            }
+            Ok(MailboxAction::Send {
+                recipient: recipient.to_string(),
+                body: body.to_string(),
+            })
+        }
+        "read" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox read <id>"));
+            }
+            Ok(MailboxAction::Read(rest.to_string()))
+        }
+        "inspect" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox inspect <id>"));
+            }
+            Ok(MailboxAction::Inspect(rest.to_string()))
+        }
+        "ack" | "acknowledge" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox ack <id>"));
+            }
+            Ok(MailboxAction::Acknowledge(rest.to_string()))
+        }
+        "approve" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox approve <id>"));
+            }
+            Ok(MailboxAction::Approve(rest.to_string()))
+        }
+        "compact" | "clear" => Ok(MailboxAction::Compact),
+        _ => Err(CommandError::new(
+            "Usage: /mailbox list|send|read|inspect|ack|approve|compact",
+        )),
+    }
+}
+
+/// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.
+#[must_use]
+pub fn build_command_registry_with_extensions(
+    skills: &[crate::skills::LoadedSkill],
+    prompts: &[crate::prompts::PromptDefinition],
+) -> CommandRegistry {
+    let mut registry = build_command_registry();
+
+    for prompt in prompts {
+        let name = prompt.name.clone();
+        let desc = prompt
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("Prompt template ({})", prompt.source_type.as_str()));
+        let usage = crate::prompts::get_usage_hint(prompt).replace("/prompts:", "/");
+        let name_for_handler = name.clone();
+        registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                desc,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokePromptTemplate {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+    }
+
+    for skill in skills {
+        if !skill.definition.enabled || !skill.definition.user_invocable {
+            continue;
+        }
+        let name = skill.definition.name.clone();
+        let desc = if skill.definition.description.is_empty() {
+            format!("Skill: {name}")
+        } else {
+            skill.definition.description.clone()
+        };
+        let hint = skill
+            .definition
+            .metadata
+            .get("argument-hint")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let usage = match hint {
+            Some(h) if !h.is_empty() => format!("/{name} {h}"),
+            _ => format!("/{name} [args...]"),
+        };
+        let name_for_handler = name.clone();
+        registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                desc,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokeSkill {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+    }
+
+    registry
+}
+
+/// Register Droid-style executable script commands as slash commands.
+///
+/// Scripts are registered with `register_if_absent`, so built-in commands and
+/// already-registered skill/prompt extensions always win name collisions.
+/// Returns the names that were skipped due to a collision so the caller can
+/// warn the user once.
+pub fn register_exec_commands(
+    registry: &mut CommandRegistry,
+    exec_commands: &[crate::exec_commands::ExecCommand],
+) -> Vec<String> {
+    let mut skipped = Vec::new();
+    for exec in exec_commands {
+        let name = exec.name.clone();
+        let description = format!(
+            "Executable command ({}, `{}`)",
+            exec.source.as_str(),
+            exec.path.display()
+        );
+        let usage = format!("/{name} [args...]");
+        let name_for_handler = name.clone();
+        let registered = registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                description,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokeExecCommand {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+        if !registered {
+            skipped.push(name);
+        }
+    }
+    skipped
 }
 
 fn build_diag_about(ctx: &CommandContext) -> String {
@@ -1636,7 +3834,7 @@ fn build_diag_context(ctx: &CommandContext) -> String {
     lines.push(format!("**Session:** {session}"));
     lines.push(format!("**CWD:** {}", ctx.cwd));
     lines.push(String::new());
-    lines.push("Token usage details are not available in the Rust TUI yet.".to_string());
+    lines.push("Use /context for a token breakdown of the current session.".to_string());
     lines.join("\n")
 }
 
@@ -1806,322 +4004,4 @@ fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, boo
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::keybindings::keybindings_test_env_lock;
-    use tempfile::tempdir;
-
-    fn with_temp_keybindings_file<T>(body: impl FnOnce(&Path) -> T) -> T {
-        let _guard = keybindings_test_env_lock().blocking_lock();
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("keybindings.json");
-        let previous = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");
-        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &path);
-        let result = body(&path);
-        match previous {
-            Some(value) => std::env::set_var("MAESTRO_KEYBINDINGS_FILE", value),
-            None => std::env::remove_var("MAESTRO_KEYBINDINGS_FILE"),
-        }
-        result
-    }
-
-    #[test]
-    fn registry_register_and_get() {
-        let mut registry = CommandRegistry::new();
-        registry.register(Command::new(
-            "test",
-            "A test command",
-            CommandCategory::Diagnostics,
-            Box::new(|_| Ok(CommandOutput::Silent)),
-        ));
-
-        assert!(registry.get("test").is_some());
-        assert!(registry.get("unknown").is_none());
-    }
-
-    #[test]
-    fn registry_alias_lookup() {
-        let mut registry = CommandRegistry::new();
-        registry.register(
-            Command::new(
-                "help",
-                "Help command",
-                CommandCategory::Navigation,
-                Box::new(|_| Ok(CommandOutput::Silent)),
-            )
-            .alias("h"),
-        );
-
-        assert!(registry.get("help").is_some());
-        assert!(registry.get("h").is_some());
-        assert_eq!(
-            registry.get("h").unwrap().name,
-            registry.get("help").unwrap().name
-        );
-    }
-
-    #[test]
-    fn registry_execute() {
-        let registry = build_command_registry();
-        let result = registry.execute("/version", "/tmp", None, None);
-        assert!(result.is_ok());
-        match result.unwrap() {
-            CommandOutput::Message(message) => {
-                assert_eq!(
-                    message,
-                    format!("Maestro TUI v{}", env!("CARGO_PKG_VERSION"))
-                );
-            }
-            other => panic!("expected version message, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn registry_execute_unknown() {
-        let registry = build_command_registry();
-        let result = registry.execute("/unknowncommand", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn built_in_commands_exist() {
-        let registry = build_command_registry();
-        assert!(registry.get("help").is_some());
-        assert!(registry.get("hotkeys").is_some());
-        assert!(registry.get("keys").is_some());
-        assert!(registry.get("shortcuts").is_some());
-        assert!(registry.get("theme").is_some());
-        assert!(registry.get("model").is_some());
-        assert!(registry.get("quit").is_some());
-        assert!(registry.get("limits").is_some());
-        assert!(registry.get("status").is_some());
-        assert!(registry.get("stats").is_some());
-        assert!(registry.get("about").is_some());
-        assert!(registry.get("context").is_some());
-        assert!(registry.get("git").is_some());
-        assert!(registry.get("diff").is_some());
-        assert!(registry.get("review").is_some());
-    }
-
-    #[test]
-    fn hotkeys_command_opens_shortcuts_help_modal() {
-        let registry = build_command_registry();
-        let result = registry.execute("/hotkeys", "/tmp", None, None);
-
-        match result.expect("hotkeys command should succeed") {
-            CommandOutput::OpenModal(ModalType::ShortcutsHelp) => {}
-            other => panic!("expected shortcuts help modal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hotkeys_command_can_init_and_validate_keybindings_config() {
-        with_temp_keybindings_file(|path| {
-            let registry = build_command_registry();
-            let init_result = registry
-                .execute("/hotkeys init", "/tmp", None, None)
-                .expect("hotkeys init should succeed");
-            match init_result {
-                CommandOutput::Message(message) => {
-                    assert!(message.contains("Created keyboard shortcuts config at"));
-                }
-                other => panic!("expected init message, got {other:?}"),
-            }
-            assert!(path.exists(), "hotkeys init should create the config file");
-
-            let validate_result = registry
-                .execute("/hotkeys validate", "/tmp", None, None)
-                .expect("hotkeys validate should succeed");
-            match validate_result {
-                CommandOutput::Message(message) => {
-                    assert!(message.contains("Keyboard Shortcuts Config:"));
-                    assert!(message.contains("Status: present"));
-                    assert!(message.contains("Rust TUI overrides:"));
-                }
-                other => panic!("expected validation message, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn hotkeys_command_requires_force_to_overwrite_existing_config() {
-        with_temp_keybindings_file(|path| {
-            std::fs::write(path, r#"{"version":1,"bindings":{}}"#)
-                .expect("write keybindings config");
-            let registry = build_command_registry();
-            let err = registry
-                .execute("/hotkeys init", "/tmp", None, None)
-                .expect_err("init without force should fail when config exists");
-
-            assert_eq!(
-                err.message,
-                format!("Keybindings config already exists at {}.", path.display())
-            );
-            assert_eq!(
-                err.hint,
-                Some("Re-run with /hotkeys init --force to overwrite it.".to_string())
-            );
-        });
-    }
-
-    #[test]
-    fn cost_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("cost").is_some());
-        assert!(registry.get("usage").is_some()); // alias
-        assert!(registry.get("tokens").is_some()); // alias
-    }
-
-    #[test]
-    fn cost_command_actions() {
-        let registry = build_command_registry();
-
-        // Summary (default)
-        let result = registry.execute("/cost", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Detailed
-        let result = registry.execute("/cost detailed", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Reset
-        let result = registry.execute("/cost reset", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Invalid
-        let result = registry.execute("/cost invalid", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn export_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("export").is_some());
-    }
-
-    #[test]
-    fn export_command_formats() {
-        let registry = build_command_registry();
-
-        // No args (show options)
-        let result = registry.execute("/export", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Markdown
-        let result = registry.execute("/export markdown", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // HTML with path
-        let result = registry.execute("/export html output.html", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Invalid format
-        let result = registry.execute("/export invalid", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn history_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("history").is_some());
-        assert!(registry.get("hist").is_some()); // alias
-    }
-
-    #[test]
-    fn history_command_actions() {
-        let registry = build_command_registry();
-
-        // Default (recent 20)
-        let result = registry.execute("/history", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // With count
-        let result = registry.execute("/history 10", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Search
-        let result = registry.execute("/history git status", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Clear
-        let result = registry.execute("/history clear", "/tmp", None, None);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn toolhistory_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("toolhistory").is_some());
-        assert!(registry.get("th").is_some()); // alias
-    }
-
-    #[test]
-    fn toolhistory_command_actions() {
-        let registry = build_command_registry();
-
-        // Default
-        let result = registry.execute("/toolhistory", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Stats
-        let result = registry.execute("/toolhistory stats", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // For specific tool
-        let result = registry.execute("/toolhistory read", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Clear
-        let result = registry.execute("/toolhistory clear", "/tmp", None, None);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn mcp_prompts_command_parses_prompt_arguments() {
-        let registry = build_command_registry();
-        let result = registry.execute(
-            r#"/mcp prompts docs summarize topic="MCP auth flow" format=brief"#,
-            "/tmp",
-            None,
-            None,
-        );
-
-        match result.expect("mcp prompt args should parse") {
-            CommandOutput::Action(CommandAction::Mcp(McpAction::Prompts {
-                server,
-                name,
-                arguments,
-            })) => {
-                assert_eq!(server.as_deref(), Some("docs"));
-                assert_eq!(name.as_deref(), Some("summarize"));
-                assert_eq!(
-                    arguments.get("topic").map(std::string::String::as_str),
-                    Some("MCP auth flow")
-                );
-                assert_eq!(
-                    arguments.get("format").map(std::string::String::as_str),
-                    Some("brief")
-                );
-            }
-            other => panic!("expected MCP prompts action, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
-        let registry = build_command_registry();
-        let result = registry.execute(
-            "/mcp prompts docs summarize invalid-arg",
-            "/tmp",
-            None,
-            None,
-        );
-
-        let err = result.expect_err("invalid MCP prompt args should fail");
-        assert_eq!(
-            err.message,
-            "Invalid MCP prompt argument. Use KEY=value after the prompt name."
-        );
-    }
-}
+mod tests;

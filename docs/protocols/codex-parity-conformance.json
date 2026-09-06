@@ -1,0 +1,142 @@
+{
+	"version": 1,
+	"description": "Compact conformance anchors for Codex-inspired Maestro surfaces that should not drift silently.",
+	"checks": [
+		{
+			"area": "codex-auth-provider",
+			"path": "docs/MODELS.md",
+			"anchors": [
+				"openai-codex",
+				"openai-codex-app-server",
+				"Sign in with ChatGPT"
+			]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "packages/tui-rs/src/codex_app_server.rs",
+			"anchors": [
+				"account/read",
+				"account/login/start",
+				"account/login/completed"
+			]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": ["thread/start", "turn/start", "item/agentMessage/delta"]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "src/agent/providers/openai-codex-session.ts",
+			"anchors": ["OPENAI_CODEX_ORIGINATOR", "codex_cli_rs", "/codex/responses"]
+		},
+		{
+			"area": "native-apply-patch",
+			"path": "src/tools/apply-patch.ts",
+			"anchors": [
+				"Apply an OpenAI/Codex apply_patch block directly",
+				"editGrammar: \"apply_patch\"",
+				"ApplyPatchConflictError"
+			]
+		},
+		{
+			"area": "native-apply-patch",
+			"path": "test/tools/apply-patch.test.ts",
+			"anchors": [
+				"applies repeated filesystem operations against staged patch state",
+				"honors EOF newline markers",
+				"moves a file while applying update hunks"
+			]
+		},
+		{
+			"area": "mcp-resource-prompt-bridge",
+			"path": "src/tools/conductor-client.ts",
+			"anchors": [
+				"list_mcp_resources",
+				"read_mcp_resource",
+				"list_mcp_prompts",
+				"get_mcp_prompt"
+			]
+		},
+		{
+			"area": "mcp-resource-prompt-bridge",
+			"path": "packages/web/src/components/composer-chat.ts",
+			"anchors": [
+				"list_mcp_resources",
+				"read_mcp_resource",
+				"list_mcp_prompts",
+				"get_mcp_prompt"
+			]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/input_handlers.rs",
+			"anchors": ["should_submit_on_tab"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/prompt_queue.rs",
+			"anchors": ["drain_queued_steering_batch_for_interrupt"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/tests.rs",
+			"anchors": [
+				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "docs/protocols/headless-conformance.md",
+			"anchors": [
+				"runtime-conformance.test.ts",
+				"MAESTRO_RUST_HOSTED_CONFORMANCE=1",
+				"read-only viewers and controller ownership",
+				"restart from that manifest after the provider has restored local workspace",
+				"report not-ready state rather than accepting attach traffic"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/headless/runtime-conformance.test.ts",
+			"anchors": [
+				"controller",
+				"viewer",
+				"scopes utility file reads to the hosted workspace root",
+				"drains hosted runners into a manifest and rejects new mutations",
+				"restoreFromDrain",
+				"restored_from_snapshot"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/server/headless-runtime-service.test.ts",
+			"anchors": [
+				"restores runtime state and replay marker from a hosted runner drain manifest",
+				"restores $flushStatus manifest into inspect-only state without stale runtime resources",
+				"pending_user_inputs: []",
+				"rejects restore manifest with mismatched $field"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/fixtures/headless/conformance-v1.json",
+			"anchors": [
+				"headless-conformance-v1",
+				"server_request_response",
+				"tool_retry",
+				"response_end"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/headless/protocol-conformance-fixture.test.ts",
+			"anchors": [
+				"assertHeadlessToAgentMessage",
+				"assertHeadlessFromAgentMessage",
+				"HEADLESS_SERVER_CAPABILITIES",
+				"covers a complete prompt through approval, retry, and result lifecycle"
+			]
+		}
+	]
+}

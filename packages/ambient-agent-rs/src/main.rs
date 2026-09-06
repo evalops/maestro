@@ -4,13 +4,13 @@
 
 use ambient_agent::{
     daemon::{DaemonBuilder, DaemonCommand},
-    ipc::{default_socket_path, IpcClient},
+    ipc::{IpcClient, default_socket_path},
     types::*,
 };
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 /// CLI-specific config that gets converted to/from AmbientConfig
@@ -103,6 +103,9 @@ enum Commands {
     /// Show statistics
     Stats,
 
+    /// Flush in-memory learner state to disk
+    Flush,
+
     /// Watch a repository
     Watch {
         /// Repository in owner/repo format
@@ -154,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Stop => cmd_stop().await,
         Commands::Status => cmd_status().await,
         Commands::Stats => cmd_stats().await,
+        Commands::Flush => cmd_flush().await,
         Commands::Watch { repo } => cmd_watch(&cli.config, &repo).await,
         Commands::Unwatch { repo } => cmd_unwatch(&cli.config, &repo).await,
         Commands::List => cmd_list(&cli.config).await,
@@ -271,6 +275,29 @@ async fn cmd_stats() -> anyhow::Result<()> {
         }
         Err(e) => {
             println!("Failed to get stats: {}", e);
+            Err(e)
+        }
+    }
+}
+
+async fn cmd_flush() -> anyhow::Result<()> {
+    let client = IpcClient::new(default_socket_path());
+
+    if !client.is_daemon_running() {
+        anyhow::bail!("Daemon is not running");
+    }
+
+    match client.flush_learner().await {
+        Ok(learner_path) => {
+            if learner_path.is_empty() {
+                println!("Learner state flushed");
+            } else {
+                println!("Learner state flushed: {}", learner_path);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            println!("Failed to flush learner state: {}", e);
             Err(e)
         }
     }

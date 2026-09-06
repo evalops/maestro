@@ -1,13 +1,117 @@
-replicaCount: 2
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+headlessRuntime:
+  routing:
+    # single-replica keeps headless runtime ownership, SSE replay, connection
+    # leases, and utility state local to one Maestro pod. Use sticky-session
+    # only when ingress pins /api/headless/* and /api/chat/ws to one pod, or
+    # durable-owner when Platform routes by a durable runtime-owner record.
+    mode: single-replica
+
+operatingLayer:
+  # Enables production operating-layer evidence capture. Requires a configured
+  # MAESTRO_DATABASE_URL/DATABASE_URL secret so evidence persists in Postgres.
+  enabled: false
+  evidenceStore: database
+  evidenceRetentionDays: 90
 
 image:
   repository: ghcr.io/evalops/maestro
-  tag: latest
+  # Defaults to Chart.appVersion when empty. Prefer immutable sha-* tags or digest.
+  tag: ""
+  digest: ""
   pullPolicy: IfNotPresent
+
+auth:
+  # Leave empty to generate an API key on first install and preserve it on upgrades.
+  apiKey: ""
 
 service:
   type: ClusterIP
   port: 8080
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+writableTmp:
+  enabled: true
+  sizeLimit: 1Gi
+  mountPath: /tmp
+
+terminationGracePeriodSeconds: 45
+
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  failureThreshold: 18
+  periodSeconds: 5
+
+gracefulShutdown:
+  enabled: true
+  preStop:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - |
+          node <<'EOF' || true
+          const port = process.env.PORT || "8080";
+          const controller = new AbortController();
+          setTimeout(() => controller.abort(), 4000).unref();
+          fetch(`http://127.0.0.1:${port}/.well-known/evalops/remote-runner/drain`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              reason: "kubernetes_prestop",
+              requested_by: "kubernetes_prestop",
+            }),
+            signal: controller.signal,
+          }).then(async (res) => {
+            if (res.status === 404) return;
+            if (!res.ok) {
+              console.error(await res.text());
+              process.exitCode = 1;
+            }
+          }).catch((error) => {
+            console.error(error?.message ?? String(error));
+            process.exitCode = 1;
+          });
+          EOF
+          sleep 5
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
 
 resources:
   requests:
@@ -18,7 +122,11 @@ resources:
     memory: 2Gi
 
 env:
+  HOME: "/tmp"
   IDENTITY_URL: ""
   KEYS_URL: ""
   LLM_GATEWAY_URL: ""
+  MAESTRO_CONTROL_HOST: "0.0.0.0"
   MEMORY_URL: ""
+  TMPDIR: "/tmp"
+  XDG_CACHE_HOME: "/tmp/.cache"

@@ -1,0 +1,84 @@
+name: Release Notify
+description: Compute release status and send the shared release notification payload.
+
+inputs:
+  release-version:
+    description: Release version being reported.
+    required: true
+  package-name:
+    description: Package name to include in the notification.
+    required: false
+    default: ""
+  package-version:
+    description: Package version to include in the notification.
+    required: false
+    default: ""
+  quality-gate-result:
+    description: Result of the release quality gate job.
+    required: false
+    default: ""
+  publish-result:
+    description: Result of the publish job.
+    required: false
+    default: ""
+  canary-result:
+    description: Result of the post-publish canary job.
+    required: false
+    default: ""
+  webhook-url:
+    description: Release notification webhook URL.
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: Computed release status sent to the notification script.
+    value: ${{ steps.status.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - id: status
+      shell: bash
+      env:
+        QUALITY_GATE_RESULT: ${{ inputs.quality-gate-result }}
+        PUBLISH_RESULT: ${{ inputs.publish-result }}
+        CANARY_RESULT: ${{ inputs.canary-result }}
+      run: |
+        set -euo pipefail
+        status="success"
+        for result in "$QUALITY_GATE_RESULT" "$PUBLISH_RESULT" "$CANARY_RESULT"; do
+          if [[ -z "$result" ]]; then
+            continue
+          fi
+          case "$result" in
+            success)
+              ;;
+            failure)
+              status="failure"
+              break
+              ;;
+            cancelled)
+              status="cancelled"
+              break
+              ;;
+            skipped)
+              status="skipped"
+              break
+              ;;
+            *)
+              status="$result"
+              break
+              ;;
+          esac
+        done
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+
+    - shell: bash
+      env:
+        RELEASE_STATUS: ${{ steps.status.outputs.status }}
+        RELEASE_VERSION: ${{ inputs.release-version }}
+        RELEASE_PACKAGE_NAME: ${{ inputs.package-name }}
+        RELEASE_PACKAGE_VERSION: ${{ inputs.package-version || inputs.release-version }}
+        SLACK_RELEASE_WEBHOOK_URL: ${{ inputs.webhook-url }}
+      run: node "$GITHUB_ACTION_PATH/../../../scripts/send-release-notification.mjs"

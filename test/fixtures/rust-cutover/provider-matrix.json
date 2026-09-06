@@ -1,0 +1,92 @@
+{
+	"schemaVersion": 1,
+	"cases": [
+		{
+			"provider": "google",
+			"aliases": ["gemini"],
+			"authEnv": ["GEMINI_API_KEY"]
+		},
+		{
+			"provider": "google-gemini-cli",
+			"aliases": [],
+			"authEnv": ["GOOGLE_GEMINI_CLI_TOKEN"]
+		},
+		{
+			"provider": "google-antigravity",
+			"aliases": [],
+			"authEnv": ["GOOGLE_ANTIGRAVITY_TOKEN"]
+		},
+		{
+			"provider": "vertex-ai",
+			"aliases": ["vertex"],
+			"authEnv": ["VERTEX_ACCESS_TOKEN", "GOOGLE_API_KEY"]
+		},
+		{
+			"provider": "evalops",
+			"aliases": ["maestro-managed"],
+			"authEnv": ["MAESTRO_EVALOPS_ACCESS_TOKEN"]
+		},
+		{ "provider": "openai", "aliases": [], "authEnv": ["OPENAI_API_KEY"] },
+		{
+			"provider": "openai-codex",
+			"aliases": ["codex"],
+			"authEnv": [
+				"OPENAI_CODEX_TOKEN",
+				"OPENAI_CODEX_ACCESS_TOKEN",
+				"CODEX_API_KEY"
+			]
+		},
+		{
+			"provider": "azure-openai",
+			"aliases": ["azure"],
+			"authEnv": ["AZURE_OPENAI_API_KEY"]
+		},
+		{
+			"provider": "anthropic",
+			"aliases": ["claude"],
+			"authEnv": ["ANTHROPIC_API_KEY"]
+		},
+		{
+			"provider": "bedrock",
+			"aliases": ["aws-bedrock"],
+			"authEnv": [
+				"AWS_ACCESS_KEY_ID",
+				"AWS_SECRET_ACCESS_KEY",
+				"AWS_PROFILE",
+				"AWS_CONFIG_FILE",
+				"AWS_SHARED_CREDENTIALS_FILE",
+				"AWS_WEB_IDENTITY_TOKEN_FILE",
+				"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+				"AWS_CONTAINER_CREDENTIALS_FULL_URI"
+			]
+		},
+		{ "provider": "writer", "aliases": [], "authEnv": ["WRITER_API_KEY"] },
+		{ "provider": "xai", "aliases": ["grok"], "authEnv": ["XAI_API_KEY"] },
+		{ "provider": "groq", "aliases": [], "authEnv": ["GROQ_API_KEY"] },
+		{ "provider": "cerebras", "aliases": [], "authEnv": ["CEREBRAS_API_KEY"] },
+		{
+			"provider": "openrouter",
+			"aliases": [],
+			"authEnv": ["OPENROUTER_API_KEY"]
+		},
+		{
+			"provider": "llamacpp",
+			"aliases": ["llama.cpp", "llama-cpp"],
+			"authEnv": []
+		},
+		{ "provider": "zai", "aliases": [], "authEnv": ["ZAI_API_KEY"] },
+		{ "provider": "mistral", "aliases": [], "authEnv": ["MISTRAL_API_KEY"] },
+		{ "provider": "deepseek", "aliases": [], "authEnv": ["DEEPSEEK_API_KEY"] },
+		{
+			"provider": "moonshot",
+			"aliases": ["kimi"],
+			"authEnv": ["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+		},
+		{
+			"provider": "dashscope",
+			"aliases": ["qwen"],
+			"authEnv": ["DASHSCOPE_API_KEY", "QWEN_API_KEY"]
+		},
+		{ "provider": "minimax", "aliases": [], "authEnv": ["MINIMAX_API_KEY"] }
+	]
+}

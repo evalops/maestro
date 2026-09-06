@@ -1,0 +1,319 @@
+name: tag-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  tag-current-version:
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      active_release_count: ${{ steps.active-release.outputs.active_count }}
+      package_name: ${{ steps.release.outputs.package_name }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      tag_exists: ${{ steps.release.outputs.tag_exists }}
+      staged_ready: ${{ steps.staged-release.outputs.ready }}
+      registry_published: ${{ steps.registry-release.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The Mono mirror creates public tags only from matching reviewed source.
+      # Current public main may already contain changes after a frozen release.
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          fallback-to-package-version: "true"
+          create-tag-if-missing: "${{ github.repository != 'evalops/maestro' }}"
+
+      - id: registry-release
+        name: Check npm registry release
+        if: ${{ github.repository == 'evalops/maestro' }}
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          # `npm view ... 2>/dev/null || true` collapsed "this version is not
+          # published" and "the registry is unreachable" into the same
+          # published=false, and published=false is what lets the
+          # dispatch-public-release job fire. A registry outage must not be able
+          # to dispatch a duplicate release, so E404 (genuinely unpublished) is
+          # separated from every other npm failure here.
+          npm_stderr="$RUNNER_TEMP/npm-view.stderr"
+          npm_status=0
+          published_version="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version 2>"$npm_stderr")" || npm_status=$?
+
+          if [[ "$npm_status" -ne 0 ]]; then
+            if grep -q "E404" "$npm_stderr"; then
+              published_version=""
+            else
+              echo "::error::npm view ${PACKAGE_NAME}@${RELEASE_VERSION} failed with status ${npm_status} and no E404; refusing to treat an unreachable registry as 'not published'."
+              cat "$npm_stderr" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "${published_version}" == "${RELEASE_VERSION}" ]]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is published on npm."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is not published on npm yet."
+          fi
+
+
+      - id: staged-release
+        name: Check signed Mono staging
+        if: ${{ github.repository == 'evalops/maestro' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/staged-release.json"
+          release_error="$RUNNER_TEMP/staged-release.stderr"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$release_json" 2> "$release_error"; then
+            ready="$(jq 'any(.assets[]; .name == "MONO_SHA256SUMS.cosign.bundle")' "$release_json")"
+          elif grep -q 'HTTP 404' "$release_error"; then
+            ready=false
+          else
+            cat "$release_error" >&2
+            exit 1
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [[ "$ready" != true ]]; then
+            echo "Tag ${RELEASE_TAG} is ready; awaiting signed Mono artifacts." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - id: active-release
+        name: Check active public release workflow
+        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          active_count="$(
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json headBranch,status,displayTitle \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .status != \"completed\")] | length"
+          )"
+          echo "active_count=${active_count}" >> "$GITHUB_OUTPUT"
+          if [[ "${active_count}" == "0" ]]; then
+            echo "No active release workflow exists for ${RELEASE_TAG}."
+          else
+            echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
+          fi
+
+      # Fail only when the version is already tagged at another commit, package
+      # inputs changed, the version is not on npm, and no release run is still
+      # in flight (queued/waiting/in_progress). A release waiting on the
+      # npm-release environment approval must not red every subsequent main push.
+      - name: Require version bump for existing release tag
+        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' && (steps.active-release.outputs.active_count == '0' || steps.active-release.outputs.active_count == '') }}
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          TAG_TARGET: ${{ steps.release.outputs.tag_target }}
+        run: |
+          echo "::error title=Package version already tagged::package.json version ${RELEASE_VERSION} already has a semver tag at another commit."
+          echo "package.json version ${RELEASE_VERSION} already has a semver tag at another commit." >&2
+          echo "${RELEASE_TAG} points at ${TAG_TARGET}; current HEAD is ${GITHUB_SHA}." >&2
+          echo "Bump package.json before tagging another main commit for this package version." >&2
+          exit 1
+
+      - name: Summarize tag status
+        env:
+          TAG_EXISTS: ${{ steps.release.outputs.tag_exists }}
+          TAG_MATCHES_HEAD: ${{ steps.release.outputs.tag_matches_head }}
+          PACKAGE_CHANGED_SINCE_TAG: ${{ steps.release.outputs.package_changed_since_tag }}
+          REGISTRY_PUBLISHED: ${{ steps.registry-release.outputs.published }}
+          ACTIVE_RELEASE_COUNT: ${{ steps.active-release.outputs.active_count }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          if [[ "$TAG_EXISTS" == "true" && "$TAG_MATCHES_HEAD" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at this commit."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" && "$REGISTRY_PUBLISHED" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is already published on npm; no new release dispatch is needed."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" && "$ACTIVE_RELEASE_COUNT" != "0" && -n "$ACTIVE_RELEASE_COUNT" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
+            echo "Release workflow for ${RELEASE_TAG} is still in flight (${ACTIVE_RELEASE_COUNT} active run(s)); not failing main for an in-progress publish."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
+            echo "Package-impacting source inputs changed since the existing tag."
+          elif [[ "$TAG_EXISTS" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists."
+            echo "No package-impacting source inputs changed since the existing tag."
+          else
+            echo "Created semver tag ${RELEASE_TAG}."
+          fi
+
+  verify-published-registry-package:
+    needs: tag-current-version
+    if: ${{ github.repository == 'evalops/maestro' && needs.tag-current-version.outputs.registry_published == 'true' }}
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup registry install smoke tools
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Verify already-published package from registry
+        env:
+          PACKAGE_NAME: ${{ needs.tag-current-version.outputs.package_name }}
+          RELEASE_VERSION: ${{ needs.tag-current-version.outputs.release_version }}
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: tag-release-published-replay-evidence
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "1"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "1000"
+        run: |
+          set -euo pipefail
+          cli_command="$(node -p 'Object.keys(require("./package.json").bin)[0]')"
+          node scripts/smoke-registry-install.js \
+            --package "$PACKAGE_NAME" \
+            --version "$RELEASE_VERSION" \
+            --cli-command "$cli_command"
+          node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence
+
+      - name: Upload already-published replay evidence
+        if: ${{ always() && hashFiles('tag-release-published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: tag-release-published-replay-evidence-${{ needs.tag-current-version.outputs.release_tag }}
+          path: tag-release-published-replay-evidence/*.json
+
+  dispatch-public-release:
+    needs:
+      - tag-current-version
+      - verify-published-registry-package
+    if: ${{ always() && github.repository == 'evalops/maestro' && needs.tag-current-version.result == 'success' && needs.tag-current-version.outputs.staged_ready == 'true' && (needs.tag-current-version.outputs.registry_published != 'true' || needs.verify-published-registry-package.result == 'success') && (needs.tag-current-version.outputs.tag_exists != 'true' || needs.tag-current-version.outputs.registry_published != 'true') && (needs.tag-current-version.outputs.active_release_count == '0' || needs.tag-current-version.outputs.active_release_count == '') }}
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch public release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.tag-current-version.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.tag-current-version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2317,SC2329 # Invoked indirectly through retry.
+          active_release_run_count() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json headBranch,status,displayTitle \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .status != \"completed\")] | length"
+          }
+
+          # shellcheck disable=SC2317,SC2329 # Invoked indirectly through retry.
+          dispatched_release_run_count() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json event,headBranch,displayTitle \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
+          }
+
+          # shellcheck disable=SC2317,SC2329 # Invoked indirectly through retry.
+          latest_dispatched_release_run_id() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json databaseId,event,headBranch,displayTitle \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"main\" and .displayTitle == \"Release ${RELEASE_TAG}\" and .event == \"workflow_dispatch\") | .databaseId] | max // empty"
+          }
+
+          retry() {
+            local description="$1"
+            shift
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" == "3" ]]; then
+                echo "::error::${description} failed after ${attempt} attempts." >&2
+                return 1
+              fi
+              echo "::warning::${description} failed on attempt ${attempt}; retrying..." >&2
+              sleep $((attempt * 5))
+            done
+          }
+
+          active_count="$(retry "List active release workflows" active_release_run_count)"
+          if [[ "${active_count}" != "0" ]]; then
+            echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
+            exit 0
+          fi
+          existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
+          existing_latest_run_id="$(retry "List latest dispatched release workflow id" latest_dispatched_release_run_id)"
+          dispatch_status=0
+          retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref main --field "version=${RELEASE_VERSION}" || dispatch_status=$?
+
+          for attempt in 1 2 3 4 5 6; do
+            release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
+            latest_release_run_id="$(retry "Confirm latest dispatched release workflow id" latest_dispatched_release_run_id)"
+            # Only confirm success when this step's dispatch actually succeeded.
+            # A concurrent or manual dispatch on the same tag can otherwise
+            # satisfy the count/id checks while `gh workflow run` failed here.
+            if (( release_run_count > existing_count )) && [[ "${dispatch_status}" == "0" ]]; then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
+              exit 0
+            fi
+            if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" -gt "${existing_latest_run_id:-0}" ]]; then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; latest matching dispatched run id is ${latest_release_run_id}, replacing ${existing_latest_run_id:-none} before dispatch."
+              exit 0
+            fi
+            echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
+            sleep 10
+          done
+          if [[ "${dispatch_status}" != "0" ]]; then
+            echo "release workflow dispatch failed and no release run appeared for ${RELEASE_TAG}." >&2
+            exit "${dispatch_status}"
+          fi
+          echo "::error::Release workflow dispatch did not produce a new run for ${RELEASE_TAG}."
+          exit 1

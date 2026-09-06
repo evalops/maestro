@@ -1,6 +1,6 @@
 //! Agent communication module
 //!
-//! This module implements the native Rust agent used by the Composer TUI.
+//! This module implements the native Rust agent used by the Maestro TUI.
 //! It exposes a lightweight handle for the UI layer and runs the actual
 //! model/tool loop in a background task.
 //!
@@ -77,9 +77,12 @@
 //!         FromAgent::ResponseChunk { content, .. } => {
 //!             print!("{content}");
 //!         }
-//!         FromAgent::ResponseEnd { .. } => {
+//!         FromAgent::ResponseEnd { .. } => { /* model-call boundary */ }
+//!         FromAgent::TurnCompleted { .. } => {
 //!             break;
 //!         }
+//!         FromAgent::TurnInterrupted { reason, .. } => return Err(reason.into()),
+//!         FromAgent::ProviderError { message, .. } => return Err(message.into()),
 //!         _ => {}
 //!     }
 //! }
@@ -87,23 +90,68 @@
 //! # }
 //! ```
 
+pub mod codex_app_server_turns;
+mod codex_selective_summary;
 pub mod compaction;
 pub mod credential_store;
+pub mod extensions;
+#[cfg(test)]
+pub mod harness;
 pub mod message_queue;
 mod native;
-mod protocol;
+pub mod protocol;
+pub mod reminders;
 pub mod retry;
 pub mod safety;
+pub mod selective_summary;
+pub mod session_scope;
+pub use selective_summary::{
+    RangeSelection, SelectiveSummaryOutcome, SelectiveSummaryPreview, SelectiveSummaryRequest,
+    SelectiveSummaryResult, SummaryTurn,
+};
+pub mod process_budget;
+pub mod steer_signal;
+pub mod text_loop;
+pub mod token_counting;
+pub mod token_estimation;
+pub mod turn_budget;
 
+pub use codex_app_server_turns::{
+    CodexAppServerTurnResult, CodexAppServerTurnSession, DynamicToolSpec, TurnWaitEvent,
+    approval_decision, codex_thread_model_id, dynamic_tools_from_native,
+    model_should_use_app_server_turns, parse_tool_call_params, tool_call_error_result,
+    tool_call_success_result,
+};
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
-pub use credential_store::{
-    clear_credentials, credential_stats, resolve_credentials, resolve_credentials_in_json,
-    store_credential, vault_credentials_in_json, CredentialStats, CredentialStore, CredentialType,
+pub use credential_store::{CredentialStats, CredentialStore, CredentialType, CredentialVault};
+pub use extensions::{
+    AgentExtension, BatchEndContext, DoomLoopExtension, ExtensionRegistry, ExtensionStats,
+    ExtensionVerdict, ToolCallContext as ExtensionToolCallContext, ToolResultContext,
+    ToolResultPayload, TurnEndContext, TurnStartContext,
 };
 pub use message_queue::{
-    MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,
+    MAX_PENDING_MESSAGES, MessageQueue, PendingMessage, PromptKind, QueuePlacement, QueueStats,
 };
-pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
-pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
+pub(crate) use native::managed_turn_lineage_id;
+pub use native::{
+    MaxTokensSource, NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseConsumption,
+    ToolResponseMessage,
+};
+pub use protocol::{
+    DenialReason, ExecutionPhase, ExecutionReceipt, ExecutionSource, ExecutionStatus, FromAgent,
+    ManagedInferenceAuthorization, ToAgent, TokenUsage, ToolError, ToolExecution, ToolOutcome,
+    ToolOutput, ToolReceiptDetails, ToolResult, UNTRUSTED_CONTENT_POLICY,
+    ensure_untrusted_content_policy,
+};
+pub use reminders::{REMINDER_CLOSE, REMINDER_OPEN, Reminder, ReminderContext, ReminderEngine};
 pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
-pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};
+pub use safety::{
+    SafetyConfig, SafetyController, SafetyVerdict, is_context_overflow, is_retryable_error,
+    stable_stringify,
+};
+pub use session_scope::{ParentScopeId, SessionId, parent_scope_for_session};
+pub use steer_signal::SteerSignal;
+pub use text_loop::{LoopKind, TextLoopDetector, loop_reminder_message};
+pub use turn_budget::{DEFAULT_MAX_TURN_STEPS, TurnOutcome, TurnStepBudget};
+
+pub(crate) mod context_usage;

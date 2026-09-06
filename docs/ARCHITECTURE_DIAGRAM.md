@@ -1,7 +1,10 @@
 # Maestro CLI - Visual Architecture
 
 Audience: contributors needing a system map; pair with `VSCODE_ARCHITECTURE.md` for extension specifics.  
-Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Safety](SAFETY.md)
+Nav: [Docs index](README.md) · [TUI Architecture](TUI_ARCHITECTURE.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Safety](SAFETY.md)
+
+Interactive terminal UI is **native** `maestro-tui` (`packages/tui-rs`). Headless/web
+paths still use the TypeScript Agent core. See [TUI Architecture](TUI_ARCHITECTURE.md).
 
 ## System Overview
 
@@ -9,22 +12,22 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) ·
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           USER INTERFACE                            │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                      Terminal UI (TUI)                        │  │
+│  │           Terminal UI (native maestro-tui / tui-rs)           │  │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐    │  │
-│  │  │  Component  │  │   Markdown   │  │  Command Palette │    │  │
-│  │  │   System    │  │   Renderer   │  │   & Selectors    │    │  │
+│  │  │  Components │  │   Markdown   │  │  Command Palette │    │  │
+│  │  │  (ratatui)  │  │   Renderer   │  │   & Selectors    │    │  │
 │  │  └──────┬──────┘  └──────┬───────┘  └────────┬─────────┘    │  │
 │  │         │                │                     │              │  │
 │  │         └────────────────┴─────────────────────┘              │  │
 │  │                           │                                    │  │
 │  │                    ┌──────▼──────┐                            │  │
-│  │                    │ TUI Renderer│                            │  │
+│  │                    │  App loop   │ (+ NativeAgent in-process) │  │
 │  │                    └──────┬──────┘                            │  │
 │  └───────────────────────────┼────────────────────────────────────┘  │
 └────────────────────────────────┼──────────────────────────────────────┘
-                                 │
+                                 │  (headless/web/IDE still use TS core)
 ┌────────────────────────────────▼──────────────────────────────────────┐
-│                           AGENT CORE                                  │
+│                    AGENT CORE (TypeScript surfaces)                   │
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │                      Agent Class                              │   │
 │  │  • Event-driven architecture (pub/sub)                        │   │
@@ -297,7 +300,7 @@ Factory CLI Integration                                        │
          │                                    │                       │
          ▼                                    ▼                       ▼
     ┌─────────────┐                  ┌──────────────┐        ┌──────────────┐
-    │ TUI Renderer│                  │  Telemetry   │        │   Session    │
+    │ Native TUI  │                  │  Telemetry   │        │   Session    │
     │             │                  │   Logger     │        │   Manager    │
     │ Updates UI  │                  │              │        │              │
     │ components  │                  │ Records:     │        │ Persists:    │

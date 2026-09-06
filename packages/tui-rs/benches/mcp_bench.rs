@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo bench --bench mcp_bench
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::mcp::{
-    load_mcp_config, McpClient, McpConfig, McpConfigScope, McpContent, McpRequest, McpResponse,
-    McpServerConfig, McpTool, McpToolResult, McpTransport,
+    McpClient, McpConfig, McpConfigScope, McpContent, McpRequest, McpResponse, McpServerConfig,
+    McpTool, McpToolResult, McpTransport, load_mcp_config,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -115,6 +115,14 @@ fn bench_mcp_server_config(c: &mut Criterion) {
                 cwd: None,
                 url: None,
                 headers: HashMap::new(),
+                headers_helper: None,
+                auth_preset: None,
+                connection_ref: None,
+                credential_ref: None,
+                managed_generation: None,
+                supports_parallel_tool_calls: None,
+                requires_project_approval: None,
+                disabled_tools: Vec::new(),
                 timeout: Some(30000),
                 enabled: true,
                 disabled: false,
@@ -134,6 +142,14 @@ fn bench_mcp_server_config(c: &mut Criterion) {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            connection_ref: None,
+            credential_ref: None,
+            managed_generation: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
+            disabled_tools: Vec::new(),
             timeout: Some(30000),
             enabled: true,
             disabled: false,

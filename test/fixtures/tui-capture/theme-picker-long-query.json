@@ -1,0 +1,23 @@
+{
+  "name": "theme-picker-long-query",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/theme"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Theme"
+    },
+    {
+      "text": "\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672c\u65e5\u672cTAIL"
+    },
+    {
+      "wait": "(?s)TAIL.*No matching themes"
+    }
+  ]
+}

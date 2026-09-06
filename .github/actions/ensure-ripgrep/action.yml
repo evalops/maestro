@@ -1,0 +1,68 @@
+name: Ensure ripgrep
+description: Install ripgrep when a runner image does not already provide rg.
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure ripgrep
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if command -v rg >/dev/null 2>&1; then
+          rg --version
+          exit 0
+        fi
+
+        install_with_apt() {
+          # Bound apt's network waits. apt's defaults (120s per connection,
+          # several retries per index file) let a black-holed mirror stall
+          # "apt-get update" for 45+ minutes — this burned a full
+          # integration-tests job timeout on 2026-07-23 when
+          # azure.archive.ubuntu.com hung. 10s per fetch with one retry
+          # keeps the worst case at a couple of minutes.
+          local apt_opts=(
+            -o Acquire::http::Timeout=10
+            -o Acquire::https::Timeout=10
+            -o Acquire::Retries=1
+          )
+          for attempt in 1 2 3; do
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get "${apt_opts[@]}" update && sudo apt-get "${apt_opts[@]}" install -y ripgrep
+            else
+              apt-get "${apt_opts[@]}" update && apt-get "${apt_opts[@]}" install -y ripgrep
+            fi
+            if command -v rg >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "apt-get ripgrep install did not expose rg on attempt ${attempt}; retrying." >&2
+            sleep $((attempt * 2))
+          done
+          return 1
+        }
+
+        install_with_brew() {
+          brew install ripgrep
+        }
+
+        install_status=1
+        install_method=""
+        if command -v apt-get >/dev/null 2>&1; then
+          install_method="apt-get"
+          install_with_apt || install_status=$?
+        elif command -v brew >/dev/null 2>&1; then
+          install_method="Homebrew"
+          install_with_brew || install_status=$?
+        else
+          echo "::error::ripgrep is required but neither rg, apt-get, nor Homebrew is available on this runner."
+          exit 1
+        fi
+
+        if command -v rg >/dev/null 2>&1; then
+          echo "Installed ripgrep with ${install_method}."
+          rg --version
+          exit 0
+        fi
+
+        echo "::error::ripgrep installation with ${install_method} failed with status ${install_status}."
+        exit "$install_status"

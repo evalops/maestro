@@ -21,6 +21,17 @@ const EXA_API_BASE: &str = "https://api.exa.ai";
 const MAX_RESULT_TEXT_CHARS: usize = 800;
 const MAX_OUTPUT_CHARS: usize = 6000;
 
+/// Timeout for Exa API requests, matching `web_fetch`'s default.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// HTTP client with a bounded timeout so a stalled host cannot hang the turn.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
 fn get_exa_api_key() -> Result<String, String> {
     std::env::var("EXA_API_KEY").map_err(|_| {
         "EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys"
@@ -153,7 +164,7 @@ pub async fn websearch(args: Value) -> ToolResult {
         body.insert("contents".to_string(), Value::Object(contents));
     }
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = match client
         .post(format!("{EXA_API_BASE}/search"))
         .bearer_auth(api_key)
@@ -246,6 +257,7 @@ pub async fn websearch(args: Value) -> ToolResult {
 
     let details = serde_json::json!({
         "requestId": request_id,
+        "query": parsed.query,
         "resolvedSearchType": resolved_type,
         "resultsCount": results.len(),
         "costDollars": cost,
@@ -276,7 +288,7 @@ pub async fn codesearch(args: Value) -> ToolResult {
         "tokensNum": tokens
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = match client
         .post(format!("{EXA_API_BASE}/context"))
         .bearer_auth(api_key)
@@ -364,6 +376,33 @@ pub async fn codesearch(args: Value) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static EXA_API_KEY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarRestore {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                original: std::env::var(key).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     // ========================================================================
     // normalize_cost_dollars Tests
@@ -511,34 +550,27 @@ mod tests {
 
     #[test]
     fn test_get_exa_api_key_not_set() {
-        // Temporarily unset the key if it exists
-        let original = std::env::var("EXA_API_KEY").ok();
+        let _lock = EXA_API_KEY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let _restore = EnvVarRestore::capture("EXA_API_KEY");
         std::env::remove_var("EXA_API_KEY");
 
         let result = get_exa_api_key();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("EXA_API_KEY"));
-
-        // Restore if it was set
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        }
     }
 
     #[test]
     fn test_get_exa_api_key_set() {
-        let original = std::env::var("EXA_API_KEY").ok();
+        let _lock = EXA_API_KEY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let _restore = EnvVarRestore::capture("EXA_API_KEY");
         std::env::set_var("EXA_API_KEY", "test-key-123");
 
         let result = get_exa_api_key();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test-key-123");
-
-        // Restore original state
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        } else {
-            std::env::remove_var("EXA_API_KEY");
-        }
     }
 }

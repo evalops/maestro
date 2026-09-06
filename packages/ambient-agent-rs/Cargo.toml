@@ -15,45 +15,47 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "fs", "process", "time"] }
-tokio-stream = "0.1"
-futures = "0.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal", "fs", "process", "time"] }
+tokio-stream.workspace = true
+futures.workspace = true
 
 # HTTP client for GitHub API and AI
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
+async-nats = "0.48"
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
 
 # Error handling
-anyhow = "1"
-thiserror = "2"
+anyhow.workspace = true
+thiserror.workspace = true
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap.workspace = true
 
 # Async traits
 async-trait = "0.1"
 
 # Utilities
 rand = "0.8"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
+uuid.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+sha2.workspace = true
 hex = "0.4"
-regex = "1"
-glob = "0.3"
-dirs = "6"
+regex.workspace = true
+glob.workspace = true
+dirs.workspace = true
+dunce.workspace = true
 
 # GitHub
 octocrab = "0.41"
 
 [dev-dependencies]
 tokio-test = "0.4"
-tempfile = "3"
+tempfile.workspace = true

@@ -1,0 +1,137 @@
+name: deprecate-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: Package name to deprecate. Defaults to package.json name.
+        required: false
+        default: ""
+        type: string
+      range:
+        description: Version or npm range to deprecate.
+        required: true
+        default: ">=0.10.8 <=0.10.20"
+        type: string
+      message:
+        description: Optional deprecation message. Leave blank to use the package-aware script default.
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: Print the npm deprecate command without changing npm.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.package_name || 'default-package' }}-${{ github.event.inputs.range || github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      package_name: ${{ steps.defaults.outputs.package_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - id: defaults
+        run: node -e "process.stdout.write('package_name=' + require('./package.json').name + '\n')" >> "$GITHUB_OUTPUT"
+
+      - name: Validate deprecation target
+        env:
+          PACKAGE_NAME: ${{ github.event.inputs.package_name || steps.defaults.outputs.package_name }}
+          RANGE: ${{ github.event.inputs.range }}
+          MESSAGE: ${{ github.event.inputs.message }}
+        run: |
+          set -euo pipefail
+
+          args=(--range "$RANGE" --package "$PACKAGE_NAME")
+          if [[ -n "$MESSAGE" ]]; then
+            args+=(--message "$MESSAGE")
+          fi
+
+          node scripts/deprecate-release.js "${args[@]}" --dry-run
+          npm view "${PACKAGE_NAME}@${RANGE}" version --json >/dev/null
+
+          current_deprecation="$(npm view "${PACKAGE_NAME}@${RANGE}" deprecated --json 2>/dev/null || true)"
+          if [[ -n "$current_deprecation" && "$current_deprecation" != "null" && "$current_deprecation" != '""' ]]; then
+            echo "::notice::${PACKAGE_NAME}@${RANGE} is already deprecated: ${current_deprecation}"
+          fi
+
+  deprecate:
+    if: ${{ github.event.inputs.dry_run == 'false' }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Deprecate package release
+        env:
+          PACKAGE_NAME: ${{ github.event.inputs.package_name || needs.preflight.outputs.package_name }}
+          RANGE: ${{ github.event.inputs.range }}
+          MESSAGE: ${{ github.event.inputs.message }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_TOKEN is required in the npm-release environment to deprecate npm releases."
+            exit 1
+          fi
+
+          npm_userconfig="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          mkdir -p "$(dirname "$npm_userconfig")"
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > "$npm_userconfig"
+          if [[ "$npm_userconfig" != "$HOME/.npmrc" ]]; then
+            cp "$npm_userconfig" "$HOME/.npmrc"
+          fi
+
+          if ! npm_user="$(npm whoami 2>/tmp/npm-whoami.err)"; then
+            cat /tmp/npm-whoami.err >&2
+            echo "::error::NPM_TOKEN is present but npm whoami failed. Refresh the npm-release NPM_TOKEN secret before deprecating releases."
+            exit 1
+          fi
+          echo "Authenticated to npm as ${npm_user}."
+
+          args=(--range "$RANGE" --package "$PACKAGE_NAME")
+          if [[ -n "$MESSAGE" ]]; then
+            args+=(--message "$MESSAGE")
+          fi
+
+          node scripts/deprecate-release.js "${args[@]}"
+
+          for attempt in 1 2 3 4 5 6; do
+            current_deprecation="$(npm view "${PACKAGE_NAME}@${RANGE}" deprecated --json 2>/dev/null || true)"
+            if [[ -n "$current_deprecation" && "$current_deprecation" != "null" && "$current_deprecation" != '""' ]]; then
+              echo "Verified deprecation for ${PACKAGE_NAME}@${RANGE}: ${current_deprecation}"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt 6 ]]; then
+              sleep 10
+            fi
+          done
+
+          echo "::error::npm did not report a deprecation for ${PACKAGE_NAME}@${RANGE} after the update."
+          exit 1

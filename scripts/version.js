@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Version bumping script for Composer CLI
+ * Version bumping script for Maestro.
  * Usage:
  *   npm run version:patch
  *   npm run version:minor
@@ -12,10 +12,16 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 	readPackageJson,
+	shouldManagePackageLock,
 	syncInternalDependencies,
 	verifyAlignedVersions,
 	writePackageJson,
 } from "./workspace-utils.js";
+import {
+	buildChangelogEntryFromGit,
+	insertChangelogEntry,
+	mergeOrInsertChangelogEntry,
+} from "./release-notes.js";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,28 +42,53 @@ function bumpVersion(currentVersion, type) {
 	}
 }
 
-function updateChangelog(newVersion) {
+function rustVersionFiles() {
+	return [
+		{
+			path: join(process.cwd(), "packages/maestro-rs/Cargo.toml"),
+			pattern: /(\[package\]\nname = "maestro"\nversion = ")[^"]+(")/u,
+		},
+		{
+			path: join(process.cwd(), "Cargo.lock"),
+			pattern: /(\[\[package\]\]\nname = "maestro"\nversion = ")[^"]+(")/u,
+		},
+	];
+}
+
+function updateRustVersion(newVersion, backups) {
+	for (const entry of rustVersionFiles()) {
+		const original = readFileSync(entry.path, "utf8");
+		if (!entry.pattern.test(original)) {
+			throw new Error(`Unable to update Rust package version in ${entry.path}`);
+		}
+		const updated = original.replace(entry.pattern, `$1${newVersion}$2`);
+		backups.push({ path: entry.path, original });
+		writeFileSync(entry.path, updated);
+	}
+	console.log("🦀 Updated Rust package version");
+}
+
+function updateChangelog(
+	newVersion,
+	{ releaseNotesRef = "HEAD", replaceExisting = false } = {},
+) {
 	const changelogPath = join(process.cwd(), "CHANGELOG.md");
 	try {
 		const content = readFileSync(changelogPath, "utf-8");
-		const date = new Date().toISOString().split("T")[0];
-		const newEntry = `\n## [${newVersion}] - ${date}\n\n### Added\n\n### Changed\n\n### Fixed\n\n`;
-		
-		// Insert after the first heading
-		const lines = content.split("\n");
-		const insertIndex = lines.findIndex(line => line.startsWith("## "));
-		
-		if (insertIndex !== -1) {
-			lines.splice(insertIndex, 0, newEntry);
-			writeFileSync(changelogPath, lines.join("\n"));
-			console.log(`📝 Updated CHANGELOG.md with ${newVersion}`);
-		}
+		const newEntry = buildChangelogEntryFromGit(newVersion, {
+			toRef: releaseNotesRef,
+		});
+		const nextContent = replaceExisting
+			? mergeOrInsertChangelogEntry(content, newVersion, newEntry)
+			: insertChangelogEntry(content, newEntry);
+		writeFileSync(changelogPath, nextContent);
+		console.log(`📝 Updated CHANGELOG.md with ${newVersion}`);
 	} catch (error) {
 		console.warn("⚠️  Could not update CHANGELOG.md:", error.message);
 	}
 }
 
-function updatePackageLock(newVersion) {
+function updatePackageLock() {
 	try {
 		// Update package-lock.json
 		execSync("npm install --package-lock-only", { stdio: "inherit" });
@@ -68,28 +99,50 @@ function updatePackageLock(newVersion) {
 	}
 }
 
-function restoreBackups(backups) {
-	for (const backup of backups) {
-		writePackageJson(backup.path, backup.original);
+function updateOpenApiSpec() {
+	try {
+		execSync("npm run openapi:generate", { stdio: "inherit" });
+		console.log("📘 Updated openapi.json");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to update openapi.json: ${reason}`);
 	}
 }
 
-function main() {
-	const bumpType = process.argv[2];
-	
-	if (!bumpType || !["patch", "minor", "major"].includes(bumpType)) {
-		console.error("Usage: node version.js <patch|minor|major>");
-		process.exit(1);
+function syncPackageMetadata() {
+	try {
+		execSync("npm run metadata:sync", { stdio: "inherit" });
+		console.log("🧭 Synced package metadata");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to sync package metadata: ${reason}`);
 	}
+}
 
+function hasScript(rootPkg, scriptName) {
+	return typeof rootPkg.scripts?.[scriptName] === "string";
+}
+
+function restoreBackups(backups) {
+	for (const backup of backups) {
+		if (backup.path.endsWith(".json")) {
+			writePackageJson(backup.path, backup.original);
+		} else {
+			writeFileSync(backup.path, backup.original);
+		}
+	}
+}
+
+async function updateVersionedFiles(
+	newVersion,
+	{ releaseNotesRef = "HEAD", replaceChangelog = false } = {},
+) {
 	const rootPkg = loadRootPackage();
-	const workspacePkgs = getWorkspacePackages(rootPkg);
+	const workspacePkgs = await getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
-
 	const currentVersion = rootPkg.version;
-	const newVersion = bumpVersion(currentVersion, bumpType);
 
-	console.log(`🔼 Bumping version: ${currentVersion} → ${newVersion}`);
+	console.log(`🔼 Setting version: ${currentVersion} → ${newVersion}`);
 
 	// Prepare updated package data (in-memory)
 	rootPkg.version = newVersion;
@@ -119,15 +172,42 @@ function main() {
 		for (const pkg of workspacePkgs) {
 			writePackageJson(pkg.path, pkg.data);
 		}
+		updateRustVersion(newVersion, backups);
 		console.log("✅ Updated package.json files");
 
 		// Update changelog
-		updateChangelog(newVersion);
+			updateChangelog(newVersion, {
+				releaseNotesRef,
+				replaceExisting: replaceChangelog,
+			});
+
+		if (hasScript(rootPkg, "openapi:generate")) {
+			updateOpenApiSpec();
+		} else {
+			console.log("📘 Skipped openapi.json update (script missing)");
+		}
+
+		if (hasScript(rootPkg, "metadata:sync")) {
+			syncPackageMetadata();
+		} else {
+			console.log("🧭 Skipped package metadata sync (script missing)");
+		}
+
+		if (hasScript(rootPkg, "cutover:check")) {
+			execSync("npm run cutover:check", { stdio: "inherit" });
+			console.log("🚚 Verified package cutover readiness");
+		} else {
+			console.log("🚚 Skipped package cutover readiness check (script missing)");
+		}
 
 		// Update package-lock.json
-		updatePackageLock(newVersion);
+		if (shouldManagePackageLock(rootPkg)) {
+			updatePackageLock();
+		} else {
+			console.log("📦 Skipped package-lock.json update for workspace-only repo");
+		}
 	} catch (error) {
-		console.error("⚠️  Version bump failed, restoring package.json files");
+		console.error("⚠️  Version bump failed, restoring versioned files");
 		restoreBackups(backups);
 		throw error;
 	}
@@ -137,9 +217,65 @@ function main() {
 	console.log(`  1. Review CHANGELOG.md and add your changes`);
 	console.log(`  2. git add .`);
 	console.log(`  3. git commit -m "Release v${newVersion}"`);
-	console.log(`  4. git tag v${newVersion}`);
-	console.log(`  5. git push origin main --tags`);
-	console.log(`  6. npm publish`);
+	console.log(`  4. git push origin <branch>`);
+	console.log(`  5. Open and merge a PR into main, or use the version-bump workflow next time`);
+	console.log(`  6. Verify the tag-release workflow creates v${newVersion}`);
+	console.log(`  7. Verify the release workflow handles v${newVersion}`);
+}
+
+async function main() {
+	const command = process.argv[2];
+
+	if (command === "next") {
+		const bumpType = process.argv[3];
+		if (!bumpType || !["patch", "minor", "major"].includes(bumpType)) {
+			console.error("Usage: node version.js next <patch|minor|major>");
+			process.exit(1);
+		}
+		process.stdout.write(`${bumpVersion(loadRootPackage().version, bumpType)}\n`);
+		return;
+	}
+
+		if (command === "set") {
+			const requestedVersion = process.argv[3];
+			let releaseNotesRef = "HEAD";
+			for (let index = 4; index < process.argv.length; index += 1) {
+				const arg = process.argv[index];
+				switch (arg) {
+					case "--release-notes-ref":
+						releaseNotesRef = process.argv[++index] ?? "";
+						break;
+					default:
+						console.error(`Unknown argument: ${arg}`);
+						process.exit(1);
+				}
+			}
+			if (
+				!requestedVersion ||
+				!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(requestedVersion) ||
+				!releaseNotesRef
+			) {
+				console.error(
+					"Usage: node version.js set <semver> [--release-notes-ref <ref>]",
+				);
+				process.exit(1);
+			}
+			await updateVersionedFiles(requestedVersion, {
+				releaseNotesRef,
+				replaceChangelog: true,
+			});
+			return;
+		}
+
+	if (!command || !["patch", "minor", "major"].includes(command)) {
+		console.error(
+			"Usage: node version.js <patch|minor|major> | next <patch|minor|major> | set <semver>",
+		);
+		process.exit(1);
+	}
+
+	const newVersion = bumpVersion(loadRootPackage().version, command);
+	await updateVersionedFiles(newVersion);
 }
 
 main();

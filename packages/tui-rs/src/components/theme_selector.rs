@@ -1,313 +1,247 @@
-//! Theme selector modal
-//!
-//! Provides a UI for selecting UI themes.
-
+//! Theme selection uses the shared picker; applying a theme remains with the app.
+use crate::themes;
+use crossterm::event::KeyCode;
+use maestro_ui::{ActionPicker, KeyHint, Modal, ModalSize, PickerOptions, PickerOutcome};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::ListItem,
 };
 
-use crate::themes;
-
-/// Theme selector modal state
 pub struct ThemeSelector {
-    /// Available theme names
-    themes: Vec<String>,
-    /// Current search query
-    query: String,
-    /// Cursor position in query
-    cursor: usize,
-    /// Filtered themes
-    filtered: Vec<usize>,
-    /// Selected index (in filtered list)
-    selected: usize,
-    /// Whether the modal is visible
-    visible: bool,
-    /// Current theme name (for highlighting)
+    picker: ActionPicker<String>,
     current_theme: Option<String>,
-    /// List state for scrolling
-    list_state: ListState,
+    original_theme: Option<themes::Theme>,
 }
-
 impl Default for ThemeSelector {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl ThemeSelector {
-    /// Create a new theme selector
     #[must_use]
     pub fn new() -> Self {
-        let theme_list = themes::available_themes();
-        let filtered: Vec<usize> = (0..theme_list.len()).collect();
         Self {
-            themes: theme_list,
-            query: String::new(),
-            cursor: 0,
-            filtered,
-            selected: 0,
-            visible: false,
+            picker: ActionPicker::new(themes::available_themes())
+                .identified_by(String::as_str)
+                .expect("theme names are unique")
+                .searchable(String::as_str),
             current_theme: None,
-            list_state: ListState::default(),
+            original_theme: None,
         }
     }
-
-    /// Set the current theme (for highlighting)
-    pub fn set_current_theme(&mut self, theme_name: Option<String>) {
-        self.current_theme = theme_name;
+    pub fn set_current_theme(&mut self, name: Option<String>) {
+        self.current_theme = name;
     }
-
-    /// Show the modal
     pub fn show(&mut self) {
-        self.visible = true;
-        self.query.clear();
-        self.cursor = 0;
-        self.selected = 0;
-        self.current_theme = Some(themes::current_theme_name());
-        self.filter();
+        let original = themes::current_theme();
+        self.current_theme = Some(original.name.clone());
+        self.picker.open();
+        self.picker.select_id(&original.name);
+        self.original_theme = Some(original);
     }
-
-    /// Hide the modal
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.picker.close();
     }
-
-    /// Check if visible
     #[must_use]
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.picker.is_open()
     }
-
-    /// Insert a character
-    pub fn insert_char(&mut self, c: char) {
-        self.query.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-        self.filter();
+    pub fn insert_str(&mut self, text: &str) -> PickerOutcome<String> {
+        self.picker.insert_str(text)
     }
-
-    /// Delete character before cursor
-    pub fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.query[..self.cursor]
-                .chars()
-                .last()
-                .map_or(0, char::len_utf8);
-            self.query.remove(self.cursor - prev);
-            self.cursor -= prev;
-            self.filter();
+    pub fn handle_key(&mut self, code: KeyCode, ctrl: bool) -> PickerOutcome<String> {
+        self.picker.handle_key(code, ctrl)
+    }
+    /// The opening palette is kept in memory, including custom theme contents.
+    pub fn original_theme(&self) -> Option<&themes::Theme> {
+        self.original_theme.as_ref()
+    }
+    /// Resolve a preview/commit/restore without applying global state here.
+    pub fn theme_for(
+        &self,
+        outcome: &PickerOutcome<String>,
+    ) -> Result<Option<themes::Theme>, themes::ThemeError> {
+        match outcome {
+            PickerOutcome::Changed(Some(name)) | PickerOutcome::Selected(name) => {
+                themes::load_theme(name).map(Some)
+            }
+            PickerOutcome::Changed(None) | PickerOutcome::Cancelled => {
+                Ok(self.original_theme.clone())
+            }
+            PickerOutcome::Pending => Ok(None),
         }
     }
-
-    /// Move cursor left
-    pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.query[..self.cursor]
-                .chars()
-                .last()
-                .map_or(0, char::len_utf8);
-            self.cursor -= prev;
-        }
-    }
-
-    /// Move cursor right
-    pub fn move_right(&mut self) {
-        if self.cursor < self.query.len() {
-            let next = self.query[self.cursor..]
-                .chars()
-                .next()
-                .map_or(0, char::len_utf8);
-            self.cursor += next;
-        }
-    }
-
-    /// Move selection up
-    pub fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-            self.list_state.select(Some(self.selected));
-        }
-    }
-
-    /// Move selection down
-    pub fn move_down(&mut self) {
-        if self.selected + 1 < self.filtered.len() {
-            self.selected += 1;
-            self.list_state.select(Some(self.selected));
-        }
-    }
-
-    /// Get the selected theme name
-    #[must_use]
-    pub fn selected_theme(&self) -> Option<&str> {
-        self.filtered
-            .get(self.selected)
-            .and_then(|&idx| self.themes.get(idx))
-            .map(std::string::String::as_str)
-    }
-
-    /// Confirm selection and return the theme name
-    pub fn confirm(&mut self) -> Option<String> {
-        let name = self.selected_theme().map(std::string::ToString::to_string);
-        self.hide();
-        name
-    }
-
-    /// Filter themes based on query
-    fn filter(&mut self) {
-        let query = self.query.to_lowercase();
-        self.filtered = self
-            .themes
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                if query.is_empty() {
-                    return true;
-                }
-                t.to_lowercase().contains(&query)
-            })
-            .map(|(i, _)| i)
-            .collect();
-
-        // Reset selection if out of bounds
-        if self.selected >= self.filtered.len() {
-            self.selected = 0;
-        }
-        // Sync list state
-        if self.filtered.is_empty() {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(self.selected));
-        }
-    }
-
-    /// Render the modal
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        if !self.visible {
+        if !self.picker.is_open() {
             return;
         }
-
-        // Calculate modal size
-        let modal_width = 50.min(area.width.saturating_sub(4));
-        let modal_height = 12.min(area.height.saturating_sub(4));
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear the area
-        frame.render_widget(Clear, modal_area);
-
-        // Create the outer block
-        let block = Block::default()
-            .title(" Select Theme ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // Layout: search box + list
-        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
-
-        // Search input
-        let search_block = Block::default()
-            .title(" Search ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let search_text = if self.query.is_empty() {
-            Paragraph::new("Type to filter themes...")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(search_block)
+        let theme = themes::current_ui_theme();
+        let inner = Modal::sized("Select Theme", ModalSize::Standard)
+            .theme(theme)
+            .render(frame, area);
+        let (picker_area, preview_area) = if inner.height >= 12 {
+            let chunks = Layout::vertical([Constraint::Min(5), Constraint::Length(7)]).split(inner);
+            (chunks[0], Some(chunks[1]))
         } else {
-            Paragraph::new(self.query.as_str())
-                .style(Style::default().fg(Color::White))
-                .block(search_block)
+            (inner, None)
         };
-
-        frame.render_widget(search_text, chunks[0]);
-
-        // Theme list
-        let items: Vec<ListItem> = self
-            .filtered
-            .iter()
-            .map(|&theme_idx| {
-                let theme_name = &self.themes[theme_idx];
-                let is_current = self.current_theme.as_ref().is_some_and(|c| c == theme_name);
-
+        if let Some(area) = preview_area {
+            frame.render_widget(
+                maestro_presentation::components::theme_preview::ThemePreview(theme),
+                area,
+            );
+        }
+        let current = &self.current_theme;
+        self.picker.render(
+            frame,
+            picker_area,
+            theme,
+            PickerOptions {
+                placeholder: "Type to filter themes...",
+                empty: "No matching themes",
+                hints: Some(&[
+                    KeyHint::new("Enter", "select"),
+                    KeyHint::new("Esc", "cancel"),
+                    KeyHint::new("↑↓", "navigate"),
+                ]),
+                ..PickerOptions::default()
+            },
+            |name| {
                 let mut spans = vec![Span::styled(
-                    theme_name.clone(),
+                    name.as_str(),
                     Style::default().add_modifier(Modifier::BOLD),
                 )];
-
-                if is_current {
+                if current.as_ref().is_some_and(|c| c == name) {
                     spans.push(Span::styled(
                         " (current)",
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(theme.success),
                     ));
                 }
-
                 ListItem::new(Line::from(spans))
-            })
-            .collect();
-
-        let list =
-            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
-        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
+            },
+        );
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_theme_selector_creation() {
-        let selector = ThemeSelector::new();
+    fn vscode_palette_can_be_previewed_cancelled_and_selected() {
+        let mut selector = ThemeSelector::new();
+        selector.show();
+        let original = selector.original_theme().unwrap().name.clone();
+        let preview = selector.insert_str("vscode-monokai");
+        let theme = selector.theme_for(&preview).unwrap().unwrap();
+        assert_eq!(theme.name, "vscode-monokai");
+        assert_eq!(theme.colors.assistant_message_bg, "#272822");
+        let cancel = selector.handle_key(KeyCode::Esc, false);
+        assert_eq!(selector.theme_for(&cancel).unwrap().unwrap().name, original);
+
+        selector.show();
+        selector.insert_str("vscode-light-modern");
+        let selected = selector.handle_key(KeyCode::Enter, false);
+        assert_eq!(
+            selector.theme_for(&selected).unwrap().unwrap().name,
+            "vscode-light-modern"
+        );
         assert!(!selector.is_visible());
-        assert!(!selector.themes.is_empty());
     }
 
     #[test]
-    fn test_theme_selector_show_hide() {
-        let mut selector = ThemeSelector::new();
-        selector.show();
-        assert!(selector.is_visible());
-        selector.hide();
-        assert!(!selector.is_visible());
-    }
-
-    #[test]
-    fn test_theme_selector_navigation() {
-        let mut selector = ThemeSelector::new();
-        selector.show();
-
-        assert_eq!(selector.selected, 0);
-        if selector.filtered.len() > 1 {
-            selector.move_down();
-            assert_eq!(selector.selected, 1);
-            selector.move_up();
-            assert_eq!(selector.selected, 0);
+    fn picker_renders_the_same_sample_at_wide_and_narrow_sizes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(100, 30), (60, 20)] {
+            let mut selector = ThemeSelector::new();
+            selector.show();
+            let original = selector.original_theme().unwrap().name.clone();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| selector.render(f, f.area())).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Dex · ready"));
+            assert!(text.contains("Let's make something useful."));
+            assert!(text.contains("Ask Dex"));
+            assert_eq!(selector.original_theme().unwrap().name, original);
         }
     }
 
     #[test]
-    fn test_theme_selector_confirm() {
+    fn current_theme_is_selected_and_preview_cancel_returns_the_opening_palette() {
         let mut selector = ThemeSelector::new();
         selector.show();
+        let original = selector.original_theme().unwrap().clone();
+        assert_eq!(selector.picker.selected(), Some(&original.name));
+        let name = if original.name == "light" {
+            "dark"
+        } else {
+            "light"
+        };
+        let outcome = selector.insert_str(name);
+        assert!(matches!(outcome, PickerOutcome::Changed(Some(_))));
+        assert_eq!(selector.theme_for(&outcome).unwrap().unwrap().name, name);
+        let cancel = selector.handle_key(KeyCode::Esc, false);
+        assert_eq!(
+            selector.theme_for(&cancel).unwrap().unwrap().name,
+            original.name
+        );
+        assert_eq!(
+            selector.theme_for(&cancel).unwrap().unwrap().colors.accent,
+            original.colors.accent
+        );
+    }
 
-        let theme_name = selector.confirm();
-        assert!(theme_name.is_some());
+    #[test]
+    fn theme_picker_filters_paste_and_confirms_without_applying_a_theme() {
+        let mut selector = ThemeSelector::new();
         assert!(!selector.is_visible());
+        selector.show();
+        let name = selector.picker.selected().unwrap().clone();
+        selector.insert_str(&name);
+        assert_eq!(
+            selector.handle_key(KeyCode::Enter, false),
+            PickerOutcome::Selected(name)
+        );
+        assert!(!selector.is_visible());
+        assert_eq!(
+            selector.handle_key(KeyCode::Enter, false),
+            PickerOutcome::Pending
+        );
+    }
+    #[test]
+    fn theme_picker_cancel_and_empty_results_never_return_a_theme() {
+        let mut selector = ThemeSelector::new();
+        selector.show();
+        selector.handle_key(KeyCode::Down, false);
+        assert_eq!(
+            selector.handle_key(KeyCode::Esc, false),
+            PickerOutcome::Cancelled
+        );
+        selector.show();
+        selector.insert_str("no-such-result-zzz");
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| selector.render(f, f.area())).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("No matching themes"));
+        assert!(text.contains("Enter select · Esc cancel"));
+        assert!(text.contains("↑↓ navigate"));
+        assert_eq!(
+            selector.handle_key(KeyCode::Enter, false),
+            PickerOutcome::Cancelled
+        );
     }
 }

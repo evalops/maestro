@@ -72,6 +72,8 @@ mod types;
 pub use executor::SwarmExecutor;
 pub use plan_parser::{parse_plan, parse_simple_list, validate_plan};
 pub use types::{
-    AgentId, SwarmConfig, SwarmEvent, SwarmPlan, SwarmState, SwarmStatus, SwarmTask, TaskId,
-    TaskPriority, TaskResult, TaskStatus,
+    AgentId, AgentMode, DispatchSource, ModelProvider, ModelTier, ReasoningEffort,
+    ResolvedSubagentDispatch, SubagentType, SwarmConfig, SwarmEvent, SwarmPlan, SwarmState,
+    SwarmStatus, SwarmTask, TaskId, TaskPriority, TaskResult, TaskStatus, model_for_tier,
+    resolve_subagent_dispatch,
 };

@@ -96,14 +96,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use crate::sandbox::SandboxPolicy;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
+use super::SubagentLifecycleEvent;
 use super::ask_user;
 use super::background_tasks;
-use super::bash::{BashArgs, BashTool};
+use super::bash::{BashArgs, BashOutputStream, BashTool, BashVersion};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::details::{
     DiffDetails, EditDetails, GlobDetails, GrepDetails, ListDetails, ReadDetails, WriteDetails,
@@ -112,21 +115,29 @@ use super::exa;
 use super::extract_document;
 use super::gh;
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
-use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
+use super::inline::{InlineTool, InlineToolExecutor, load_inline_tools};
 use super::notebook_edit;
+use super::orb_delegation::{
+    DEFAULT_ORB_MCP_SERVER, OrbConsoleAction, OrbDelegationAdapter, OrbOperationValidator,
+    is_reserved_orb_tool,
+};
 use super::status;
+use super::subagents::SubagentManager;
 use super::todo;
+use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
-use crate::agent::{FromAgent, ToolDefinition, ToolResult};
-use crate::ai::Tool;
+use crate::agent::{
+    CredentialVault, DenialReason, ExecutionSource, FromAgent, ToolDefinition, ToolExecution,
+    ToolResult,
+};
 use crate::lsp;
 use crate::mcp::{
-    append_mcp_prompt_summary, load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt,
-    McpTransport,
+    McpClient, McpConfig, McpConfigScope, McpContent, McpPrompt, McpServerConfig, McpTransport,
+    append_mcp_prompt_summary, load_mcp_config_with_managed_connections,
 };
+use crate::orb_connection::{HostedOrbOwnerBinding, hosted_orb_owner_binding};
 use crate::safety::{
-    expand_tilde, is_tilde_path, require_plan, run_validators_with_diagnostics, ActionFirewall,
-    FirewallVerdict,
+    ActionFirewall, FirewallVerdict, expand_tilde, is_tilde_path, run_validators_with_diagnostics,
 };
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
@@ -135,21 +146,157 @@ const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
 const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 
-fn shell_escape(arg: &str) -> String {
-    if arg.is_empty() {
-        return "''".to_string();
+#[derive(Debug, Clone)]
+struct HostedOrbConnectionSnapshot {
+    server: McpServerConfig,
+    owner_binding: HostedOrbOwnerBinding,
+}
+
+/// Resolve the managed Computer server and its opaque owner binding from one
+/// immutable configuration snapshot. The client synchronizer must consume
+/// that same snapshot; resolving the owner first and reloading configuration
+/// for the client can otherwise pair owner A with connection B during a
+/// managed-account switch.
+fn hosted_orb_connection_snapshot(
+    config: &McpConfig,
+) -> Result<HostedOrbConnectionSnapshot, String> {
+    hosted_orb_connection_snapshot_with(config, |server| {
+        hosted_orb_owner_binding(server)
+            .map_err(|error| format!("resolve hosted Computer owner binding: {error:#}"))
+    })
+}
+
+fn hosted_orb_connection_snapshot_with<F>(
+    config: &McpConfig,
+    resolve_owner: F,
+) -> Result<HostedOrbConnectionSnapshot, String>
+where
+    F: FnOnce(&McpServerConfig) -> Result<HostedOrbOwnerBinding, String>,
+{
+    let Some(server) = config
+        .enabled_servers()
+        .find(|server| server.name == DEFAULT_ORB_MCP_SERVER)
+        .cloned()
+    else {
+        return Err(format!(
+            "Computer delegation requires a managed MCP server named \"{DEFAULT_ORB_MCP_SERVER}\""
+        ));
+    };
+    if server.transport != McpTransport::Http {
+        return Err(
+            "Computer delegation requires the hosted HTTP MCP endpoint; local Computer control planes are not supported"
+            .to_string(),
+        );
     }
-    let mut escaped = String::with_capacity(arg.len() + 2);
-    escaped.push('\'');
-    for ch in arg.chars() {
-        if ch == '\'' {
-            escaped.push_str("'\\''");
-        } else {
-            escaped.push(ch);
+    let owner_binding = resolve_owner(&server)?;
+    Ok(HostedOrbConnectionSnapshot {
+        server,
+        owner_binding,
+    })
+}
+
+fn vault_tool_result_credentials(
+    vault: &CredentialVault,
+    generation: u64,
+    mut result: ToolResult,
+) -> ToolResult {
+    result.output = vault.vault_in_text_at_generation(generation, &result.output);
+    if let Some(error) = result.error.take() {
+        result.error = Some(vault.vault_in_text_at_generation(generation, &error));
+    }
+    if let Some(details) = result.details.take() {
+        result.details = Some(vault.vault_in_json_at_generation(generation, &details));
+    }
+    result
+}
+
+fn cache_dependency_paths(cwd: &str, tool_name: &str, args: &Value) -> Vec<PathBuf> {
+    let tool_name = tool_name.to_ascii_lowercase();
+    let mut dependencies = Vec::new();
+
+    let mut add_path = |base_cwd: &str, value: &Value| {
+        if let Some(raw) = value.as_str() {
+            if let Ok(path) = resolve_tool_path(base_cwd, raw) {
+                dependencies.push(PathBuf::from(path));
+            }
         }
+    };
+
+    match tool_name.as_str() {
+        "read" | "read_image" => {
+            if let Some(path) = args.get("path").or_else(|| args.get("file_path")) {
+                add_path(cwd, path);
+            }
+        }
+        "glob" | "find" | "list" | "grep" => {
+            if let Some(path) = args.get("path").or_else(|| args.get("directory")) {
+                add_path(cwd, path);
+            } else {
+                dependencies.push(PathBuf::from(cwd));
+            }
+        }
+        "search" | "parallel_ripgrep" => {
+            // Search executes relative paths from its command cwd. Keep cache
+            // dependencies in that same coordinate system so a later edit of
+            // subdir/file.rs invalidates a search run with cwd=subdir.
+            let search_cwd = args
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(|raw| resolve_tool_path(cwd, raw).ok())
+                .unwrap_or_else(|| cwd.to_string());
+            match args.get("paths") {
+                Some(Value::Array(paths)) => {
+                    for path in paths {
+                        add_path(&search_cwd, path);
+                    }
+                }
+                Some(paths) => add_path(&search_cwd, paths),
+                None => dependencies.push(PathBuf::from(search_cwd)),
+            }
+        }
+        "diff" | "status" => dependencies.push(PathBuf::from(cwd)),
+        "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            } else {
+                // Workspace diagnostics have no file-specific key; the
+                // workspace directory is the narrowest safe dependency.
+                dependencies.push(PathBuf::from(cwd));
+            }
+        }
+        "vscode_get_definition"
+        | "jetbrains_get_definition"
+        | "vscode_find_references"
+        | "jetbrains_find_references" => {
+            // Definitions and references are project-sensitive: editing a
+            // different file can change the answer to a query for this URI.
+            // Keep the URI for precise bookkeeping, but also bind the entry to
+            // the workspace so edits elsewhere invalidate it.
+            dependencies.push(PathBuf::from(cwd));
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            }
+        }
+        "vscode_read_file_range" | "jetbrains_read_file_range" => {
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            }
+        }
+        _ => {}
     }
-    escaped.push('\'');
-    escaped
+
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    dependencies
 }
 
 fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
@@ -302,12 +449,10 @@ fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String
     };
 
     let cwd_path = Path::new(cwd);
-    let relative = cwd_path
-        .canonicalize()
+    let relative = dunce::canonicalize(cwd_path)
         .ok()
         .and_then(|cwd_canon| {
-            resolved
-                .canonicalize()
+            dunce::canonicalize(&resolved)
                 .ok()
                 .and_then(|path_canon| path_canon.strip_prefix(&cwd_canon).ok().map(PathBuf::from))
         })
@@ -347,17 +492,91 @@ fn is_probably_binary(data: &[u8]) -> bool {
     data.iter().take(2048).any(|byte| *byte == 0)
 }
 
-/// MCP server status snapshot for UI rendering
-#[derive(Debug, Clone)]
+/// Lifecycle state shown by the MCP manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpLifecycleState {
+    Connecting,
+    Ready,
+    NeedsAuth,
+    Failed,
+    Disabled,
+    BlockedByPolicy,
+    NeedsWorkspaceTrust,
+    ConfigError,
+}
+
+impl McpLifecycleState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Ready => "ready",
+            Self::NeedsAuth => "needs auth",
+            Self::Failed => "failed",
+            Self::Disabled => "disabled",
+            Self::BlockedByPolicy => "blocked by policy",
+            Self::NeedsWorkspaceTrust => "needs workspace trust",
+            Self::ConfigError => "config error",
+        }
+    }
+}
+
+/// MCP server status snapshot for UI and CLI rendering.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct McpServerStatus {
     pub name: String,
+    pub state: McpLifecycleState,
     pub connected: bool,
     pub scope: McpConfigScope,
     pub transport: McpTransport,
     pub error: Option<String>,
     pub tools: Vec<String>,
+    pub disabled_tools: Vec<String>,
     pub resources: Vec<String>,
     pub prompts: Vec<String>,
+}
+
+fn mcp_lifecycle_state(
+    server: &crate::mcp::McpServerConfig,
+    connected: bool,
+    error: Option<&str>,
+    workspace: &Path,
+) -> McpLifecycleState {
+    if !server.is_enabled() {
+        return McpLifecycleState::Disabled;
+    }
+    if crate::mcp::server_requires_workspace_approval(server)
+        && !crate::config::workspace_trusted_in_global_config(workspace)
+    {
+        return McpLifecycleState::NeedsWorkspaceTrust;
+    }
+    if connected {
+        return McpLifecycleState::Ready;
+    }
+    let Some(error) = error else {
+        return McpLifecycleState::Connecting;
+    };
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("sandbox policy")
+        || lower.contains("managed policy")
+        || lower.contains("blocked")
+    {
+        McpLifecycleState::BlockedByPolicy
+    } else if lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("authentication")
+        || lower.contains("access token")
+        || lower.contains("oauth")
+    {
+        if server.auth_preset.as_deref() == Some("none") {
+            McpLifecycleState::Failed
+        } else {
+            McpLifecycleState::NeedsAuth
+        }
+    } else {
+        McpLifecycleState::Failed
+    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -387,10 +606,33 @@ pub struct McpServerStatus {
 /// non-Sync primitives. However, it can be moved across async tasks and used within
 /// a single-threaded context safely.
 pub struct ToolExecutor {
+    code_authority: Option<crate::code_authority::CodeToolAuthority>,
+    /// Shared vault used to keep credential references valid across this execution session.
+    credential_vault: CredentialVault,
+
     /// Bash command execution tool
     ///
     /// Handles shell command execution with approval logic and timeout enforcement.
     bash: BashTool,
+
+    /// Native sandbox requested for this executor, if any.
+    sandbox_policy: Option<SandboxPolicy>,
+    /// Whether this executor runs where no human can answer an approval
+    /// prompt (print/exec mode and other headless runs).
+    unattended: bool,
+
+    /// The organization's MCP server policy, applied to every MCP client this
+    /// executor builds. `None` means no administrator opinion.
+    managed_mcp_policy: Option<crate::mcp::ManagedMcpPolicy>,
+
+    /// Whether successful write/edit calls may run process-global safe-mode
+    /// validators. Governed runtimes disable this and own validation separately.
+    ambient_mutation_validators_enabled: bool,
+
+    /// Pinned behavior versions for version-managed tools (empty = all tools
+    /// run their current behavior). Session replay populates this from the
+    /// versions recorded in session-entry receipts.
+    tool_versions: ToolVersionOverrides,
 
     /// Web fetch tool for retrieving web content
     ///
@@ -411,6 +653,13 @@ pub struct ToolExecutor {
     ///
     /// Maps lowercase tool names to their definitions.
     inline_tools: HashMap<String, InlineTool>,
+
+    /// Durable child-agent delegation shared by tool calls in this workspace.
+    subagents: Arc<SubagentManager>,
+    coding_task: std::sync::Mutex<Option<coding_task::CodingTaskState>>,
+
+    /// Capability-bound identity for model-facing mailbox operations.
+    mailbox_identity: String,
 
     /// Current working directory for all tool operations
     ///
@@ -433,6 +682,12 @@ pub struct ToolExecutor {
     /// MCP client for resource tools (lazy-initialized)
     mcp_client: tokio::sync::Mutex<Option<Arc<crate::mcp::McpClient>>>,
 
+    /// Serializes managed-connection snapshots with MCP client replacement and
+    /// Orb adapter installation. Existing adapters retain their own client
+    /// snapshot when a managed connection changes, so an old owner cannot be
+    /// paired with the newly selected connection.
+    mcp_sync_lock: tokio::sync::Mutex<()>,
+
     /// MCP tool annotations for approval hints
     mcp_tool_annotations: RwLock<HashMap<String, crate::mcp::McpToolAnnotations>>,
 
@@ -444,9 +699,248 @@ pub struct ToolExecutor {
 
     /// Last reconnect attempt timestamp for configured MCP servers.
     mcp_last_connect_attempts: RwLock<HashMap<String, Instant>>,
+
+    /// Stable local permission identities for the currently admitted MCP
+    /// tools. Managed/enterprise tools are deliberately absent.
+    mcp_permission_identities: RwLock<HashMap<String, crate::mcp::McpPermissionIdentity>>,
+
+    /// Executor used for the tools in
+    /// [`crate::tools::executor::PROCESS_ISOLATABLE_TOOLS`], when the caller
+    /// configured one.
+    ///
+    /// `None` -- the default -- means every tool runs on this process's own
+    /// dispatch. When it is set, only the isolatable tools are handed to it;
+    /// approvals, hooks, the action firewall, sandbox-policy denial, the
+    /// result cache, credential vaulting, and receipt construction have all
+    /// already run in this process before the handoff, and every other tool
+    /// still runs here.
+    isolated_dispatch: Option<Arc<dyn crate::tools::executor::ToolExecutor>>,
+}
+
+/// Every exact name that `execute_impl`'s dispatch `match` (in
+/// `tools/registry/execute.rs`) handles *before* falling through to the
+/// inline-tool lookup in its
+/// wildcard arm.
+///
+/// Several of these -- `ls`, `readimage`, `webfetch` -- are pure dispatch
+/// aliases that are never separately present in `ToolRegistry`'s own name
+/// map, so `registry.get(&name)` alone does not catch them: an inline tool
+/// registered under one of these names would pass that check, display its
+/// configured command in the approval dialog, and then never actually run
+/// (the alias's built-in arm intercepts the call first).
+///
+/// Kept as an explicit mirror of `execute_impl`'s match arms rather than
+/// derived from the registry, since being alias-only is exactly what the
+/// registry-only check missed. Update this list alongside any new match arm
+/// added there.
+///
+/// This deliberately does NOT cover the `mcp_`/`mcp__` prefix rule --
+/// `execute_impl` checks `McpClient::is_mcp_tool` *before* this dispatch
+/// match is even reached (`tools/registry/execute.rs`), so callers of this
+/// function (currently just `register_inline_tools`) must also check
+/// `McpClient::is_mcp_tool` themselves rather than relying on it being
+/// folded in here.
+fn is_reserved_execute_dispatch_name(name: &str) -> bool {
+    if super::subagents::SUBAGENT_TOOL_NAMES.contains(&name) {
+        return true;
+    }
+    // These spellings intentionally mirror execute_impl exactly. Inline
+    // lookup lower-cases its wildcard input, so an unmatched case variant
+    // such as `BASH` remains a valid inline name even though `bash` and
+    // `Bash` are intercepted by built-in dispatch.
+    matches!(
+        name,
+        "coding_task"
+            | "bash"
+            | "Bash"
+            | "read"
+            | "Read"
+            | "write"
+            | "Write"
+            | "glob"
+            | "Glob"
+            | "grep"
+            | "Grep"
+            | "edit"
+            | "Edit"
+            | "diff"
+            | "Diff"
+            | "list"
+            | "List"
+            | "ls"
+            | "find"
+            | "Find"
+            | "search"
+            | "Search"
+            | "parallel_ripgrep"
+            | "tool_search"
+            | "explore"
+            | "Explore"
+            | "ParallelRipgrep"
+            | "status"
+            | "Status"
+            | "background_tasks"
+            | "todo"
+            | "get_goal"
+            | "update_goal"
+            | "ask_user"
+            | "draft_feedback"
+            | "extract_document"
+            | "notebook_edit"
+            | "websearch"
+            | "codesearch"
+            | "gh_pr"
+            | "gh_issue"
+            | "gh_repo"
+            | "mcp_list_resources"
+            | "mcp_list_prompts"
+            | "mcp_read_resource"
+            | "mcp_get_prompt"
+            | "vscode_get_diagnostics"
+            | "jetbrains_get_diagnostics"
+            | "vscode_get_definition"
+            | "jetbrains_get_definition"
+            | "vscode_find_references"
+            | "jetbrains_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_read_file_range"
+            | "web_fetch"
+            | "WebFetch"
+            | "webfetch"
+            | "read_image"
+            | "ReadImage"
+            | "readimage"
+            | "screenshot"
+            | "Screenshot"
+    )
+}
+
+/// Register `inline_tools_list` into `registry`, skipping any name that
+/// collides with an already-registered built-in tool (including its
+/// dispatch aliases -- see [`is_reserved_execute_dispatch_name`]) or with
+/// the `mcp_`/`mcp__` prefix `McpClient::is_mcp_tool` reserves.
+///
+/// Built-in and MCP tools both dispatch ahead of the inline fallback in
+/// `execute_impl`, so an inline tool reusing a built-in name, one of its
+/// aliases, or an MCP-reserved prefix would never actually run, while the
+/// approval dialog would still show its configured command -- approving a
+/// call that silently invokes something else (or fails against MCP)
+/// instead. Shared by every `ToolExecutor` constructor (and the test-only
+/// `with_inline_tools_for_test`) so the collision check can't drift between
+/// them.
+fn register_inline_tools(
+    registry: &mut ToolRegistry,
+    inline_tools_list: Vec<InlineTool>,
+) -> HashMap<String, InlineTool> {
+    let mut inline_tools = HashMap::new();
+    for tool in inline_tools_list {
+        let name = tool.definition.name.to_lowercase();
+        let dispatch_name = tool.definition.name.as_str();
+        if is_reserved_execute_dispatch_name(dispatch_name) || McpClient::is_mcp_tool(dispatch_name)
+        {
+            eprintln!(
+                "Warning: Skipping inline tool '{}': name collides with a built-in tool, \
+                 one of its dispatch aliases, or the mcp_/mcp__ prefix reserved for MCP tools",
+                tool.definition.name
+            );
+            continue;
+        }
+        registry.register_exact(
+            dispatch_name,
+            ToolDefinition {
+                tool: tool.to_tool(),
+                requires_approval: tool.requires_approval(),
+            },
+        );
+        inline_tools.insert(name, tool);
+    }
+    inline_tools
+}
+
+struct ToolExecutionContext<'a> {
+    code_decision: Option<crate::code_authority::CodeAuthorityDecision>,
+    cancel: Option<CancellationToken>,
+    approved_inline_env: Option<&'a HashMap<String, String>>,
+    hooks: Option<&'a mut crate::hooks::IntegratedHookSystem>,
+    /// Receipt callers suppress the dispatcher lifecycle events; new execute_impl
+    /// arms must use lifecycle_event_tx so ToolEnd remains singular.
+    emit_tool_events: bool,
+}
+
+pub(crate) struct ToolExecutionOptions<'a> {
+    pub(crate) cancel: CancellationToken,
+    pub(crate) approved_inline_env: Option<&'a HashMap<String, String>>,
+    pub(crate) hooks: Option<&'a mut crate::hooks::IntegratedHookSystem>,
 }
 
 impl ToolExecutor {
+    #[cfg(test)]
+    pub(crate) fn with_test_code_authority(mut self) -> Self {
+        self.code_authority = Some(crate::code_authority::CodeToolAuthority::for_test(vec![]));
+        self
+    }
+
+    pub(crate) fn with_code_authority(mut self) -> Self {
+        self.code_authority = crate::code_authority::CodeToolAuthority::configured();
+        self
+    }
+
+    pub(crate) fn has_code_authority(&self) -> bool {
+        self.code_authority.is_some()
+    }
+
+    async fn authorize_code_call(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        generation: u64,
+        inline_env: Option<&HashMap<String, String>>,
+    ) -> anyhow::Result<Option<crate::code_authority::CodeAuthorityDecision>> {
+        use sha2::{Digest as _, Sha256};
+        let Some(authority) = &self.code_authority else {
+            return Ok(None);
+        };
+        let definition = if let Some(definition) = self.registry.get(tool_name) {
+            definition.tool.clone()
+        } else if McpClient::is_mcp_tool(tool_name) {
+            self.ensure_mcp_client()
+                .await
+                .map_err(anyhow::Error::msg)?
+                .list_all_tools()
+                .await
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .ok_or_else(|| anyhow::anyhow!("Code MCP schema unavailable"))?
+        } else {
+            anyhow::bail!("Code tool schema unavailable");
+        };
+        let task_id = self
+            .coding_contract()
+            .map(|c| c.task_id)
+            .unwrap_or_else(|| authority.session_id().to_string());
+        let repository = dunce::canonicalize(&self.cwd)?;
+        let inline = self.get_inline_tool(tool_name).map(|tool| serde_json::json!({
+            "command": tool.definition.command, "cwd": tool.definition.cwd,
+            "environment": inline_env.unwrap_or(&tool.definition.env), "timeout": tool.definition.timeout,
+            "sourcePath": tool.source_path,
+        }));
+        let definition = serde_json::json!({"schema": definition, "inlineExecution": inline});
+        let invocation = serde_json::json!({
+            "codeSessionId": authority.session_id(), "taskId": task_id,
+            "repositoryId": repository.to_string_lossy(), "runtimeGeneration": generation.checked_add(1).ok_or_else(|| anyhow::anyhow!("Code runtime generation exhausted"))?.to_string(),
+            "callId": call_id, "toolId": tool_name,
+            "toolSchemaDigest": format!("{:x}", Sha256::digest(serde_json::to_vec(&definition)?)),
+            "argumentsDigest": format!("{:x}", Sha256::digest(serde_json::to_vec(args)?)),
+        });
+        Ok(Some(authority.authorize(invocation).await?))
+    }
+
+    /// Stop and reap background Bash commands owned by this executor.
+    pub async fn shutdown_background_processes(&self) {
+        self.bash.shutdown_background_processes().await;
+    }
+
     /// Create a new tool executor with the given working directory
     ///
     /// # Arguments
@@ -472,41 +966,99 @@ impl ToolExecutor {
     /// let executor = ToolExecutor::new(path.display().to_string());
     /// ```
     pub fn new(cwd: impl Into<String>) -> Self {
+        Self::with_credential_vault(cwd, CredentialVault::new())
+    }
+
+    /// Create a new tool executor using a caller-provided credential vault.
+    pub fn with_credential_vault(
+        cwd: impl Into<String>,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         let cwd_path = std::path::Path::new(&cwd);
 
         // Load inline tools from config files
         let inline_tools_list = load_inline_tools(cwd_path);
-        let mut inline_tools = HashMap::new();
         let mut registry = ToolRegistry::new();
-
-        // Register inline tools
-        for tool in inline_tools_list {
-            let name = tool.definition.name.to_lowercase();
-            registry.register(
-                &name,
-                ToolDefinition {
-                    tool: tool.to_tool(),
-                    requires_approval: tool.requires_approval(),
-                },
-            );
-            inline_tools.insert(name, tool);
-        }
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
+            code_authority: None,
+            credential_vault,
             bash: BashTool::new(&cwd),
+            sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
+            ambient_mutation_validators_enabled: true,
+            tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
+            mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
             mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
+        }
+    }
+
+    /// Test-only constructor that registers a caller-supplied inline tool
+    /// list directly instead of loading `.composer/tools.json` from disk.
+    ///
+    /// The real constructors above go through `load_inline_tools`, which
+    /// gates project-level tools on `workspace_trusted_in_global_config` --
+    /// reading the *real* process `$HOME`. That can't be faked
+    /// deterministically in a test without mutating a process-global env
+    /// var, which would race every other test in this (parallel-by-default)
+    /// binary that also reads `$HOME`. This entry point exercises exactly
+    /// the same registration/collision logic (via [`register_inline_tools`])
+    /// as every other constructor, with the tool list supplied directly.
+    #[cfg(test)]
+    pub(crate) fn with_inline_tools_for_test(
+        cwd: impl Into<String>,
+        inline_tools_list: Vec<InlineTool>,
+    ) -> Self {
+        let cwd = cwd.into();
+        let mut registry = ToolRegistry::new();
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
+
+        Self {
+            code_authority: None,
+            credential_vault: CredentialVault::new(),
+            bash: BashTool::new(&cwd),
+            sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
+            ambient_mutation_validators_enabled: true,
+            tool_versions: ToolVersionOverrides::default(),
+            web_fetch: WebFetchTool::new(),
+            image: ImageTool::new(),
+            inline_executor: InlineToolExecutor::new(&cwd),
+            inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
+            mailbox_identity: crate::mailbox::local_identity(),
+            cwd,
+            registry,
+            cache: RwLock::new(ToolResultCache::default()),
+            mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
+            mcp_tool_annotations: RwLock::new(HashMap::new()),
+            mcp_last_errors: RwLock::new(HashMap::new()),
+            mcp_synced_configs: RwLock::new(HashMap::new()),
+            mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
         }
     }
 
@@ -517,41 +1069,352 @@ impl ToolExecutor {
     /// - `cwd`: Working directory for all tool operations
     /// - `cache_config`: Configuration for the tool result cache
     pub fn with_cache_config(cwd: impl Into<String>, cache_config: CacheConfig) -> Self {
+        Self::with_cache_config_and_credential_vault(cwd, cache_config, CredentialVault::new())
+    }
+
+    /// Create a new tool executor with custom cache configuration and a shared vault.
+    pub fn with_cache_config_and_credential_vault(
+        cwd: impl Into<String>,
+        cache_config: CacheConfig,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         let cwd_path = std::path::Path::new(&cwd);
 
         // Load inline tools from config files
         let inline_tools_list = load_inline_tools(cwd_path);
-        let mut inline_tools = HashMap::new();
         let mut registry = ToolRegistry::new();
-
-        // Register inline tools
-        for tool in inline_tools_list {
-            let name = tool.definition.name.to_lowercase();
-            registry.register(
-                &name,
-                ToolDefinition {
-                    tool: tool.to_tool(),
-                    requires_approval: tool.requires_approval(),
-                },
-            );
-            inline_tools.insert(name, tool);
-        }
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
+            code_authority: None,
+            credential_vault,
             bash: BashTool::new(&cwd),
+            sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
+            ambient_mutation_validators_enabled: true,
+            tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            coding_task: std::sync::Mutex::new(None),
+            mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
             mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            mcp_permission_identities: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
+        }
+    }
+
+    /// Route the tools in
+    /// [`crate::tools::executor::PROCESS_ISOLATABLE_TOOLS`] through
+    /// `dispatch` instead of this process's own dispatch.
+    ///
+    /// Everything the agent decides before a tool runs still runs here, and
+    /// every tool outside that list still runs here too.
+    #[must_use]
+    pub fn with_isolated_dispatch(
+        mut self,
+        dispatch: Arc<dyn crate::tools::executor::ToolExecutor>,
+    ) -> Self {
+        self.isolated_dispatch = Some(dispatch);
+        self
+    }
+
+    /// The isolated executor for `tool_name`, if one is configured and the
+    /// tool is allowed to leave this process.
+    fn isolated_dispatch_for(
+        &self,
+        tool_name: &str,
+    ) -> Option<Arc<dyn crate::tools::executor::ToolExecutor>> {
+        // Inline tools can never reach here under an isolatable name:
+        // `register_inline_tools` rejects every name in
+        // `is_reserved_execute_dispatch_name`, which covers all of them.
+        let dispatch = self.isolated_dispatch.as_ref()?;
+        crate::tools::executor::is_process_isolatable(tool_name).then(|| Arc::clone(dispatch))
+    }
+
+    /// The invocation handed across the executor seam for one tool call.
+    fn isolated_invocation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        approved_inline_env: Option<&HashMap<String, String>>,
+    ) -> crate::tools::executor::ToolInvocation {
+        let env = approved_inline_env
+            .map(|environment| {
+                let mut entries = environment
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>();
+                entries.sort();
+                entries
+            })
+            .unwrap_or_default();
+        crate::tools::executor::ToolInvocation::new(
+            call_id,
+            tool_name,
+            args.clone(),
+            PathBuf::from(&self.cwd),
+        )
+        .with_env(env)
+        .with_sandbox(crate::tools::executor::SandboxPolicySnapshot::from_policy(
+            self.sandbox_policy.clone(),
+        ))
+    }
+
+    /// Run one invocation on this process's dispatch, with no policy, cache,
+    /// hook, or receipt work.
+    ///
+    /// This is the raw entry point behind
+    /// [`crate::tools::executor::InProcessExecutor`]. Callers that have not
+    /// already applied the layers above the executor seam must use
+    /// [`Self::execute`] instead.
+    pub(crate) async fn dispatch_invocation(
+        &self,
+        invocation: &crate::tools::executor::ToolInvocation,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        cancel: CancellationToken,
+    ) -> ToolResult {
+        self.execute_impl(
+            &invocation.tool,
+            &invocation.args,
+            event_tx,
+            &invocation.call_id,
+            self.credential_generation(),
+            ToolExecutionContext {
+                code_decision: None,
+                cancel: Some(cancel),
+                approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: false,
+            },
+        )
+        .await
+    }
+
+    /// The working directory every tool in this executor runs in.
+    #[must_use]
+    pub fn cwd(&self) -> &str {
+        &self.cwd
+    }
+
+    /// Apply a native sandbox to subprocess-backed tools.
+    pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox_policy = Some(policy);
+        self.bash = self.build_bash_tool();
+        self
+    }
+
+    /// Install the organization's MCP server policy.
+    ///
+    /// Every MCP client this executor builds, including one rebuilt after a
+    /// configuration change, carries this policy. That is why the policy lives
+    /// on the executor rather than on one client instance.
+    #[must_use]
+    pub fn with_managed_mcp_policy(mut self, policy: Option<crate::mcp::ManagedMcpPolicy>) -> Self {
+        self.managed_mcp_policy = policy;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn managed_mcp_policy_version_for_test(&self) -> Option<u64> {
+        self.managed_mcp_policy
+            .as_ref()
+            .map(|policy| policy.version)
+    }
+
+    /// Mark this executor as running with no approval UI.
+    ///
+    /// Print/exec mode and other headless runs cannot collect a human
+    /// approval, so tools that would otherwise escalate an unclassifiable
+    /// input to the user must refuse it instead. Currently this makes the
+    /// bash tool fail closed on a command its analyzer cannot parse.
+    #[must_use]
+    pub fn unattended(mut self) -> Self {
+        self.unattended = true;
+        self.bash = self.build_bash_tool();
+        self
+    }
+
+    /// Whether this executor runs with no approval UI.
+    #[must_use]
+    pub fn is_unattended(&self) -> bool {
+        self.unattended
+    }
+
+    /// Disable process-global safe-mode validators for callers that own a
+    /// separate, bounded validation path.
+    #[must_use]
+    pub fn without_ambient_mutation_validators(mut self) -> Self {
+        self.ambient_mutation_validators_enabled = false;
+        self
+    }
+
+    /// Whether this registry may spawn a native language server.
+    ///
+    /// `NativeLspSession::start` launches `rust-analyzer` / `pyright` /
+    /// `MAESTRO_LSP_COMMAND` via a bare `tokio::process::Command` that is
+    /// never wrapped by Seatbelt or Landlock. Under any policy other than
+    /// `DangerFullAccess` (or "no policy"), that child would escape the
+    /// advertised containment — including the default network-enabled
+    /// `WorkspaceWrite` and implicit diagnostics on `read`/`write`/`edit`.
+    /// See the matching gate in `sandbox_policy_denial`.
+    #[must_use]
+    pub(crate) fn may_launch_native_language_server(&self) -> bool {
+        match self.sandbox_policy.as_ref() {
+            None | Some(SandboxPolicy::DangerFullAccess) => true,
+            Some(_) => false,
+        }
+    }
+
+    /// Build the bash tool honoring the pinned behavior version and sandbox.
+    fn build_bash_tool(&self) -> BashTool {
+        let tool = BashTool::new(&self.cwd).with_version(self.resolved_bash_version());
+        let tool = if self.unattended {
+            tool.unattended()
+        } else {
+            tool
+        };
+        match &self.sandbox_policy {
+            Some(policy) => tool.with_sandbox_policy(policy.clone()),
+            None => tool,
+        }
+    }
+
+    /// The behavior version currently resolved for the bash tool.
+    fn resolved_bash_version(&self) -> BashVersion {
+        BashVersion::from_contract(Some(self.tool_versions.resolve("bash")))
+    }
+
+    /// Pin a version-managed tool to a specific behavior contract version.
+    ///
+    /// This is the registry hook for behavior version selection: session
+    /// replay reads the version recorded in a session entry's receipt details
+    /// (e.g. `BashDetails.version`) and pins it here so re-executed tool
+    /// calls reproduce the recorded behavior. Errors if the tool is not
+    /// version-managed or the version is unsupported — see
+    /// `tools::versions` for the catalog.
+    pub fn pin_tool_version(&mut self, tool_name: &str, version: &str) -> Result<(), String> {
+        self.tool_versions.pin(tool_name, version)?;
+        self.bash = self.build_bash_tool();
+        Ok(())
+    }
+
+    /// Return a clone of the vault used by this executor.
+    #[must_use]
+    pub fn credential_vault(&self) -> CredentialVault {
+        self.credential_vault.clone()
+    }
+
+    pub(crate) fn credential_generation(&self) -> u64 {
+        self.credential_vault.generation()
+    }
+
+    pub(crate) fn with_subagent_parent_scope(mut self, parent_scope_id: String) -> Self {
+        self.subagents = Arc::new(SubagentManager::with_parent_scope(
+            PathBuf::from(&self.cwd),
+            parent_scope_id,
+        ));
+        self
+    }
+
+    pub(crate) fn with_mailbox_identity(mut self, identity: impl Into<String>) -> Self {
+        self.mailbox_identity = identity.into();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mailbox_identity(&self) -> &str {
+        &self.mailbox_identity
+    }
+
+    pub(crate) fn subagent_parent_scope_id(&self) -> String {
+        self.subagents.parent_scope_id()
+    }
+
+    /// Point this executor's subagent scope at a different conversation.
+    ///
+    /// Takes `&self` because the executor is shared behind an `Arc` that
+    /// outlives any one session; a new or resumed session rotates the scope
+    /// rather than replacing the executor, which would drop its inline tools
+    /// and MCP state.
+    /// Point this executor's blocking tool waits at a steering signal.
+    ///
+    /// Without it `wait_subagent` sleeps until its own timeout and the user's
+    /// message waits behind it.
+    pub(crate) fn set_steer_signal(&self, signal: std::sync::Arc<crate::agent::SteerSignal>) {
+        self.subagents.set_steer_signal(signal);
+    }
+
+    pub(crate) fn set_subagent_parent_model(&self, choice: crate::model_dynamics::ModelChoice) {
+        self.subagents.set_parent_model(choice);
+    }
+
+    pub(crate) fn set_subagent_parent_scope(&self, parent_scope_id: String) {
+        if self.subagents.parent_scope_id() != parent_scope_id {
+            self.reset_coding_turn();
+        }
+        self.subagents.set_parent_scope_id(parent_scope_id);
+    }
+
+    /// Drain terminal child-agent notifications for this parent executor.
+    pub(crate) fn poll_subagent_lifecycle_events(&self) -> Vec<SubagentLifecycleEvent> {
+        self.subagents.poll_lifecycle_events()
+    }
+
+    pub(crate) fn acknowledge_subagent_lifecycle_event(
+        &self,
+        event: &SubagentLifecycleEvent,
+    ) -> Result<(), String> {
+        self.subagents.acknowledge_lifecycle_event(event)
+    }
+
+    pub(crate) fn set_subagent_parent_requests(&self, requests: Vec<String>) {
+        self.subagents.set_parent_requests(requests);
+    }
+
+    pub(crate) fn worker_activity(&self) -> Result<(usize, usize), String> {
+        self.subagents.worker_activity()
+    }
+
+    pub(crate) fn subagent_mailbox_recipients(&self) -> Vec<String> {
+        self.subagents.active_mailbox_recipients()
+    }
+
+    pub(crate) fn inspect_subagent_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        self.subagents.inspect_control(message_id)
+    }
+
+    pub(crate) fn approve_held_subagent_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        self.subagents.approve_held_control(message_id)
+    }
+
+    pub(crate) fn cancel_subagent_by_id(&self, subagent_id: &str) -> Result<(), String> {
+        let result = self
+            .subagents
+            .cancel_native(&serde_json::json!({"subagent_id": subagent_id}));
+        if result.success {
+            Ok(())
+        } else {
+            Err(result.output)
         }
     }
 
@@ -565,6 +1428,54 @@ impl ToolExecutor {
     /// Get the count of loaded inline tools
     pub fn inline_tool_count(&self) -> usize {
         self.inline_tools.len()
+    }
+
+    /// Runtime tool definitions sent to model transports.
+    pub fn tool_definitions(&self) -> impl Iterator<Item = &crate::agent::ToolDefinition> {
+        self.registry.tools()
+    }
+
+    /// Look up the inline tool that this exact spelling will execute.
+    ///
+    /// Used to resolve the real command string (and its source config path)
+    /// for the approval dialog, since an inline tool call's JSON arguments
+    /// don't contain the command -- it lives in the tool's own definition.
+    /// Exact built-in and MCP spellings dispatch before the inline fallback,
+    /// so they must never inherit same-fold inline approval context.
+    #[must_use]
+    pub fn get_inline_tool(&self, name: &str) -> Option<&InlineTool> {
+        if is_reserved_execute_dispatch_name(name) || McpClient::is_mcp_tool(name) {
+            return None;
+        }
+        self.inline_tools.get(&name.to_lowercase())
+    }
+
+    /// Resolve the directory an inline tool will actually execute in.
+    ///
+    /// Approval rendering uses this same resolver as execution so an omitted
+    /// `cwd` cannot hide the implicit workspace directory from the approver.
+    #[must_use]
+    pub fn inline_tool_effective_cwd(&self, tool: &InlineTool) -> String {
+        self.inline_executor
+            .effective_cwd(tool)
+            .display()
+            .to_string()
+    }
+
+    /// Resolve the environment context an approver must see before an inline
+    /// tool executes, including inherited shell startup controls.
+    #[must_use]
+    pub fn inline_tool_effective_env(&self, tool: &InlineTool) -> HashMap<String, String> {
+        self.inline_executor.effective_env_approval_context(tool)
+    }
+
+    /// Resolve the exact shell executable and flag used for inline tools.
+    ///
+    /// Approval rendering uses the same resolver as execution so inherited
+    /// `SHELL`/`COMSPEC` values cannot hide the executable being approved.
+    #[must_use]
+    pub fn inline_tool_effective_shell(&self) -> (String, &'static str) {
+        InlineToolExecutor::effective_shell()
     }
 
     /// Get cache statistics
@@ -585,7 +1496,28 @@ impl ToolExecutor {
     }
 
     async fn ensure_mcp_client(&self) -> Result<Arc<McpClient>, String> {
-        let config = load_mcp_config(Some(Path::new(&self.cwd)));
+        let _sync_guard = self.mcp_sync_lock.lock().await;
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
+        self.ensure_mcp_client_for_config(&config).await
+    }
+
+    /// Synchronize a client from one immutable configuration snapshot. The
+    /// caller must hold `mcp_sync_lock`; replacing the client, rather than
+    /// mutating it in place, keeps adapters created for the previous managed
+    /// connection paired with that connection after an account switch.
+    async fn ensure_mcp_client_for_config(
+        &self,
+        config: &McpConfig,
+    ) -> Result<Arc<McpClient>, String> {
+        if self
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| !policy.has_full_network_access())
+        {
+            return Err(
+                "MCP blocked because the active sandbox policy disables network access".to_string(),
+            );
+        }
         let servers: Vec<_> = config.enabled_servers().cloned().collect();
         let desired_configs: HashMap<String, crate::mcp::McpServerConfig> = servers
             .iter()
@@ -607,14 +1539,29 @@ impl ToolExecutor {
             .read()
             .map(|attempts| attempts.clone())
             .unwrap_or_default();
+        let replace_client =
+            previous_configs != desired_configs || self.mcp_client.lock().await.as_ref().is_none();
         let client = {
-            let mut guard = self.mcp_client.lock().await;
-            Arc::clone(guard.get_or_insert_with(|| Arc::new(McpClient::new())))
+            if replace_client {
+                let client = Arc::new(McpClient::new());
+                client
+                    .set_managed_policy(self.managed_mcp_policy.clone())
+                    .await;
+                client
+            } else {
+                let guard = self.mcp_client.lock().await;
+                guard
+                    .as_ref()
+                    .map(Arc::clone)
+                    .expect("MCP client exists when replacement is not required")
+            }
         };
 
-        for (name, previous) in &previous_configs {
-            if desired_configs.get(name) != Some(previous) {
-                let _ = client.disconnect(name).await;
+        if !replace_client {
+            for (name, previous) in &previous_configs {
+                if desired_configs.get(name) != Some(previous) {
+                    let _ = client.disconnect(name).await;
+                }
             }
         }
 
@@ -622,9 +1569,31 @@ impl ToolExecutor {
             client.connected_servers().await.into_iter().collect();
         let now = Instant::now();
 
+        // Project/local-scoped servers come from the repository and may be
+        // hostile. Enforce the per-workspace trust approval for every
+        // transport. Trust is read from global config only, so a repository
+        // cannot grant itself trust.
+        let workspace_trusted =
+            crate::config::workspace_trusted_in_global_config(Path::new(&self.cwd));
+
         for server in &servers {
             let name = &server.name;
-            let config_changed = previous_configs.get(name) != Some(server);
+            if crate::mcp::server_requires_workspace_approval(server) && !workspace_trusted {
+                if connected.contains(name) {
+                    let _ = client.disconnect(name).await;
+                }
+                last_errors.insert(
+                    name.clone(),
+                    format!(
+                        "MCP server \"{name}\" requires workspace trust approval; \
+                         set projects.\"<workspace>\".trust_level = \"trusted\" in global \
+                         config (~/.composer/config.toml) to enable it"
+                    ),
+                );
+                continue;
+            }
+
+            let config_changed = replace_client || previous_configs.get(name) != Some(server);
             let is_connected = connected.contains(name);
             let retry_allowed = match last_attempts.get(name) {
                 Some(last_attempt) => {
@@ -634,7 +1603,10 @@ impl ToolExecutor {
             };
 
             if config_changed || (!is_connected && retry_allowed) {
-                match client.connect(server.clone()).await {
+                match client
+                    .connect_with_workspace_trust(server.clone(), Some(Path::new(&self.cwd)))
+                    .await
+                {
                     Ok(()) => {
                         last_errors.remove(name);
                     }
@@ -668,6 +1640,11 @@ impl ToolExecutor {
             *map = last_attempts;
         }
 
+        if replace_client {
+            let mut guard = self.mcp_client.lock().await;
+            *guard = Some(Arc::clone(&client));
+        }
+
         let annotations = client.list_tool_annotations().await;
         if let Ok(mut map) = self.mcp_tool_annotations.write() {
             map.clear();
@@ -676,22 +1653,161 @@ impl ToolExecutor {
             }
         }
 
+        // Publish the identity of every dispatchable MCP tool so the session
+        // recorder can stamp each call with the definition it was issued
+        // against. See `tools::tool_call_contract`.
+        let live_tools = client.list_all_tools().await;
+        if let Ok(mut identities) = self.mcp_permission_identities.write() {
+            identities.clear();
+            for tool in &live_tools {
+                let server = servers.iter().find(|server| {
+                    tool.name
+                        .strip_prefix("mcp__")
+                        .is_some_and(|rest| rest.starts_with(&format!("{}__", server.name)))
+                });
+                if let Some(identity) = server.and_then(|server| {
+                    crate::mcp::permission_identity(server, &tool.name, &tool.input_schema)
+                }) {
+                    identities.insert(tool.name.to_lowercase(), identity);
+                }
+            }
+        }
+        crate::tools::tool_call_contract::publish_live_identities(
+            live_tools
+                .iter()
+                .map(|tool| (tool.name.as_str(), Some(&tool.input_schema))),
+        );
+
         Ok(client)
+    }
+
+    /// Whether a local remembered grant matches this exact admitted MCP tool.
+    #[must_use]
+    pub(crate) fn mcp_permission_allows(&self, tool_name: &str) -> bool {
+        self.mcp_permission_identities
+            .read()
+            .ok()
+            .and_then(|identities| identities.get(&tool_name.to_lowercase()).cloned())
+            .is_some_and(|identity| crate::mcp::permission_is_allowed(&identity))
+    }
+
+    /// Remember approval for this exact local MCP transport + schema identity.
+    pub(crate) fn remember_mcp_permission(
+        &self,
+        tool_name: &str,
+        persistent: bool,
+    ) -> Result<(), String> {
+        let identity = self
+            .mcp_permission_identities
+            .read()
+            .map_err(|_| "MCP permission identity lock poisoned".to_string())?
+            .get(&tool_name.to_lowercase())
+            .cloned()
+            .ok_or_else(|| {
+                "Only admitted local MCP tools can receive remembered permissions".to_string()
+            })?;
+        if persistent {
+            crate::mcp::grant_persistent_permission(&identity).map_err(|error| error.to_string())
+        } else {
+            crate::mcp::grant_session_permission(&identity);
+            Ok(())
+        }
+    }
+
+    /// Identity of an MCP tool as the currently configured servers define it.
+    ///
+    /// `None` when no configured server offers that name any more.
+    pub(crate) async fn live_mcp_tool_contract(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+    ) -> Option<crate::tools::tool_call_contract::ToolCallContract> {
+        let client = self.ensure_mcp_client().await.ok()?;
+        client
+            .list_all_tools()
+            .await
+            .into_iter()
+            .find(|tool| tool.name == tool_name)
+            .map(|tool| {
+                crate::tools::tool_call_contract::ToolCallContract::record(
+                    call_id,
+                    tool_name,
+                    Some(&tool.input_schema),
+                )
+            })
+    }
+
+    pub(crate) async fn ensure_orb_delegation_adapter(&self) -> Result<(), String> {
+        // The managed connection authority is the source of truth for hosted
+        // Orb bindings. Keep the owner and client on one immutable merged
+        // snapshot, otherwise an account/connection switch between two
+        // independent loads can pair owner A with client B.
+        let _sync_guard = self.mcp_sync_lock.lock().await;
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
+        let snapshot = hosted_orb_connection_snapshot(&config)?;
+        let client = self.ensure_mcp_client_for_config(&config).await?;
+        let expected_server = snapshot.server.clone();
+        let expected_owner = snapshot.owner_binding.clone();
+        let cwd = self.cwd.clone();
+        let operation_validator: OrbOperationValidator = Arc::new(move || {
+            let current_config = load_mcp_config_with_managed_connections(Some(Path::new(&cwd)));
+            let current_snapshot = hosted_orb_connection_snapshot(&current_config)?;
+            if current_snapshot.server != expected_server {
+                return Err(
+                    "active managed Computer connection configuration changed; remote operation refused"
+                        .to_string(),
+                );
+            }
+            if current_snapshot.owner_binding != expected_owner {
+                return Err(
+                    "active account, workspace, or managed Computer connection owner changed; remote operation refused"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        });
+        self.subagents
+            .set_orb_adapter(OrbDelegationAdapter::from_mcp_client_with_validator(
+                client,
+                snapshot.server.name,
+                snapshot.owner_binding,
+                Some(operation_validator),
+            ))
+            .await;
+        Ok(())
+    }
+
+    /// Execute a native hosted Computer operation through the same managed
+    /// connection and durable subagent registry used by model tool calls.
+    /// Provider setup failures are projected as `Unavailable` by the manager;
+    /// durable local task identity is never discarded.
+    pub(crate) async fn run_orb_console(&self, action: OrbConsoleAction) -> ToolResult {
+        let provider_error = self.ensure_orb_delegation_adapter().await.err();
+        self.subagents.orb_console(action, provider_error).await
     }
 
     /// Get MCP server status snapshots for UI display
     pub async fn mcp_status(&self) -> Result<Vec<McpServerStatus>, String> {
-        let config = load_mcp_config(Some(Path::new(&self.cwd)));
-        let client = self.ensure_mcp_client().await?;
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
+        let connect_error = self.ensure_mcp_client().await.err();
+        let client = self.mcp_client.lock().await.as_ref().cloned();
 
-        let connected: std::collections::HashSet<_> =
-            client.connected_servers().await.into_iter().collect();
-        let tools_map: HashMap<String, Vec<String>> =
-            client.list_tools_by_server().await.into_iter().collect();
-        let resources_map: HashMap<String, Vec<String>> =
-            client.list_all_resources().await.into_iter().collect();
-        let prompts_map: HashMap<String, Vec<String>> =
-            client.list_all_prompts().await.into_iter().collect();
+        let connected: std::collections::HashSet<_> = match &client {
+            Some(client) => client.connected_servers().await.into_iter().collect(),
+            None => std::collections::HashSet::new(),
+        };
+        let tools_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_tools_by_server().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
+        let resources_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_all_resources().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
+        let prompts_map: HashMap<String, Vec<String>> = match &client {
+            Some(client) => client.list_all_prompts().await.into_iter().collect(),
+            None => HashMap::new(),
+        };
         let last_errors = self
             .mcp_last_errors
             .read()
@@ -699,22 +1815,68 @@ impl ToolExecutor {
             .unwrap_or_default();
 
         let mut statuses = Vec::new();
-        for server in config.enabled_servers() {
+        for server in &config.servers {
             let name = server.name.clone();
+            let error = if server.is_enabled() {
+                last_errors
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| connect_error.clone())
+            } else {
+                None
+            };
+            let state = mcp_lifecycle_state(
+                server,
+                connected.contains(&name),
+                error.as_deref(),
+                Path::new(&self.cwd),
+            );
             let status = McpServerStatus {
                 name: name.clone(),
+                state,
                 connected: connected.contains(&name),
                 scope: server.scope,
                 transport: server.transport,
-                error: last_errors.get(&name).cloned(),
+                error,
                 tools: tools_map.get(&name).cloned().unwrap_or_default(),
+                disabled_tools: server.disabled_tools.clone(),
                 resources: resources_map.get(&name).cloned().unwrap_or_default(),
                 prompts: prompts_map.get(&name).cloned().unwrap_or_default(),
             };
             statuses.push(status);
         }
 
+        for issue in config.issues {
+            statuses.push(McpServerStatus {
+                name: issue
+                    .server
+                    .unwrap_or_else(|| issue.path.display().to_string()),
+                state: McpLifecycleState::ConfigError,
+                connected: false,
+                scope: issue.scope,
+                transport: crate::mcp::McpTransport::Stdio,
+                error: Some(issue.message),
+                tools: Vec::new(),
+                disabled_tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            });
+        }
+        statuses.sort_by(|left, right| left.name.cmp(&right.name));
+
         Ok(statuses)
+    }
+
+    /// Clear the reconnect cooldown and disconnect one cached server so the
+    /// next background status refresh performs a fresh connection attempt.
+    pub async fn retry_mcp_server(&self, name: &str) {
+        if let Ok(mut attempts) = self.mcp_last_connect_attempts.write() {
+            attempts.remove(name);
+        }
+        let client = self.mcp_client.lock().await.as_ref().cloned();
+        if let Some(client) = client {
+            let _ = client.disconnect(name).await;
+        }
     }
 
     /// Get detailed MCP prompt metadata for connected servers
@@ -766,11 +1928,10 @@ impl ToolExecutor {
     /// Called when files are modified to ensure stale data isn't returned.
     fn invalidate_file_cache(&self, path: &str) {
         if let Ok(mut cache) = self.cache.write() {
-            // Clear all entries - a more sophisticated approach would track
-            // which cache entries depend on which files
-            cache.clear();
-            // Note: File modification triggered cache invalidation for: {path}
-            let _ = path; // silence unused warning
+            // Invalidate only reads that recorded this file (or a containing
+            // directory) as a dependency. Unrelated cached reads survive a
+            // write elsewhere in the workspace.
+            cache.invalidate_for_file(Path::new(path));
         }
     }
 
@@ -802,6 +1963,9 @@ impl ToolExecutor {
 
     /// Drain live MCP notifications and refresh cached metadata when server lists change.
     pub async fn poll_mcp_updates(&self) -> Result<Vec<crate::mcp::McpRuntimeEvent>, String> {
+        // Connection reconciliation runs on the background status worker.
+        // The UI loop only drains already-connected notification queues here;
+        // it must never dial or respawn a server while handling input.
         let client = {
             let guard = self.mcp_client.lock().await;
             guard.as_ref().cloned()
@@ -873,7 +2037,10 @@ impl ToolExecutor {
     /// assert!(missing.is_empty());
     /// ```
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
-        self.registry.missing_required(name, args)
+        let registry_name = self
+            .get_inline_tool(name)
+            .map_or(name, |tool| tool.definition.name.as_str());
+        self.registry.missing_required(registry_name, args)
     }
 
     /// Check whether a tool requires user approval given its arguments
@@ -916,14 +2083,159 @@ impl ToolExecutor {
     /// assert!(executor.requires_approval("bash", &unsafe_cmd));
     /// ```
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
-        self.registry.requires_approval(name, args)
+        // This check runs before the allowlist below on purpose.
+        if self.requires_sandbox_bypass_approval(name, args) {
+            return true;
+        }
+
+        // Version-managed tools classify approval with their pinned behavior
+        // version so replayed sessions reproduce the recorded decisions.
+        if matches!(name, "bash" | "Bash") {
+            if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
+                return self.resolved_bash_version().requires_approval(command);
+            }
+        }
+        let registry_name = self
+            .get_inline_tool(name)
+            .map_or(name, |tool| tool.definition.name.as_str());
+        self.registry.requires_approval(registry_name, args)
+    }
+
+    /// Whether this tool call is asking to run a command outside the native
+    /// sandbox while a sandbox policy is active.
+    ///
+    /// A request to bypass the native sandbox always requires human
+    /// approval, regardless of the command allowlist: this is the
+    /// per-command sandbox escape hatch, and it must be a thing the user is
+    /// asked about, never something that silently slips through because the
+    /// command text happens to look safe. This is also the check approval
+    /// gates use when they would otherwise auto-approve unconditionally
+    /// (e.g. `ApprovalMode::Yolo`), so a bypass request can never be
+    /// auto-approved on any surface.
+    #[must_use]
+    pub fn requires_sandbox_bypass_approval(&self, name: &str, args: &serde_json::Value) -> bool {
+        name.eq_ignore_ascii_case("bash")
+            && self.sandbox_policy.is_some()
+            && args
+                .get("bypass_sandbox")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
     }
 
     /// Check a tool call against the action firewall.
     pub fn firewall_verdict(&self, name: &str, args: &serde_json::Value) -> FirewallVerdict {
         let firewall = ActionFirewall::new(&self.cwd);
-        let tool_name = name.to_lowercase();
-        firewall.check_tool(&tool_name, args)
+        if self.get_inline_tool(name).is_some() {
+            // Preserve a non-built-in spelling so a same-fold inline name
+            // cannot inherit the built-in tool's argument policy.
+            firewall.check_tool(name, args)
+        } else {
+            firewall.check_tool(&name.to_lowercase(), args)
+        }
+    }
+
+    fn owns_cancellation_cleanup(&self, tool_name: &str) -> bool {
+        let tool_key = tool_name.to_lowercase();
+        tool_name.eq_ignore_ascii_case("bash")
+            || McpClient::is_mcp_tool(tool_name)
+            || self.inline_tools.contains_key(&tool_key)
+            || matches!(
+                tool_key.as_str(),
+                "write"
+                    | "edit"
+                    | "notebook_edit"
+                    | "todo"
+                    | "extract_document"
+                    | "spawn_subagent"
+                    | "resume_subagent"
+                    | "control_subagent"
+            )
+    }
+
+    fn sandbox_policy_denial(&self, name: &str, args: &serde_json::Value) -> Option<String> {
+        let policy = self.sandbox_policy.as_ref()?;
+        let tool = name.to_ascii_lowercase();
+
+        let uses_mcp_transport = tool.starts_with("mcp_") || McpClient::is_mcp_tool(name);
+        if !policy.has_full_network_access()
+            && (uses_mcp_transport
+                || matches!(
+                    tool.as_str(),
+                    "web_fetch"
+                        | "websearch"
+                        | "codesearch"
+                        | "extract_document"
+                        | "gh_pr"
+                        | "gh_issue"
+                        | "gh_repo"
+                ))
+        {
+            return Some(format!(
+                "Tool '{name}' blocked because the active sandbox policy disables network access"
+            ));
+        }
+
+        if !matches!(policy, SandboxPolicy::DangerFullAccess) {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let unsandboxed_git_mutation = (tool == "gh_pr" && action == "checkout")
+                || (tool == "gh_repo" && action == "clone");
+            if unsandboxed_git_mutation {
+                return Some(format!(
+                    "Tool '{name}' blocked because its git mutation is not contained by the active sandbox policy"
+                ));
+            }
+        }
+
+        // The VS Code/JetBrains diagnostics/definition/references tools
+        // launch a language server (rust-analyzer, pyright, or
+        // MAESTRO_LSP_COMMAND) via `NativeLspSession::start` -- a bare
+        // `tokio::process::Command` that the OS-level sandbox never
+        // contains, with full write and network access. The same escape
+        // applies under default WorkspaceWrite (network on) and under
+        // ReadOnly: the child is never Seatbelt/Landlock-wrapped. Block
+        // every non-DangerFullAccess policy; implicit diagnostics on
+        // read/write/edit are gated the same way via
+        // `ToolRegistry::may_launch_native_language_server`.
+        let launches_native_language_server = matches!(
+            tool.as_str(),
+            "vscode_get_diagnostics"
+                | "jetbrains_get_diagnostics"
+                | "vscode_get_definition"
+                | "jetbrains_get_definition"
+                | "vscode_find_references"
+                | "jetbrains_find_references"
+        );
+        if launches_native_language_server && !matches!(policy, SandboxPolicy::DangerFullAccess) {
+            return Some(format!(
+                "Tool '{name}' blocked because it launches a language server outside the active sandbox policy"
+            ));
+        }
+
+        if matches!(policy, SandboxPolicy::ReadOnly) {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let mutates_files = matches!(tool.as_str(), "write" | "edit" | "notebook_edit")
+                || (tool == "background_tasks" && action == "start")
+                || tool == "extract_document"
+                // `todo` persists to ~/.composer/todos.json (or
+                // MAESTRO_TODO_FILE) via tools/todo.rs::save_store.
+                || tool == "todo"
+                // `screenshot` launches an unsandboxed capture program that
+                // writes a temp PNG (tools/image.rs).
+                || tool == "screenshot";
+            if mutates_files {
+                return Some(format!(
+                    "Tool '{name}' blocked by the active read-only sandbox policy"
+                ));
+            }
+        }
+
+        None
     }
 
     /// Execute a tool by name with the given arguments
@@ -1014,41 +2326,124 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        self.execute_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_at_generation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        cancel: Option<CancellationToken>,
+    ) -> ToolResult {
+        self.execute_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            generation,
+            ToolExecutionContext {
+                code_decision: None,
+                cancel,
+                approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: true,
+            },
+        )
+        .await
+    }
+
+    async fn execute_at_generation_with_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        execution_context: ToolExecutionContext<'_>,
+    ) -> ToolResult {
+        let mut execution_context = execution_context;
+        if execution_context.code_decision.is_none() {
+            execution_context.code_decision = match self
+                .authorize_code_call(
+                    tool_name,
+                    args,
+                    call_id,
+                    generation,
+                    execution_context.approved_inline_env,
+                )
+                .await
+            {
+                Ok(decision) => decision,
+                Err(error) => {
+                    return ToolResult::failure(format!(
+                        "Code tool authority denied execution: {error}"
+                    ));
+                }
+            };
+        }
+        if execution_context
+            .code_decision
+            .as_ref()
+            .is_some_and(|decision| !decision.is_current())
+        {
+            return ToolResult::failure("Code tool authority expired before dispatch");
+        }
+        let emit_tool_events = execution_context.emit_tool_events;
+        if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
+            return ToolResult::failure(message);
+        }
+        if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
+            return ToolResult::failure("Inline shell tools are disabled for sandboxed exec runs");
+        }
         if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
             return ToolResult::failure(format!("Blocked by action firewall: {reason}"));
         }
 
         // Check cache for cacheable tools
-        let cache_key = CacheKey::new(tool_name, args);
+        let cache_key = CacheKey::for_generation(tool_name, args, generation);
         let is_cacheable = self
             .cache
             .read()
             .map(|c| c.is_cacheable(tool_name))
             .unwrap_or(false);
 
+        if !self.owns_cancellation_cleanup(tool_name)
+            && execution_context
+                .cancel
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            let result = ToolResult::failure(format!("{tool_name} cancelled"))
+                .with_details(serde_json::json!({"cancelled": true}));
+            if emit_tool_events {
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(FromAgent::ToolEnd {
+                        call_id: call_id.to_string(),
+                        success: false,
+                        result: Some(result.clone()),
+                        receipt: None,
+                    });
+                }
+            }
+            return result;
+        }
+
         if is_cacheable {
             if let Ok(mut cache) = self.cache.write() {
                 if let Some(cached) = cache.get(&cache_key) {
                     // Cache hit for tool execution
-
-                    // Send events for cached result
-                    if let Some(tx) = event_tx {
-                        let _ = tx.send(FromAgent::ToolStart {
-                            call_id: call_id.to_string(),
-                        });
-                        if !cached.output.is_empty() {
-                            let _ = tx.send(FromAgent::ToolOutput {
-                                call_id: call_id.to_string(),
-                                content: cached.output.clone(),
-                            });
-                        }
-                        let _ = tx.send(FromAgent::ToolEnd {
-                            call_id: call_id.to_string(),
-                            success: !cached.is_error,
-                        });
-                    }
-
-                    return ToolResult {
+                    let mut result = ToolResult {
                         success: !cached.is_error,
                         output: cached.output.clone(),
                         error: if cached.is_error {
@@ -1058,15 +2453,105 @@ impl ToolExecutor {
                         },
                         details: None,
                     };
+
+                    self.append_directory_skill_catalog(tool_name, args, generation, &mut result);
+
+                    // Send events for cached result
+                    if emit_tool_events {
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(FromAgent::ToolStart {
+                                call_id: call_id.to_string(),
+                            });
+                            if !cached.output.is_empty() {
+                                let _ = tx.send(FromAgent::ToolOutput {
+                                    call_id: call_id.to_string(),
+                                    content: cached.output.clone(),
+                                });
+                            }
+                            let _ = tx.send(FromAgent::ToolEnd {
+                                call_id: call_id.to_string(),
+                                success: !cached.is_error,
+                                result: Some(result.clone()),
+                                receipt: None,
+                            });
+                        }
+                    }
+
+                    return result;
                 }
             }
         }
 
+        // Process-owning tools must run their kill-and-reap paths after
+        // cancellation. Transactional file mutations must also finish so a
+        // dropped future cannot strand a target between backup and publish.
+        // Other tools can safely race their whole execution against the
+        // per-call token.
+        let cancellation = execution_context.cancel.clone();
+        let isolated = self.isolated_dispatch_for(tool_name);
+        // An isolated executor owns its own kill path, so the outer select
+        // below must not abandon the call and leave the child running.
+        let owns_cancellation_cleanup =
+            isolated.is_some() || self.owns_cancellation_cleanup(tool_name);
+        let execution = Box::pin(async {
+            match isolated {
+                Some(dispatch) => {
+                    let invocation = self.isolated_invocation(
+                        tool_name,
+                        args,
+                        call_id,
+                        execution_context.approved_inline_env,
+                    );
+                    let sink = event_tx
+                        .cloned()
+                        .map(crate::tools::executor::OutputSink::new);
+                    let token = execution_context.cancel.clone().unwrap_or_default();
+                    dispatch.execute(invocation, token, sink).await
+                }
+                None => {
+                    self.execute_impl(
+                        tool_name,
+                        args,
+                        event_tx,
+                        call_id,
+                        generation,
+                        execution_context,
+                    )
+                    .await
+                }
+            }
+        });
+        let (uncached_result, synthetically_cancelled) = match cancellation {
+            Some(token) if !owns_cancellation_cleanup => {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => {
+                        let result = ToolResult::failure(format!("{tool_name} cancelled"))
+                            .with_details(serde_json::json!({"cancelled": true}));
+                        if emit_tool_events {
+                            if let Some(tx) = event_tx {
+                            let _ = tx.send(FromAgent::ToolEnd {
+                                call_id: call_id.to_string(),
+                                success: false,
+                                result: Some(result.clone()),
+                                receipt: None,
+                            });
+                            }
+                        }
+                        (result, true)
+                    }
+                    result = execution => (result, false),
+                }
+            }
+            _ => (execution.await, false),
+        };
+
         // Execute the tool
-        let result = self.execute_impl(tool_name, args, event_tx, call_id).await;
+        let mut result =
+            vault_tool_result_credentials(&self.credential_vault, generation, uncached_result);
 
         // Store result in cache for cacheable tools
-        if is_cacheable {
+        if is_cacheable && !synthetically_cancelled && !result.is_cancelled() {
             if let Ok(mut cache) = self.cache.write() {
                 let cached_result = CachedResult::new(
                     if result.success {
@@ -1076,4110 +2561,288 @@ impl ToolExecutor {
                     },
                     !result.success,
                 );
-                cache.put(cache_key, cached_result);
+                let dependencies = cache_dependency_paths(&self.cwd, tool_name, args);
+                if dependencies.is_empty() {
+                    cache.put(cache_key, cached_result);
+                } else {
+                    cache.put_with_deps(cache_key, cached_result, dependencies);
+                }
                 // Stored result in cache
             }
         }
 
+        // Derive catalogs after caching so trust revocation is effective on cached reads.
+        self.append_directory_skill_catalog(tool_name, args, generation, &mut result);
         result
     }
 
-    async fn execute_search(&self, args: &serde_json::Value) -> ToolResult {
-        let start_time = Instant::now();
-        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-        if pattern.is_empty() {
-            return ToolResult::failure("Missing pattern argument".to_string());
-        }
-
-        let paths: Vec<String> = match args.get("paths") {
-            Some(Value::String(path)) => vec![path.clone()],
-            Some(Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                .collect(),
-            _ => Vec::new(),
-        };
-
-        let mut cmd = String::from("rg --color=never --no-heading -n");
-        let output_mode = args
-            .get("outputMode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("content");
-        if output_mode == "files" {
-            cmd.push_str(" -l");
-        } else if output_mode == "count" {
-            cmd.push_str(" --count-matches");
-        }
-        if args
-            .get("ignoreCase")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+    fn append_directory_skill_catalog(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        generation: u64,
+        result: &mut ToolResult,
+    ) {
+        if !result.success
+            || args
+                .get("asBase64")
+                .or_else(|| args.get("as_base64"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            || self.isolated_dispatch_for(tool_name).is_some()
+            || !matches!(tool_name, "read" | "Read" | "list" | "List" | "ls")
         {
-            cmd.push_str(" -i");
+            return;
         }
-        if args
-            .get("literal")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" -F");
-        }
-        if args
-            .get("word")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" -w");
-        }
-        if args
-            .get("multiline")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" --multiline");
-        }
-        if let Some(max_results) = args.get("maxResults").and_then(serde_json::Value::as_u64) {
-            cmd.push_str(&format!(" -m {max_results}"));
-        }
-        if let Some(context) = args.get("context").and_then(serde_json::Value::as_u64) {
-            cmd.push_str(&format!(" -C {context}"));
-        } else {
-            if let Some(before) = args
-                .get("beforeContext")
-                .and_then(serde_json::Value::as_u64)
-            {
-                cmd.push_str(&format!(" -B {before}"));
-            }
-            if let Some(after) = args.get("afterContext").and_then(serde_json::Value::as_u64) {
-                cmd.push_str(&format!(" -A {after}"));
-            }
-        }
-        if let Some(glob) = args.get("glob").and_then(|v| v.as_str()) {
-            cmd.push_str(&format!(" -g {}", shell_escape(glob)));
-        }
-        if args
-            .get("includeHidden")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" --hidden");
-        }
-        if args
-            .get("useGitIgnore")
-            .and_then(serde_json::Value::as_bool)
-            .is_some_and(|v| !v)
-        {
-            cmd.push_str(" --no-ignore");
-        }
-        if args
-            .get("invertMatch")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" --invert-match");
-        }
-        if args
-            .get("onlyMatching")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            cmd.push_str(" --only-matching");
-        }
-
-        cmd.push_str(&format!(" -- {}", shell_escape(pattern)));
-        for path in &paths {
-            cmd.push_str(&format!(" {}", shell_escape(path)));
-        }
-
-        let head_limit = args
-            .get("headLimit")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(MAX_GREP_LINES as u64) as usize;
-        cmd.push_str(&format!(
-            " | head -{head_limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi"
-        ));
-
-        let result = self
-            .bash
-            .execute(BashArgs {
-                command: cmd,
-                timeout: Some(30000),
-                description: Some("Search for pattern".to_string()),
-                run_in_background: false,
-            })
-            .await;
-
-        let duration_ms = start_time.elapsed().as_millis() as u64;
-        let matches_count = result.output.lines().count();
-        let truncated = matches_count >= head_limit;
-
-        let mut details = GrepDetails::new(pattern)
-            .with_path(paths.join(", "))
-            .with_matches(matches_count)
-            .with_duration(duration_ms);
-        if truncated {
-            details = details.with_truncation();
-        }
-
-        if result.success {
-            ToolResult::success(result.output).with_details(details.to_json())
-        } else {
-            ToolResult::failure(result.error.unwrap_or_default()).with_details(details.to_json())
-        }
+        let raw_path = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&self.cwd);
+        let path = Path::new(&self.cwd).join(raw_path);
+        let catalog = crate::skills::directory::catalog(Path::new(&self.cwd), &path);
+        result.output.push_str(
+            &self
+                .credential_vault
+                .vault_in_text_at_generation(generation, &catalog),
+        );
     }
 
-    /// Internal implementation of tool execution (without caching)
-    async fn execute_impl(
+    /// Execute a tool and convert the legacy transport DTO into the typed internal outcome.
+    ///
+    /// The existing `execute` API remains for headless and control-plane clients which still
+    /// exchange the legacy `{ success, output, error, details }` schema.
+    pub async fn execute_with_receipt(
         &self,
         tool_name: &str,
         args: &serde_json::Value,
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
-    ) -> ToolResult {
-        if McpClient::is_mcp_tool(tool_name) {
-            let client = match self.ensure_mcp_client().await {
-                Ok(client) => client,
-                Err(err) => return ToolResult::failure(err),
-            };
-
-            match client
-                .call_tool_with_metadata(tool_name, args.clone())
-                .await
-            {
-                Ok((server_name, tool_label, result)) => {
-                    let text_output = result
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            McpContent::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let output = if text_output.is_empty() {
-                        serde_json::to_string_pretty(&result.content)
-                            .unwrap_or_else(|_| "MCP tool returned non-text content".to_string())
-                    } else {
-                        text_output
-                    };
-                    let details = serde_json::json!({
-                        "server": server_name,
-                        "tool": tool_label,
-                        "content": result.content,
-                        "isError": result.is_error
-                    });
-                    return ToolResult::success(output).with_details(details);
-                }
-                Err(err) => {
-                    return ToolResult::failure(format!("MCP tool error: {err}"));
-                }
-            }
-        }
-
-        match tool_name {
-            "bash" | "Bash" => {
-                let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return ToolResult::failure(format!("Invalid bash arguments: {e}"));
-                    }
-                };
-
-                if let Err(err) = require_plan("bash") {
-                    return ToolResult::failure(err);
-                }
-
-                // Send tool start event
-                if let Some(tx) = event_tx {
-                    let _ = tx.send(FromAgent::ToolStart {
-                        call_id: call_id.to_string(),
-                    });
-                }
-
-                let result = self.bash.execute(bash_args).await;
-
-                // Send tool output event
-                if let Some(tx) = event_tx {
-                    if !result.output.is_empty() {
-                        let _ = tx.send(FromAgent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            content: result.output.clone(),
-                        });
-                    }
-
-                    let _ = tx.send(FromAgent::ToolEnd {
-                        call_id: call_id.to_string(),
-                        success: result.success,
-                    });
-                }
-
-                result
-            }
-            "read" | "Read" => {
-                let start_time = Instant::now();
-                let raw_path = args
-                    .get("path")
-                    .or_else(|| args.get("file_path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let path = match resolve_tool_path(&self.cwd, raw_path) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                let path_buf = std::path::Path::new(&path);
-                let extension = path_buf
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(str::to_ascii_lowercase);
-
-                // Optional line offset (1-indexed, defaults to 1)
-                let offset = args
-                    .get("offset")
-                    .and_then(serde_json::Value::as_u64)
-                    .map_or(1, |v| v.max(1) as usize);
-
-                // Optional line limit (defaults to reading all)
-                let limit = args
-                    .get("limit")
-                    .and_then(serde_json::Value::as_u64)
-                    .map(|v| v as usize);
-
-                let mode = args
-                    .get("mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("normal");
-
-                let line_numbers = args
-                    .get("lineNumbers")
-                    .or_else(|| args.get("line_numbers"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let wrap_in_code_fence = args
-                    .get("wrapInCodeFence")
-                    .or_else(|| args.get("wrap_in_code_fence"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let as_base64 = args
-                    .get("asBase64")
-                    .or_else(|| args.get("as_base64"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-
-                let with_diagnostics = args
-                    .get("withDiagnostics")
-                    .or_else(|| args.get("diagnostics"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let language = args.get("language").and_then(|v| v.as_str());
-
-                if let Some(ext) = extension.as_deref() {
-                    let is_image =
-                        matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg");
-                    if is_image {
-                        let image_args = ReadImageArgs {
-                            file_path: path.clone(),
-                            max_dimension: None,
-                        };
-                        return self.image.read_image(image_args).await;
-                    }
-                }
-
-                if let Some(ext) = extension.as_deref() {
-                    if ext == "pdf" {
-                        let bytes = match tokio::fs::read(&path).await {
-                            Ok(data) => data,
-                            Err(err) => {
-                                let details = ReadDetails::new(path.clone())
-                                    .with_duration(start_time.elapsed().as_millis() as u64);
-                                return ToolResult::failure(format!("Failed to read PDF: {err}"))
-                                    .with_details(details.to_json());
-                            }
-                        };
-                        let text = match pdf_extract::extract_text_from_mem(&bytes) {
-                            Ok(text) => text,
-                            Err(err) => {
-                                let details = ReadDetails::new(path.clone())
-                                    .with_duration(start_time.elapsed().as_millis() as u64)
-                                    .with_mime_type("application/pdf");
-                                return ToolResult::failure(format!(
-                                    "Failed to extract PDF: {err}"
-                                ))
-                                .with_details(details.to_json());
-                            }
-                        };
-                        let mut output = text;
-                        if wrap_in_code_fence {
-                            let fence_language = language.unwrap_or("");
-                            output = format!("```{fence_language}\n{output}\n```");
-                        }
-                        let details = ReadDetails::new(path.clone())
-                            .with_size(bytes.len() as u64)
-                            .with_mime_type("application/pdf")
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::success(output).with_details(details.to_json());
-                    }
-                }
-
-                if let Some(ext) = extension.as_deref() {
-                    if ext == "ipynb" {
-                        let content = match tokio::fs::read_to_string(&path).await {
-                            Ok(text) => text,
-                            Err(err) => {
-                                let details = ReadDetails::new(path.clone())
-                                    .with_duration(start_time.elapsed().as_millis() as u64);
-                                return ToolResult::failure(format!(
-                                    "Failed to read notebook: {err}"
-                                ))
-                                .with_details(details.to_json());
-                            }
-                        };
-                        let notebook: serde_json::Value = match serde_json::from_str(&content) {
-                            Ok(val) => val,
-                            Err(err) => {
-                                let details = ReadDetails::new(path.clone())
-                                    .with_duration(start_time.elapsed().as_millis() as u64);
-                                return ToolResult::failure(format!(
-                                    "Failed to parse notebook: {err}"
-                                ))
-                                .with_details(details.to_json());
-                            }
-                        };
-                        let cells = notebook.get("cells").and_then(|v| v.as_array()).cloned();
-                        let cells = match cells {
-                            Some(val) => val,
-                            None => {
-                                return ToolResult::failure(
-                                    "Invalid notebook format: missing cells".to_string(),
-                                );
-                            }
-                        };
-                        let mut lines = Vec::new();
-                        for (idx, cell) in cells.iter().enumerate() {
-                            let cell_type = cell
-                                .get("cell_type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("code");
-                            let cell_id = cell.get("id").and_then(|v| v.as_str());
-                            let source = cell.get("source").map(|v| {
-                                if v.is_array() {
-                                    v.as_array()
-                                        .unwrap_or(&Vec::new())
-                                        .iter()
-                                        .filter_map(|line| line.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join("")
-                                } else {
-                                    v.as_str().unwrap_or("").to_string()
-                                }
-                            });
-                            let preview = source.unwrap_or_default();
-                            let preview_lines: Vec<&str> = preview.lines().take(3).collect();
-                            let truncated = if preview.lines().count() > 3 {
-                                "..."
-                            } else {
-                                ""
-                            };
-                            let id_suffix =
-                                cell_id.map(|id| format!(" (id: {id})")).unwrap_or_default();
-                            lines.push(format!(
-                                "[{}] {}{}:\n{}{}",
-                                idx,
-                                cell_type,
-                                id_suffix,
-                                preview_lines.join("\n"),
-                                truncated
-                            ));
-                            lines.push(String::new());
-                        }
-                        let output = lines.join("\n");
-                        let details = ReadDetails::new(path.clone())
-                            .with_size(content.len() as u64)
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::success(output).with_details(details.to_json());
-                    }
-                }
-
-                if let Ok(metadata) = tokio::fs::metadata(&path).await {
-                    let size_bytes = metadata.len();
-                    if size_bytes > MAX_READ_SIZE_BYTES {
-                        let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
-                        let details = ReadDetails::new(path.clone())
-                            .with_size(size_bytes)
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!(
-                            "File is too large ({size_mb:.2}MB). Maximum size is 10MB. Use offset/limit or bash head/tail for large files."
-                        ))
-                        .with_details(details.to_json());
-                    }
-                }
-
-                let bytes = match tokio::fs::read(&path).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        let details = ReadDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to read file: {e}"))
-                            .with_details(details.to_json());
-                    }
-                };
-
-                if is_probably_binary(&bytes) && !as_base64 {
-                    let details = ReadDetails::new(path.clone())
-                        .with_size(bytes.len() as u64)
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(
-                        "Binary file detected. Re-run with asBase64=true or use the bash tool.",
-                    )
-                    .with_details(details.to_json());
-                }
-
-                if as_base64 {
-                    let encoded = STANDARD.encode(&bytes);
-                    let details = ReadDetails::new(path.clone())
-                        .with_size(bytes.len() as u64)
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::success(encoded).with_details(details.to_json());
-                }
-
-                let content = if let Ok(text) = String::from_utf8(bytes) {
-                    text
-                } else {
-                    let details = ReadDetails::new(path.clone())
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(
-                        "File is not valid UTF-8. Re-run with asBase64=true or use the bash tool.",
-                    )
-                    .with_details(details.to_json());
-                };
-
-                let lines: Vec<&str> = content.lines().collect();
-                let total_lines = lines.len();
-
-                let mut start_idx = (offset - 1).min(total_lines);
-                let mut max_lines = limit.unwrap_or(total_lines);
-
-                match mode {
-                    "head" => {
-                        start_idx = 0;
-                        max_lines = limit.unwrap_or(total_lines);
-                    }
-                    "tail" => {
-                        max_lines = limit.unwrap_or(total_lines);
-                        start_idx = total_lines.saturating_sub(max_lines);
-                    }
-                    "normal" => {}
-                    _ => {
-                        let details = ReadDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure("Invalid mode. Use normal, head, or tail.")
-                            .with_details(details.to_json());
-                    }
-                }
-
-                let end_idx = (start_idx + max_lines).min(total_lines);
-                let lines_read = end_idx.saturating_sub(start_idx);
-                let truncated = limit.is_some() && end_idx < total_lines;
-
-                let mut output: String = lines[start_idx..end_idx]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| {
-                        if line_numbers {
-                            format!("{:>6}\t{}", start_idx + i + 1, line)
-                        } else {
-                            (*line).to_string()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                if wrap_in_code_fence {
-                    let fence_language = language.unwrap_or("");
-                    output = format!("```{fence_language}\n{output}\n```");
-                }
-
-                if with_diagnostics {
-                    if let Ok(diagnostics) = lsp::diagnostics_for_file(&self.cwd, &path).await {
-                        if !diagnostics.is_empty() {
-                            let errors: Vec<_> = diagnostics
-                                .iter()
-                                .filter(|d| d.severity == Some(1) || d.severity.is_none())
-                                .collect();
-                            let warnings: Vec<_> = diagnostics
-                                .iter()
-                                .filter(|d| d.severity == Some(2))
-                                .collect();
-
-                            if !errors.is_empty() || !warnings.is_empty() {
-                                output.push_str("\n\n--- LSP Diagnostics ---\n");
-                                let max_diagnostics = lsp::max_diagnostics_per_file();
-                                let mut count = 0usize;
-
-                                for diag in &errors {
-                                    if count >= max_diagnostics {
-                                        break;
-                                    }
-                                    let message = lsp::sanitize_diagnostic_message(&diag.message);
-                                    output.push_str(&format!(
-                                        "ERROR (line {}): {}\n",
-                                        diag.range.start.line + 1,
-                                        message
-                                    ));
-                                    count += 1;
-                                }
-
-                                for diag in &warnings {
-                                    if count >= max_diagnostics {
-                                        break;
-                                    }
-                                    let message = lsp::sanitize_diagnostic_message(&diag.message);
-                                    output.push_str(&format!(
-                                        "WARN (line {}): {}\n",
-                                        diag.range.start.line + 1,
-                                        message
-                                    ));
-                                    count += 1;
-                                }
-
-                                if errors.len() + warnings.len() > max_diagnostics {
-                                    let remaining = errors.len() + warnings.len() - max_diagnostics;
-                                    output.push_str(&format!(
-                                        "...and {} more {} hidden.\n",
-                                        remaining,
-                                        if remaining == 1 {
-                                            "diagnostic"
-                                        } else {
-                                            "diagnostics"
-                                        }
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let details = ReadDetails::new(path.clone())
-                    .with_size(content.len() as u64)
-                    .with_lines(lines_read)
-                    .with_truncated(truncated)
-                    .with_offset(if offset > 1 { Some(offset) } else { None })
-                    .with_limit(limit)
-                    .with_duration(start_time.elapsed().as_millis() as u64);
-
-                ToolResult::success(output).with_details(details.to_json())
-            }
-            "write" | "Write" => {
-                let start_time = Instant::now();
-                let raw_path = args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let path = match resolve_tool_path(&self.cwd, raw_path) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                if let Err(err) = require_plan("write") {
-                    return ToolResult::failure(err);
-                }
-
-                let content = args
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let preview_diff = args
-                    .get("previewDiff")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-                let backup = args
-                    .get("backup")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let file_existed = std::path::Path::new(&path).exists();
-                let mut previous_content: Option<String> = None;
-                if file_existed {
-                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                        previous_content = Some(text);
-                    }
-                }
-
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        let details = WriteDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to create directory: {e}"))
-                            .with_details(details.to_json());
-                    }
-                }
-
-                let mut backup_path: Option<String> = None;
-                let mut backup_renamed = false;
-                if file_existed && backup {
-                    let backup_target = format!("{path}.bak");
-                    if tokio::fs::rename(&path, &backup_target).await.is_ok() {
-                        backup_renamed = true;
-                    } else if let Some(prev) = &previous_content {
-                        let _ = tokio::fs::write(&backup_target, prev).await;
-                    }
-                    backup_path = Some(backup_target);
-                }
-
-                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
-                let write_result = async {
-                    tokio::fs::write(&tmp_path, &content).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                    Ok::<(), std::io::Error>(())
-                }
-                .await;
-
-                if let Err(e) = write_result {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    if backup_renamed {
-                        let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
-                    } else if let Some(prev) = &previous_content {
-                        let _ = tokio::fs::write(&path, prev).await;
-                    }
-                    let details = WriteDetails::new(path.clone())
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {e}"))
-                        .with_details(details.to_json());
-                }
-
-                let diff = if preview_diff {
-                    previous_content.as_ref().map(|old| {
-                        let diff = similar::TextDiff::from_lines(old, &content);
-                        diff.unified_diff().to_string()
-                    })
-                } else {
-                    None
-                };
-
-                let display_path = if raw_path.is_empty() { &path } else { raw_path };
-                let mut linter_output = String::new();
-                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
-                    &self.cwd,
-                    std::slice::from_ref(&path),
-                )
-                .await
-                {
-                    Ok(map) => {
-                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
-                            linter_output =
-                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
-                        }
-                        Some(map)
-                    }
-                    Err(_) => None,
-                };
-
-                let validators = match run_validators_with_diagnostics(
-                    std::slice::from_ref(&path),
-                    lsp_diagnostics.as_ref(),
-                )
-                .await
-                {
-                    Ok(results) => Some(results),
-                    Err(err) => {
-                        if backup_renamed {
-                            let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
-                        } else if let Some(prev) = &previous_content {
-                            let _ = tokio::fs::write(&path, prev).await;
-                        }
-                        return ToolResult::failure(err);
-                    }
-                };
-
-                self.invalidate_file_cache(&path);
-
-                let mut details = WriteDetails::new(path.clone())
-                    .with_bytes(content.len() as u64)
-                    .with_created(!file_existed)
-                    .with_duration(start_time.elapsed().as_millis() as u64);
-                if let Some(diff) = diff {
-                    details = details.with_diff(diff);
-                }
-                if let Some(backup_path) = backup_path {
-                    details = details.with_backup(backup_path);
-                }
-                if let Some(validators) = validators {
-                    details = details.with_validators(validators);
-                }
-
-                let mut summary = format!("File written successfully: {path}");
-                if !linter_output.is_empty() {
-                    summary.push_str(&linter_output);
-                }
-
-                ToolResult::success(summary).with_details(details.to_json())
-            }
-            "glob" | "Glob" => {
-                let start_time = Instant::now();
-                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-
-                let base_path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&self.cwd);
-
-                let full_pattern = build_glob_pattern(base_path, pattern);
-
-                // Use native glob crate
-                match glob::glob(&full_pattern) {
-                    Ok(paths) => {
-                        const MAX_GLOB_RESULTS: usize = 100;
-                        let mut matches: Vec<String> = Vec::new();
-                        let mut truncated = false;
-
-                        for entry in paths {
-                            let Ok(path) = entry else {
-                                continue;
-                            };
-                            if matches.len() >= MAX_GLOB_RESULTS {
-                                truncated = true;
-                                break;
-                            }
-                            matches.push(path.display().to_string());
-                        }
-
-                        let details = GlobDetails::new(pattern)
-                            .with_base_path(base_path)
-                            .with_matches(matches.len())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        let details = if truncated {
-                            details.with_truncation()
-                        } else {
-                            details
-                        };
-
-                        ToolResult::success(matches.join("\n")).with_details(details.to_json())
-                    }
-                    Err(e) => {
-                        let details = GlobDetails::new(pattern)
-                            .with_base_path(base_path)
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        ToolResult::failure(format!("Glob error: {e}"))
-                            .with_details(details.to_json())
-                    }
-                }
-            }
-            "grep" | "Grep" => {
-                let start_time = Instant::now();
-                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
-                    Ok(result) => result,
-                    Err(message) => {
-                        return ToolResult::failure(message);
-                    }
-                };
-
-                if pattern.is_empty() {
-                    let details =
-                        GrepDetails::new("").with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure("Missing pattern argument")
-                        .with_details(details.to_json());
-                }
-
-                // Use ripgrep if available, fall back to grep
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: format!(
-                            "(rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null) | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
-                            shell_escape(pattern),
-                            shell_escape(&shell_path),
-                            shell_escape(pattern),
-                            shell_escape(&shell_path),
-                            MAX_GREP_LINES
-                        ),
-                        timeout: Some(30000),
-                        description: Some("Search for pattern".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
-
-                // Build grep details from result
-                let duration_ms = start_time.elapsed().as_millis() as u64;
-                let matches_count = result.output.lines().count();
-                let files_matched = result
-                    .output
-                    .lines()
-                    .filter_map(extract_grep_path)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
-                let truncated = matches_count >= MAX_GREP_LINES;
-
-                let details = GrepDetails::new(pattern)
-                    .with_path(&display_path)
-                    .with_matches(matches_count)
-                    .with_files_matched(files_matched)
-                    .with_duration(duration_ms);
-
-                let details = if truncated {
-                    details.with_truncation()
-                } else {
-                    details
-                };
-
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
-                } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
-                }
-            }
-            "edit" | "Edit" => {
-                let start_time = Instant::now();
-                let raw_path = args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let path = match resolve_tool_path(&self.cwd, raw_path) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                if let Err(err) = require_plan("edit") {
-                    return ToolResult::failure(err);
-                }
-
-                let replace_all = args
-                    .get("replaceAll")
-                    .or_else(|| args.get("replace_all"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let occurrence = args
-                    .get("occurrence")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(1) as usize;
-                let dry_run = args
-                    .get("dryRun")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-
-                let edits_value = args.get("edits").and_then(|v| v.as_array());
-                let mut edits: Vec<(String, String)> = Vec::new();
-
-                if let Some(edits_array) = edits_value {
-                    if replace_all || occurrence != 1 {
-                        return ToolResult::failure(
-                            "Cannot use replaceAll or occurrence with edits array".to_string(),
-                        );
-                    }
-                    for edit in edits_array {
-                        let old = edit
-                            .get("oldText")
-                            .or_else(|| edit.get("old_string"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if old.is_empty() {
-                            return ToolResult::failure("Edit entry missing oldText".to_string());
-                        }
-                        let new = edit
-                            .get("newText")
-                            .or_else(|| edit.get("new_string"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        edits.push((old, new));
-                    }
-                } else {
-                    let old = args
-                        .get("oldText")
-                        .or_else(|| args.get("old_string"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if old.is_empty() {
-                        return ToolResult::failure("Missing oldText argument".to_string());
-                    }
-                    let new = args
-                        .get("newText")
-                        .or_else(|| args.get("new_string"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    edits.push((old, new));
-                }
-
-                // Read file content
-                let content = match tokio::fs::read_to_string(&path).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let details = EditDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to read file: {e}"))
-                            .with_details(details.to_json());
-                    }
-                };
-
-                let mut new_content = content.clone();
-                let mut replacements_total = 0;
-                for (old_text, new_text) in &edits {
-                    let positions: Vec<usize> = new_content
-                        .match_indices(old_text)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if positions.is_empty() {
-                        let details = EditDetails::new(path.clone())
-                            .with_replacements(replacements_total)
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(
-                            "oldText not found in file. Make sure the string matches exactly."
-                                .to_string(),
-                        )
-                        .with_details(details.to_json());
-                    }
-                    if replace_all && edits.len() == 1 {
-                        replacements_total += positions.len();
-                        new_content = new_content.replace(old_text, new_text);
-                        continue;
-                    }
-                    let idx = occurrence.saturating_sub(1);
-                    if idx >= positions.len() {
-                        return ToolResult::failure(format!(
-                            "Occurrence {} out of range ({} matches)",
-                            occurrence,
-                            positions.len()
-                        ));
-                    }
-                    let pos = positions[idx];
-                    let mut updated = String::new();
-                    updated.push_str(&new_content[..pos]);
-                    updated.push_str(new_text);
-                    updated.push_str(&new_content[pos + old_text.len()..]);
-                    new_content = updated;
-                    replacements_total += 1;
-                }
-
-                let diff = similar::TextDiff::from_lines(&content, &new_content)
-                    .unified_diff()
-                    .to_string();
-
-                if dry_run {
-                    let details = EditDetails::new(path.clone())
-                        .with_replacements(replacements_total)
-                        .with_diff(diff)
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::success(
-                        "Dry run complete (no changes written)".to_string(),
-                    )
-                    .with_details(details.to_json());
-                }
-
-                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
-                let write_result = async {
-                    tokio::fs::write(&tmp_path, &new_content).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                    Ok::<(), std::io::Error>(())
-                }
-                .await;
-
-                if let Err(e) = write_result {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    let details = EditDetails::new(path.clone())
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {e}"))
-                        .with_details(details.to_json());
-                }
-
-                let display_path = if raw_path.is_empty() { &path } else { raw_path };
-                let mut linter_output = String::new();
-                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
-                    &self.cwd,
-                    std::slice::from_ref(&path),
-                )
-                .await
-                {
-                    Ok(map) => {
-                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
-                            linter_output =
-                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
-                        }
-                        Some(map)
-                    }
-                    Err(_) => None,
-                };
-
-                let validators = match run_validators_with_diagnostics(
-                    std::slice::from_ref(&path),
-                    lsp_diagnostics.as_ref(),
-                )
-                .await
-                {
-                    Ok(results) => Some(results),
-                    Err(err) => {
-                        let _ = tokio::fs::write(&path, &content).await;
-                        return ToolResult::failure(err);
-                    }
-                };
-
-                self.invalidate_file_cache(&path);
-
-                let mut details = EditDetails::new(path.clone())
-                    .with_replacements(replacements_total)
-                    .with_diff(diff)
-                    .with_duration(start_time.elapsed().as_millis() as u64)
-                    .with_line_changes(&content, &new_content);
-                if let Some(validators) = validators {
-                    details = details.with_validators(validators);
-                }
-
-                let mut summary =
-                    format!("Successfully replaced {replacements_total} occurrence(s) in {path}");
-                if !linter_output.is_empty() {
-                    summary.push_str(&linter_output);
-                }
-
-                ToolResult::success(summary).with_details(details.to_json())
-            }
-            "diff" | "Diff" => {
-                let start_time = Instant::now();
-                // Git diff tool - shows changes in working tree or between commits
-                let target = args
-                    .get("target")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("HEAD");
-
-                let path = args.get("path").and_then(|v| v.as_str());
-                let normalized_path = path.map(|raw_path| normalize_git_path(&self.cwd, raw_path));
-                let (display_path, shell_path) = match normalized_path.transpose() {
-                    Ok(Some((display, shell))) => (Some(display), Some(shell)),
-                    Ok(None) => (None, None),
-                    Err(message) => {
-                        return ToolResult::failure(message);
-                    }
-                };
-
-                // Build git diff command
-                let cmd = match shell_path.as_ref() {
-                    Some(p) => format!(
-                        "git diff {} -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(target),
-                        shell_escape(p),
-                        MAX_DIFF_LINES
-                    ),
-                    None => format!(
-                        "git diff {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(target),
-                        MAX_DIFF_LINES
-                    ),
-                };
-
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(30000),
-                        description: Some("Get git diff".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
-
-                // Build diff details
-                let duration_ms = start_time.elapsed().as_millis() as u64;
-                let mut details = DiffDetails::new(target).with_duration(duration_ms);
-
-                if let Some(p) = display_path.as_ref() {
-                    details = details.with_path(p);
-                }
-
-                // Parse diff stats from output (count +/- lines)
-                let insertions = result
-                    .output
-                    .lines()
-                    .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
-                    .count();
-                let deletions = result
-                    .output
-                    .lines()
-                    .filter(|line| line.starts_with('-') && !line.starts_with("---"))
-                    .count();
-                let files_changed = result
-                    .output
-                    .lines()
-                    .filter(|line| line.starts_with("diff --git"))
-                    .count();
-
-                if files_changed > 0 || insertions > 0 || deletions > 0 {
-                    details = details.with_stats(files_changed, insertions, deletions);
-                }
-
-                let truncated = result.output.lines().count() >= MAX_DIFF_LINES;
-                if truncated {
-                    details = details.with_truncation();
-                }
-
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
-                } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
-                }
-            }
-            "list" | "List" | "ls" => {
-                let start_time = Instant::now();
-                // Directory listing tool
-                let raw_path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&self.cwd);
-                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
-                    Ok(result) => result,
-                    Err(message) => {
-                        return ToolResult::failure(message);
-                    }
-                };
-
-                let recursive = args
-                    .get("recursive")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-
-                let cmd = if recursive {
-                    format!(
-                        "find -- {} -type f | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(&shell_path),
-                        MAX_LIST_LINES
-                    )
-                } else {
-                    format!(
-                        "ls -la -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(&shell_path),
-                        MAX_LIST_LINES
-                    )
-                };
-
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(10000),
-                        description: Some("List directory".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
-
-                // Build list details
-                let duration_ms = start_time.elapsed().as_millis() as u64;
-                let entries_count = result.output.lines().count();
-                let truncated = entries_count >= MAX_LIST_LINES;
-
-                let mut details = ListDetails::new(&display_path)
-                    .with_entries(entries_count)
-                    .with_duration(duration_ms);
-
-                if recursive {
-                    details = details.with_recursive();
-                }
-
-                if truncated {
-                    details = details.with_truncation();
-                }
-
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
-                } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
-                }
-            }
-            "find" | "Find" => {
-                let start_time = Instant::now();
-                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                if pattern.is_empty() {
-                    return ToolResult::failure("Missing pattern argument".to_string());
-                }
-                let raw_path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&self.cwd);
-                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
-                    Ok(result) => result,
-                    Err(message) => return ToolResult::failure(message),
-                };
-                let limit = args
-                    .get("limit")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(1000) as usize;
-                let include_hidden = args
-                    .get("includeHidden")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let mut cmd = String::from("rg --files --color=never");
-                if include_hidden {
-                    cmd.push_str(" --hidden");
-                }
-                cmd.push_str(&format!(
-                    " -g {} -- {}",
-                    shell_escape(pattern),
-                    shell_escape(&shell_path)
-                ));
-                cmd.push_str(&format!(
-                    " | head -{limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi"
-                ));
-
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(20000),
-                        description: Some("Find files".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
-
-                let duration_ms = start_time.elapsed().as_millis() as u64;
-                let count = result.output.lines().count();
-                let truncated = count >= limit;
-                let mut details = ListDetails::new(&display_path)
-                    .with_entries(count)
-                    .with_duration(duration_ms);
-                if truncated {
-                    details = details.with_truncation();
-                }
-
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
-                } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
-                }
-            }
-            "search" | "Search" => self.execute_search(args).await,
-            "parallel_ripgrep" | "ParallelRipgrep" => {
-                let patterns = args.get("patterns").and_then(|v| v.as_array()).cloned();
-                let patterns = match patterns {
-                    Some(p) if !p.is_empty() => p,
-                    _ => return ToolResult::failure("patterns array required".to_string()),
-                };
-
-                let mut combined = Vec::new();
-                let mut commands = Vec::new();
-                let mut total_matches = 0usize;
-                for pattern_value in patterns {
-                    let pattern = match pattern_value.as_str() {
-                        Some(p) => p.to_string(),
-                        None => continue,
-                    };
-                    let mut search_args = args.clone();
-                    if let Some(obj) = search_args.as_object_mut() {
-                        obj.insert("pattern".to_string(), Value::String(pattern.clone()));
-                        obj.remove("patterns");
-                    }
-                    let result = self.execute_search(&search_args).await;
-                    commands.push(pattern);
-                    if result.success {
-                        let line_count = result.output.lines().count();
-                        total_matches += line_count;
-                        combined.push(result.output);
-                    } else {
-                        combined.push(result.error.unwrap_or_default());
-                    }
-                }
-                let details = serde_json::json!({
-                    "commands": commands,
-                    "matchCount": total_matches
-                });
-                ToolResult::success(combined.join("\n\n")).with_details(details)
-            }
-            "status" | "Status" => status::git_status(args.clone(), &self.cwd).await,
-            "background_tasks" => {
-                let action = args
-                    .get("action")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("list");
-                match action {
-                    "start" => {
-                        if let Err(err) = require_plan("background_tasks") {
-                            return ToolResult::failure(err);
-                        }
-                        let command = match args.get("command").and_then(|v| v.as_str()) {
-                            Some(cmd) => cmd.to_string(),
-                            None => {
-                                return ToolResult::failure(
-                                    "command required for start".to_string(),
-                                )
-                            }
-                        };
-                        let cwd = args
-                            .get("cwd")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&self.cwd)
-                            .to_string();
-                        let shell = args
-                            .get("shell")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        let env = args.get("env").and_then(|v| v.as_object()).map(|map| {
-                            map.iter()
-                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                                .collect::<std::collections::HashMap<_, _>>()
-                        });
-                        match background_tasks::start(command, cwd, self.cwd.clone(), shell, env)
-                            .await
-                        {
-                            Ok(task) => {
-                                let details = serde_json::json!({
-                                    "id": task.id,
-                                    "pid": task.pid,
-                                    "status": "running",
-                                    "logPath": task.log_path
-                                });
-                                ToolResult::success(format!("Started task {}", task.id))
-                                    .with_details(details)
-                            }
-                            Err(err) => ToolResult::failure(err),
-                        }
-                    }
-                    "stop" => {
-                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
-                            Some(id) => id,
-                            None => {
-                                return ToolResult::failure("taskId required for stop".to_string())
-                            }
-                        };
-                        match background_tasks::stop(id) {
-                            Ok(task) => ToolResult::success(format!("Stopped task {}", task.id)),
-                            Err(err) => ToolResult::failure(err),
-                        }
-                    }
-                    "logs" => {
-                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
-                            Some(id) => id,
-                            None => {
-                                return ToolResult::failure("taskId required for logs".to_string())
-                            }
-                        };
-                        let lines = args
-                            .get("lines")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(40) as usize;
-                        match background_tasks::logs(id, lines) {
-                            Ok(logs) => ToolResult::success(logs),
-                            Err(err) => ToolResult::failure(err),
-                        }
-                    }
-                    "waitForRotation" | "wait_for_rotation" => {
-                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
-                            Some(id) => id,
-                            None => {
-                                return ToolResult::failure(
-                                    "taskId required for waitForRotation".to_string(),
-                                )
-                            }
-                        };
-                        let timeout_ms = args
-                            .get("timeoutMs")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(5000);
-                        match background_tasks::wait_for_rotation(
-                            id,
-                            Duration::from_millis(timeout_ms),
-                        )
-                        .await
-                        {
-                            Ok(info) => {
-                                let rotated_at = info
-                                    .rotated_at
-                                    .duration_since(SystemTime::UNIX_EPOCH)
-                                    .ok()
-                                    .map(|duration| duration.as_millis() as u64);
-                                let details = serde_json::json!({
-                                    "logPath": info.log_path.to_string_lossy(),
-                                    "archivePath": info.archive_path.to_string_lossy(),
-                                    "rotatedAt": rotated_at
-                                });
-                                ToolResult::success(format!("Log rotated for task {}", id))
-                                    .with_details(details)
-                            }
-                            Err(err) => ToolResult::failure(err),
-                        }
-                    }
-                    _ => {
-                        let tasks = background_tasks::list();
-                        let summary = tasks
-                            .iter()
-                            .map(|t| {
-                                let mut line = format!("{} {:?} {}", t.id, t.status, t.command);
-                                if t.log_write_failed {
-                                    if let Some(reason) = &t.log_write_error {
-                                        let reason = reason.replace(['\n', '\r'], " ");
-                                        line.push_str(&format!(" [log write failed: {reason}]"));
-                                    } else {
-                                        line.push_str(" [log write failed]");
-                                    }
-                                }
-                                line
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let details = serde_json::json!({ "count": tasks.len() });
-                        ToolResult::success(if summary.is_empty() {
-                            "No background tasks".to_string()
-                        } else {
-                            summary
-                        })
-                        .with_details(details)
-                    }
-                }
-            }
-            "todo" => todo::todo(args.clone()).await,
-            "ask_user" => ask_user::ask_user(args.clone()),
-            "extract_document" => extract_document::extract_document(args.clone()).await,
-            "notebook_edit" => notebook_edit::notebook_edit(args.clone(), &self.cwd).await,
-            "websearch" => exa::websearch(args.clone()).await,
-            "codesearch" => exa::codesearch(args.clone()).await,
-            "gh_pr" => gh::gh_pr(args.clone(), &self.cwd).await,
-            "gh_issue" => gh::gh_issue(args.clone()).await,
-            "gh_repo" => gh::gh_repo(args.clone(), &self.cwd).await,
-            "mcp_list_resources" => {
-                let server_filter = args.get("server").and_then(|v| v.as_str());
-                let client = match self.ensure_mcp_client().await {
-                    Ok(client) => client,
-                    Err(err) => return ToolResult::failure(err),
-                };
-
-                let mut resources = client.list_all_resources().await;
-                if let Some(filter) = server_filter {
-                    resources.retain(|(name, _)| name == filter);
-                }
-
-                let mut servers = Vec::new();
-                for (name, uris) in resources {
-                    if uris.is_empty() {
-                        continue;
-                    }
-                    servers.push(serde_json::json!({
-                        "name": name,
-                        "resources": uris
-                    }));
-                }
-
-                if servers.is_empty() {
-                    return ToolResult::success(
-                        "No MCP resources available. Either no servers are connected or they don't expose resources.".to_string(),
-                    )
-                    .with_details(serde_json::json!({ "servers": [] }));
-                }
-
-                let mut lines = Vec::new();
-                lines.push("# Available MCP Resources".to_string());
-                lines.push(String::new());
-                for server in &servers {
-                    let name = server
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    lines.push(format!("## {name}"));
-                    if let Some(resources) = server.get("resources").and_then(|v| v.as_array()) {
-                        for uri in resources {
-                            if let Some(uri_str) = uri.as_str() {
-                                lines.push(format!("- {uri_str}"));
-                            }
-                        }
-                    }
-                    lines.push(String::new());
-                }
-
-                ToolResult::success(lines.join("\n"))
-                    .with_details(serde_json::json!({ "servers": servers }))
-            }
-            "mcp_list_prompts" => {
-                let server_filter = args.get("server").and_then(|v| v.as_str());
-                let prompt_servers = match self.mcp_prompt_details(server_filter).await {
-                    Ok(entries) => entries,
-                    Err(err) => return ToolResult::failure(err),
-                };
-
-                let mut servers = Vec::new();
-                let mut lines = Vec::new();
-                lines.push("# Available MCP Prompts".to_string());
-                lines.push(String::new());
-                for (name, prompts) in prompt_servers {
-                    if prompts.is_empty() {
-                        continue;
-                    }
-                    lines.push(format!("## {name}"));
-                    for prompt in &prompts {
-                        append_mcp_prompt_summary(&mut lines, prompt, "- ", "  ");
-                    }
-                    lines.push(String::new());
-                    servers.push(serde_json::json!({
-                        "name": name,
-                        "prompts": prompts
-                    }));
-                }
-
-                if servers.is_empty() {
-                    return ToolResult::success(
-                        "No MCP prompts available. Either no servers are connected or they don't expose prompts.".to_string(),
-                    )
-                    .with_details(serde_json::json!({ "servers": [] }));
-                }
-
-                ToolResult::success(lines.join("\n"))
-                    .with_details(serde_json::json!({ "servers": servers }))
-            }
-            "mcp_read_resource" => {
-                let server = args.get("server").and_then(|v| v.as_str()).unwrap_or("");
-                let uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-                if server.is_empty() || uri.is_empty() {
-                    return ToolResult::failure("server and uri are required".to_string());
-                }
-
-                let client = match self.ensure_mcp_client().await {
-                    Ok(client) => client,
-                    Err(err) => return ToolResult::failure(err),
-                };
-
-                match client.read_resource(server, uri).await {
-                    Ok(result) => {
-                        if result.contents.is_empty() {
-                            return ToolResult::success(format!("Resource '{uri}' is empty."))
-                                .with_details(serde_json::json!({
-                                    "server": server,
-                                    "uri": uri,
-                                    "contents": []
-                                }));
-                        }
-
-                        let text_output = result
-                            .contents
-                            .iter()
-                            .filter_map(|content| content.text.clone())
-                            .collect::<Vec<_>>()
-                            .join("\n---\n");
-                        let output = if text_output.is_empty() {
-                            serde_json::to_string_pretty(&result.contents).unwrap_or_else(|_| {
-                                "MCP resource returned non-text content".to_string()
-                            })
-                        } else {
-                            text_output
-                        };
-
-                        ToolResult::success(output).with_details(serde_json::json!({
-                            "server": server,
-                            "uri": uri,
-                            "contents": result.contents
-                        }))
-                    }
-                    Err(err) => ToolResult::failure(format!("Failed to read MCP resource: {err}")),
-                }
-            }
-            "mcp_get_prompt" => {
-                let server = args.get("server").and_then(|v| v.as_str()).unwrap_or("");
-                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                if server.is_empty() || name.is_empty() {
-                    return ToolResult::failure("server and name are required".to_string());
-                }
-
-                let arguments = args
-                    .get("arguments")
-                    .and_then(|v| v.as_object())
-                    .map(|obj| {
-                        obj.iter()
-                            .map(|(key, value)| {
-                                let value = match value {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                (key.clone(), value)
-                            })
-                            .collect::<HashMap<String, String>>()
-                    });
-
-                let client = match self.ensure_mcp_client().await {
-                    Ok(client) => client,
-                    Err(err) => return ToolResult::failure(err),
-                };
-
-                match client.get_prompt(server, name, arguments).await {
-                    Ok(result) => {
-                        let description = result.description.clone();
-                        let messages = result.messages;
-                        let mut lines = Vec::new();
-                        lines.push(format!("Prompt: {name}"));
-                        if let Some(desc) = &description {
-                            lines.push(String::new());
-                            lines.push(format!("Description: {desc}"));
-                        }
-                        lines.push(String::new());
-                        for msg in &messages {
-                            lines.push(format!("[{}]", msg.role));
-                            let content = msg.content.as_text().unwrap_or("[non-text content]");
-                            lines.push(content.to_string());
-                            lines.push(String::new());
-                        }
-
-                        ToolResult::success(lines.join("\n")).with_details(serde_json::json!({
-                            "server": server,
-                            "name": name,
-                            "description": description,
-                            "messages": messages,
-                        }))
-                    }
-                    Err(err) => ToolResult::failure(format!("Failed to get MCP prompt: {err}")),
-                }
-            }
-            "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
-                let uri = args.get("uri").and_then(|v| v.as_str());
-                let diagnostics = if let Some(uri) = uri {
-                    let uri = normalize_uri_input(uri);
-                    let path = match resolve_tool_path(&self.cwd, &uri) {
-                        Ok(resolved) => resolved,
-                        Err(message) => return ToolResult::failure(message),
-                    };
-                    match lsp::diagnostics_for_file(&self.cwd, &path).await {
-                        Ok(entries) => entries,
-                        Err(err) => return ToolResult::failure(err),
-                    }
-                } else {
-                    match lsp::collect_workspace_diagnostics(&self.cwd).await {
-                        Ok(map) => map.values().flat_map(|entries| entries.clone()).collect(),
-                        Err(err) => return ToolResult::failure(err),
-                    }
-                };
-
-                let output =
-                    serde_json::to_string_pretty(&diagnostics).unwrap_or_else(|_| "[]".to_string());
-                ToolResult::success(output)
-            }
-            "vscode_get_definition" | "jetbrains_get_definition" => {
-                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-                if raw_uri.is_empty() {
-                    return ToolResult::failure("uri is required".to_string());
-                }
-                let line = match args.get("line").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as u32,
-                    _ => {
-                        return ToolResult::failure(
-                            "line must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-                let character = match args.get("character").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as u32,
-                    _ => {
-                        return ToolResult::failure(
-                            "character must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-
-                let uri = normalize_uri_input(raw_uri);
-                let path = match resolve_tool_path(&self.cwd, &uri) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                let locations =
-                    match lsp::definition_for_position(&self.cwd, &path, line, character).await {
-                        Ok(entries) => entries,
-                        Err(err) => return ToolResult::failure(err),
-                    };
-                let normalized: Vec<_> = locations
-                    .into_iter()
-                    .map(|mut location| {
-                        location.uri = normalize_uri_input(&location.uri);
-                        location
-                    })
-                    .collect();
-
-                let output =
-                    serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "[]".to_string());
-                ToolResult::success(output)
-            }
-            "vscode_find_references" | "jetbrains_find_references" => {
-                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-                if raw_uri.is_empty() {
-                    return ToolResult::failure("uri is required".to_string());
-                }
-                let line = match args.get("line").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as u32,
-                    _ => {
-                        return ToolResult::failure(
-                            "line must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-                let character = match args.get("character").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as u32,
-                    _ => {
-                        return ToolResult::failure(
-                            "character must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-                let include_declaration = args
-                    .get("includeDeclaration")
-                    .or_else(|| args.get("include_declaration"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
-
-                let uri = normalize_uri_input(raw_uri);
-                let path = match resolve_tool_path(&self.cwd, &uri) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                let locations = match lsp::references_for_position(
-                    &self.cwd,
-                    &path,
-                    line,
-                    character,
-                    include_declaration,
-                )
-                .await
-                {
-                    Ok(entries) => entries,
-                    Err(err) => return ToolResult::failure(err),
-                };
-                let normalized: Vec<_> = locations
-                    .into_iter()
-                    .map(|mut location| {
-                        location.uri = normalize_uri_input(&location.uri);
-                        location
-                    })
-                    .collect();
-
-                let output =
-                    serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "[]".to_string());
-                ToolResult::success(output)
-            }
-            "vscode_read_file_range" | "jetbrains_read_file_range" => {
-                let start_time = Instant::now();
-                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-                if raw_uri.is_empty() {
-                    return ToolResult::failure("uri is required".to_string());
-                }
-                let start_line = match args.get("startLine").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as usize,
-                    _ => {
-                        return ToolResult::failure(
-                            "startLine must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-                let end_line = match args.get("endLine").and_then(serde_json::Value::as_i64) {
-                    Some(value) if value >= 0 => value as usize,
-                    _ => {
-                        return ToolResult::failure(
-                            "endLine must be a non-negative integer".to_string(),
-                        )
-                    }
-                };
-
-                let uri = normalize_uri_input(raw_uri);
-                let path = match resolve_tool_path(&self.cwd, &uri) {
-                    Ok(resolved) => resolved,
-                    Err(message) => return ToolResult::failure(message),
-                };
-
-                let (output, lines_read) = match read_file_range(&path, start_line, end_line).await
-                {
-                    Ok(result) => result,
-                    Err(err) => return ToolResult::failure(err),
-                };
-
-                let size_bytes = tokio::fs::metadata(&path).await.ok().map(|m| m.len());
-                let mut details = ReadDetails::new(path.clone())
-                    .with_lines(lines_read)
-                    .with_offset(Some(start_line + 1))
-                    .with_limit(Some(end_line.saturating_sub(start_line) + 1))
-                    .with_duration(start_time.elapsed().as_millis() as u64);
-                if let Some(size) = size_bytes {
-                    details = details.with_size(size);
-                }
-
-                ToolResult::success(output).with_details(details.to_json())
-            }
-            "web_fetch" | "WebFetch" | "webfetch" => {
-                let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return ToolResult::failure(format!("Invalid web_fetch arguments: {e}"));
-                    }
-                };
-
-                // Send tool start event
-                if let Some(tx) = event_tx {
-                    let _ = tx.send(FromAgent::ToolStart {
-                        call_id: call_id.to_string(),
-                    });
-                }
-
-                let result = self.web_fetch.execute(fetch_args).await;
-
-                // Send tool output event
-                if let Some(tx) = event_tx {
-                    if !result.output.is_empty() {
-                        let _ = tx.send(FromAgent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            content: result.output.clone(),
-                        });
-                    }
-
-                    let _ = tx.send(FromAgent::ToolEnd {
-                        call_id: call_id.to_string(),
-                        success: result.success,
-                    });
-                }
-
-                result
-            }
-            "read_image" | "ReadImage" | "readimage" => {
-                let image_args: ReadImageArgs = match serde_json::from_value(args.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return ToolResult::failure(format!("Invalid read_image arguments: {e}"));
-                    }
-                };
-
-                // Send tool start event
-                if let Some(tx) = event_tx {
-                    let _ = tx.send(FromAgent::ToolStart {
-                        call_id: call_id.to_string(),
-                    });
-                }
-
-                let result = self.image.read_image(image_args).await;
-
-                // Send tool output event
-                if let Some(tx) = event_tx {
-                    if !result.output.is_empty() {
-                        let _ = tx.send(FromAgent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            content: result.output.clone(),
-                        });
-                    }
-
-                    let _ = tx.send(FromAgent::ToolEnd {
-                        call_id: call_id.to_string(),
-                        success: result.success,
-                    });
-                }
-
-                result
-            }
-            "screenshot" | "Screenshot" => {
-                let screenshot_args: ScreenshotArgs = match serde_json::from_value(args.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return ToolResult::failure(format!("Invalid screenshot arguments: {e}"));
-                    }
-                };
-
-                // Send tool start event
-                if let Some(tx) = event_tx {
-                    let _ = tx.send(FromAgent::ToolStart {
-                        call_id: call_id.to_string(),
-                    });
-                }
-
-                let result = self.image.screenshot(screenshot_args).await;
-
-                // Send tool output event
-                if let Some(tx) = event_tx {
-                    if !result.output.is_empty() {
-                        let _ = tx.send(FromAgent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            content: result.output.clone(),
-                        });
-                    }
-
-                    let _ = tx.send(FromAgent::ToolEnd {
-                        call_id: call_id.to_string(),
-                        success: result.success,
-                    });
-                }
-
-                result
-            }
-            _ => {
-                // Check if this is an inline tool
-                let tool_key = tool_name.to_lowercase();
-                if let Some(inline_tool) = self.inline_tools.get(&tool_key) {
-                    // Send tool start event
-                    if let Some(tx) = event_tx {
-                        let _ = tx.send(FromAgent::ToolStart {
-                            call_id: call_id.to_string(),
-                        });
-                    }
-
-                    let result = self
-                        .inline_executor
-                        .execute(inline_tool, args.clone())
-                        .await;
-
-                    // Send tool output and end events
-                    if let Some(tx) = event_tx {
-                        if !result.output.is_empty() {
-                            let _ = tx.send(FromAgent::ToolOutput {
-                                call_id: call_id.to_string(),
-                                content: result.output.clone(),
-                            });
-                        }
-
-                        let _ = tx.send(FromAgent::ToolEnd {
-                            call_id: call_id.to_string(),
-                            success: result.success,
-                        });
-                    }
-
-                    result
-                } else {
-                    ToolResult::failure(format!("Unknown tool: {tool_name}"))
-                }
-            }
-        }
-    }
-}
-
-/// Tool registry that holds tool definitions with schemas and validation logic
-///
-/// The registry is a HashMap-based collection of tool definitions. Each tool is
-/// identified by a lowercase name and contains metadata including:
-/// - Tool description and usage information
-/// - JSON schema for argument validation
-/// - Approval requirement (static or dynamic)
-///
-/// # Schema-Based Validation
-///
-/// Tool definitions include JSON schemas that specify:
-/// - Required vs optional parameters
-/// - Parameter types (string, number, boolean, object, array)
-/// - Parameter descriptions for the AI
-/// - Default values (via serde defaults)
-///
-/// The registry validates arguments by:
-/// 1. Checking for presence of required fields
-/// 2. Ensuring non-empty string values for required fields
-/// 3. Returning missing field names for client-side error handling
-///
-/// # Case Insensitivity
-///
-/// Tool lookups are case-insensitive. "bash", "Bash", and "BASH" all resolve to
-/// the same tool definition. Internally, all tool names are stored lowercase.
-///
-/// # Default Tools
-///
-/// The registry is pre-populated with built-in tools via `new()`, including
-/// core file/shell tools plus search, web, GitHub, MCP resource, and IDE stubs.
-///
-/// # Examples
-///
-/// ```
-/// use maestro_tui::tools::ToolRegistry;
-/// use serde_json::json;
-///
-/// let registry = ToolRegistry::new();
-///
-/// // Check if a tool exists
-/// assert!(registry.get("bash").is_some());
-/// assert!(registry.get("Bash").is_some());  // Case-insensitive
-///
-/// // Validate arguments
-/// let args = json!({});
-/// let missing = registry.missing_required("bash", &args);
-/// assert_eq!(missing, vec!["command"]);
-///
-/// // Check approval requirements
-/// let safe_args = json!({"command": "ls"});
-/// assert!(!registry.requires_approval("bash", &safe_args));
-/// ```
-pub struct ToolRegistry {
-    /// `HashMap` of tool definitions keyed by lowercase tool name
-    ///
-    /// Keys are normalized to lowercase for case-insensitive lookups.
-    /// Values contain the full tool definition with schema and approval logic.
-    tools: HashMap<String, ToolDefinition>,
-}
-
-impl ToolRegistry {
-    /// Create a new tool registry with default tools
-    #[must_use]
-    pub fn new() -> Self {
-        let mut tools = HashMap::new();
-
-        // Bash tool
-        tools.insert(
-            "bash".to_string(),
-            ToolDefinition {
-                tool: BashTool::definition(),
-                requires_approval: true, // Dynamic based on command
-            },
-        );
-
-        // Read tool
-        tools.insert(
-            "read".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "read",
-                    "Read a file (text, notebook, PDF, or image). Use for text files, configs, and docs. Supports images and .ipynb with automatic formatting.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file to read (relative or absolute)"
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Legacy alias for path"
-                        },
-                        "offset": {
-                            "type": "number",
-                            "description": "Line number to start reading from (optional)"
-                        },
-                        "limit": {
-                            "type": "number",
-                            "description": "Number of lines to read (optional)"
-                        },
-                        "mode": {
-                            "type": "string",
-                            "description": "Reading mode: normal, head, or tail (default: normal)"
-                        },
-                        "lineNumbers": {
-                            "type": "boolean",
-                            "description": "Prefix output lines with line numbers (default: true)"
-                        },
-                        "line_numbers": {
-                            "type": "boolean",
-                            "description": "Legacy alias for lineNumbers"
-                        },
-                        "wrapInCodeFence": {
-                            "type": "boolean",
-                            "description": "Wrap output in a Markdown code fence (default: true)"
-                        },
-                        "wrap_in_code_fence": {
-                            "type": "boolean",
-                            "description": "Legacy alias for wrapInCodeFence"
-                        },
-                        "asBase64": {
-                            "type": "boolean",
-                            "description": "Return base64-encoded content instead of text (default: false)"
-                        },
-                        "as_base64": {
-                            "type": "boolean",
-                            "description": "Legacy alias for asBase64"
-                        },
-                        "language": {
-                            "type": "string",
-                            "description": "Language identifier for code fence syntax highlighting (optional)"
-                        },
-                        "diagnostics": {
-                            "type": "boolean",
-                            "description": "Include diagnostics if available (optional)"
-                        },
-                        "withDiagnostics": {
-                            "type": "boolean",
-                            "description": "Include LSP diagnostics if available (optional)"
-                        }
-                    },
-                    "required": ["path"]
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // Write tool
-        tools.insert(
-            "write".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "write",
-                    "Write content to a file. Creates the file if it doesn't exist.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file to write (relative or absolute)"
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Legacy alias for path"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The content to write to the file (default: empty string)"
-                        },
-                        "previewDiff": {
-                            "type": "boolean",
-                            "description": "Return a diff preview (default: true)"
-                        },
-                        "backup": {
-                            "type": "boolean",
-                            "description": "Write a .bak copy before overwriting (default: true)"
-                        }
-                    },
-                    "required": ["path"]
-                })),
-                requires_approval: true,
-            },
-        );
-
-        // Glob tool
-        tools.insert(
-            "glob".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "glob",
-                    "Find files matching a glob pattern. Returns matching file paths.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "The glob pattern to match (e.g., '*.rs', '**/*.ts')"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "The directory to search in (optional, defaults to cwd)"
-                        }
-                    },
-                    "required": ["pattern"]
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // Grep tool
-        tools.insert(
-            "grep".to_string(),
-            ToolDefinition {
-                tool: Tool::new("grep", "Search for a pattern in files using ripgrep/grep.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "pattern": {
-                                "type": "string",
-                                "description": "The regex pattern to search for"
-                            },
-                            "path": {
-                                "type": "string",
-                                "description": "The file or directory to search in (optional)"
-                            }
-                        },
-                        "required": ["pattern"]
-                    })),
-                requires_approval: false,
-            },
-        );
-
-        // Edit tool
-        tools.insert(
-            "edit".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "edit",
-                    "Edit files with find-and-replace. Supports single edit, multi-edit, replace-all, and dry-run.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file to edit (relative or absolute)"
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Legacy alias for path"
-                        },
-                        "oldText": {
-                            "type": "string",
-                            "description": "Exact text to find and replace"
-                        },
-                        "newText": {
-                            "type": "string",
-                            "description": "Replacement text (omit or empty string to delete)"
-                        },
-                        "old_string": {
-                            "type": "string",
-                            "description": "Legacy alias for oldText"
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "Legacy alias for newText"
-                        },
-                        "edits": {
-                            "type": "array",
-                            "description": "Multiple edits to apply sequentially",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "oldText": {"type": "string"},
-                                    "newText": {"type": "string"},
-                                    "old_string": {"type": "string"},
-                                    "new_string": {"type": "string"}
-                                },
-                                "required": ["oldText"]
-                            }
-                        },
-                        "replaceAll": {
-                            "type": "boolean",
-                            "description": "Replace all occurrences (default: false)"
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "Legacy alias for replaceAll"
-                        },
-                        "occurrence": {
-                            "type": "number",
-                            "description": "Which occurrence to replace (default: 1)"
-                        },
-                        "dryRun": {
-                            "type": "boolean",
-                            "description": "Preview diff without writing"
-                        }
-                    },
-                    "required": ["path"]
-                })),
-                requires_approval: true,
-            },
-        );
-
-        // Diff tool - git diff
-        tools.insert(
-            "diff".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "diff",
-                    "Show changes in git working tree or between commits.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "target": {
-                            "type": "string",
-                            "description": "Git ref to diff against (default: HEAD)"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "File or directory path to limit diff to (optional)"
-                        }
-                    },
-                    "required": []
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // List tool - directory listing
-        tools.insert(
-            "list".to_string(),
-            ToolDefinition {
-                tool: Tool::new("list", "List contents of a directory.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Directory path to list (default: current directory)"
-                            },
-                            "recursive": {
-                                "type": "boolean",
-                                "description": "List files recursively (default: false)"
-                            }
-                        },
-                        "required": []
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-
-        // Find tool
-        tools.insert(
-            "find".to_string(),
-            ToolDefinition {
-                tool: Tool::new("find", "Search for files by glob pattern.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string", "description": "Glob pattern to match files"},
-                            "path": {"type": "string", "description": "Directory to search (default: cwd)"},
-                            "limit": {"type": "number", "description": "Maximum number of results (default: 1000)"},
-                            "includeHidden": {"type": "boolean", "description": "Include hidden files (default: true)"}
-                        },
-                        "required": ["pattern"]
-                    })),
-                requires_approval: false,
-            },
-        );
-
-        // Search tool
-        tools.insert(
-            "search".to_string(),
-            ToolDefinition {
-                tool: Tool::new("search", "Search file contents using ripgrep.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string", "description": "Regex or literal pattern"},
-                            "paths": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "array", "items": {"type": "string"}}
-                                ]
-                            },
-                            "glob": {"type": "string", "description": "Glob filter"},
-                            "ignoreCase": {"type": "boolean", "description": "Case-insensitive search"},
-                            "literal": {"type": "boolean", "description": "Treat pattern as literal"},
-                            "word": {"type": "boolean", "description": "Match whole words only"},
-                            "multiline": {"type": "boolean", "description": "Enable multiline"},
-                            "maxResults": {"type": "number", "description": "Maximum matches"},
-                            "context": {"type": "number", "description": "Lines of context (before/after)"},
-                            "beforeContext": {"type": "number", "description": "Lines of context before"},
-                            "afterContext": {"type": "number", "description": "Lines of context after"},
-                            "cwd": {"type": "string", "description": "Working directory"},
-                            "includeHidden": {"type": "boolean", "description": "Include hidden files"},
-                            "useGitIgnore": {"type": "boolean", "description": "Respect .gitignore"},
-                            "outputMode": {"type": "string", "description": "content | files | count"},
-                            "format": {"type": "string", "description": "text | json"},
-                            "invertMatch": {"type": "boolean", "description": "Invert match"},
-                            "onlyMatching": {"type": "boolean", "description": "Only matching text"},
-                            "headLimit": {"type": "number", "description": "Limit output lines"}
-                        },
-                        "required": ["pattern"]
-                    })),
-                requires_approval: false,
-            },
-        );
-
-        // Parallel ripgrep tool
-        tools.insert(
-            "parallel_ripgrep".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "parallel_ripgrep",
-                    "Run multiple ripgrep patterns in parallel and merge results.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "patterns": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                        "paths": {
-                            "anyOf": [
-                                {"type": "string"},
-                                {"type": "array", "items": {"type": "string"}}
-                            ]
-                        },
-                        "glob": {"type": "string"},
-                        "ignoreCase": {"type": "boolean"},
-                        "literal": {"type": "boolean"},
-                        "word": {"type": "boolean"},
-                        "multiline": {"type": "boolean"},
-                        "maxResults": {"type": "number"},
-                        "context": {"type": "number"},
-                        "beforeContext": {"type": "number"},
-                        "afterContext": {"type": "number"},
-                        "cwd": {"type": "string"},
-                        "includeHidden": {"type": "boolean"},
-                        "useGitIgnore": {"type": "boolean"},
-                        "headLimit": {"type": "number"}
-                    },
-                    "required": ["patterns"]
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // Web search tool (Exa)
-        tools.insert(
-            "websearch".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "websearch",
-                    "Search the web for current information via Exa.",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "numResults": {"type": "number"},
-                        "type": {"type": "string"},
-                        "category": {"type": "string"},
-                        "includeDomains": {"type": "array", "items": {"type": "string"}},
-                        "excludeDomains": {"type": "array", "items": {"type": "string"}},
-                        "text": {},
-                        "summary": {},
-                        "highlights": {},
-                        "context": {},
-                        "startPublishedDate": {"type": "string"},
-                        "endPublishedDate": {"type": "string"},
-                        "livecrawl": {"type": "string"},
-                        "subpages": {"type": "object"}
-                    },
-                    "required": ["query"]
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // Code search tool (Exa)
-        tools.insert(
-            "codesearch".to_string(),
-            ToolDefinition {
-                tool: Tool::new("codesearch", "Search code examples and docs via Exa.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"},
-                            "tokensNum": {}
-                        },
-                        "required": ["query"]
-                    })),
-                requires_approval: false,
-            },
-        );
-
-        // Background tasks tool
-        tools.insert(
-            "background_tasks".to_string(),
-            ToolDefinition {
-                tool: Tool::new("background_tasks", "Manage long-running background tasks.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string", "description": "start | stop | list | logs | waitForRotation"},
-                            "command": {"type": "string"},
-                            "cwd": {"type": "string"},
-                            "env": {"type": "object"},
-                            "shell": {"type": "boolean"},
-                            "taskId": {"type": "string"},
-                            "lines": {"type": "number"},
-                            "restart": {"type": "object"},
-                            "timeoutMs": {"type": "number"}
-                        },
-                        "required": ["action"]
-                    })),
-                requires_approval: true,
-            },
-        );
-
-        // Status tool
-        tools.insert(
-            "status".to_string(),
-            ToolDefinition {
-                tool: Tool::new("status", "Show git status (porcelain v2).").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "branchSummary": {"type": "boolean"},
-                            "includeIgnored": {"type": "boolean"},
-                            "paths": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "array", "items": {"type": "string"}}
-                                ]
-                            }
-                        },
-                        "required": []
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-
-        // Todo tool
-        tools.insert(
-            "todo".to_string(),
-            ToolDefinition {
-                tool: Tool::new("todo", "Create or update a todo checklist.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "goal": {"type": "string"},
-                            "items": {},
-                            "updates": {"type": "array"},
-                            "includeSummary": {"type": "boolean"}
-                        },
-                        "required": ["goal"]
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-
-        // Ask user tool
-        tools.insert(
-            "ask_user".to_string(),
-            ToolDefinition {
-                tool: Tool::new("ask_user", "Ask structured questions to the user.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "questions": {"type": "array"}
-                        },
-                        "required": ["questions"]
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-
-        // Extract document tool
-        tools.insert(
-            "extract_document".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "extract_document",
-                    "Download a document and extract its text (PDF, DOCX, XLSX, PPTX).",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string"},
-                        "maxChars": {"type": "number"}
-                    },
-                    "required": ["url"]
-                })),
-                requires_approval: false,
-            },
-        );
-
-        // Notebook edit tool
-        tools.insert(
-            "notebook_edit".to_string(),
-            ToolDefinition {
-                tool: Tool::new("notebook_edit", "Edit Jupyter notebook (.ipynb) files.")
-                    .with_schema(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "cell_id": {"type": "string"},
-                            "cell_index": {"type": "number"},
-                            "new_source": {"type": "string"},
-                            "cell_type": {"type": "string"},
-                            "edit_mode": {"type": "string"}
-                        },
-                        "required": ["path", "new_source"]
-                    })),
-                requires_approval: true,
-            },
-        );
-
-        // GitHub CLI tools (gh api)
-        tools.insert(
-            "gh_pr".to_string(),
-            ToolDefinition {
-                tool: Tool::new("gh_pr", "GitHub pull request operations via gh api.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "number": {"type": "number"},
-                            "title": {"type": "string"},
-                            "body": {"type": "string"},
-                            "branch": {"type": "string"},
-                            "base": {"type": "string"},
-                            "draft": {"type": "boolean"},
-                            "state": {"type": "string"},
-                            "author": {"type": "string"},
-                            "label": {"type": "array", "items": {"type": "string"}},
-                            "milestone": {"type": "string"},
-                            "limit": {"type": "number"},
-                            "json": {"type": "boolean"},
-                            "nameOnly": {"type": "boolean"},
-                            "repository": {"type": "string"}
-                        },
-                        "required": ["action"]
-                    }),
-                ),
-                requires_approval: true,
-            },
-        );
-
-        tools.insert(
-            "gh_issue".to_string(),
-            ToolDefinition {
-                tool: Tool::new("gh_issue", "GitHub issue operations via gh api.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "number": {"type": "number"},
-                            "title": {"type": "string"},
-                            "body": {"type": "string"},
-                            "labels": {"type": "array", "items": {"type": "string"}},
-                            "state": {"type": "string"},
-                            "author": {"type": "string"},
-                            "limit": {"type": "number"},
-                            "json": {"type": "boolean"},
-                            "repository": {"type": "string"}
-                        },
-                        "required": ["action"]
-                    }),
-                ),
-                requires_approval: true,
-            },
-        );
-
-        tools.insert(
-            "gh_repo".to_string(),
-            ToolDefinition {
-                tool: Tool::new("gh_repo", "GitHub repository operations via gh api.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "repository": {"type": "string"},
-                            "directory": {"type": "string"},
-                            "json": {"type": "boolean"}
-                        },
-                        "required": ["action"]
-                    }),
-                ),
-                requires_approval: true,
-            },
-        );
-
-        // Web fetch tool - retrieve web content
-        let webfetch_definition = WebFetchTool::definition();
-        tools.insert(
-            "web_fetch".to_string(),
-            ToolDefinition {
-                tool: webfetch_definition.clone(),
-                requires_approval: false, // Safe read-only operation
-            },
-        );
-        tools.insert(
-            "webfetch".to_string(),
-            ToolDefinition {
-                tool: Tool::new("webfetch", webfetch_definition.description.clone())
-                    .with_schema(webfetch_definition.input_schema.clone()),
-                requires_approval: false,
-            },
-        );
-
-        // Image reading tool - for vision-capable models
-        tools.insert(
-            "read_image".to_string(),
-            ToolDefinition {
-                tool: ImageTool::read_image_definition(),
-                requires_approval: false, // Safe read-only operation
-            },
-        );
-
-        // Screenshot capture tool
-        tools.insert(
-            "screenshot".to_string(),
-            ToolDefinition {
-                tool: ImageTool::screenshot_definition(),
-                requires_approval: true, // Captures screen content - needs approval
-            },
-        );
-
-        // MCP resource tools
-        tools.insert(
-            "mcp_list_resources".to_string(),
-            ToolDefinition {
-                tool: Tool::new("mcp_list_resources", "List available MCP resources.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "server": {"type": "string"}
-                        },
-                        "required": []
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "mcp_list_prompts".to_string(),
-            ToolDefinition {
-                tool: Tool::new("mcp_list_prompts", "List available MCP prompts.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "server": {"type": "string"}
-                        },
-                        "required": []
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "mcp_read_resource".to_string(),
-            ToolDefinition {
-                tool: Tool::new("mcp_read_resource", "Read an MCP resource by URI.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "server": {"type": "string"},
-                            "uri": {"type": "string"}
-                        },
-                        "required": ["server", "uri"]
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "mcp_get_prompt".to_string(),
-            ToolDefinition {
-                tool: Tool::new("mcp_get_prompt", "Get an MCP prompt by name.").with_schema(
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "server": {"type": "string"},
-                            "name": {"type": "string"},
-                            "arguments": {
-                                "type": "object",
-                                "additionalProperties": {"type": "string"}
-                            }
-                        },
-                        "required": ["server", "name"]
-                    }),
-                ),
-                requires_approval: false,
-            },
-        );
-
-        // IDE tools (LSP-backed)
-        let diagnostics_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "uri": {"type": "string"}
-            },
-            "required": []
-        });
-        let definition_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "uri": {"type": "string"},
-                "line": {"type": "number", "minimum": 0},
-                "character": {"type": "number", "minimum": 0}
-            },
-            "required": ["uri", "line", "character"]
-        });
-        let references_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "uri": {"type": "string"},
-                "line": {"type": "number", "minimum": 0},
-                "character": {"type": "number", "minimum": 0}
-            },
-            "required": ["uri", "line", "character"]
-        });
-        let read_range_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "uri": {"type": "string"},
-                "startLine": {"type": "number", "minimum": 0, "maximum": 10000},
-                "endLine": {"type": "number", "minimum": 0, "maximum": 10000}
-            },
-            "required": ["uri", "startLine", "endLine"]
-        });
-
-        tools.insert(
-            "vscode_get_diagnostics".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "vscode_get_diagnostics",
-                    "Get diagnostic errors/warnings from the workspace (LSP-backed).",
-                )
-                .with_schema(diagnostics_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "vscode_get_definition".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "vscode_get_definition",
-                    "Go to definition for a symbol at a position (LSP-backed).",
-                )
-                .with_schema(definition_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "vscode_find_references".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "vscode_find_references",
-                    "Find references for a symbol at a position (LSP-backed).",
-                )
-                .with_schema(references_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "vscode_read_file_range".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "vscode_read_file_range",
-                    "Read a specific range of lines from a file (LSP-backed).",
-                )
-                .with_schema(read_range_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "jetbrains_get_diagnostics".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "jetbrains_get_diagnostics",
-                    "Get diagnostic errors/warnings from the workspace (LSP-backed).",
-                )
-                .with_schema(diagnostics_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "jetbrains_get_definition".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "jetbrains_get_definition",
-                    "Go to definition for a symbol at a position (LSP-backed).",
-                )
-                .with_schema(definition_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "jetbrains_find_references".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "jetbrains_find_references",
-                    "Find references for a symbol at a position (LSP-backed).",
-                )
-                .with_schema(references_schema.clone()),
-                requires_approval: false,
-            },
-        );
-        tools.insert(
-            "jetbrains_read_file_range".to_string(),
-            ToolDefinition {
-                tool: Tool::new(
-                    "jetbrains_read_file_range",
-                    "Read a specific range of lines from a file (LSP-backed).",
-                )
-                .with_schema(read_range_schema.clone()),
-                requires_approval: false,
-            },
-        );
-
-        Self { tools }
-    }
-
-    /// Return missing required fields for a tool based on its JSON schema
-    ///
-    /// This method validates the provided arguments against the tool's schema and
-    /// returns a list of required field names that are either:
-    /// - Not present in the args object
-    /// - Present but empty (for string fields)
-    ///
-    /// # Arguments
-    ///
-    /// - `name`: Tool name (case-insensitive)
-    /// - `args`: JSON object containing the proposed arguments
-    ///
-    /// # Returns
-    ///
-    /// Vector of field names that are missing or invalid. Empty vector if all
-    /// required fields are present and valid.
-    ///
-    /// # Schema Processing
-    ///
-    /// 1. Look up tool definition by name (lowercase)
-    /// 2. Extract "required" array from tool's `input_schema`
-    /// 3. For each required field, check if:
-    ///    - Field exists in args
-    ///    - Field value is not an empty string (for string types)
-    /// 4. Collect missing field names
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use maestro_tui::tools::ToolRegistry;
-    /// use serde_json::json;
-    ///
-    /// let registry = ToolRegistry::new();
-    ///
-    /// // Missing command field
-    /// let args = json!({});
-    /// let missing = registry.missing_required("bash", &args);
-    /// assert_eq!(missing, vec!["command"]);
-    ///
-    /// // Empty command field (treated as missing)
-    /// let args = json!({"command": ""});
-    /// let missing = registry.missing_required("bash", &args);
-    /// assert_eq!(missing, vec!["command"]);
-    ///
-    /// // All required fields present
-    /// let args = json!({"command": "ls -la"});
-    /// let missing = registry.missing_required("bash", &args);
-    /// assert!(missing.is_empty());
-    ///
-    /// // Edit tool requires a path (edit params are validated at runtime)
-    /// let args = json!({"file_path": "/tmp/file.txt"});
-    /// let missing = registry.missing_required("edit", &args);
-    /// assert!(missing.is_empty());
-    /// ```
-    #[must_use]
-    pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
-        let mut missing = Vec::new();
-        let key = name.to_lowercase();
-        if let Some(def) = self.tools.get(&key) {
-            if let Some(required) = def
-                .tool
-                .input_schema
-                .get("required")
-                .and_then(|v| v.as_array())
-            {
-                for field in required.iter().filter_map(|f| f.as_str()) {
-                    let present = args.get(field).is_some()
-                        && !args
-                            .get(field)
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| s.trim().is_empty());
-                    let alias_present = match field {
-                        "file_path" => args
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| !s.trim().is_empty()),
-                        "path" => args
-                            .get("file_path")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| !s.trim().is_empty()),
-                        _ => false,
-                    };
-                    if !present && !alias_present {
-                        missing.push(field.to_string());
-                    }
-                }
-            }
-        }
-        missing
-    }
-
-    /// Get an iterator over all registered tool definitions
-    ///
-    /// Returns an iterator that yields immutable references to all `ToolDefinitions`
-    /// in the registry. The order is undefined (`HashMap` iteration order).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use maestro_tui::tools::ToolRegistry;
-    ///
-    /// let registry = ToolRegistry::new();
-    ///
-    /// // Count tools
-    /// let count = registry.tools().count();
-    /// assert_eq!(count, 38);  // includes search/parity tools + IDE stubs
-    ///
-    /// // List tool names
-    /// for tool_def in registry.tools() {
-    ///     println!("Tool: {}", tool_def.tool.name);
-    /// }
-    /// ```
-    pub fn tools(&self) -> impl Iterator<Item = &ToolDefinition> {
-        self.tools.values()
-    }
-
-    /// Get a tool definition by name (case-insensitive lookup)
-    ///
-    /// # Arguments
-    ///
-    /// - `name`: Tool name to look up (e.g., "bash", "Bash", "BASH")
-    ///
-    /// # Returns
-    ///
-    /// Some(&ToolDefinition) if the tool exists, None otherwise.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use maestro_tui::tools::ToolRegistry;
-    ///
-    /// let registry = ToolRegistry::new();
-    ///
-    /// // Case-insensitive lookup
-    /// assert!(registry.get("bash").is_some());
-    /// assert!(registry.get("Bash").is_some());
-    /// assert!(registry.get("BASH").is_some());
-    ///
-    /// // Unknown tool
-    /// assert!(registry.get("unknown").is_none());
-    /// ```
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
-        self.tools.get(&name.to_lowercase())
-    }
-
-    /// Check if a tool requires user approval, considering dynamic logic
-    ///
-    /// This method implements a two-tier approval system:
-    ///
-    /// 1. **Dynamic approval (bash only)**: Inspects command content to determine
-    ///    if approval is needed. Safe commands like "ls" are auto-approved.
-    /// 2. **Static approval**: Uses the `requires_approval` flag from the tool
-    ///    definition. Tools like "write" always require approval.
-    ///
-    /// # Arguments
-    ///
-    /// - `name`: Tool name (case-insensitive)
-    /// - `args`: JSON object containing tool arguments
-    ///
-    /// # Returns
-    ///
-    /// - `true`: Tool requires user approval before execution
-    /// - `false`: Tool can execute automatically without prompting
-    ///
-    /// Unknown tools default to requiring approval for safety.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use maestro_tui::tools::ToolRegistry;
-    /// use serde_json::json;
-    ///
-    /// let registry = ToolRegistry::new();
-    ///
-    /// // Read tool - static approval (false)
-    /// let args = json!({"file_path": "/etc/passwd"});
-    /// assert!(!registry.requires_approval("read", &args));
-    ///
-    /// // Write tool - static approval (true)
-    /// let args = json!({"file_path": "/tmp/test.txt", "content": "hello"});
-    /// assert!(registry.requires_approval("write", &args));
-    ///
-    /// // Bash tool - dynamic approval based on command
-    /// let safe_cmd = json!({"command": "git status"});
-    /// assert!(!registry.requires_approval("bash", &safe_cmd));
-    ///
-    /// let unsafe_cmd = json!({"command": "rm -rf /"});
-    /// assert!(registry.requires_approval("bash", &unsafe_cmd));
-    ///
-    /// // Unknown tool - defaults to requiring approval
-    /// let args = json!({});
-    /// assert!(registry.requires_approval("unknown_tool", &args));
-    /// ```
-    #[must_use]
-    pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
-        match name {
-            "bash" | "Bash" => {
-                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-                    BashTool::requires_approval(cmd)
-                } else {
-                    true
-                }
-            }
-            _ => self
-                .tools
-                .get(&name.to_lowercase())
-                .is_none_or(|d| d.requires_approval),
-        }
-    }
-
-    /// Register a tool from an external source (e.g., inline tools, MCP)
-    ///
-    /// This method adds a new tool to the registry. If a tool with the same name
-    /// already exists, it will be overwritten.
-    ///
-    /// # Arguments
-    ///
-    /// - `name`: Tool name (will be normalized to lowercase)
-    /// - `definition`: The tool definition to register
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use maestro_tui::tools::ToolRegistry;
-    /// use maestro_tui::agent::ToolDefinition;
-    /// use maestro_tui::ai::Tool;
-    ///
-    /// let mut registry = ToolRegistry::new();
-    ///
-    /// let tool = Tool::new("my_tool", "A custom tool")
-    ///     .with_schema(serde_json::json!({
-    ///         "type": "object",
-    ///         "properties": {},
-    ///         "required": []
-    ///     }));
-    ///
-    /// registry.register("my_tool", ToolDefinition {
-    ///     tool,
-    ///     requires_approval: true,
-    /// });
-    ///
-    /// assert!(registry.get("my_tool").is_some());
-    /// ```
-    pub fn register(&mut self, name: &str, definition: ToolDefinition) {
-        self.tools.insert(name.to_lowercase(), definition);
-    }
-
-    /// Unregister a tool by name
-    ///
-    /// Returns true if the tool was found and removed, false otherwise.
-    pub fn unregister(&mut self, name: &str) -> bool {
-        self.tools.remove(&name.to_lowercase()).is_some()
-    }
-}
-
-impl Default for ToolRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    use crate::tools::details;
-
-    struct EnvGuard {
-        log_bytes: Option<String>,
-        log_segments: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn capture() -> Self {
-            Self {
-                log_bytes: std::env::var("MAESTRO_BACKGROUND_TASK_LOG_BYTES").ok(),
-                log_segments: std::env::var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS").ok(),
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.log_bytes {
-                std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES", value);
-            } else {
-                std::env::remove_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES");
-            }
-            if let Some(value) = &self.log_segments {
-                std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS", value);
-            } else {
-                std::env::remove_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS");
-            }
-        }
-    }
-
-    fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::io::Result<()> {
-        std::fs::write(
-            config_dir.join("mcp.json"),
-            serde_json::to_string(&serde_json::json!({ "servers": servers }))
-                .expect("serialize mcp config"),
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            None,
         )
+        .await
     }
 
-    #[cfg(not(windows))]
-    fn failing_counter_server(server_name: &str, counter_path: &Path) -> serde_json::Value {
-        serde_json::json!({
-            "name": server_name,
-            "transport": "stdio",
-            "command": "sh",
-            "timeout": 50,
-            "args": [
-                "-c",
-                "count=$(cat \"$1\" 2>/dev/null || echo 0); echo $((count + 1)) > \"$1\"; exit 1",
-                "sh",
-                counter_path.display().to_string()
-            ]
-        })
+    /// Execute a tool like [`Self::execute_with_receipt`], aborting early when
+    /// `cancel` fires (the TUI wires this to Ctrl+C so long-running commands
+    /// are interrupted instead of blocking until their timeout).
+    pub async fn execute_with_receipt_cancellable(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        cancel: CancellationToken,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            Some(cancel),
+        )
+        .await
     }
 
-    #[cfg(not(windows))]
-    fn read_counter(counter_path: &Path) -> usize {
-        std::fs::read_to_string(counter_path)
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .unwrap_or(0)
-    }
-
-    #[test]
-    fn test_registry_has_default_tools() {
-        let registry = ToolRegistry::new();
-
-        assert!(registry.get("bash").is_some());
-        assert!(registry.get("read").is_some());
-        assert!(registry.get("write").is_some());
-        assert!(registry.get("glob").is_some());
-        assert!(registry.get("grep").is_some());
-        assert!(registry.get("edit").is_some());
-    }
-
-    #[test]
-    fn test_append_mcp_prompt_summary_includes_metadata_and_arguments() {
-        let mut lines = Vec::new();
-        append_mcp_prompt_summary(
-            &mut lines,
-            &crate::mcp::McpPrompt {
-                name: "summarize".to_string(),
-                title: Some("Summarize Docs".to_string()),
-                description: Some("Summarize the selected documentation.".to_string()),
-                arguments: Some(vec![crate::mcp::McpPromptArgument {
-                    name: "topic".to_string(),
-                    description: Some("Topic to summarize".to_string()),
-                    required: true,
-                }]),
+    pub(crate) async fn execute_with_receipt_cancellable_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        options: ToolExecutionOptions<'_>,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            ToolExecutionContext {
+                code_decision: None,
+                cancel: Some(options.cancel),
+                approved_inline_env: options.approved_inline_env,
+                hooks: options.hooks,
+                emit_tool_events: false,
             },
-            "- ",
-            "  ",
-        );
-
-        assert_eq!(
-            lines,
-            vec![
-                "- summarize".to_string(),
-                "  title: Summarize Docs".to_string(),
-                "  description: Summarize the selected documentation.".to_string(),
-                "  args: topic (required): Topic to summarize".to_string(),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_mcp_status_includes_scope_transport_and_error() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".composer");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-
-        let server_name = "status-parity-test-server";
-        write_mcp_config(
-            &config_dir,
-            vec![serde_json::json!({
-                "name": server_name,
-                "transport": "stdio",
-                "command": "missing-test-command"
-            })],
         )
-        .expect("write mcp config");
-
-        let executor = ToolExecutor::new(temp.path().display().to_string());
-
-        let statuses = executor.mcp_status().await.expect("mcp status");
-        let server = statuses
-            .into_iter()
-            .find(|status| status.name == server_name)
-            .expect("status entry");
-
-        assert_eq!(server.scope, crate::mcp::McpConfigScope::Project);
-        assert_eq!(server.transport, crate::mcp::McpTransport::Stdio);
-        assert!(server.error.is_some());
-        assert!(!server.connected);
+        .await
     }
 
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_mcp_status_retries_failed_servers_after_cooldown() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".composer");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-
-        let server_name = "retry-test-server";
-        let counter_path = temp.path().join("retry-count.txt");
-        write_mcp_config(
-            &config_dir,
-            vec![failing_counter_server(server_name, &counter_path)],
+    pub(crate) async fn execute_with_receipt_at_generation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        cancel: Option<CancellationToken>,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            generation,
+            ToolExecutionContext {
+                code_decision: None,
+                cancel,
+                approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: false,
+            },
         )
-        .expect("write mcp config");
-
-        let executor = ToolExecutor::new(temp.path().display().to_string());
-
-        let _ = executor.mcp_status().await.expect("first mcp status");
-        assert_eq!(read_counter(&counter_path), 1);
-
-        let _ = executor.mcp_status().await.expect("second mcp status");
-        assert_eq!(read_counter(&counter_path), 1);
-
-        if let Ok(mut attempts) = executor.mcp_last_connect_attempts.write() {
-            attempts.insert(
-                server_name.to_string(),
-                Instant::now()
-                    .checked_sub(MCP_RECONNECT_RETRY_COOLDOWN + Duration::from_secs(1))
-                    .expect("retry backoff timestamp"),
-            );
-        }
-
-        let _ = executor.mcp_status().await.expect("third mcp status");
-        assert_eq!(read_counter(&counter_path), 2);
+        .await
     }
 
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_mcp_status_reloads_changed_server_config() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".composer");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-
-        let server_name = "reload-test-server";
-        let first_counter_path = temp.path().join("reload-count-a.txt");
-        let second_counter_path = temp.path().join("reload-count-b.txt");
-        write_mcp_config(
-            &config_dir,
-            vec![failing_counter_server(server_name, &first_counter_path)],
-        )
-        .expect("write initial mcp config");
-
-        let executor = ToolExecutor::new(temp.path().display().to_string());
-
-        let _ = executor.mcp_status().await.expect("first mcp status");
-        assert_eq!(read_counter(&first_counter_path), 1);
-        assert_eq!(read_counter(&second_counter_path), 0);
-
-        write_mcp_config(
-            &config_dir,
-            vec![failing_counter_server(server_name, &second_counter_path)],
-        )
-        .expect("write updated mcp config");
-
-        let _ = executor.mcp_status().await.expect("second mcp status");
-        assert_eq!(read_counter(&first_counter_path), 1);
-        assert_eq!(read_counter(&second_counter_path), 1);
-    }
-
-    #[tokio::test]
-    async fn test_mcp_status_clears_removed_server_state() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".composer");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-
-        let server_name = "removed-status-server";
-        write_mcp_config(
-            &config_dir,
-            vec![serde_json::json!({
-                "name": server_name,
-                "transport": "stdio",
-                "command": "missing-test-command"
-            })],
-        )
-        .expect("write initial mcp config");
-
-        let executor = ToolExecutor::new(temp.path().display().to_string());
-
-        let _ = executor.mcp_status().await.expect("initial mcp status");
-        assert!(executor
-            .mcp_last_errors
-            .read()
-            .expect("mcp errors")
-            .contains_key(server_name));
-
-        write_mcp_config(&config_dir, Vec::new()).expect("write empty mcp config");
-
-        let statuses = executor.mcp_status().await.expect("updated mcp status");
-        assert!(statuses.is_empty());
-        assert!(!executor
-            .mcp_last_errors
-            .read()
-            .expect("mcp errors")
-            .contains_key(server_name));
-        assert!(!executor
-            .mcp_synced_configs
-            .read()
-            .expect("mcp configs")
-            .contains_key(server_name));
-    }
-
-    #[test]
-    fn test_registry_tool_count() {
-        let registry = ToolRegistry::new();
-        let count = registry.tools().count();
-        assert_eq!(count, 38); // includes parity tools + IDE stubs
-    }
-
-    #[test]
-    fn test_build_glob_pattern_relative() {
-        let base = "/tmp/root";
-        let pattern = "**/*.rs";
-        let expected = Path::new(base).join(pattern).to_string_lossy().to_string();
-        assert_eq!(build_glob_pattern(base, pattern), expected);
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn test_build_glob_pattern_absolute_unix() {
-        let base = "/tmp/root";
-        let pattern = "/tmp/root/**/*.rs";
-        assert_eq!(build_glob_pattern(base, pattern), pattern);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn test_build_glob_pattern_absolute_windows() {
-        let base = r"C:\root";
-        let pattern = r"C:\root\**\*.rs";
-        assert_eq!(build_glob_pattern(base, pattern), pattern);
-    }
-
-    #[test]
-    fn test_registry_requires_approval_read() {
-        let registry = ToolRegistry::new();
-        let args = serde_json::json!({"file_path": "/etc/passwd"});
-        assert!(!registry.requires_approval("read", &args));
-    }
-
-    #[test]
-    fn test_registry_requires_approval_bash_dynamic() {
-        let registry = ToolRegistry::new();
-        let safe = serde_json::json!({"command": "ls -la"});
-        let unsafe_cmd = serde_json::json!({"command": "cargo build"});
-
-        assert!(!registry.requires_approval("bash", &safe));
-        assert!(registry.requires_approval("bash", &unsafe_cmd));
-    }
-
-    #[test]
-    fn test_registry_missing_required_fields() {
-        let registry = ToolRegistry::new();
-        // read requires path (file_path is accepted as alias)
-        let missing = registry.missing_required("read", &serde_json::json!({}));
-        assert_eq!(missing, vec!["path".to_string()]);
-
-        // present field -> no missing
-        let ok =
-            registry.missing_required("read", &serde_json::json!({"file_path": "/tmp/file.txt"}));
-        assert!(ok.is_empty());
-    }
-
-    #[test]
-    fn test_registry_requires_approval_write() {
-        let registry = ToolRegistry::new();
-        let args = serde_json::json!({"file_path": "/tmp/test.txt", "content": "hello"});
-        assert!(registry.requires_approval("write", &args));
-    }
-
-    #[test]
-    fn test_registry_requires_approval_bash_safe() {
-        let registry = ToolRegistry::new();
-        let args = serde_json::json!({"command": "ls -la"});
-        assert!(!registry.requires_approval("bash", &args));
-    }
-
-    #[test]
-    fn test_registry_requires_approval_bash_unsafe() {
-        let registry = ToolRegistry::new();
-        let args = serde_json::json!({"command": "rm -rf /tmp/test"});
-        assert!(registry.requires_approval("bash", &args));
-    }
-
-    #[test]
-    fn test_registry_unknown_tool() {
-        let registry = ToolRegistry::new();
-        assert!(registry.get("unknown").is_none());
-        // Unknown tools require approval
-        let args = serde_json::json!({});
-        assert!(registry.requires_approval("unknown", &args));
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "line 1\nline 2\nline 3").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(result.success);
-        assert!(result.output.contains("line 1"));
-        assert!(result.output.contains("line 2"));
-        assert!(result.output.contains("line 3"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file_as_base64() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("binary.bin");
-        let bytes = [0_u8, 1, 2, 3, 4, 5];
-        std::fs::write(&file_path, bytes).unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "as_base64": true
-        });
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let expected = STANDARD.encode(bytes);
-        assert_eq!(result.output, expected);
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file_binary_requires_base64() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("binary.bin");
-        let bytes = [0_u8, 1, 2, 3, 4, 5];
-        std::fs::write(&file_path, bytes).unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap()
-        });
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("binary file detected"));
-    }
-
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_background_tasks_wait_for_rotation() {
-        let _env_guard = EnvGuard::capture();
-        // MIN_LOG_BYTES is 50_000, so the limit must be at least that to enable rotation.
-        // Write more data than the limit to guarantee rotation triggers.
-        std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES", "50000");
-        std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS", "1");
-
-        let dir = tempfile::tempdir().unwrap();
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let command = "sh -c \"head -c 60000 /dev/zero; sleep 0.2\"";
-        let start_args = serde_json::json!({
-            "action": "start",
-            "command": command,
-            "cwd": dir.path().to_str().unwrap(),
-            "shell": false
-        });
-        let start_result = executor
-            .execute("background_tasks", &start_args, None, "bg-start")
-            .await;
-        assert!(
-            start_result.success,
-            "start failed: {:?}",
-            start_result.error
-        );
-        let task_id = start_result
-            .details
-            .as_ref()
-            .and_then(|details| details.get("id"))
-            .and_then(|id| id.as_str())
-            .unwrap()
-            .to_string();
-
-        let wait_args = serde_json::json!({
-            "action": "waitForRotation",
-            "taskId": task_id,
-            "timeoutMs": 2000
-        });
-        let wait_result = executor
-            .execute("background_tasks", &wait_args, None, "bg-wait")
-            .await;
-        assert!(wait_result.success, "wait failed: {:?}", wait_result.error);
-        let details = wait_result.details.unwrap_or_default();
-        assert!(details.get("archivePath").is_some());
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file_no_line_numbers() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("plain.txt");
-        std::fs::write(&file_path, "alpha\nbeta").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "line_numbers": false,
-            "wrap_in_code_fence": false
-        });
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(result.success);
-        assert!(result.output.contains("alpha\nbeta"));
-        assert!(!result.output.contains('\t'));
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file_relative_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("relative.txt");
-        std::fs::write(&file_path, "hello from relative").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({"file_path": "relative.txt"});
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(result.success);
-        assert!(result.output.contains("hello from relative"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_read_file_too_large() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("large.txt");
-        let data = vec![b'a'; (MAX_READ_SIZE_BYTES + 1) as usize];
-        std::fs::write(&file_path, data).unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
-        let result = executor.execute("read", &args, None, "test-call").await;
-
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("too large"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_write_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("output.txt");
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "content": "test content"
-        });
-        let result = executor.execute("write", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(content, "test content");
-    }
-
-    #[tokio::test]
-    async fn test_executor_write_file_relative_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": "nested/output.txt",
-            "content": "relative write"
-        });
-        let result = executor.execute("write", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let content = std::fs::read_to_string(dir.path().join("nested/output.txt")).unwrap();
-        assert_eq!(content, "relative write");
-    }
-
-    #[tokio::test]
-    async fn test_executor_unknown_tool() {
-        let executor = ToolExecutor::new(".");
-        let args = serde_json::json!({});
-        let result = executor
-            .execute("nonexistent", &args, None, "test-call")
-            .await;
-
-        assert!(!result.success);
-        assert!(result.error.unwrap().contains("Unknown tool"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_edit_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("edit_test.txt");
-        std::fs::write(&file_path, "hello world").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "old_string": "world",
-            "new_string": "rust"
-        });
-        let result = executor.execute("edit", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(content, "hello rust");
-    }
-
-    #[tokio::test]
-    async fn test_executor_edit_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("edit_test.txt");
-        std::fs::write(&file_path, "hello world").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "old_string": "nonexistent",
-            "new_string": "rust"
-        });
-        let result = executor.execute("edit", &args, None, "test-call").await;
-
-        assert!(!result.success);
-        assert!(result.error.unwrap().contains("not found"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_edit_non_unique() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("edit_test.txt");
-        std::fs::write(&file_path, "foo bar foo").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "old_string": "foo",
-            "new_string": "baz"
-        });
-        let result = executor.execute("edit", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(content, "baz bar foo");
-    }
-
-    #[tokio::test]
-    async fn test_executor_edit_replace_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("edit_test.txt");
-        std::fs::write(&file_path, "foo bar foo").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "old_string": "foo",
-            "new_string": "baz",
-            "replace_all": true
-        });
-        let result = executor.execute("edit", &args, None, "test-call").await;
-
-        assert!(result.success);
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(content, "baz bar baz");
-    }
-
-    #[test]
-    fn test_registry_requires_approval_edit() {
-        let registry = ToolRegistry::new();
-        let args = serde_json::json!({
-            "file_path": "/tmp/test.txt",
-            "old_string": "foo",
-            "new_string": "bar"
-        });
-        assert!(registry.requires_approval("edit", &args));
-    }
-
-    #[test]
-    fn test_shell_escape() {
-        assert_eq!(shell_escape(""), "''");
-        assert_eq!(shell_escape("simple"), "'simple'");
-        assert_eq!(shell_escape("with space"), "'with space'");
-        assert_eq!(shell_escape("a'b"), "'a'\\''b'");
-    }
-
-    #[test]
-    fn test_extract_grep_path_unix() {
-        assert_eq!(
-            extract_grep_path("src/main.rs:12:fn main()"),
-            Some("src/main.rs")
-        );
-    }
-
-    #[test]
-    fn test_extract_grep_path_colon_in_match() {
-        assert_eq!(
-            extract_grep_path("src/lib.rs:5:let x: i32 = 5;"),
-            Some("src/lib.rs")
-        );
-    }
-
-    #[test]
-    fn test_extract_grep_path_windows() {
-        assert_eq!(
-            extract_grep_path(r"C:\repo\main.rs:12:fn main()"),
-            Some(r"C:\repo\main.rs")
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn test_to_shell_path_drive_letter() {
-        assert_eq!(to_shell_path(r"C:\repo\file.txt"), "/c/repo/file.txt");
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn test_to_shell_path_passthrough() {
-        assert_eq!(to_shell_path("src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn test_normalize_git_path_strips_cwd() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("foo.txt");
-        std::fs::write(&file_path, "data").unwrap();
-
-        let (display, shell) =
-            normalize_git_path(dir.path().to_str().unwrap(), file_path.to_str().unwrap()).unwrap();
-
-        assert_eq!(display, "foo.txt");
-        assert_eq!(shell, "foo.txt");
-    }
-
-    // ========== Cache Integration Tests ==========
-
-    #[tokio::test]
-    async fn test_executor_cache_hit() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("cache_test.txt");
-        std::fs::write(&file_path, "cached content").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
-
-        // First call - cache miss
-        let result1 = executor.execute("read", &args, None, "call-1").await;
-        assert!(result1.success);
-        let stats1 = executor.cache_stats();
-        assert_eq!(stats1.misses, 1);
-        assert_eq!(stats1.hits, 0);
-
-        // Second call - cache hit
-        let result2 = executor.execute("read", &args, None, "call-2").await;
-        assert!(result2.success);
-        assert_eq!(result1.output, result2.output);
-        let stats2 = executor.cache_stats();
-        assert_eq!(stats2.misses, 1);
-        assert_eq!(stats2.hits, 1);
-    }
-
-    #[tokio::test]
-    async fn test_executor_cache_invalidation_on_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("invalidate_test.txt");
-        std::fs::write(&file_path, "original content").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let read_args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
-
-        // Read file - populates cache
-        let result1 = executor.execute("read", &read_args, None, "call-1").await;
-        assert!(result1.success);
-        assert!(result1.output.contains("original content"));
-
-        // Write to file - should invalidate cache
-        let write_args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "content": "new content"
-        });
-        let write_result = executor.execute("write", &write_args, None, "call-2").await;
-        assert!(write_result.success);
-
-        // Read again - should get new content (cache was invalidated)
-        let result2 = executor.execute("read", &read_args, None, "call-3").await;
-        assert!(result2.success);
-        assert!(result2.output.contains("new content"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_cache_invalidation_on_edit() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("edit_cache_test.txt");
-        std::fs::write(&file_path, "hello world").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let read_args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
-
-        // Read file - populates cache
-        let result1 = executor.execute("read", &read_args, None, "call-1").await;
-        assert!(result1.success);
-        assert!(result1.output.contains("hello world"));
-
-        // Edit file - should invalidate cache
-        let edit_args = serde_json::json!({
-            "file_path": file_path.to_str().unwrap(),
-            "old_string": "world",
-            "new_string": "rust"
-        });
-        let edit_result = executor.execute("edit", &edit_args, None, "call-2").await;
-        assert!(edit_result.success);
-
-        // Read again - should get updated content (cache was invalidated)
-        let result2 = executor.execute("read", &read_args, None, "call-3").await;
-        assert!(result2.success);
-        assert!(result2.output.contains("hello rust"));
-    }
-
-    #[tokio::test]
-    async fn test_executor_cache_not_used_for_bash() {
-        let dir = tempfile::tempdir().unwrap();
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-
-        let args = serde_json::json!({"command": "echo hello"});
-
-        // First call
-        executor.execute("bash", &args, None, "call-1").await;
-
-        // Second call - should NOT be cached (bash is excluded)
-        executor.execute("bash", &args, None, "call-2").await;
-
-        let stats = executor.cache_stats();
-        // Bash calls should not affect cache stats (they're excluded)
-        assert_eq!(stats.hits, 0);
-        assert_eq!(stats.misses, 0);
-    }
-
-    #[test]
-    fn test_executor_clear_cache() {
-        let executor = ToolExecutor::new("/tmp");
-
-        // Verify cache starts empty
-        let stats1 = executor.cache_stats();
-        assert_eq!(stats1.entries, 0);
-
-        // Clear cache (no-op when empty, but should not panic)
-        executor.clear_cache();
-
-        let stats2 = executor.cache_stats();
-        assert_eq!(stats2.entries, 0);
-    }
-
-    #[test]
-    fn test_executor_with_custom_cache_config() {
-        use std::time::Duration;
-
-        let config = CacheConfig {
-            max_entries: 10,
-            ttl: Duration::from_secs(30),
-            enabled: true,
-            excluded_tools: vec!["bash".to_string()],
+    async fn execute_with_receipt_at_generation_with_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        execution_context: ToolExecutionContext<'_>,
+    ) -> ToolExecution {
+        let code_decision = match self
+            .authorize_code_call(
+                tool_name,
+                args,
+                call_id,
+                generation,
+                execution_context.approved_inline_env,
+            )
+            .await
+        {
+            Ok(decision) => decision,
+            Err(error) => {
+                let execution = ToolExecution::denied(
+                    call_id,
+                    tool_name,
+                    DenialReason::IdentityAuthority {
+                        message: format!("Code tool authority denied execution: {error}"),
+                    },
+                );
+                emit_typed_tool_end(event_tx, call_id, &execution);
+                return execution;
+            }
         };
+        let mut execution_context = execution_context;
+        execution_context.code_decision = code_decision.clone();
+        if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
+            let execution =
+                ToolExecution::denied(call_id, tool_name, DenialReason::SandboxPolicy { message });
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
+        if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
+            let execution = ToolExecution::denied(
+                call_id,
+                tool_name,
+                DenialReason::SandboxPolicy {
+                    message: "Inline shell tools are disabled for sandboxed exec runs".to_string(),
+                },
+            );
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
+        if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
+            let execution = ToolExecution::denied(
+                call_id,
+                tool_name,
+                DenialReason::ActionFirewall {
+                    message: format!("Blocked by action firewall: {reason}"),
+                },
+            );
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
 
-        let executor = ToolExecutor::with_cache_config("/tmp", config);
-        let stats = executor.cache_stats();
-        assert_eq!(stats.max_entries, 10);
-    }
-
-    // ============================================================
-    // Tool Details Tests
-    // ============================================================
-
-    #[tokio::test]
-    async fn test_read_details_populated() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.txt");
-        std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": path.to_str().unwrap()
-        });
-
-        let result = executor.execute("read", &args, None, "test-call").await;
-        assert!(result.success);
-        assert!(result.details.is_some());
-
-        let details: details::ReadDetails =
-            serde_json::from_value(result.details.unwrap()).unwrap();
-        assert_eq!(details.path, path.to_str().unwrap());
-        assert!(details.size_bytes.is_some());
-        assert_eq!(details.lines_read, Some(3));
-        assert!(!details.truncated);
-        assert!(details.duration_ms.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_write_details_populated() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new_file.txt");
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": path.to_str().unwrap(),
-            "content": "hello world"
-        });
-
-        let result = executor.execute("write", &args, None, "test-call").await;
-        assert!(result.success);
-        assert!(result.details.is_some());
-
-        let details: details::WriteDetails =
-            serde_json::from_value(result.details.unwrap()).unwrap();
-        assert_eq!(details.path, path.to_str().unwrap());
-        assert_eq!(details.bytes_written, Some(11));
-        assert!(details.created); // New file was created
-        assert!(details.duration_ms.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_write_details_overwrite() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("existing.txt");
-        std::fs::write(&path, "old content").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": path.to_str().unwrap(),
-            "content": "new content"
-        });
-
-        let result = executor.execute("write", &args, None, "test-call").await;
-        assert!(result.success);
-        assert!(result.details.is_some());
-
-        let details: details::WriteDetails =
-            serde_json::from_value(result.details.unwrap()).unwrap();
-        assert!(!details.created); // File already existed
-    }
-
-    #[tokio::test]
-    async fn test_edit_details_populated() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("edit_test.txt");
-        std::fs::write(&path, "hello world").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": path.to_str().unwrap(),
-            "old_string": "world",
-            "new_string": "rust"
-        });
-
-        let result = executor.execute("edit", &args, None, "test-call").await;
-        assert!(result.success);
-        assert!(result.details.is_some());
-
-        let details: details::EditDetails =
-            serde_json::from_value(result.details.unwrap()).unwrap();
-        assert_eq!(details.path, path.to_str().unwrap());
-        assert_eq!(details.replacements, Some(1));
-        assert!(details.duration_ms.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_edit_details_with_line_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("multiline.txt");
-        std::fs::write(&path, "single line").unwrap();
-
-        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let args = serde_json::json!({
-            "file_path": path.to_str().unwrap(),
-            "old_string": "single line",
-            "new_string": "line one\nline two\nline three"
-        });
-
-        let result = executor.execute("edit", &args, None, "test-call").await;
-        assert!(result.success);
-        assert!(result.details.is_some());
-
-        let details: details::EditDetails =
-            serde_json::from_value(result.details.unwrap()).unwrap();
-        assert_eq!(details.lines_added, Some(2)); // Added 2 lines
+        let started = Instant::now();
+        let cache_key = CacheKey::for_generation(tool_name, args, generation);
+        let cache_hit =
+            self.cache.read().ok().is_some_and(|cache| {
+                cache.is_cacheable(tool_name) && cache.contains_fresh(&cache_key)
+            });
+        if let Some(tx) = event_tx {
+            let _ = tx.send(FromAgent::ToolStart {
+                call_id: call_id.to_string(),
+            });
+        }
+        // Execute without event forwarding so the receipt-bearing ToolEnd below is the
+        // sole terminal event for this call.
+        let result = self
+            .execute_at_generation_with_inline_env(
+                tool_name,
+                args,
+                event_tx,
+                call_id,
+                generation,
+                execution_context,
+            )
+            .await;
+        let used_cache = cache_hit && !result.is_cancelled();
+        let mut execution = ToolExecution::from_legacy(
+            call_id,
+            tool_name,
+            if used_cache {
+                ExecutionSource::Cache
+            } else {
+                ExecutionSource::Native
+            },
+            result,
+        )
+        .with_duration(started.elapsed().as_millis() as u64);
+        execution.receipt.code_authority = code_decision.map(Box::new);
+        if used_cache {
+            execution.receipt.details = crate::agent::ToolReceiptDetails::Cached;
+        }
+        emit_typed_tool_end(event_tx, call_id, &execution);
+        execution
     }
 }
+
+fn emit_typed_tool_end(
+    event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+    call_id: &str,
+    execution: &ToolExecution,
+) {
+    let Some(tx) = event_tx else {
+        return;
+    };
+
+    let result = execution.to_legacy();
+    let output_was_streamed = result
+        .details
+        .as_ref()
+        .and_then(|details| details.get("streamed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !output_was_streamed && !result.output.is_empty() {
+        let _ = tx.send(FromAgent::ToolOutput {
+            call_id: call_id.to_string(),
+            content: result.output.clone(),
+        });
+    }
+    let _ = tx.send(FromAgent::ToolEnd {
+        call_id: call_id.to_string(),
+        success: result.success,
+        result: Some(result),
+        receipt: Some(execution.receipt.clone()),
+    });
+}
+
+mod coding_task;
+mod execute;
+mod tool_registry;
+pub use tool_registry::ToolRegistry;
+#[cfg(test)]
+mod tests;

@@ -1,11 +1,16 @@
 //! Executor
 //!
 //! Executes tasks by calling LLMs and applying file changes.
-//! Handles prompt construction, API calls, response parsing, and file operations.
+//! Handles API calls, response parsing, and file operations.
 
 use crate::cascader::RoutingResult;
+#[cfg(test)]
+use crate::file_permission::FilePermissionRule;
+use crate::file_permission::{
+    FilePermissionDecision, FilePermissionEvaluation, FilePermissionPolicy,
+};
+use crate::prompt::{PromptBuilder, PromptBundle, PromptFileContext};
 use crate::types::*;
-use chrono::{Datelike, Utc};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -27,22 +32,6 @@ static FILE_CHANGE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 static MARKDOWN_FILE_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap());
 
-/// Protected file patterns that should never be modified
-static PROTECTED_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    vec![
-        Regex::new(r"^\.git/").unwrap(),
-        Regex::new(r"^\.env").unwrap(),
-        Regex::new(r"credentials").unwrap(),
-        Regex::new(r"secrets?\.").unwrap(),
-        Regex::new(r"\.pem$").unwrap(),
-        Regex::new(r"\.key$").unwrap(),
-        Regex::new(r"id_rsa").unwrap(),
-        Regex::new(r"\.ssh/").unwrap(),
-        Regex::new(r"node_modules/").unwrap(),
-        Regex::new(r"vendor/").unwrap(),
-    ]
-});
-
 /// Allowed test commands (whitelist for security)
 static ALLOWED_TEST_COMMANDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     vec![
@@ -56,6 +45,7 @@ static ALLOWED_TEST_COMMANDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 pub struct ExecutorConfig {
     pub api_key: String,
     pub api_base_url: String,
+    pub api_provider: LlmApiProvider,
     pub max_tokens: u32,
     pub temperature: f64,
     pub run_tests: bool,
@@ -66,11 +56,18 @@ pub struct ExecutorConfig {
     pub max_retries: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmApiProvider {
+    AnthropicMessages,
+    OpenRouterChatCompletions,
+}
+
 impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            api_base_url: "https://api.anthropic.com/v1".to_string(),
+            api_base_url: "https://openrouter.ai/api/v1".to_string(),
+            api_provider: LlmApiProvider::OpenRouterChatCompletions,
             max_tokens: 4096,
             temperature: 0.0,
             run_tests: true,
@@ -83,10 +80,43 @@ impl Default for ExecutorConfig {
     }
 }
 
+impl ExecutorConfig {
+    pub fn from_env(working_dir: impl Into<String>) -> Self {
+        let working_dir = working_dir.into();
+        let api_provider = match std::env::var("MAESTRO_AMBIENT_LLM_API").ok().as_deref() {
+            Some("anthropic") | Some("anthropic-messages") => LlmApiProvider::AnthropicMessages,
+            _ => LlmApiProvider::OpenRouterChatCompletions,
+        };
+
+        match api_provider {
+            LlmApiProvider::OpenRouterChatCompletions => Self {
+                api_key: std::env::var("OPENROUTER_API_KEY")
+                    .or_else(|_| std::env::var("MAESTRO_OPENROUTER_API_KEY"))
+                    .unwrap_or_default(),
+                api_base_url: std::env::var("OPENROUTER_BASE_URL")
+                    .or_else(|_| std::env::var("MAESTRO_OPENROUTER_BASE_URL"))
+                    .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string()),
+                api_provider,
+                working_dir,
+                ..Default::default()
+            },
+            LlmApiProvider::AnthropicMessages => Self {
+                api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+                api_base_url: std::env::var("ANTHROPIC_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.anthropic.com/v1".to_string()),
+                api_provider,
+                working_dir,
+                ..Default::default()
+            },
+        }
+    }
+}
+
 /// Executor handles LLM calls and file operations
 pub struct Executor {
     config: ExecutorConfig,
     client: Client,
+    file_permission_policy: FilePermissionPolicy,
 }
 
 /// Anthropic API request
@@ -94,9 +124,40 @@ pub struct Executor {
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
-    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
     messages: Vec<Message>,
     system: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenRouterChatRequest {
+    model: String,
+    max_tokens: u32,
+    temperature: f64,
+    messages: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterChatResponse {
+    choices: Vec<OpenRouterChoice>,
+    usage: Option<OpenRouterUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterChoice {
+    message: OpenRouterMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,7 +204,21 @@ impl Executor {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self { config, client }
+        Self {
+            config,
+            client,
+            file_permission_policy: FilePermissionPolicy::default_write_policy(),
+        }
+    }
+
+    /// Override file write permissions for executor-applied changes.
+    ///
+    /// The executor is currently non-interactive, so Ask and Deny decisions both
+    /// stop writes. Keeping Ask distinct gives callers a stable hook for future
+    /// approval plumbing without changing this execution path.
+    pub fn with_file_permission_policy(mut self, policy: FilePermissionPolicy) -> Self {
+        self.file_permission_policy = policy;
+        self
     }
 
     /// Execute a task plan using the routed model
@@ -156,12 +231,12 @@ impl Executor {
         ));
 
         // Build the prompt
-        let (system_prompt, user_prompt) = self.build_prompts(plan).await;
+        let prompts = self.build_prompts(plan).await;
         logs.push("Built prompts".to_string());
 
         // Call the LLM with retries
         let response = match self
-            .call_llm_with_retry(&routing.model, &system_prompt, &user_prompt)
+            .call_llm_with_retry(&routing.model, &prompts.system, &prompts.user)
             .await
         {
             Ok(resp) => {
@@ -277,95 +352,25 @@ impl Executor {
         }
     }
 
-    /// Build system and user prompts for the LLM
-    async fn build_prompts(&self, plan: &TaskPlan) -> (String, String) {
-        let current_year = Utc::now().year();
-        let system_prompt = format!(
-            r#"You are an expert software engineer. Your task is to implement code changes based on the given requirements.
+    /// Build system and user prompts for the LLM.
+    async fn build_prompts(&self, plan: &TaskPlan) -> PromptBundle {
+        let prompt_builder = PromptBuilder::new();
+        let mut file_contexts = Vec::with_capacity(plan.files.len());
 
-When making changes, output them in the following format:
-
-<file_change>
-<action>create|modify|delete</action>
-<path>path/to/file.ext</path>
-<content>
-Full file content here (for create/modify)
-</content>
-</file_change>
-
-Rules:
-1. Output the COMPLETE file content for create/modify operations
-2. Include all necessary imports and dependencies
-3. Follow existing code style and conventions
-4. Add appropriate error handling
-5. Include comments for complex logic
-6. Do not include content tags for delete operations
-7. NEVER use absolute paths - always use relative paths from the project root
-8. NEVER modify files outside the project directory
-9. When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range
-
-Think step by step about the implementation before writing code."#
-        );
-
-        // Build user prompt with context
-        let mut user_prompt = format!("## Task\n{}\n\n", plan.summary);
-
-        // Add event context
-        user_prompt.push_str(&format!(
-            "## Event Details\nType: {:?}\nTitle: {}\n",
-            plan.event.event_type, plan.event.title
-        ));
-
-        if let Some(ref body) = plan.event.body {
-            let truncated = self.safe_truncate(body, 2000);
-            user_prompt.push_str(&format!("Body:\n{}\n\n", truncated));
-        }
-
-        // Add file context
-        if !plan.files.is_empty() {
-            user_prompt.push_str("## Relevant Files\n");
-            for file in &plan.files {
-                if let Ok(content) = self.read_file_context(file).await {
-                    user_prompt.push_str(&format!("### {}\n```\n{}\n```\n\n", file, content));
-                }
+        for file in &plan.files {
+            if let Ok(content) = self.read_file_context(file).await {
+                file_contexts.push(PromptFileContext::new(file, content));
             }
         }
 
-        // Add task breakdown
-        user_prompt.push_str("## Tasks\n");
-        for (i, task) in plan.tasks.iter().enumerate() {
-            user_prompt.push_str(&format!(
-                "{}. {:?}: {}\n",
-                i + 1,
-                task.task_type,
-                task.prompt
-            ));
-        }
-
-        (system_prompt, user_prompt)
+        prompt_builder.build(plan, &file_contexts)
     }
 
-    /// Safely truncate a string at character boundaries
-    fn safe_truncate(&self, s: &str, max_chars: usize) -> String {
-        if s.len() <= max_chars {
-            return s.to_string();
-        }
-        // Find the last valid char boundary before max_chars
-        let mut end = max_chars;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}...(truncated)", &s[..end])
-    }
-
-    /// Read file content for context (truncated if too large)
+    /// Read file content for prompt context.
     async fn read_file_context(&self, path: &str) -> anyhow::Result<String> {
         // Validate path before reading
         let full_path = self.validate_path(path)?;
-        let content = fs::read_to_string(&full_path).await?;
-
-        // Truncate if too large
-        Ok(self.safe_truncate(&content, 10000))
+        Ok(fs::read_to_string(&full_path).await?)
     }
 
     /// Validate that a path is safe and within the working directory
@@ -385,15 +390,14 @@ Think step by step about the implementation before writing code."#
             anyhow::bail!("Invalid path (contains null byte): {}", path);
         }
 
-        let working_dir = Path::new(&self.config.working_dir)
-            .canonicalize()
+        let working_dir = dunce::canonicalize(Path::new(&self.config.working_dir))
             .unwrap_or_else(|_| PathBuf::from(&self.config.working_dir));
 
         let full_path = working_dir.join(path);
 
         // For existing files, verify they're within working dir
         if full_path.exists() {
-            let canonical = full_path.canonicalize()?;
+            let canonical = dunce::canonicalize(&full_path)?;
             if !canonical.starts_with(&working_dir) {
                 anyhow::bail!(
                     "Path escapes working directory: {} -> {}",
@@ -423,14 +427,35 @@ Think step by step about the implementation before writing code."#
         Ok(final_path)
     }
 
-    /// Check if a file path matches protected patterns
-    fn is_protected_path(&self, path: &str) -> bool {
-        for pattern in PROTECTED_PATTERNS.iter() {
-            if pattern.is_match(path) {
-                return true;
-            }
-        }
-        false
+    /// Evaluate write permission for an executor-applied file path.
+    pub fn evaluate_file_permission(&self, path: &str) -> FilePermissionEvaluation {
+        self.file_permission_policy.evaluate(path)
+    }
+
+    /// Whether the executor has an API key configured for LLM calls.
+    pub fn has_api_key(&self) -> bool {
+        !self.config.api_key.is_empty()
+    }
+
+    /// Call the configured LLM with retry and return the raw text content.
+    ///
+    /// Used by auxiliary judges (e.g. the goal evaluator) that need a plain
+    /// completion rather than executor file changes.
+    pub async fn chat_completion_text(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<String> {
+        let response = self
+            .call_llm_with_retry(model, system_prompt, user_prompt)
+            .await?;
+        Ok(response
+            .content
+            .iter()
+            .filter_map(|c| c.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     /// Call the LLM with retry logic and exponential backoff
@@ -471,8 +496,27 @@ Think step by step about the implementation before writing code."#
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after retries")))
     }
 
-    /// Call the Anthropic API
+    /// Call the configured LLM API
     async fn call_llm(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<AnthropicResponse> {
+        match self.config.api_provider {
+            LlmApiProvider::AnthropicMessages => {
+                self.call_anthropic_messages(model, system_prompt, user_prompt)
+                    .await
+            }
+            LlmApiProvider::OpenRouterChatCompletions => {
+                self.call_openrouter_chat_completions(model, system_prompt, user_prompt)
+                    .await
+            }
+        }
+    }
+
+    /// Call the Anthropic Messages API
+    async fn call_anthropic_messages(
         &self,
         model: &str,
         system_prompt: &str,
@@ -481,7 +525,7 @@ Think step by step about the implementation before writing code."#
         let request = AnthropicRequest {
             model: model.to_string(),
             max_tokens: self.config.max_tokens,
-            temperature: self.config.temperature,
+            temperature: supports_anthropic_temperature(model).then_some(self.config.temperature),
             system: system_prompt.to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -507,6 +551,69 @@ Think step by step about the implementation before writing code."#
 
         let result: AnthropicResponse = response.json().await?;
         Ok(result)
+    }
+
+    /// Call the OpenRouter OpenAI-compatible chat completions API.
+    async fn call_openrouter_chat_completions(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<AnthropicResponse> {
+        let request = OpenRouterChatRequest {
+            model: model.to_string(),
+            max_tokens: self.config.max_tokens,
+            temperature: self.config.temperature,
+            messages: vec![
+                Message {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: user_prompt.to_string(),
+                },
+            ],
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.config.api_base_url))
+            .bearer_auth(&self.config.api_key)
+            .header("content-type", "application/json")
+            .header("HTTP-Referer", "https://orb.deixic.com")
+            .header("X-OpenRouter-Title", "EvalOps Maestro Ambient Agent")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("API error {}: {}", status, body);
+        }
+
+        let result: OpenRouterChatResponse = response.json().await?;
+        let text = result
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .unwrap_or_default();
+        let usage = result.usage.unwrap_or(OpenRouterUsage {
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+        });
+
+        Ok(AnthropicResponse {
+            content: vec![ContentBlock {
+                content_type: "text".to_string(),
+                text: Some(text),
+            }],
+            usage: Usage {
+                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                output_tokens: usage.completion_tokens.unwrap_or(0),
+            },
+        })
     }
 
     /// Parse LLM response to extract file changes with validation
@@ -570,9 +677,32 @@ Think step by step about the implementation before writing code."#
 
     /// Apply a parsed change to the filesystem with security checks
     async fn apply_change(&self, change: &ParsedChange) -> anyhow::Result<FileChange> {
-        // Security: Check for protected files
-        if self.is_protected_path(&change.file_path) {
-            anyhow::bail!("Cannot modify protected file: {}", change.file_path);
+        // Security: Check write permission before touching the filesystem.
+        let file_permission = self.evaluate_file_permission(&change.file_path);
+        if file_permission.decision.is_blocking() {
+            let decision = match file_permission.decision {
+                FilePermissionDecision::Ask => "requires approval",
+                FilePermissionDecision::Deny => "is denied",
+                FilePermissionDecision::Allow => "is allowed",
+            };
+            let pattern = file_permission
+                .matched_pattern
+                .as_deref()
+                .map(|pattern| format!(" matched by '{pattern}'"))
+                .unwrap_or_default();
+            let reason = file_permission
+                .reason
+                .as_deref()
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default();
+
+            anyhow::bail!(
+                "Cannot modify {}: file permission {}{}{}",
+                change.file_path,
+                decision,
+                pattern,
+                reason
+            );
         }
 
         // Security: Validate path is within working directory
@@ -686,6 +816,7 @@ Think step by step about the implementation before writing code."#
             Command::new(parts[0])
                 .args(&parts[1..])
                 .current_dir(&self.config.working_dir)
+                .kill_on_drop(true)
                 .output(),
         )
         .await;
@@ -718,9 +849,29 @@ Think step by step about the implementation before writing code."#
     }
 }
 
+fn supports_anthropic_temperature(model: &str) -> bool {
+    let model = model
+        .strip_prefix("~anthropic/")
+        .or_else(|| model.strip_prefix("anthropic/"))
+        .unwrap_or(model);
+    let model = model.to_ascii_lowercase();
+
+    !(is_anthropic_opus_4_family(&model) || model == "claude-opus-latest")
+}
+
+fn is_anthropic_opus_4_family(model: &str) -> bool {
+    model == "claude-opus-4"
+        || model
+            .strip_prefix("claude-opus-4")
+            .is_some_and(|suffix| suffix.starts_with(['-', '.']))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
 
     #[test]
     fn test_parse_file_change_blocks() {
@@ -781,34 +932,225 @@ fn main() {
     fn test_protected_paths() {
         let executor = Executor::new(ExecutorConfig::default());
 
-        assert!(executor.is_protected_path(".git/config"));
-        assert!(executor.is_protected_path(".env"));
-        assert!(executor.is_protected_path(".env.local"));
-        assert!(executor.is_protected_path("config/secrets.json"));
-        assert!(executor.is_protected_path("credentials.yaml"));
-        assert!(executor.is_protected_path("server.key"));
-        assert!(executor.is_protected_path("node_modules/package/index.js"));
+        for path in [
+            ".git/config",
+            ".env",
+            ".env.local",
+            "config/secrets.json",
+            "credentials.yaml",
+            "server.key",
+            "node_modules/package/index.js",
+        ] {
+            assert!(
+                executor
+                    .evaluate_file_permission(path)
+                    .decision
+                    .is_blocking(),
+                "{path} should be blocked"
+            );
+        }
 
-        assert!(!executor.is_protected_path("src/main.rs"));
-        assert!(!executor.is_protected_path("lib/utils.ts"));
+        for path in ["src/main.rs", "lib/utils.ts"] {
+            assert_eq!(
+                executor.evaluate_file_permission(path).decision,
+                FilePermissionDecision::Allow,
+                "{path} should be allowed"
+            );
+        }
     }
 
     #[test]
-    fn test_safe_truncate() {
-        let executor = Executor::new(ExecutorConfig::default());
+    fn test_file_permission_policy_override_uses_last_match() {
+        let executor = Executor::new(ExecutorConfig::default()).with_file_permission_policy(
+            FilePermissionPolicy::new(vec![
+                FilePermissionRule::new("*", FilePermissionDecision::Allow),
+                FilePermissionRule::new("src/generated/**", FilePermissionDecision::Ask),
+                FilePermissionRule::new("src/generated/fixtures/**", FilePermissionDecision::Allow),
+            ]),
+        );
 
-        // Normal truncation
-        let short = "hello";
-        assert_eq!(executor.safe_truncate(short, 10), "hello");
+        let generated = executor.evaluate_file_permission("src/generated/client.rs");
+        let fixture = executor.evaluate_file_permission("src/generated/fixtures/client.rs");
 
-        let long = "hello world this is a long string";
-        let truncated = executor.safe_truncate(long, 10);
-        assert!(truncated.starts_with("hello worl"));
-        assert!(truncated.ends_with("...(truncated)"));
+        assert_eq!(generated.decision, FilePermissionDecision::Ask);
+        assert!(generated.decision.is_blocking());
+        assert_eq!(fixture.decision, FilePermissionDecision::Allow);
+        assert!(!fixture.decision.is_blocking());
+    }
 
-        // UTF-8 boundary handling
-        let utf8 = "hello 世界 world";
-        let truncated = executor.safe_truncate(utf8, 8);
-        assert!(truncated.is_ascii() || truncated.chars().all(|c| c.len_utf8() <= 4));
+    #[test]
+    fn anthropic_temperature_support_matches_opus_4_family() {
+        assert!(!supports_anthropic_temperature("claude-opus-4"));
+        assert!(!supports_anthropic_temperature("claude-opus-4-7"));
+        assert!(!supports_anthropic_temperature("claude-opus-4.7"));
+        assert!(!supports_anthropic_temperature("claude-opus-4-1-20250805"));
+        assert!(!supports_anthropic_temperature("anthropic/claude-opus-4-7"));
+        assert!(!supports_anthropic_temperature(
+            "~anthropic/claude-opus-4-7"
+        ));
+        assert!(!supports_anthropic_temperature("claude-opus-latest"));
+        assert!(supports_anthropic_temperature("claude-3-opus-20240229"));
+        assert!(supports_anthropic_temperature("claude-sonnet-4-5"));
+        assert!(supports_anthropic_temperature("claude-haiku-3-5"));
+    }
+
+    #[tokio::test]
+    async fn call_llm_omits_temperature_for_anthropic_opus_4_7() {
+        let (api_base_url, request_rx) = spawn_anthropic_messages_fixture();
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "ant-test-key".to_string(),
+            api_base_url,
+            api_provider: LlmApiProvider::AnthropicMessages,
+            temperature: 0.7,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm("claude-opus-4-7", "system prompt", "user prompt")
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        let lowercase_request = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /messages HTTP/1.1"));
+        assert!(lowercase_request.contains("x-api-key: ant-test-key"));
+        assert!(request.contains("\"model\":\"claude-opus-4-7\""));
+        assert!(request.contains("\"system\":\"system prompt\""));
+        assert!(request.contains("\"role\":\"user\""));
+        assert!(request.contains("\"content\":\"user prompt\""));
+        assert!(!request.contains("\"temperature\""));
+        assert_eq!(response.usage.input_tokens, 3);
+        assert_eq!(response.usage.output_tokens, 2);
+        assert_eq!(response.content[0].text.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn call_llm_keeps_temperature_for_anthropic_sonnet() {
+        let (api_base_url, request_rx) = spawn_anthropic_messages_fixture();
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "ant-test-key".to_string(),
+            api_base_url,
+            api_provider: LlmApiProvider::AnthropicMessages,
+            temperature: 0.7,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm("claude-sonnet-4-5", "system prompt", "user prompt")
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        let lowercase_request = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /messages HTTP/1.1"));
+        assert!(lowercase_request.contains("x-api-key: ant-test-key"));
+        assert!(request.contains("\"model\":\"claude-sonnet-4-5\""));
+        assert!(request.contains("\"temperature\":0.7"));
+        assert_eq!(response.usage.input_tokens, 3);
+        assert_eq!(response.usage.output_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn call_llm_uses_openrouter_chat_completions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+            let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>\"}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "or-test-key".to_string(),
+            api_base_url: format!("http://{}", addr),
+            api_provider: LlmApiProvider::OpenRouterChatCompletions,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm(
+                "~anthropic/claude-opus-latest",
+                "system prompt",
+                "user prompt",
+            )
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        assert!(request.starts_with("POST /chat/completions HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer or-test-key"));
+        assert!(request.contains("\"model\":\"~anthropic/claude-opus-latest\""));
+        assert!(request.contains("\"role\":\"system\""));
+        assert!(request.contains("\"content\":\"system prompt\""));
+        assert!(request.contains("\"role\":\"user\""));
+        assert!(request.contains("\"content\":\"user prompt\""));
+        assert_eq!(response.usage.input_tokens, 11);
+        assert_eq!(response.usage.output_tokens, 7);
+        assert_eq!(
+            response.content[0].text.as_deref(),
+            Some(
+                "<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>"
+            )
+        );
+    }
+
+    fn spawn_anthropic_messages_fixture() -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+            let body = "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        (format!("http://{}", addr), request_rx)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = find_header_end(&buffer) else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buffer.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(buffer).unwrap()
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
     }
 }

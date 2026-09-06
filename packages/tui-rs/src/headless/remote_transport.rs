@@ -11,19 +11,22 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION},
     Client, StatusCode,
+    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use sha2::{Digest, Sha256};
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
-    ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
-    UtilityCommandShellMode, UtilityCommandTerminalMode, UtilityOperation,
+    ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
+    GovernedClientToolBinding, HeadlessErrorType, InitConfig, PendingApproval, ServerCapabilities,
+    ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandTerminalMode, UtilityOperation,
 };
 
 const MESSAGE_POST_MAX_RETRIES: u32 = 10;
@@ -123,6 +126,9 @@ pub struct UtilityCommandStartOptions {
 }
 
 #[derive(Debug, Clone)]
+// `FromAgentMessage` carries optional typed receipts. Keep this public transport
+// enum source-compatible; the supervisor boxes messages before retaining them.
+#[allow(clippy::large_enum_variant)]
 pub enum RemoteIncoming {
     Snapshot {
         state: Box<AgentState>,
@@ -141,6 +147,13 @@ pub enum RemoteIncoming {
 struct RemoteSessionSubscribeRequest {
     #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
     connection_id: Option<String>,
+    #[serde(
+        rename = "connectionCapability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired")]
+    connection_capability_required: bool,
     #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
     protocol_version: Option<String>,
     #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
@@ -162,8 +175,12 @@ struct RemoteSessionSubscribeRequest {
 #[derive(Debug, Deserialize)]
 struct RemoteSessionSubscriptionResponse {
     connection_id: String,
+    #[serde(default)]
+    connection_capability: Option<String>,
     subscription_id: String,
     heartbeat_interval_ms: u64,
+    #[serde(default)]
+    controller_pending_events: Vec<FromAgentMessage>,
     snapshot: RemoteRuntimeSnapshot,
 }
 
@@ -177,6 +194,13 @@ struct RemoteConnectionCreateRequest {
     session_id: Option<String>,
     #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
     connection_id: Option<String>,
+    #[serde(
+        rename = "connectionCapability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired")]
+    connection_capability_required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(rename = "thinkingLevel", skip_serializing_if = "Option::is_none")]
@@ -217,12 +241,16 @@ struct RemoteClientCapabilities {
         skip_serializing_if = "std::ops::Not::not"
     )]
     raw_agent_events: bool,
+    #[serde(rename = "transcriptGrade")]
+    transcript_grade: crate::transcript::TranscriptGrade,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct RemoteConnectionBootstrapResponse {
     session_id: String,
     connection_id: String,
+    #[serde(default)]
+    connection_capability: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -269,11 +297,17 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     protocol_version: Option<String>,
     #[serde(default)]
+    controller_binding_version: Option<String>,
+    #[serde(default)]
+    controller_binding_sha256: Option<String>,
+    #[serde(default)]
     client_protocol_version: Option<String>,
     #[serde(default)]
     client_info: Option<ClientInfo>,
     #[serde(default)]
     capabilities: Option<ClientCapabilities>,
+    #[serde(default)]
+    server_capabilities: Option<ServerCapabilities>,
     #[serde(default)]
     opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
@@ -305,6 +339,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
+    governed_client_tool_bindings: HashMap<String, GovernedClientToolBinding>,
+    #[serde(default)]
     pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
     pending_tool_retries: Vec<PendingApproval>,
@@ -313,6 +349,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
     #[serde(default)]
+    codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+    #[serde(default)]
     active_utility_commands: Vec<RemoteActiveUtilityCommandState>,
     #[serde(default)]
     active_file_watches: Vec<RemoteActiveFileWatchState>,
@@ -320,6 +358,8 @@ struct RemoteRuntimeStateSnapshot {
     last_error: Option<String>,
     #[serde(default)]
     last_error_type: Option<HeadlessErrorType>,
+    #[serde(default)]
+    provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     #[serde(default)]
     last_status: Option<String>,
     #[serde(default)]
@@ -337,8 +377,11 @@ impl RemoteRuntimeStateSnapshot {
         AgentState {
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
+            controller_binding_version: self.controller_binding_version,
+            controller_binding_sha256: self.controller_binding_sha256,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            server_capabilities: self.server_capabilities,
             opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
@@ -354,6 +397,7 @@ impl RemoteRuntimeStateSnapshot {
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
+            governed_client_tool_bindings: self.governed_client_tool_bindings,
             pending_user_inputs: self.pending_user_inputs,
             pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
@@ -376,6 +420,7 @@ impl RemoteRuntimeStateSnapshot {
                     )
                 })
                 .collect(),
+            codex_subagent_edges: self.codex_subagent_edges,
             active_utility_commands: self
                 .active_utility_commands
                 .into_iter()
@@ -416,6 +461,7 @@ impl RemoteRuntimeStateSnapshot {
                 .collect(),
             last_error: self.last_error,
             last_error_type: self.last_error_type,
+            provider_error_kind: self.provider_error_kind,
             last_status: self.last_status,
             last_response_duration_ms: self.last_response_duration_ms,
             last_ttft_ms: self.last_ttft_ms,
@@ -467,11 +513,13 @@ enum RemoteEnvelope {
 pub struct RemoteAgentTransport {
     message_tx: mpsc::UnboundedSender<ToAgentMessage>,
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     cancel_token: CancellationToken,
     shutdown_context: Arc<RemoteShutdownContext>,
     connection_role: Option<ConnectionRole>,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     heartbeat_interval: Duration,
     state: AgentState,
@@ -481,14 +529,58 @@ pub struct RemoteAgentTransport {
     _heartbeat_handle: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RemoteConnectionResumeAuthority {
+    pub(crate) connection_id: String,
+    pub(crate) connection_capability: Option<String>,
+}
+
+pub(crate) struct RemoteConnectFailure {
+    pub(crate) error: AsyncTransportError,
+    pub(crate) resume_authority: Option<RemoteConnectionResumeAuthority>,
+}
+
+impl RemoteConnectFailure {
+    fn without_authority(error: AsyncTransportError) -> Self {
+        Self {
+            error,
+            resume_authority: None,
+        }
+    }
+
+    fn with_authority(
+        error: AsyncTransportError,
+        resume_authority: RemoteConnectionResumeAuthority,
+    ) -> Self {
+        Self {
+            error,
+            resume_authority: Some(resume_authority),
+        }
+    }
+}
+
 struct WriterLoopContext {
     client: Client,
     config: RemoteTransportConfig,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     cancel: CancellationToken,
+}
+
+struct ReaderEventContext {
+    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteConnectionAuthority<'a> {
+    connection_id: &'a str,
+    connection_capability: Option<&'a str>,
+    subscription_id: &'a str,
 }
 
 struct HeartbeatLoopContext {
@@ -496,8 +588,10 @@ struct HeartbeatLoopContext {
     config: RemoteTransportConfig,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     emit_success_heartbeat: bool,
     interval: Duration,
     cancel: CancellationToken,
@@ -520,33 +614,83 @@ enum RemoteRequestKind {
 impl RemoteAgentTransport {
     /// Connect to a remote headless session and begin streaming events.
     pub async fn connect(config: RemoteTransportConfig) -> Result<Self, AsyncTransportError> {
+        Self::connect_with_resume_authority(config, None)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn connect_with_resume_authority(
+        config: RemoteTransportConfig,
+        resume_authority: Option<RemoteConnectionResumeAuthority>,
+    ) -> Result<Self, RemoteConnectFailure> {
         let client = Client::builder()
             .build()
-            .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+            .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+            .map_err(RemoteConnectFailure::without_authority)?;
         let shutdown_context = Arc::new(RemoteShutdownContext {
             client: client.clone(),
             config: config.clone(),
         });
 
-        let bootstrap = create_or_attach_connection(&client, &config).await?;
+        let bootstrap_resume_authority = resume_authority.unwrap_or_else(|| {
+            let configured_connection_id = config.connection_id.clone();
+            RemoteConnectionResumeAuthority {
+                connection_id: configured_connection_id
+                    .clone()
+                    .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple())),
+                connection_capability: Some(
+                    configured_connection_id
+                        .and_then(|_| configured_connection_capability(&config))
+                        .unwrap_or_else(|| format!("cap_{}", Uuid::new_v4().simple())),
+                ),
+            }
+        });
+        let bootstrap =
+            create_or_attach_connection(&client, &config, Some(&bootstrap_resume_authority))
+                .await?;
+        let bootstrap_authority = RemoteConnectionResumeAuthority {
+            connection_id: bootstrap.connection_id.clone(),
+            connection_capability: bootstrap.connection_capability.clone(),
+        };
         let subscription = subscribe_to_session(
             &client,
             &config,
             &bootstrap.session_id,
             Some(&bootstrap.connection_id),
+            bootstrap.connection_capability.as_deref(),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            RemoteConnectFailure::with_authority(error, bootstrap_authority.clone())
+        })?;
         let (session_id, cursor, last_init, state) = subscription.snapshot.into_state();
         let connection_id = subscription.connection_id;
+        let connection_capability = subscription
+            .connection_capability
+            .or(bootstrap.connection_capability);
+        let effective_resume_authority = RemoteConnectionResumeAuthority {
+            connection_id: connection_id.clone(),
+            connection_capability: connection_capability.clone(),
+        };
+        let controller_pending_events = subscription.controller_pending_events;
         let subscription_id = subscription.subscription_id;
         let heartbeat_interval = Duration::from_millis(subscription.heartbeat_interval_ms.max(1));
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let event_notification = Arc::new(Notify::new());
         let cancel_token = CancellationToken::new();
         let reader_cancel = cancel_token.clone();
         let writer_cancel = cancel_token.clone();
         let heartbeat_cancel = cancel_token.clone();
+
+        for message in controller_pending_events {
+            let _ = super::send_transport_event(
+                &event_tx,
+                &event_notification,
+                Ok(RemoteIncoming::Message(message)),
+            );
+        }
 
         let reader_handle = tokio::spawn(reader_loop(
             client.clone(),
@@ -554,7 +698,10 @@ impl RemoteAgentTransport {
             session_id.clone(),
             subscription_id.clone(),
             cursor,
-            event_tx.clone(),
+            ReaderEventContext {
+                event_tx: event_tx.clone(),
+                event_notification: Arc::clone(&event_notification),
+            },
             reader_cancel,
         ));
         let writer_handle = tokio::spawn(writer_loop(
@@ -563,8 +710,10 @@ impl RemoteAgentTransport {
                 config: config.clone(),
                 session_id: session_id.clone(),
                 connection_id: connection_id.clone(),
+                connection_capability: connection_capability.clone(),
                 subscription_id: subscription_id.clone(),
                 event_tx: event_tx.clone(),
+                event_notification: Arc::clone(&event_notification),
                 cancel: writer_cancel,
             },
             message_rx,
@@ -572,12 +721,17 @@ impl RemoteAgentTransport {
         let heartbeat_handle = tokio::spawn(heartbeat_loop(HeartbeatLoopContext {
             client: Client::builder()
                 .build()
-                .map_err(|error| AsyncTransportError::Remote(error.to_string()))?,
+                .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+                .map_err(|error| {
+                    RemoteConnectFailure::with_authority(error, effective_resume_authority.clone())
+                })?,
             config: config.clone(),
             session_id: session_id.clone(),
             connection_id: connection_id.clone(),
+            connection_capability: connection_capability.clone(),
             subscription_id: subscription_id.clone(),
             event_tx,
+            event_notification: Arc::clone(&event_notification),
             emit_success_heartbeat: config
                 .opt_out_notifications
                 .iter()
@@ -589,11 +743,13 @@ impl RemoteAgentTransport {
         let transport = Self {
             message_tx,
             event_rx,
+            event_notification,
             cancel_token,
             shutdown_context,
             connection_role: build_remote_connection_role(&config),
             session_id,
             connection_id,
+            connection_capability,
             subscription_id,
             heartbeat_interval,
             state,
@@ -603,7 +759,11 @@ impl RemoteAgentTransport {
             _heartbeat_handle: heartbeat_handle,
         };
         if transport.connection_role != Some(ConnectionRole::Viewer) {
-            transport.send(build_remote_hello_message(&config))?;
+            transport
+                .send(build_remote_hello_message(&config))
+                .map_err(|error| {
+                    RemoteConnectFailure::with_authority(error, effective_resume_authority)
+                })?;
         }
         Ok(transport)
     }
@@ -737,6 +897,7 @@ impl RemoteAgentTransport {
         let shutdown_context = Arc::clone(&self.shutdown_context);
         let session_id = self.session_id.clone();
         let connection_id = self.connection_id.clone();
+        let connection_capability = self.connection_capability.clone();
         let subscription_id = self.subscription_id.clone();
         let cancel = self.cancel_token.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -746,6 +907,7 @@ impl RemoteAgentTransport {
                     &shutdown_context.config,
                     &session_id,
                     &connection_id,
+                    connection_capability.as_deref(),
                     Some(&subscription_id),
                 )
                 .await;
@@ -762,11 +924,13 @@ impl RemoteAgentTransport {
         let Self {
             message_tx: _message_tx,
             event_rx: _event_rx,
+            event_notification: _event_notification,
             cancel_token,
             shutdown_context,
             connection_role: _connection_role,
             session_id,
             connection_id,
+            connection_capability,
             subscription_id,
             heartbeat_interval: _heartbeat_interval,
             state: _state,
@@ -782,6 +946,7 @@ impl RemoteAgentTransport {
                 &shutdown_context.config,
                 &session_id,
                 &connection_id,
+                connection_capability.as_deref(),
                 Some(&subscription_id),
             )
             .await;
@@ -793,7 +958,7 @@ impl RemoteAgentTransport {
         Ok(())
     }
 
-    pub(super) fn try_recv_incoming(
+    pub(crate) fn try_recv_incoming(
         &mut self,
     ) -> Option<Result<RemoteIncoming, AsyncTransportError>> {
         match self.event_rx.try_recv() {
@@ -805,13 +970,17 @@ impl RemoteAgentTransport {
         }
     }
 
-    pub(super) async fn recv_incoming(&mut self) -> Result<RemoteIncoming, AsyncTransportError> {
+    pub(crate) async fn recv_incoming(&mut self) -> Result<RemoteIncoming, AsyncTransportError> {
         let result = self
             .event_rx
             .recv()
             .await
             .ok_or(AsyncTransportError::ChannelClosed)?;
         self.apply_incoming_result(result)
+    }
+
+    pub(crate) fn event_notification(&self) -> Arc<Notify> {
+        Arc::clone(&self.event_notification)
     }
 
     pub fn state(&self) -> &AgentState {
@@ -832,6 +1001,13 @@ impl RemoteAgentTransport {
 
     pub fn connection_id(&self) -> &str {
         &self.connection_id
+    }
+
+    pub(crate) fn resume_authority(&self) -> RemoteConnectionResumeAuthority {
+        RemoteConnectionResumeAuthority {
+            connection_id: self.connection_id.clone(),
+            connection_capability: self.connection_capability.clone(),
+        }
     }
 
     pub fn heartbeat_interval(&self) -> Duration {
@@ -898,7 +1074,6 @@ fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static 
         requests.push("client_tool");
     }
     if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
-        requests.push("user_input");
         requests.push("tool_retry");
     }
     requests
@@ -910,7 +1085,6 @@ fn build_remote_server_request_types(config: &RemoteTransportConfig) -> Vec<Serv
         requests.push(ServerRequestType::ClientTool);
     }
     if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
-        requests.push(ServerRequestType::UserInput);
         requests.push(ServerRequestType::ToolRetry);
     }
     requests
@@ -941,6 +1115,16 @@ fn build_remote_connection_role(config: &RemoteTransportConfig) -> Option<Connec
     }
 }
 
+fn build_remote_transcript_grade(
+    config: &RemoteTransportConfig,
+) -> crate::transcript::TranscriptGrade {
+    if config.enable_raw_agent_events {
+        crate::transcript::TranscriptGrade::Delta
+    } else {
+        crate::transcript::TranscriptGrade::Block
+    }
+}
+
 fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage {
     ToAgentMessage::Hello {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -952,16 +1136,45 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
             server_requests: Some(build_remote_server_request_types(config)),
             utility_operations: Some(build_remote_utility_operation_types(config)),
             raw_agent_events: Some(config.enable_raw_agent_events),
+            transcript_grade: Some(build_remote_transcript_grade(config)),
+            governed_code_mode: Some(true),
         }),
         role: build_remote_connection_role(config),
         opt_out_notifications: (!config.opt_out_notifications.is_empty())
             .then(|| config.opt_out_notifications.clone()),
+        controller_binding: None,
     }
 }
 
+fn configured_connection_capability(config: &RemoteTransportConfig) -> Option<String> {
+    config.headers.iter().find_map(|(name, value)| {
+        [
+            "x-maestro-headless-connection-capability",
+            "x-composer-headless-connection-capability",
+            "x-evalops-headless-connection-capability",
+        ]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        .then(|| value.clone())
+    })
+}
+
+#[cfg(test)]
 fn build_remote_connection_create_request(
     config: &RemoteTransportConfig,
     connection_id: Option<String>,
+) -> RemoteConnectionCreateRequest {
+    build_remote_connection_create_request_with_capability(
+        config,
+        connection_id,
+        configured_connection_capability(config),
+    )
+}
+
+fn build_remote_connection_create_request_with_capability(
+    config: &RemoteTransportConfig,
+    connection_id: Option<String>,
+    connection_capability: Option<String>,
 ) -> RemoteConnectionCreateRequest {
     RemoteConnectionCreateRequest {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -971,6 +1184,8 @@ fn build_remote_connection_create_request(
         }),
         session_id: config.session_id.clone(),
         connection_id,
+        connection_capability,
+        connection_capability_required: true,
         model: config.model.clone(),
         thinking_level: config.thinking_level,
         approval_mode: config.approval_mode,
@@ -979,6 +1194,7 @@ fn build_remote_connection_create_request(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
             raw_agent_events: config.enable_raw_agent_events,
+            transcript_grade: build_remote_transcript_grade(config),
         }),
         opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
@@ -990,40 +1206,105 @@ fn build_remote_connection_create_request(
 async fn create_or_attach_connection(
     client: &Client,
     config: &RemoteTransportConfig,
-) -> Result<RemoteConnectionBootstrapResponse, AsyncTransportError> {
+    resume_authority: Option<&RemoteConnectionResumeAuthority>,
+) -> Result<RemoteConnectionBootstrapResponse, RemoteConnectFailure> {
     let url = format!(
         "{}/api/headless/connections",
         config.base_url.trim_end_matches('/')
     );
+    let connection_id = resume_authority
+        .map(|authority| authority.connection_id.clone())
+        .or_else(|| config.connection_id.clone());
+    let connection_capability = resume_authority
+        .and_then(|authority| authority.connection_capability.clone())
+        .or_else(|| configured_connection_capability(config));
+    let known_connection_authority = connection_id.clone().zip(connection_capability.clone());
     let response = with_headers(
         client
             .post(&url)
-            .json(&build_remote_connection_create_request(
+            .json(&build_remote_connection_create_request_with_capability(
                 config,
-                config.connection_id.clone(),
+                connection_id.clone(),
+                connection_capability,
             )),
         config,
         true,
     )
     .send()
     .await
-    .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+    .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+    .map_err(|error| bootstrap_failure(error, known_connection_authority.clone()))?;
 
-    if response.status() == StatusCode::NOT_FOUND && config.connection_id.is_some() {
+    if response.status() == StatusCode::NOT_FOUND && connection_id.is_some() {
+        let fallback_authority = RemoteConnectionResumeAuthority {
+            connection_id: format!("conn_{}", Uuid::new_v4().simple()),
+            connection_capability: Some(format!("cap_{}", Uuid::new_v4().simple())),
+        };
+        let known_fallback_authority = fallback_authority
+            .connection_capability
+            .clone()
+            .map(|capability| (fallback_authority.connection_id.clone(), capability));
         let retry_response = with_headers(
             client
                 .post(url)
-                .json(&build_remote_connection_create_request(config, None)),
+                .json(&build_remote_connection_create_request_with_capability(
+                    config,
+                    Some(fallback_authority.connection_id),
+                    fallback_authority.connection_capability,
+                )),
             config,
             true,
         )
         .send()
         .await
-        .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
-        return decode_json_response(retry_response, RemoteRequestKind::Bootstrap).await;
+        .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+        .map_err(|error| bootstrap_failure(error, known_fallback_authority.clone()))?;
+        let mut bootstrap: RemoteConnectionBootstrapResponse =
+            decode_json_response(retry_response, RemoteRequestKind::Bootstrap)
+                .await
+                .map_err(|error| bootstrap_failure(error, known_fallback_authority.clone()))?;
+        if let Some((fallback_connection_id, fallback_connection_capability)) =
+            known_fallback_authority
+        {
+            if bootstrap.connection_id == fallback_connection_id {
+                bootstrap.connection_capability = bootstrap
+                    .connection_capability
+                    .or(Some(fallback_connection_capability));
+            }
+        }
+        return Ok(bootstrap);
     }
 
-    decode_json_response(response, RemoteRequestKind::Bootstrap).await
+    let mut bootstrap: RemoteConnectionBootstrapResponse =
+        decode_json_response(response, RemoteRequestKind::Bootstrap)
+            .await
+            .map_err(|error| bootstrap_failure(error, known_connection_authority.clone()))?;
+    if let Some((known_connection_id, known_connection_capability)) = known_connection_authority {
+        if bootstrap.connection_id == known_connection_id {
+            bootstrap.connection_capability = bootstrap
+                .connection_capability
+                .or(Some(known_connection_capability));
+        }
+    }
+    Ok(bootstrap)
+}
+
+fn bootstrap_failure(
+    error: AsyncTransportError,
+    resume_authority: Option<(String, String)>,
+) -> RemoteConnectFailure {
+    if matches!(&error, AsyncTransportError::Remote(_)) {
+        if let Some((connection_id, connection_capability)) = resume_authority {
+            return RemoteConnectFailure::with_authority(
+                error,
+                RemoteConnectionResumeAuthority {
+                    connection_id,
+                    connection_capability: Some(connection_capability),
+                },
+            );
+        }
+    }
+    RemoteConnectFailure::without_authority(error)
 }
 
 async fn subscribe_to_session(
@@ -1031,6 +1312,7 @@ async fn subscribe_to_session(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: Option<&str>,
+    connection_capability: Option<&str>,
 ) -> Result<RemoteSessionSubscriptionResponse, AsyncTransportError> {
     let url = format!(
         "{}/api/headless/sessions/{session_id}/subscribe",
@@ -1038,6 +1320,8 @@ async fn subscribe_to_session(
     );
     let request = RemoteSessionSubscribeRequest {
         connection_id: connection_id.map(str::to_string),
+        connection_capability: connection_capability.map(str::to_string),
+        connection_capability_required: true,
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
         client_info: Some(ClientInfo {
             name: config.client_name.clone(),
@@ -1047,6 +1331,7 @@ async fn subscribe_to_session(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
             raw_agent_events: config.enable_raw_agent_events,
+            transcript_grade: build_remote_transcript_grade(config),
         }),
         role: config.role.clone(),
         opt_out_notifications: config.opt_out_notifications.clone(),
@@ -1066,6 +1351,7 @@ async fn disconnect_connection(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: &str,
+    connection_capability: Option<&str>,
     subscription_id: Option<&str>,
 ) {
     let url = format!(
@@ -1073,10 +1359,11 @@ async fn disconnect_connection(
         config.base_url.trim_end_matches('/')
     );
     let _ignored = with_headers(
-        client.post(url).json(&serde_json::json!({
-            "connectionId": connection_id,
-            "subscriptionId": subscription_id,
-        })),
+        client.post(url).json(&connection_lifecycle_request(
+            connection_id,
+            connection_capability,
+            subscription_id,
+        )),
         config,
         true,
     )
@@ -1089,6 +1376,7 @@ async fn heartbeat_session(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: &str,
+    connection_capability: Option<&str>,
     subscription_id: &str,
 ) -> Result<(), AsyncTransportError> {
     let url = format!(
@@ -1096,10 +1384,11 @@ async fn heartbeat_session(
         config.base_url.trim_end_matches('/')
     );
     let response = with_headers(
-        client.post(url).json(&serde_json::json!({
-            "connectionId": connection_id,
-            "subscriptionId": subscription_id,
-        })),
+        client.post(url).json(&connection_lifecycle_request(
+            connection_id,
+            connection_capability,
+            Some(subscription_id),
+        )),
         config,
         true,
     )
@@ -1112,14 +1401,28 @@ async fn heartbeat_session(
     Ok(())
 }
 
+fn connection_lifecycle_request(
+    connection_id: &str,
+    connection_capability: Option<&str>,
+    subscription_id: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "connectionId": connection_id,
+        "subscriptionId": subscription_id,
+        "connectionCapability": connection_capability,
+    })
+}
+
 async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver<ToAgentMessage>) {
     let WriterLoopContext {
         client,
         config,
         session_id,
         connection_id,
+        connection_capability,
         subscription_id,
         event_tx,
+        event_notification,
         cancel,
     } = context;
     let url = format!(
@@ -1138,8 +1441,11 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                     &client,
                     &config,
                     &url,
-                    &connection_id,
-                    &subscription_id,
+                    RemoteConnectionAuthority {
+                        connection_id: &connection_id,
+                        connection_capability: connection_capability.as_deref(),
+                        subscription_id: &subscription_id,
+                    },
                     &message,
                     &cancel,
                 )
@@ -1148,7 +1454,11 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                     Ok(()) => {}
                     Err(AsyncTransportError::Cancelled) => break,
                     Err(error) => {
-                        let _ = event_tx.send(Err(error));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(error),
+                        );
                         break;
                     }
                 }
@@ -1177,31 +1487,46 @@ async fn send_message_with_retry(
     client: &Client,
     config: &RemoteTransportConfig,
     url: &str,
-    connection_id: &str,
-    subscription_id: &str,
+    authority: RemoteConnectionAuthority<'_>,
     message: &ToAgentMessage,
     cancel: &CancellationToken,
 ) -> Result<(), AsyncTransportError> {
     let mut delay = MESSAGE_POST_BASE_DELAY;
+    let response_idempotency_key = response_idempotency_key(message);
 
     for attempt in 1..=MESSAGE_POST_MAX_RETRIES {
         if cancel.is_cancelled() {
             return Err(AsyncTransportError::Cancelled);
         }
 
-        let result = with_headers(
-            client
-                .post(url)
-                .header("x-maestro-headless-connection-id", connection_id)
-                .header("x-composer-headless-connection-id", connection_id)
-                .header("x-maestro-headless-subscriber-id", subscription_id)
-                .header("x-composer-headless-subscriber-id", subscription_id)
-                .json(message),
-            config,
-            true,
-        )
-        .send()
-        .await;
+        let mut request = client
+            .post(url)
+            .header("x-maestro-headless-connection-id", authority.connection_id)
+            .header("x-composer-headless-connection-id", authority.connection_id)
+            .header(
+                "x-maestro-headless-subscriber-id",
+                authority.subscription_id,
+            )
+            .header(
+                "x-composer-headless-subscriber-id",
+                authority.subscription_id,
+            )
+            .json(message);
+        if let Some(connection_capability) = authority.connection_capability {
+            request = request
+                .header(
+                    "x-maestro-headless-connection-capability",
+                    connection_capability,
+                )
+                .header(
+                    "x-composer-headless-connection-capability",
+                    connection_capability,
+                );
+        }
+        if let Some(response_idempotency_key) = response_idempotency_key.as_deref() {
+            request = request.header("x-maestro-idempotency-key", response_idempotency_key);
+        }
+        let result = with_headers(request, config, true).send().await;
 
         match result {
             Ok(response) if response.status().is_success() => return Ok(()),
@@ -1233,14 +1558,33 @@ async fn send_message_with_retry(
     ))
 }
 
+fn response_idempotency_key(message: &ToAgentMessage) -> Option<String> {
+    let identity = match message {
+        ToAgentMessage::ToolResponse { call_id, .. } => format!("tool_response:{call_id}"),
+        ToAgentMessage::ClientToolResult { call_id, .. } => {
+            format!("client_tool_result:{call_id}")
+        }
+        ToAgentMessage::ServerRequestResponse { request_id, .. } => {
+            format!("server_request_response:{request_id}")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "maestro-response-{:x}",
+        Sha256::digest(identity.as_bytes())
+    ))
+}
+
 async fn heartbeat_loop(context: HeartbeatLoopContext) {
     let HeartbeatLoopContext {
         client,
         config,
         session_id,
         connection_id,
+        connection_capability,
         subscription_id,
         event_tx,
+        event_notification,
         emit_success_heartbeat,
         interval,
         cancel,
@@ -1257,12 +1601,17 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                     &config,
                     &session_id,
                     &connection_id,
+                    connection_capability.as_deref(),
                     &subscription_id,
                 )
                 .await {
                     Ok(()) => {
                         if emit_success_heartbeat
-                            && event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err()
+                            && !super::send_transport_event(
+                                &event_tx,
+                                &event_notification,
+                                Ok(RemoteIncoming::Heartbeat),
+                            )
                         {
                             cancel.cancel();
                             break;
@@ -1272,7 +1621,11 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                         if !should_surface_heartbeat_error(&error) {
                             continue;
                         }
-                        let _ = event_tx.send(Err(error));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(error),
+                        );
                         cancel.cancel();
                         break;
                     }
@@ -1288,9 +1641,13 @@ async fn reader_loop(
     session_id: String,
     subscription_id: String,
     initial_cursor: u64,
-    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    reader_events: ReaderEventContext,
     cancel: CancellationToken,
 ) {
+    let ReaderEventContext {
+        event_tx,
+        event_notification,
+    } = reader_events;
     let mut cursor = initial_cursor;
     if cancel.is_cancelled() {
         return;
@@ -1303,22 +1660,27 @@ async fn reader_loop(
     let response = match with_headers(client.get(url), &config, false).send().await {
         Ok(response) => response,
         Err(error) => {
-            let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+            let _ = super::send_transport_event(
+                &event_tx,
+                &event_notification,
+                Err(AsyncTransportError::Remote(error.to_string())),
+            );
             return;
         }
     };
 
     if response.status() != StatusCode::OK {
-        let _ = event_tx.send(Err(response_status_error(
-            response,
-            RemoteRequestKind::Stream,
-        )
-        .await));
+        let _ = super::send_transport_event(
+            &event_tx,
+            &event_notification,
+            Err(response_status_error(response, RemoteRequestKind::Stream).await),
+        );
         return;
     }
 
     let mut stream = response.bytes_stream().eventsource();
     let mut saw_event = false;
+    let mut coalesced_response_cursor = None;
 
     loop {
         tokio::select! {
@@ -1329,14 +1691,20 @@ async fn reader_loop(
                         saw_event = true;
                         match serde_json::from_str::<RemoteEnvelope>(&event.data) {
                             Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
-                                if !advances_remote_cursor(cursor, next_cursor) {
+                                if !accepts_remote_message_cursor(
+                                    cursor,
+                                    next_cursor,
+                                    &message,
+                                    &mut coalesced_response_cursor,
+                                ) {
                                     continue;
                                 }
-                                cursor = next_cursor;
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Message(*message)))
-                                    .is_err()
-                                {
+                                cursor = cursor.max(next_cursor);
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Message(*message)),
+                                ) {
                                     return;
                                 }
                             }
@@ -1347,31 +1715,33 @@ async fn reader_loop(
                                 let (_snapshot_session_id, next_cursor, last_init, state) =
                                     snapshot.into_state();
                                 cursor = next_cursor;
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Snapshot {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Snapshot {
                                         state: Box::new(state),
                                         last_init,
-                                    }))
-                                    .is_err()
-                                {
+                                    }),
+                                ) {
                                     return;
                                 }
                             }
                             Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
-                                if !advances_remote_cursor(cursor, snapshot.cursor) {
+                                if !accepts_remote_reset_cursor(cursor, snapshot.cursor) {
                                     continue;
                                 }
                                 let (_snapshot_session_id, next_cursor, last_init, state) =
                                     snapshot.into_state();
                                 cursor = next_cursor;
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Reset {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Reset {
                                         reason,
                                         state: Box::new(state),
                                         last_init,
-                                    }))
-                                    .is_err()
-                                {
+                                    }),
+                                ) {
                                     return;
                                 }
                             }
@@ -1380,7 +1750,11 @@ async fn reader_loop(
                                     continue;
                                 }
                                 cursor = cursor.max(next_cursor);
-                                if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Heartbeat),
+                                ) {
                                     return;
                                 }
                             }
@@ -1393,7 +1767,11 @@ async fn reader_loop(
                         }
                     }
                     Some(Err(error)) => {
-                        let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(AsyncTransportError::Remote(error.to_string())),
+                        );
                         return;
                     }
                     None => break,
@@ -1411,11 +1789,47 @@ async fn reader_loop(
     } else {
         AsyncTransportError::Remote("remote event stream closed before emitting data".to_string())
     };
-    let _ = event_tx.send(Err(error));
+    let _ = super::send_transport_event(&event_tx, &event_notification, Err(error));
 }
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
     next_cursor > current_cursor
+}
+
+fn accepts_remote_reset_cursor(current_cursor: u64, next_cursor: u64) -> bool {
+    next_cursor >= current_cursor
+}
+
+fn accepts_remote_message_cursor(
+    current_cursor: u64,
+    next_cursor: u64,
+    message: &FromAgentMessage,
+    coalesced_response_cursor: &mut Option<(u64, String)>,
+) -> bool {
+    if advances_remote_cursor(current_cursor, next_cursor) {
+        *coalesced_response_cursor = match message {
+            FromAgentMessage::ResponseChunk {
+                response_id,
+                is_thinking: false,
+                ..
+            } => Some((next_cursor, response_id.clone())),
+            _ => None,
+        };
+        return true;
+    }
+    let accepts_completion = matches!(
+        (message, coalesced_response_cursor.as_ref()),
+        (
+            FromAgentMessage::ResponseEnd { response_id, .. },
+            Some((chunk_cursor, chunk_response_id))
+        ) if next_cursor == current_cursor
+            && *chunk_cursor == next_cursor
+            && chunk_response_id == response_id
+    );
+    if accepts_completion {
+        *coalesced_response_cursor = None;
+    }
+    accepts_completion
 }
 
 fn accepts_remote_heartbeat_cursor(current_cursor: u64, next_cursor: u64) -> bool {
@@ -1476,6 +1890,13 @@ fn classify_remote_status(
     body: &str,
 ) -> (bool, RemoteErrorKind) {
     let trimmed_body = body.trim();
+
+    if body_has_remote_error_code(trimmed_body, "runtime_owned_elsewhere") {
+        return (false, RemoteErrorKind::OwnershipConflict);
+    }
+    if body_has_remote_error_code(trimmed_body, "runtime_not_ready") {
+        return (true, RemoteErrorKind::RuntimeNotReady);
+    }
 
     if trimmed_body.contains("Headless connection not found") {
         return (
@@ -1542,6 +1963,26 @@ fn classify_remote_status(
     (retryable, RemoteErrorKind::Other)
 }
 
+fn body_has_remote_error_code(body: &str, expected: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    if value.get("error_type").and_then(|value| value.as_str()) == Some(expected) {
+        return true;
+    }
+    if value.get("code").and_then(|value| value.as_str()) == Some(expected) {
+        return true;
+    }
+    value
+        .get("details")
+        .and_then(|value| value.as_array())
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail.get("reason").and_then(|value| value.as_str()) == Some(expected)
+            })
+        })
+}
+
 async fn response_status_error(
     response: reqwest::Response,
     kind: RemoteRequestKind,
@@ -1568,2890 +2009,15 @@ async fn response_status_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::headless::HEADLESS_PROTOCOL_VERSION;
-    use std::collections::VecDeque;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{mpsc, Mutex};
-
-    async fn read_http_request(
-        socket: &mut TcpStream,
-    ) -> Option<(String, Vec<(String, String)>, String)> {
-        let mut buffer = Vec::new();
-        let mut chunk = [0u8; 1024];
-
-        loop {
-            let bytes_read = socket.read(&mut chunk).await.ok()?;
-            if bytes_read == 0 {
-                return None;
-            }
-            buffer.extend_from_slice(&chunk[..bytes_read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-
-        let header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
-        let header_bytes = &buffer[..header_end];
-        let header_text = String::from_utf8_lossy(header_bytes);
-        let request_line = header_text.lines().next()?;
-        let path = request_line.split_whitespace().nth(1)?.to_string();
-        let headers = header_text
-            .lines()
-            .skip(1)
-            .filter_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
-            })
-            .collect::<Vec<_>>();
-        let content_length = headers
-            .iter()
-            .find_map(|(name, value)| {
-                if name == "content-length" {
-                    value.parse::<usize>().ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0);
-
-        let mut body = buffer[(header_end + 4)..].to_vec();
-        while body.len() < content_length {
-            let bytes_read = socket.read(&mut chunk).await.ok()?;
-            if bytes_read == 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..bytes_read]);
-        }
-
-        Some((
-            path,
-            headers,
-            String::from_utf8_lossy(&body[..content_length]).to_string(),
-        ))
-    }
-
-    async fn write_http_response(
-        socket: &mut TcpStream,
-        status_line: &str,
-        content_type: &str,
-        body: &str,
-    ) {
-        let response = format!(
-            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.shutdown().await;
-    }
-
-    async fn wait_for_posted_bodies_len(
-        posted_bodies: &Arc<Mutex<Vec<String>>>,
-        expected_len: usize,
-    ) -> Vec<String> {
-        for _ in 0..50 {
-            let posted = posted_bodies.lock().await.clone();
-            if posted.len() >= expected_len {
-                return posted;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        posted_bodies.lock().await.clone()
-    }
-
-    async fn spawn_remote_headless_server(
-        snapshot_json: String,
-        sse_events: Vec<String>,
-    ) -> (
-        std::net::SocketAddr,
-        Arc<Mutex<Vec<String>>>,
-        Arc<Mutex<Vec<String>>>,
-        Arc<Mutex<Vec<Vec<(String, String)>>>>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let posted_bodies = Arc::new(Mutex::new(Vec::new()));
-        let request_paths = Arc::new(Mutex::new(Vec::new()));
-        let request_headers = Arc::new(Mutex::new(Vec::new()));
-        let events = Arc::new(Mutex::new(VecDeque::from(sse_events)));
-
-        tokio::spawn({
-            let posted_bodies = Arc::clone(&posted_bodies);
-            let request_paths = Arc::clone(&request_paths);
-            let request_headers = Arc::clone(&request_headers);
-            let events = Arc::clone(&events);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let posted_bodies = Arc::clone(&posted_bodies);
-                    let request_paths = Arc::clone(&request_paths);
-                    let request_headers = Arc::clone(&request_headers);
-                    let events = Arc::clone(&events);
-                    let snapshot_json = snapshot_json.clone();
-
-                    tokio::spawn(async move {
-                        let Some((path, headers, body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        request_paths.lock().await.push(path.clone());
-                        request_headers.lock().await.push(headers);
-
-                        if path == "/api/headless/connections" {
-                            let body = serde_json::json!({
-                                "session_id": "sess_remote",
-                                "connection_id": "conn_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/subscribe")
-                        {
-                            let body = serde_json::json!({
-                                "connection_id": "conn_remote",
-                                "subscription_id": "sub_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/unsubscribe")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/disconnect")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/heartbeat")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/messages")
-                        {
-                            posted_bodies.lock().await.push(body);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
-                        {
-                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                            if socket.write_all(headers.as_bytes()).await.is_err() {
-                                return;
-                            }
-                            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-                            while let Some(event) = events.lock().await.pop_front() {
-                                let _ = tx.send(event);
-                            }
-                            while let Some(event) = rx.recv().await {
-                                let payload = format!("data: {event}\n\n");
-                                if socket.write_all(payload.as_bytes()).await.is_err() {
-                                    break;
-                                }
-                            }
-                            return;
-                        }
-
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        (addr, posted_bodies, request_paths, request_headers)
-    }
+mod reset_cursor_tests {
+    use super::accepts_remote_reset_cursor;
 
     #[test]
-    fn remote_runtime_state_snapshot_maps_into_agent_state() {
-        let snapshot = RemoteRuntimeStateSnapshot {
-            protocol_version: Some("2026-03-30".to_string()),
-            client_protocol_version: Some("2026-03-30".to_string()),
-            client_info: Some(ClientInfo {
-                name: "maestro-tui-rs".to_string(),
-                version: Some("0.1.0".to_string()),
-            }),
-            capabilities: Some(ClientCapabilities {
-                server_requests: Some(vec![
-                    crate::headless::ServerRequestType::Approval,
-                    crate::headless::ServerRequestType::ClientTool,
-                    crate::headless::ServerRequestType::UserInput,
-                    crate::headless::ServerRequestType::ToolRetry,
-                ]),
-                utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
-                raw_agent_events: Some(true),
-            }),
-            opt_out_notifications: Some(vec!["status".to_string()]),
-            connection_role: Some(ConnectionRole::Controller),
-            connection_count: 1,
-            subscriber_count: 2,
-            controller_subscription_id: Some("sub_remote".to_string()),
-            controller_connection_id: Some("conn_remote".to_string()),
-            connections: vec![ConnectionState {
-                connection_id: "conn_remote".to_string(),
-                role: ConnectionRole::Controller,
-                client_protocol_version: Some("2026-03-30".to_string()),
-                client_info: Some(ClientInfo {
-                    name: "maestro-tui-rs".to_string(),
-                    version: Some("0.1.0".to_string()),
-                }),
-                capabilities: Some(ClientCapabilities {
-                    server_requests: Some(vec![
-                        crate::headless::ServerRequestType::Approval,
-                        crate::headless::ServerRequestType::ClientTool,
-                        crate::headless::ServerRequestType::UserInput,
-                        crate::headless::ServerRequestType::ToolRetry,
-                    ]),
-                    utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
-                    raw_agent_events: Some(true),
-                }),
-                opt_out_notifications: Some(vec!["status".to_string()]),
-                subscription_count: 1,
-                attached_subscription_count: 1,
-                controller_lease_granted: true,
-                lease_expires_at: Some("2026-04-02T00:00:15Z".to_string()),
-            }],
-            model: Some("gpt-5.4".to_string()),
-            provider: Some("openai".to_string()),
-            session_id: Some("session-1".to_string()),
-            cwd: Some("/tmp/project".to_string()),
-            git_branch: Some("main".to_string()),
-            current_response: Some(StreamingResponse {
-                response_id: "resp-1".to_string(),
-                text: "Hello".to_string(),
-                thinking: "Thinking".to_string(),
-                usage: None,
-            }),
-            pending_approvals: vec![PendingApproval {
-                call_id: "call-1".to_string(),
-                request_id: None,
-                tool: "bash".to_string(),
-                args: serde_json::json!({"cmd": "ls"}),
-            }],
-            pending_client_tools: vec![PendingApproval {
-                call_id: "call-client".to_string(),
-                request_id: None,
-                tool: "artifacts".to_string(),
-                args: serde_json::json!({"command": "create", "filename": "report.txt"}),
-            }],
-            pending_user_inputs: vec![PendingApproval {
-                call_id: "call-user-input".to_string(),
-                request_id: None,
-                tool: "ask_user".to_string(),
-                args: serde_json::json!({
-                    "questions": [{
-                        "header": "Stack",
-                        "question": "Which schema library should we use?",
-                        "options": [{
-                            "label": "Zod",
-                            "description": "Use Zod schemas"
-                        }]
-                    }]
-                }),
-            }],
-            pending_tool_retries: vec![PendingApproval {
-                call_id: "call-retry".to_string(),
-                request_id: Some("req-retry".to_string()),
-                tool: "bash".to_string(),
-                args: serde_json::json!({
-                    "tool_call_id": "call-retry",
-                    "args": {"cmd": "ls"},
-                    "error_message": "command failed",
-                    "attempt": 1
-                }),
-            }],
-            tracked_tools: vec![PendingApproval {
-                call_id: "call-2".to_string(),
-                request_id: None,
-                tool: "read".to_string(),
-                args: serde_json::json!({"path": "package.json"}),
-            }],
-            active_tools: vec![RemoteActiveToolState {
-                call_id: "call-2".to_string(),
-                tool: "read".to_string(),
-                output: "partial".to_string(),
-            }],
-            active_utility_commands: vec![RemoteActiveUtilityCommandState {
-                command_id: "cmd-1".to_string(),
-                command: "echo hi".to_string(),
-                cwd: Some("/tmp/project".to_string()),
-                shell_mode: UtilityCommandShellMode::Direct,
-                terminal_mode: UtilityCommandTerminalMode::Pipe,
-                pid: Some(1234),
-                columns: None,
-                rows: None,
-                owner_connection_id: Some("conn-1".to_string()),
-                output: "hi\n".to_string(),
-            }],
-            active_file_watches: vec![RemoteActiveFileWatchState {
-                watch_id: "watch-1".to_string(),
-                root_dir: "/tmp/project".to_string(),
-                include_patterns: Some(vec!["src/**".to_string()]),
-                exclude_patterns: Some(vec!["dist/**".to_string()]),
-                debounce_ms: 100,
-                owner_connection_id: Some("conn-1".to_string()),
-            }],
-            last_error: Some("boom".to_string()),
-            last_error_type: Some(HeadlessErrorType::Tool),
-            last_status: Some("Working".to_string()),
-            last_response_duration_ms: Some(42),
-            last_ttft_ms: Some(7),
-            is_ready: true,
-            is_responding: true,
-        };
-
-        let state = snapshot.into_agent_state();
-        assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(state.provider.as_deref(), Some("openai"));
-        assert_eq!(state.client_protocol_version.as_deref(), Some("2026-03-30"));
-        assert_eq!(
-            state.client_info.as_ref().map(|info| info.name.as_str()),
-            Some("maestro-tui-rs")
-        );
-        assert_eq!(
-            state
-                .opt_out_notifications
-                .as_ref()
-                .map(|items| items.len()),
-            Some(1)
-        );
-        assert_eq!(state.pending_approvals.len(), 1);
-        assert_eq!(state.pending_client_tools.len(), 1);
-        assert_eq!(state.pending_user_inputs.len(), 1);
-        assert_eq!(state.pending_tool_retries.len(), 1);
-        assert_eq!(state.subscriber_count, 2);
-        assert_eq!(
-            state.controller_subscription_id.as_deref(),
-            Some("sub_remote")
-        );
-        assert_eq!(state.tracked_tools.len(), 1);
-        assert_eq!(state.active_tools.len(), 1);
-        assert_eq!(state.active_utility_commands.len(), 1);
-        assert_eq!(state.active_file_watches.len(), 1);
-        assert_eq!(
-            state
-                .active_utility_commands
-                .get("cmd-1")
-                .and_then(|command| command.owner_connection_id.as_deref()),
-            Some("conn-1")
-        );
-        assert_eq!(
-            state
-                .active_file_watches
-                .get("watch-1")
-                .and_then(|watch| watch.owner_connection_id.as_deref()),
-            Some("conn-1")
-        );
-        assert_eq!(state.last_error.as_deref(), Some("boom"));
-        assert_eq!(state.last_status.as_deref(), Some("Working"));
-        assert!(state.is_ready);
-        assert!(state.is_responding);
-    }
-
-    #[test]
-    fn remote_connection_create_request_serializes_client_tool_flags() {
-        let request = RemoteConnectionCreateRequest {
-            protocol_version: Some("2026-03-30".to_string()),
-            client_info: Some(ClientInfo {
-                name: "maestro-tui-rs".to_string(),
-                version: Some("0.1.0".to_string()),
-            }),
-            session_id: Some("sess_remote".to_string()),
-            connection_id: Some("conn_remote".to_string()),
-            model: Some("gpt-5.4".to_string()),
-            thinking_level: Some(ThinkingLevel::Low),
-            approval_mode: Some(ApprovalMode::Prompt),
-            enable_client_tools: true,
-            capabilities: Some(RemoteClientCapabilities {
-                server_requests: vec!["approval", "client_tool", "user_input", "tool_retry"],
-                utility_operations: vec!["command_exec"],
-                raw_agent_events: true,
-            }),
-            opt_out_notifications: vec!["status".to_string()],
-            client: Some("vscode".to_string()),
-            role: Some("controller".to_string()),
-            take_control: true,
-        };
-
-        let json = serde_json::to_value(request).expect("serialize request");
-        assert_eq!(json["protocolVersion"], "2026-03-30");
-        assert_eq!(json["clientInfo"]["name"], "maestro-tui-rs");
-        assert_eq!(json["clientInfo"]["version"], "0.1.0");
-        assert_eq!(json["sessionId"], "sess_remote");
-        assert_eq!(json["connectionId"], "conn_remote");
-        assert_eq!(json["model"], "gpt-5.4");
-        assert_eq!(json["thinkingLevel"], "low");
-        assert_eq!(json["approvalMode"], "prompt");
-        assert_eq!(json["enableClientTools"], true);
-        assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
-        assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
-        assert_eq!(json["capabilities"]["serverRequests"][2], "user_input");
-        assert_eq!(json["capabilities"]["serverRequests"][3], "tool_retry");
-        assert_eq!(json["capabilities"]["rawAgentEvents"], true);
-        assert_eq!(json["optOutNotifications"][0], "status");
-        assert_eq!(json["client"], "vscode");
-        assert_eq!(json["role"], "controller");
-        assert_eq!(json["takeControl"], true);
-    }
-
-    #[test]
-    fn remote_session_subscribe_request_serializes_opt_out_notifications() {
-        let request = RemoteSessionSubscribeRequest {
-            connection_id: Some("conn_remote".to_string()),
-            protocol_version: Some("2026-04-02".to_string()),
-            client_info: Some(ClientInfo {
-                name: "maestro-tui-rs".to_string(),
-                version: Some("0.1.0".to_string()),
-            }),
-            capabilities: Some(RemoteClientCapabilities {
-                server_requests: vec!["approval", "client_tool", "user_input"],
-                utility_operations: vec!["command_exec", "file_read", "file_watch"],
-                raw_agent_events: true,
-            }),
-            role: Some("viewer".to_string()),
-            opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
-            take_control: false,
-        };
-
-        let json = serde_json::to_value(request).expect("serialize request");
-        assert_eq!(json["connectionId"], "conn_remote");
-        assert_eq!(json["role"], "viewer");
-        assert_eq!(json["capabilities"]["rawAgentEvents"], true);
-        assert_eq!(json["optOutNotifications"][0], "status");
-        assert_eq!(json["optOutNotifications"][1], "heartbeat");
-    }
-
-    #[test]
-    fn remote_hello_message_includes_interactive_server_requests_for_controller() {
-        let message = build_remote_hello_message(&RemoteTransportConfig {
-            enable_client_tools: true,
-            ..RemoteTransportConfig::default()
-        });
-
-        let ToAgentMessage::Hello {
-            capabilities: Some(capabilities),
-            ..
-        } = message
-        else {
-            panic!("expected hello message");
-        };
-
-        assert_eq!(
-            capabilities.server_requests,
-            Some(vec![
-                ServerRequestType::Approval,
-                ServerRequestType::ClientTool,
-                ServerRequestType::UserInput,
-                ServerRequestType::ToolRetry,
-            ])
-        );
-    }
-
-    #[test]
-    fn remote_hello_message_omits_interactive_server_requests_for_viewer() {
-        let message = build_remote_hello_message(&RemoteTransportConfig {
-            enable_client_tools: true,
-            role: Some("viewer".to_string()),
-            ..RemoteTransportConfig::default()
-        });
-
-        let ToAgentMessage::Hello {
-            capabilities: Some(capabilities),
-            ..
-        } = message
-        else {
-            panic!("expected hello message");
-        };
-
-        assert_eq!(
-            capabilities.server_requests,
-            Some(vec![
-                ServerRequestType::Approval,
-                ServerRequestType::ClientTool
-            ])
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_transport_retries_connection_bootstrap_without_stale_connection_id() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let bootstrap_attempt = Arc::new(AtomicUsize::new(0));
-        let connection_requests = Arc::new(Mutex::new(Vec::new()));
-
-        tokio::spawn({
-            let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
-            let connection_requests = Arc::clone(&connection_requests);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-
-                    tokio::spawn({
-                        let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
-                        let connection_requests = Arc::clone(&connection_requests);
-                        async move {
-                            let Some((path, _headers, body)) = read_http_request(&mut socket).await
-                            else {
-                                return;
-                            };
-
-                            if path == "/api/headless/connections" {
-                                let attempt = bootstrap_attempt.fetch_add(1, Ordering::SeqCst) + 1;
-                                connection_requests.lock().await.push(body.clone());
-                                let request = serde_json::from_str::<serde_json::Value>(&body)
-                                    .expect("valid connection request");
-                                if attempt == 1 {
-                                    assert_eq!(
-                                        request
-                                            .get("connectionId")
-                                            .and_then(serde_json::Value::as_str),
-                                        Some("conn_stale")
-                                    );
-                                    write_http_response(
-                                        &mut socket,
-                                        "HTTP/1.1 404 Not Found",
-                                        "application/json",
-                                        r#"{"error":"Headless connection not found"}"#,
-                                    )
-                                    .await;
-                                    return;
-                                }
-                                assert!(request.get("connectionId").is_none());
-                                let body = serde_json::json!({
-                                    "session_id": "sess_remote",
-                                    "connection_id": "conn_fresh",
-                                })
-                                .to_string();
-                                write_http_response(
-                                    &mut socket,
-                                    "HTTP/1.1 200 OK",
-                                    "application/json",
-                                    &body,
-                                )
-                                .await;
-                                return;
-                            }
-
-                            if path.starts_with("/api/headless/sessions/")
-                                && path.ends_with("/subscribe")
-                            {
-                                let body = serde_json::json!({
-                                    "connection_id": "conn_fresh",
-                                    "subscription_id": "sub_remote",
-                                    "controller_connection_id": "conn_fresh",
-                                    "lease_expires_at": "2026-04-02T00:00:15Z",
-                                    "heartbeat_interval_ms": 15000,
-                                    "snapshot": {
-                                        "protocolVersion": "2026-03-30",
-                                        "session_id": "sess_remote",
-                                        "cursor": 0,
-                                        "state": {
-                                            "protocol_version": "2026-03-30",
-                                            "session_id": "sess_remote",
-                                            "pending_approvals": [],
-                                            "active_tools": [],
-                                            "active_utility_commands": [],
-                                            "active_file_watches": [],
-                                            "is_ready": true,
-                                            "is_responding": false
-                                        }
-                                    }
-                                })
-                                .to_string();
-                                write_http_response(
-                                    &mut socket,
-                                    "HTTP/1.1 200 OK",
-                                    "application/json",
-                                    &body,
-                                )
-                                .await;
-                                return;
-                            }
-
-                            if path.starts_with("/api/headless/sessions/")
-                                && path.ends_with("/disconnect")
-                            {
-                                write_http_response(
-                                    &mut socket,
-                                    "HTTP/1.1 200 OK",
-                                    "application/json",
-                                    r#"{"success":true,"connection_id":"conn_fresh","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                                )
-                                .await;
-                                return;
-                            }
-
-                            if path.starts_with("/api/headless/sessions/")
-                                && path.ends_with("/heartbeat")
-                            {
-                                write_http_response(
-                                    &mut socket,
-                                    "HTTP/1.1 200 OK",
-                                    "application/json",
-                                    r#"{"connection_id":"conn_fresh","controller_lease_granted":true,"controller_connection_id":"conn_fresh","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                                )
-                                .await;
-                                return;
-                            }
-
-                            if path.starts_with("/api/headless/sessions/")
-                                && path.contains("/events?")
-                            {
-                                let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                                let _ = socket.write_all(headers.as_bytes()).await;
-                                let _ = socket.shutdown().await;
-                                return;
-                            }
-
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 404 Not Found",
-                                "text/plain",
-                                "not found",
-                            )
-                            .await;
-                        }
-                    });
-                }
-            }
-        });
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            session_id: Some("sess_remote".to_string()),
-            connection_id: Some("conn_stale".to_string()),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        assert_eq!(transport.connection_id(), "conn_fresh");
-        assert_eq!(connection_requests.lock().await.len(), 2);
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_classifies_bootstrap_conflict_as_non_retryable() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                return;
-            };
-            assert_eq!(path, "/api/headless/connections");
-            write_http_response(
-                &mut socket,
-                "HTTP/1.1 409 Conflict",
-                "application/json",
-                r#"{"error":"Controller lease is already held by another connection"}"#,
-            )
-            .await;
-        });
-
-        let error = match RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        {
-            Ok(_) => panic!("bootstrap conflict should fail"),
-            Err(error) => error,
-        };
-
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 409,
-                retryable: false,
-                kind: RemoteErrorKind::ControllerLeaseConflict,
-                ..
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn remote_transport_classifies_generic_subscribe_404_as_non_retryable() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                        return;
-                    };
-
-                    if path == "/api/headless/connections" {
-                        let body = serde_json::json!({
-                            "session_id": "sess_remote",
-                            "connection_id": "conn_remote",
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "application/json",
-                            r#"{"error":"route not found"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    write_http_response(
-                        &mut socket,
-                        "HTTP/1.1 404 Not Found",
-                        "text/plain",
-                        "not found",
-                    )
-                    .await;
-                });
-            }
-        });
-
-        let error = match RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        {
-            Ok(_) => panic!("generic subscribe 404 should fail"),
-            Err(error) => error,
-        };
-
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: false,
-                kind: RemoteErrorKind::Other,
-                ..
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn remote_transport_classifies_stream_404_as_retryable() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                        return;
-                    };
-
-                    if path == "/api/headless/connections" {
-                        let body = serde_json::json!({
-                            "session_id": "sess_remote",
-                            "connection_id": "conn_remote",
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
-                        let body = serde_json::json!({
-                            "connection_id": "conn_remote",
-                            "subscription_id": "sub_remote",
-                            "controller_connection_id": "conn_remote",
-                            "lease_expires_at": "2026-04-02T00:00:15Z",
-                            "heartbeat_interval_ms": 15000,
-                            "snapshot": {
-                                "protocolVersion": "2026-03-30",
-                                "session_id": "sess_remote",
-                                "cursor": 0,
-                                "state": {
-                                    "protocol_version": "2026-03-30",
-                                    "session_id": "sess_remote",
-                                    "pending_approvals": [],
-                                    "active_tools": [],
-                                    "active_utility_commands": [],
-                                    "active_file_watches": [],
-                                    "is_ready": true,
-                                    "is_responding": false
-                                }
-                            }
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "application/json",
-                            r#"{"error":"Headless subscriber not found"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    write_http_response(
-                        &mut socket,
-                        "HTTP/1.1 404 Not Found",
-                        "text/plain",
-                        "not found",
-                    )
-                    .await;
-                });
-            }
-        });
-
-        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        let error = transport
-            .recv_incoming()
-            .await
-            .expect_err("stream 404 should fail");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: true,
-                kind: RemoteErrorKind::StaleSubscriber,
-                ..
-            }
-        ));
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_classifies_generic_stream_404_as_non_retryable() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                        return;
-                    };
-
-                    if path == "/api/headless/connections" {
-                        let body = serde_json::json!({
-                            "session_id": "sess_remote",
-                            "connection_id": "conn_remote",
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
-                        let body = serde_json::json!({
-                            "connection_id": "conn_remote",
-                            "subscription_id": "sub_remote",
-                            "controller_connection_id": "conn_remote",
-                            "lease_expires_at": "2026-04-02T00:00:15Z",
-                            "heartbeat_interval_ms": 15000,
-                            "snapshot": {
-                                "protocolVersion": "2026-03-30",
-                                "session_id": "sess_remote",
-                                "cursor": 0,
-                                "state": {
-                                    "protocol_version": "2026-03-30",
-                                    "session_id": "sess_remote",
-                                    "pending_approvals": [],
-                                    "active_tools": [],
-                                    "active_utility_commands": [],
-                                    "active_file_watches": [],
-                                    "is_ready": true,
-                                    "is_responding": false
-                                }
-                            }
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "application/json",
-                            r#"{"error":"route not found"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "application/json",
-                            r#"{"error":"route not found"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    write_http_response(
-                        &mut socket,
-                        "HTTP/1.1 404 Not Found",
-                        "text/plain",
-                        "not found",
-                    )
-                    .await;
-                });
-            }
-        });
-
-        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        let error = transport
-            .recv_incoming()
-            .await
-            .expect_err("generic stream 404 should fail");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: false,
-                kind: RemoteErrorKind::Other,
-                ..
-            }
-        ));
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_surfaces_non_retryable_heartbeat_failures() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                        return;
-                    };
-
-                    if path == "/api/headless/connections" {
-                        let body = serde_json::json!({
-                            "session_id": "sess_remote",
-                            "connection_id": "conn_remote",
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
-                        let body = serde_json::json!({
-                            "connection_id": "conn_remote",
-                            "subscription_id": "sub_remote",
-                            "controller_connection_id": "conn_remote",
-                            "lease_expires_at": "2026-04-02T00:00:15Z",
-                            "heartbeat_interval_ms": 1,
-                            "snapshot": {
-                                "protocolVersion": "2026-03-30",
-                                "session_id": "sess_remote",
-                                "cursor": 0,
-                                "state": {
-                                    "protocol_version": "2026-03-30",
-                                    "session_id": "sess_remote",
-                                    "pending_approvals": [],
-                                    "active_tools": [],
-                                    "active_utility_commands": [],
-                                    "active_file_watches": [],
-                                    "is_ready": true,
-                                    "is_responding": false
-                                }
-                            }
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
-                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                        if socket.write_all(headers.as_bytes()).await.is_err() {
-                            return;
-                        }
-                        tokio::time::sleep(Duration::from_secs(60)).await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "application/json",
-                            r#"{"error":"route not found"}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/unsubscribe")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    write_http_response(
-                        &mut socket,
-                        "HTTP/1.1 404 Not Found",
-                        "text/plain",
-                        "not found",
-                    )
-                    .await;
-                });
-            }
-        });
-
-        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let error = tokio::time::timeout(Duration::from_secs(1), transport.recv_incoming())
-            .await
-            .expect("heartbeat failure should arrive before timeout")
-            .expect_err("heartbeat failure should surface as an incoming error");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: false,
-                kind: RemoteErrorKind::Other,
-                ..
-            }
-        ));
-
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[test]
-    fn retryability_allows_recovery_from_stale_message_connection_errors() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::FORBIDDEN,
-                RemoteRequestKind::Message,
-                r#"{"error":"Headless connection not found"}"#,
-            ),
-            (true, RemoteErrorKind::StaleConnection)
-        );
-    }
-
-    #[test]
-    fn retryability_stops_bootstrap_connection_not_found_retries() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Bootstrap,
-                r#"{"error":"Headless connection not found"}"#,
-            ),
-            (false, RemoteErrorKind::StaleConnection)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_session_not_found_retryable_after_bootstrap() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Stream,
-                r#"{"error":"Headless session not found"}"#,
-            ),
-            (true, RemoteErrorKind::StaleSession)
-        );
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Subscribe,
-                r#"{"error":"Headless session not found"}"#,
-            ),
-            (true, RemoteErrorKind::StaleSession)
-        );
-    }
-
-    #[test]
-    fn retryability_stops_bootstrap_session_not_found_retries() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Bootstrap,
-                r#"{"error":"Headless session not found"}"#,
-            ),
-            (false, RemoteErrorKind::StaleSession)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_controller_lease_conflicts_non_retryable() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::CONFLICT,
-                RemoteRequestKind::Subscribe,
-                r#"{"error":"Controller lease is already held by another connection"}"#,
-            ),
-            (false, RemoteErrorKind::ControllerLeaseConflict)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_subscriber_not_found_retryable_for_streams() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Stream,
-                r#"{"error":"Headless subscriber not found"}"#,
-            ),
-            (true, RemoteErrorKind::StaleSubscriber)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_generic_stream_404s_non_retryable() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Stream,
-                r#"{"error":"route not found"}"#,
-            ),
-            (false, RemoteErrorKind::Other)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_generic_heartbeat_404s_non_retryable() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Heartbeat,
-                r#"{"error":"route not found"}"#,
-            ),
-            (false, RemoteErrorKind::Other)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_generic_subscribe_404s_non_retryable() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Subscribe,
-                r#"{"error":"route not found"}"#,
-            ),
-            (false, RemoteErrorKind::Other)
-        );
-    }
-
-    #[test]
-    fn retryability_stops_subscriber_not_found_retries_for_subscribe() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::NOT_FOUND,
-                RemoteRequestKind::Subscribe,
-                r#"{"error":"Headless subscriber not found"}"#,
-            ),
-            (false, RemoteErrorKind::StaleSubscriber)
-        );
-    }
-
-    #[test]
-    fn retryability_keeps_generic_message_client_errors_non_retryable() {
-        assert_eq!(
-            classify_remote_status(
-                StatusCode::BAD_REQUEST,
-                RemoteRequestKind::Message,
-                r#"{"error":"bad request"}"#,
-            ),
-            (false, RemoteErrorKind::Other)
-        );
-    }
-
-    #[test]
-    fn writer_retry_budget_ignores_stale_reference_errors() {
-        assert!(!should_retry_message_error(
-            &AsyncTransportError::RemoteStatus {
-                status: 404,
-                message: "remote request failed with status 404: Headless connection not found"
-                    .to_string(),
-                retryable: true,
-                kind: RemoteErrorKind::StaleConnection,
-            }
-        ));
-        assert!(!should_retry_message_error(
-            &AsyncTransportError::RemoteStatus {
-                status: 404,
-                message: "remote request failed with status 404: Headless session not found"
-                    .to_string(),
-                retryable: true,
-                kind: RemoteErrorKind::StaleSession,
-            }
-        ));
-        assert!(!should_retry_message_error(
-            &AsyncTransportError::RemoteStatus {
-                status: 404,
-                message: "remote request failed with status 404: Headless subscriber not found"
-                    .to_string(),
-                retryable: true,
-                kind: RemoteErrorKind::StaleSubscriber,
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn remote_transport_connects_sends_and_receives_events() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "last_init": {
-                "system_prompt": "Be terse",
-                "thinking_level": "high",
-                "approval_mode": "prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "cwd": "/tmp/project",
-                "git_branch": "main",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let hello_ok_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "hello_ok",
-                "protocol_version": "2026-04-03",
-                "connection_id": "conn_remote",
-                "client_protocol_version": "2026-04-03",
-                "client_info": {
-                    "name": "maestro-tui-rs",
-                    "version": "1.0.0"
-                },
-                "capabilities": {
-                    "server_requests": ["approval"],
-                    "utility_operations": ["command_exec", "file_search", "file_read", "file_watch"],
-                    "raw_agent_events": false
-                },
-                "role": "controller",
-                "controller_connection_id": "conn_remote"
-            }
-        })
-        .to_string();
-        let message_event = serde_json::json!({
-            "type": "message",
-            "cursor": 3,
-            "message": {
-                "type": "status",
-                "message": "Remote update"
-            }
-        })
-        .to_string();
-
-        let (addr, posted_bodies, request_paths, request_headers) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![hello_ok_event, message_event])
-                .await;
-
-        let mut config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            api_key: Some("secret".to_string()),
-            ..RemoteTransportConfig::default()
-        };
-        config
-            .headers
-            .insert("x-maestro-client".to_string(), "tui-rs".to_string());
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-        assert_eq!(transport.session_id(), "sess_remote");
-        assert_eq!(transport.subscription_id(), "sub_remote");
-        assert_eq!(transport.state().model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(transport.state().provider.as_deref(), Some("openai"));
-        assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
-        assert_eq!(
-            transport
-                .last_init()
-                .and_then(|init| init.system_prompt.as_deref()),
-            Some("Be terse")
-        );
-
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 1).await;
-        assert_eq!(posted.len(), 1);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
-        assert!(matches!(
-            sent,
-            ToAgentMessage::Hello {
-                protocol_version,
-                client_info,
-                capabilities,
-                role,
-                ..
-            } if protocol_version.as_deref() == Some(HEADLESS_PROTOCOL_VERSION)
-                && client_info.as_ref().map(|info| info.name.as_str()) == Some("maestro-tui-rs")
-                && capabilities.as_ref().and_then(|items| items.server_requests.as_ref()) == Some(&vec![
-                    ServerRequestType::Approval,
-                    ServerRequestType::UserInput,
-                    ServerRequestType::ToolRetry,
-                ])
-                && role == Some(ConnectionRole::Controller)
-        ));
-
-        let incoming = transport.recv_incoming().await.expect("incoming hello_ok");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::HelloOk {
-                connection_id,
-                controller_connection_id,
-                ..
-            }) => {
-                assert_eq!(connection_id.as_deref(), Some("conn_remote"));
-                assert_eq!(controller_connection_id.as_deref(), Some("conn_remote"));
-            }
-            other => panic!("expected remote hello_ok, got {other:?}"),
-        }
-        assert_eq!(
-            transport.state().client_protocol_version.as_deref(),
-            Some("2026-04-03")
-        );
-        assert_eq!(
-            transport.state().controller_connection_id.as_deref(),
-            Some("conn_remote")
-        );
-
-        let incoming = transport
-            .recv_incoming()
-            .await
-            .expect("incoming status event");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                assert_eq!(message, "Remote update");
-            }
-            other => panic!("expected remote status message, got {other:?}"),
-        }
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Remote update")
-        );
-
-        transport
-            .send(ToAgentMessage::Interrupt)
-            .expect("send interrupt");
-
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
-        assert_eq!(posted.len(), 2);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
-        assert!(matches!(sent, ToAgentMessage::Interrupt));
-
-        let headers = request_headers.lock().await.clone();
-        let connection_headers = headers.first().expect("connection request headers");
-        let subscribe_headers = headers.get(1).expect("subscribe request headers");
-        let message_headers = headers.iter().find(|entry| {
-            entry.iter().any(|(name, value)| {
-                name == "x-maestro-headless-subscriber-id" && value == "sub_remote"
-            })
-        });
-        assert!(connection_headers
-            .iter()
-            .any(|(name, value)| { name == "authorization" && value == "Bearer secret" }));
-        assert!(connection_headers
-            .iter()
-            .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
-        assert!(connection_headers
-            .iter()
-            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
-        assert!(connection_headers
-            .iter()
-            .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" }));
-        assert!(subscribe_headers
-            .iter()
-            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
-        assert!(message_headers.is_some());
-
-        transport.shutdown().expect("shutdown");
-
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let posted = posted_bodies.lock().await.clone();
-        assert_eq!(posted.len(), 2);
-
-        let paths = request_paths.lock().await.clone();
-        assert!(
-            paths.iter().any(|path| path.ends_with("/disconnect")),
-            "expected remote shutdown to disconnect the explicit connection without shutting down the runtime"
-        );
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_viewer_transport_rejects_controller_messages() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-
-        let (addr, posted_bodies, request_paths, _request_headers) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            role: Some("viewer".to_string()),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(posted_bodies.lock().await.is_empty());
-        assert!(
-            request_paths
-                .lock()
-                .await
-                .iter()
-                .all(|path| !path.ends_with("/messages")),
-            "viewer connect should not post a bootstrap hello message"
-        );
-
-        let prompt_error = transport
-            .send(ToAgentMessage::Prompt {
-                content: "viewer should stay read-only".to_string(),
-                attachments: None,
-            })
-            .expect_err("viewer prompt should be rejected");
-        assert!(matches!(
-            prompt_error,
-            AsyncTransportError::SendFailed(ref message)
-                if message.contains("viewer connections cannot send remote session messages")
-        ));
-
-        let interrupt_error = transport
-            .send(ToAgentMessage::Interrupt)
-            .expect_err("viewer interrupt should be rejected");
-        assert!(matches!(
-            interrupt_error,
-            AsyncTransportError::SendFailed(ref message)
-                if message.contains("viewer connections cannot send remote session messages")
-        ));
-
-        let cancel_error = transport
-            .send(ToAgentMessage::Cancel)
-            .expect_err("viewer cancel should be rejected");
-        assert!(matches!(
-            cancel_error,
-            AsyncTransportError::SendFailed(ref message)
-                if message.contains("viewer connections cannot send remote session messages")
-        ));
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(posted_bodies.lock().await.is_empty());
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_updates_cached_state_on_snapshot_events() {
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "last_init": {
-                "system_prompt": "Initial prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let snapshot_event = serde_json::json!({
-            "type": "snapshot",
-            "snapshot": {
-                "protocolVersion": "2026-03-30",
-                "session_id": "sess_remote",
-                "cursor": 2,
-                "last_init": {
-                    "system_prompt": "Updated prompt"
-                },
-                "state": {
-                    "protocol_version": "2026-03-30",
-                    "model": "gpt-5.4",
-                    "provider": "openai",
-                    "session_id": "sess_remote",
-                    "pending_approvals": [],
-                    "tracked_tools": [],
-                    "active_tools": [],
-                    "last_status": "Replayed snapshot",
-                    "is_ready": true,
-                    "is_responding": false
-                }
-            }
-        })
-        .to_string();
-
-        let (addr, _posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(initial_snapshot.to_string(), vec![snapshot_event]).await;
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-        assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
-        assert_eq!(
-            transport
-                .last_init()
-                .and_then(|init| init.system_prompt.as_deref()),
-            Some("Initial prompt")
-        );
-
-        let incoming = transport.recv_incoming().await.expect("incoming snapshot");
-        match incoming {
-            RemoteIncoming::Snapshot { .. } => {}
-            other => panic!("expected remote snapshot, got {other:?}"),
-        }
-
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Replayed snapshot")
-        );
-        assert_eq!(
-            transport
-                .last_init()
-                .and_then(|init| init.system_prompt.as_deref()),
-            Some("Updated prompt")
-        );
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_ignores_replayed_events_that_do_not_advance_cursor() {
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let first_status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "status",
-                "message": "Remote update"
-            }
-        })
-        .to_string();
-        let replayed_status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "status",
-                "message": "stale replay"
-            }
-        })
-        .to_string();
-        let heartbeat_event = serde_json::json!({
-            "type": "heartbeat",
-            "cursor": 3
-        })
-        .to_string();
-
-        let (addr, _posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(
-                initial_snapshot.to_string(),
-                vec![first_status_event, replayed_status_event, heartbeat_event],
-            )
-            .await;
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let incoming = transport
-            .recv_incoming()
-            .await
-            .expect("incoming status event");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                assert_eq!(message, "Remote update");
-            }
-            other => panic!("expected remote status message, got {other:?}"),
-        }
-
-        let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
-        assert!(matches!(incoming, RemoteIncoming::Heartbeat));
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Remote update")
-        );
-        assert!(transport.try_recv_incoming().is_none());
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_accepts_heartbeat_without_cursor_advance() {
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let first_status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "status",
-                "message": "Remote update"
-            }
-        })
-        .to_string();
-        let nonadvancing_heartbeat_event = serde_json::json!({
-            "type": "heartbeat",
-            "cursor": 2
-        })
-        .to_string();
-
-        let (addr, _posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(
-                initial_snapshot.to_string(),
-                vec![first_status_event, nonadvancing_heartbeat_event],
-            )
-            .await;
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let incoming = transport
-            .recv_incoming()
-            .await
-            .expect("incoming status event");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                assert_eq!(message, "Remote update");
-            }
-            other => panic!("expected remote status message, got {other:?}"),
-        }
-
-        let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
-        assert!(matches!(incoming, RemoteIncoming::Heartbeat));
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Remote update")
-        );
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_synthesizes_liveness_when_stream_heartbeats_are_opted_out() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
-                        return;
-                    };
-
-                    if path == "/api/headless/connections" {
-                        let body = serde_json::json!({
-                            "session_id": "sess_remote",
-                            "connection_id": "conn_remote",
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
-                        let body = serde_json::json!({
-                            "connection_id": "conn_remote",
-                            "subscription_id": "sub_remote",
-                            "controller_connection_id": "conn_remote",
-                            "lease_expires_at": "2026-04-02T00:00:15Z",
-                            "heartbeat_interval_ms": 1,
-                            "snapshot": {
-                                "protocolVersion": "2026-03-30",
-                                "session_id": "sess_remote",
-                                "cursor": 0,
-                                "state": {
-                                    "protocol_version": "2026-03-30",
-                                    "session_id": "sess_remote",
-                                    "pending_approvals": [],
-                                    "active_tools": [],
-                                    "active_utility_commands": [],
-                                    "active_file_watches": [],
-                                    "is_ready": true,
-                                    "is_responding": false
-                                }
-                            }
-                        })
-                        .to_string();
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            &body,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
-                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                        if socket.write_all(headers.as_bytes()).await.is_err() {
-                            return;
-                        }
-                        let status_event = serde_json::json!({
-                            "type": "message",
-                            "cursor": 1,
-                            "message": {
-                                "type": "status",
-                                "message": "Remote update"
-                            }
-                        });
-                        let payload = format!("data: {status_event}\n\n");
-                        if socket.write_all(payload.as_bytes()).await.is_err() {
-                            return;
-                        }
-                        tokio::time::sleep(Duration::from_secs(60)).await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":25}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/messages") {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/unsubscribe")
-                    {
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 200 OK",
-                            "application/json",
-                            r#"{"success":true}"#,
-                        )
-                        .await;
-                        return;
-                    }
-
-                    write_http_response(
-                        &mut socket,
-                        "HTTP/1.1 404 Not Found",
-                        "text/plain",
-                        "not found",
-                    )
-                    .await;
-                });
-            }
-        });
-
-        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            opt_out_notifications: vec!["heartbeat".to_string()],
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let mut saw_status = false;
-        let mut saw_heartbeat = false;
-        for _ in 0..3 {
-            let incoming = tokio::time::timeout(Duration::from_secs(1), transport.recv_incoming())
-                .await
-                .expect("remote status or synthetic heartbeat should arrive before timeout")
-                .expect("remote status or synthetic heartbeat should be delivered");
-            match incoming {
-                RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                    assert_eq!(message, "Remote update");
-                    saw_status = true;
-                }
-                RemoteIncoming::Heartbeat => {
-                    saw_heartbeat = true;
-                }
-                other => panic!("expected remote status or heartbeat, got {other:?}"),
-            }
-
-            if saw_status && saw_heartbeat {
-                break;
-            }
-        }
-        assert!(saw_status, "expected streamed status event");
-        assert!(saw_heartbeat, "expected synthetic heartbeat event");
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Remote update")
-        );
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_ignores_malformed_events_and_keeps_streaming() {
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let first_status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "status",
-                "message": "Remote update"
-            }
-        })
-        .to_string();
-        let malformed_event = "{\"type\":\"message\",\"cursor\":3,\"message\":".to_string();
-        let heartbeat_event = serde_json::json!({
-            "type": "heartbeat",
-            "cursor": 4
-        })
-        .to_string();
-
-        let (addr, _posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(
-                initial_snapshot.to_string(),
-                vec![first_status_event, malformed_event, heartbeat_event],
-            )
-            .await;
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let incoming = transport
-            .recv_incoming()
-            .await
-            .expect("incoming status event");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                assert_eq!(message, "Remote update");
-            }
-            other => panic!("expected remote status message, got {other:?}"),
-        }
-
-        let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
-        assert!(matches!(incoming, RemoteIncoming::Heartbeat));
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Remote update")
-        );
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_reader_exits_after_malformed_event_when_receiver_is_dropped() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-
-        let server_handle = tokio::spawn(async move {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let Some((_path, _headers, _body)) = read_http_request(&mut socket).await else {
-                return;
-            };
-
-            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-            if socket.write_all(headers.as_bytes()).await.is_err() {
-                return;
-            }
-
-            let malformed_event = "data: {\"type\":\"message\",\"cursor\":1,\"message\":\n\n";
-            if socket.write_all(malformed_event.as_bytes()).await.is_err() {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        });
-
-        let (event_tx, event_rx) =
-            mpsc::unbounded_channel::<Result<RemoteIncoming, AsyncTransportError>>();
-        drop(event_rx);
-
-        let cancel = CancellationToken::new();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            reader_loop(
-                Client::new(),
-                RemoteTransportConfig {
-                    base_url: format!("http://{addr}"),
-                    ..RemoteTransportConfig::default()
-                },
-                "sess_remote".to_string(),
-                "sub_remote".to_string(),
-                0,
-                event_tx,
-                cancel.clone(),
-            ),
-        )
-        .await
-        .expect("reader loop should exit once the consumer channel is dropped");
-
-        cancel.cancel();
-        server_handle.abort();
-        let _ = server_handle.await;
-    }
-
-    #[tokio::test]
-    async fn remote_transport_surfaces_stream_closure_without_internal_reader_retry() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let request_paths = Arc::new(Mutex::new(Vec::new()));
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 2,
-            "message": {
-                "type": "status",
-                "message": "Remote update"
-            }
-        })
-        .to_string();
-        tokio::spawn({
-            let request_paths = Arc::clone(&request_paths);
-            let snapshot_json = initial_snapshot.to_string();
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let request_paths = Arc::clone(&request_paths);
-                    let snapshot_json = snapshot_json.clone();
-                    let status_event = status_event.clone();
-                    tokio::spawn(async move {
-                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        request_paths.lock().await.push(path.clone());
-
-                        if path == "/api/headless/connections" {
-                            let body = serde_json::json!({
-                                "session_id": "sess_remote",
-                                "connection_id": "conn_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/subscribe")
-                        {
-                            let body = serde_json::json!({
-                                "connection_id": "conn_remote",
-                                "subscription_id": "sub_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/disconnect")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/heartbeat")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/messages")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
-                        {
-                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
-                            if socket.write_all(headers.as_bytes()).await.is_err() {
-                                return;
-                            }
-                            let payload = format!("data: {status_event}\n\n");
-                            let _ = socket.write_all(payload.as_bytes()).await;
-                            let _ = socket.shutdown().await;
-                            return;
-                        }
-
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let incoming = transport
-            .recv_incoming()
-            .await
-            .expect("incoming status event");
-        match incoming {
-            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
-                assert_eq!(message, "Remote update");
-            }
-            other => panic!("expected remote status message, got {other:?}"),
-        }
-
-        let error = transport
-            .recv_incoming()
-            .await
-            .expect_err("stream closure should surface as an incoming error");
-        assert!(
-            matches!(error, AsyncTransportError::Remote(message) if message.contains("closed after emitting data"))
-        );
-
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        let paths = request_paths.lock().await.clone();
-        let event_requests = paths
-            .iter()
-            .filter(|path| path.contains("/events?"))
-            .count();
-        assert_eq!(
-            event_requests, 1,
-            "reader loop should not retry /events internally"
-        );
-
-        transport.shutdown().expect("shutdown");
-        for _ in 0..50 {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(cancel_token.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn remote_transport_sends_utility_command_resize_messages() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "active_utility_commands": [],
-                "active_file_watches": [],
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-
-        let (addr, posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        transport
-            .resize_utility_command("cmd_pty".to_string(), 120, 40)
-            .expect("send utility command resize");
-
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
-        assert_eq!(posted.len(), 2);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
-        assert!(matches!(
-            sent,
-            ToAgentMessage::UtilityCommandResize {
-                command_id,
-                columns,
-                rows,
-            } if command_id == "cmd_pty" && columns == 120 && rows == 40
-        ));
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_retries_retryable_message_post_failures() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "active_utility_commands": [],
-                "active_file_watches": [],
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let posted_bodies = Arc::new(Mutex::new(Vec::new()));
-        let interrupt_attempts = Arc::new(AtomicUsize::new(0));
-
-        tokio::spawn({
-            let posted_bodies = Arc::clone(&posted_bodies);
-            let interrupt_attempts = Arc::clone(&interrupt_attempts);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let posted_bodies = Arc::clone(&posted_bodies);
-                    let interrupt_attempts = Arc::clone(&interrupt_attempts);
-                    let snapshot = snapshot.clone();
-
-                    tokio::spawn(async move {
-                        let Some((path, _headers, body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-
-                        if path == "/api/headless/connections" {
-                            let body = serde_json::json!({
-                                "session_id": "sess_remote",
-                                "connection_id": "conn_remote",
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/subscribe")
-                        {
-                            let body = serde_json::json!({
-                                "connection_id": "conn_remote",
-                                "subscription_id": "sub_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": snapshot,
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/disconnect")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/heartbeat")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
-                        {
-                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                            let _ = socket.write_all(headers.as_bytes()).await;
-                            let (_tx, mut rx) = mpsc::unbounded_channel::<String>();
-                            while let Some(event) = rx.recv().await {
-                                let payload = format!("data: {event}\n\n");
-                                if socket.write_all(payload.as_bytes()).await.is_err() {
-                                    break;
-                                }
-                            }
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/messages")
-                        {
-                            posted_bodies.lock().await.push(body.clone());
-                            let message = serde_json::from_str::<ToAgentMessage>(&body)
-                                .expect("valid outbound message");
-                            if matches!(message, ToAgentMessage::Interrupt) {
-                                let attempt = interrupt_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                                if attempt == 1 {
-                                    write_http_response(
-                                        &mut socket,
-                                        "HTTP/1.1 500 Internal Server Error",
-                                        "application/json",
-                                        r#"{"error":"temporary upstream failure"}"#,
-                                    )
-                                    .await;
-                                    return;
-                                }
-                            }
-
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        transport
-            .send(ToAgentMessage::Interrupt)
-            .expect("send interrupt");
-
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 3).await;
-        assert_eq!(interrupt_attempts.load(Ordering::SeqCst), 2);
-        assert!(matches!(
-            serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse retryable interrupt"),
-            ToAgentMessage::Interrupt
-        ));
-        assert!(matches!(
-            serde_json::from_str::<ToAgentMessage>(&posted[2]).expect("parse successful retry"),
-            ToAgentMessage::Interrupt
-        ));
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_sends_utility_file_read_messages() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "active_utility_commands": [],
-                "active_file_watches": [],
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-
-        let (addr, posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-
-        transport
-            .read_file(
-                "read_src".to_string(),
-                "src/main.rs".to_string(),
-                Some("/tmp/project".to_string()),
-                Some(10),
-                Some(25),
-            )
-            .expect("send utility file read");
-
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
-        assert_eq!(posted.len(), 2);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
-        assert!(matches!(
-            sent,
-            ToAgentMessage::UtilityFileRead {
-                read_id,
-                path,
-                cwd,
-                offset,
-                limit,
-            } if read_id == "read_src"
-                && path == "src/main.rs"
-                && cwd.as_deref() == Some("/tmp/project")
-                && offset == Some(10)
-                && limit == Some(25)
-        ));
-
-        transport.shutdown().expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn remote_transport_applies_reset_events_as_snapshots() {
-        let initial_snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 1,
-            "last_init": {
-                "system_prompt": "Initial prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "tracked_tools": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let reset_event = serde_json::json!({
-            "type": "reset",
-            "reason": "lagged",
-            "snapshot": {
-                "protocolVersion": "2026-03-30",
-                "session_id": "sess_remote",
-                "cursor": 2,
-                "last_init": {
-                    "system_prompt": "Reset prompt"
-                },
-                "state": {
-                    "protocol_version": "2026-03-30",
-                    "model": "gpt-5.4",
-                    "provider": "openai",
-                    "session_id": "sess_remote",
-                    "pending_approvals": [],
-                    "tracked_tools": [],
-                    "active_tools": [],
-                    "last_status": "Reset snapshot",
-                    "is_ready": true,
-                    "is_responding": false
-                }
-            }
-        })
-        .to_string();
-
-        let (addr, _posted_bodies, _request_paths, _request_headers) =
-            spawn_remote_headless_server(initial_snapshot.to_string(), vec![reset_event]).await;
-
-        let config = RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        };
-
-        let mut transport = RemoteAgentTransport::connect(config)
-            .await
-            .expect("connect");
-
-        let incoming = transport.recv_incoming().await.expect("incoming reset");
-        match incoming {
-            RemoteIncoming::Reset { reason, .. } => {
-                assert_eq!(reason, "lagged");
-            }
-            other => panic!("expected remote reset, got {other:?}"),
-        }
-
-        assert_eq!(
-            transport.state().last_status.as_deref(),
-            Some("Reset snapshot")
-        );
-        assert_eq!(
-            transport
-                .last_init()
-                .and_then(|init| init.system_prompt.as_deref()),
-            Some("Reset prompt")
-        );
+    fn authoritative_reset_is_accepted_at_the_current_cursor() {
+        assert!(accepts_remote_reset_cursor(42, 42));
+        assert!(!accepts_remote_reset_cursor(42, 41));
     }
 }
+
+#[cfg(test)]
+mod tests;

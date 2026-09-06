@@ -1,6 +1,5 @@
 node_modules
 dist
-.nx
 .git
 .env
 .env.*
@@ -11,7 +10,7 @@ coverage/
 .cache/
 .DS_Store
 .external/
-packages/tui-rs/target
+target
 packages/desktop
 packages/jetbrains-plugin
 packages/vscode-extension

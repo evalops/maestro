@@ -1,0 +1,25 @@
+[package]
+name = "maestro-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Transport-neutral native runtime contracts for Deixic Code"
+
+[dependencies]
+anyhow.workspace = true
+http.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+maestro-coding-acceptance.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+serde_json.workspace = true

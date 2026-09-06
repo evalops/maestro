@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::key_binding::KeyBinding;
 use crate::scroll_state::ScrollState;
-use crate::wrapping::{word_wrap_line, RtOptions};
+use crate::wrapping::{RtOptions, word_wrap_line};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DISPLAY ROW

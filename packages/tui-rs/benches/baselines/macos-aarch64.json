@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "platform": "macos-aarch64",
+  "scenarios": {
+    "agent_loop_16_multi_tool_turns": 165646958,
+    "agent_loop_32_tool_turns": 200037833,
+    "agent_loop_32_turns": 9799500,
+    "agent_loop_96_long_history_turns": 80974292,
+    "execpolicy_eval": 32041,
+    "message_layout_steady": 53750,
+    "model_selector_local_refresh_search": 172250,
+    "session_read_full": 1593291,
+    "session_read_header": 205375,
+    "session_wire_roundtrip": 1807459
+  }
+}

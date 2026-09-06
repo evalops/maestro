@@ -199,7 +199,14 @@ impl StatusIndicator {
         let spinner_span = if self.animations_enabled {
             braille_spinner(self.last_resume_at)
         } else {
-            Span::styled("●", Style::default().fg(Color::Cyan))
+            Span::styled(
+                "●",
+                Style::default().fg(Color::Rgb(
+                    crate::shimmer::DEIXIC_VIOLET.0,
+                    crate::shimmer::DEIXIC_VIOLET.1,
+                    crate::shimmer::DEIXIC_VIOLET.2,
+                )),
+            )
         };
 
         let elapsed = self.elapsed_display();

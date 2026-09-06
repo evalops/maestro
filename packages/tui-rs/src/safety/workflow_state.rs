@@ -225,12 +225,20 @@ pub fn apply_workflow_state_hooks(
                     format!(
                         "redact_transcript could not find an artifact for subject \"{}\". Pending artifacts: {}",
                         subject,
-                        if pending.is_empty() { "none".to_string() } else { pending }
+                        if pending.is_empty() {
+                            "none".to_string()
+                        } else {
+                            pending
+                        }
                     )
                 } else {
                     format!(
                         "redact_transcript could not determine which artifact to redact; provide artifactId or subject. Pending artifacts: {}",
-                        if pending.is_empty() { "none".to_string() } else { pending }
+                        if pending.is_empty() {
+                            "none".to_string()
+                        } else {
+                            pending
+                        }
                     )
                 };
                 return Err(WorkflowStateError { message });

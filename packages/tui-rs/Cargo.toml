@@ -3,66 +3,117 @@ name = "maestro-tui"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Native terminal UI renderer for Maestro"
+description = "Native terminal UI renderer for Deixic Code"
 
 [[bin]]
 name = "maestro-tui"
 path = "src/main.rs"
+bench = false
+
+[[bin]]
+name = "maestro-hosted-runner"
+path = "src/bin/maestro_hosted_runner.rs"
+bench = false
+
+[[bin]]
+name = "maestro-perf-bench"
+path = "src/bin/maestro_perf_bench.rs"
+bench = false
+required-features = ["test-support"]
 
 [lib]
 name = "maestro_tui"
 path = "src/lib.rs"
 
 [dependencies]
+maestro-a2a-ledger.workspace = true
 # Terminal handling
-crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
-ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+crossterm = { workspace = true, features = ["bracketed-paste", "event-stream"] }
+maestro-ui.workspace = true
+maestro-presentation.workspace = true
+maestro-interaction.workspace = true
+ratatui = { workspace = true, features = [
+    "crossterm_0_29",
+    "layout-cache",
+    "macros",
+    "underline-color",
+    "unstable-widget-ref",
+] }
+uncurses = "0.0.1"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process"] }
-tokio-stream = "0.1"
+async-trait = "0.1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }
+tokio-stream.workspace = true
+tokio-rustls.workspace = true
 tokio-util = "0.7"
-futures = "0.3"
+futures.workspace = true
+
+# AI provider client layer (packages/ai-rs); re-exported at crate::ai
+maestro-ai.workspace = true
+maestro-execpolicy.workspace = true
+maestro-runtime.workspace = true
+maestro-session-history.workspace = true
 
 # HTTP client for AI APIs
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls"] }
+rcgen.workspace = true
+rustls.workspace = true
+semver = "1"
+sha2.workspace = true
+pathdiff = "0.2"
+wait-timeout.workspace = true
 
 # Serialization for IPC
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+ring.workspace = true
+ed25519-dalek = { version = "2", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
 prost = "0.14"
 prost-types = "0.14"
 
 # SSE streaming for OpenAI Responses API
-eventsource-stream = "0.2"
+eventsource-stream.workspace = true
 pin-project-lite = "0.2"
 
 # Utilities
-unicode-width = "0.2"
-textwrap = "0.16"
-anyhow = "1"
-thiserror = "2"
+unicode-width.workspace = true
+unicode-properties = "0.1"
+textwrap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+time.workspace = true
 once_cell = "1"
-uuid = { version = "1", features = ["v4"] }
-clap = { version = "4", features = ["derive"] }
-glob = "0.3"
-regex = "1"
-dirs = "6"
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+glob.workspace = true
+ipnet.workspace = true
+regex.workspace = true
+dirs.workspace = true
+dunce.workspace = true
+fd-lock.workspace = true
 toml = "0.8"
-libc = "0.2"
+libc.workspace = true
 rayon = "1.10"
-zip = "2"
-pdf-extract = "0.7"
+zip.workspace = true
+tempfile.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+pdf-extract.workspace = true
 urlencoding = "2"
+zeroize = "1"
+x509-parser.workspace = true
 
 # Markdown parsing
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 
 # Syntax highlighting for code blocks
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 
 # Diff generation
-similar = "2"
+similar = "3"
 
 # Random selection for tooltips
 rand = "0.9"
@@ -74,17 +125,19 @@ url = "2"
 shlex = "1"
 
 # Base64 encoding for images
-base64 = "0.22"
+base64.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Terminal color detection
 supports-color = "3"
 
 # Date/time handling
-chrono = "0.4"
+chrono.workspace = true
+keyring = "4.1.5"
+rpassword = "7.4"
 
 # YAML parsing for skill files
-serde_yaml = "0.9"
+serde_yaml.workspace = true
 
 # Clipboard support (optional)
 arboard = { version = "3", optional = true }
@@ -95,18 +148,34 @@ arboard = { version = "3", optional = true }
 mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"], optional = true }
 
 # WASM runtime for hook plugins (optional)
-wasmtime = { version = "36", optional = true }
+wasmtime = { version = "47", optional = true }
 
 # File watching for hot reload
-notify = { version = "7", optional = true }
+notify = { version = "8", optional = true }
+tiktoken-rs = { version = "0.12.0", default-features = false }
 
 # Linux sandboxing (Landlock + seccomp)
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4"
-seccompiler = "0.4"
+landlock = "0.4.5"
+seccompiler = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [features]
 default = []
+# Unverified NativeAgent constructor for in-crate tests plus the local
+# perf/bench binaries. Shipped maestro / deixic-code builds must not enable it.
+test-support = []
+thin-scenario = []
 clipboard = ["arboard"]
 # Hook backends
 lua = ["mlua"]
@@ -117,8 +186,17 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"
-tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+wat = "1"
+# Enables `#[tokio::test(start_paused = true)]` for deterministic timeout tests.
+tokio = { workspace = true, features = ["test-util"] }
+portable-pty.workspace = true
+# doctor.rs auth-health tests reuse maestro-ai's FakeOp `op://` test fixture.
+maestro-ai = { workspace = true, features = ["test-support"] }
+# Library for the `#[cfg(kani)]` proof harnesses in tools/process_registry.rs.
+# The harnesses only compile under `--cfg kani` (e.g. `cargo kani`); plain
+# `cargo test` never builds them. Run proofs with `cargo kani -p maestro-tui`.
+kani-verifier = "0.67"
 
 [build-dependencies]
 prost-build = "0.14"
@@ -140,10 +218,18 @@ harness = false
 name = "mcp_bench"
 harness = false
 
-[profile.release]
-lto = true
-codegen-units = 1
-strip = true
+[[bench]]
+name = "search_bench"
+harness = false
+
+[[bench]]
+name = "message_layout_bench"
+harness = false
+
+[[bench]]
+name = "agent_loop_bench"
+harness = false
+required-features = ["test-support"]
 
 # Clippy lint configuration - enable pedantic with targeted allowances
 [lints.clippy]
@@ -209,3 +295,4 @@ large_stack_arrays = "allow"            # Test fixtures may use large arrays
 # Unsafe code is allowed only for low-level system operations
 # (libc process management, Darwin APIs, pointer arithmetic)
 # Each unsafe block should have a SAFETY comment explaining why it's safe
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(kani)"] }

@@ -15,9 +15,23 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::ToolResult;
 use crate::safety::set_plan_satisfied;
+
+async fn begin_mutation_commit(cancellation: Option<&CancellationToken>) -> bool {
+    match cancellation {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => false,
+                () = std::future::ready(()) => true,
+            }
+        }
+        None => true,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct TodoArgs {
@@ -240,7 +254,25 @@ fn format_output(goal: &str, items: &[NormalizedTodo], include_summary: bool) ->
     lines.join("\n")
 }
 
-pub async fn todo(args: serde_json::Value) -> ToolResult {
+/// Count the items `format_output` rendered as not completed.
+///
+/// The `todo` tool returns prose, not JSON, so this reads back what
+/// [`format_output`] wrote: `status_symbol` renders `[x]` for a completed
+/// item and `[ ]` or `[~]` for everything else. Keeping the reader next to
+/// the writer is what makes the pair testable; the test below fails if
+/// either side changes alone.
+#[must_use]
+pub fn open_todo_count_from_output(output: &str) -> usize {
+    output
+        .lines()
+        .filter(|line| line.starts_with("[ ] ") || line.starts_with("[~] "))
+        .count()
+}
+
+pub async fn todo_with_cancellation(
+    args: serde_json::Value,
+    cancellation: Option<&CancellationToken>,
+) -> ToolResult {
     let parsed: TodoArgs = match serde_json::from_value(args) {
         Ok(val) => val,
         Err(err) => return ToolResult::failure(format!("Invalid todo arguments: {err}")),
@@ -283,6 +315,10 @@ pub async fn todo(args: serde_json::Value) -> ToolResult {
     record.updated_at = chrono::Utc::now().to_rfc3339();
     store.insert(goal.clone(), record);
 
+    if !begin_mutation_commit(cancellation).await {
+        return ToolResult::failure("todo cancelled")
+            .with_details(serde_json::json!({"cancelled": true}));
+    }
     if let Err(err) = save_store(&store).await {
         return ToolResult::failure(err);
     }
@@ -308,6 +344,64 @@ pub async fn todo(args: serde_json::Value) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static TODO_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn open_todo_count_matches_what_format_output_rendered() {
+        let items = vec![
+            NormalizedTodo {
+                id: "1".to_string(),
+                content: "read the handler".to_string(),
+                status: "completed".to_string(),
+                priority: "medium".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: None,
+            },
+            NormalizedTodo {
+                id: "2".to_string(),
+                content: "write the test".to_string(),
+                status: "in_progress".to_string(),
+                priority: "high".to_string(),
+                notes: Some("notes should not be counted".to_string()),
+                due: None,
+                blocked_by: None,
+            },
+            NormalizedTodo {
+                id: "3".to_string(),
+                content: "land the fix".to_string(),
+                status: "pending".to_string(),
+                priority: "low".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: Some(vec!["2".to_string()]),
+            },
+        ];
+        let rendered = format_output("ship it", &items, true);
+        assert_eq!(open_todo_count_from_output(&rendered), 2);
+    }
+
+    #[test]
+    fn open_todo_count_is_zero_for_a_finished_list() {
+        let items = vec![NormalizedTodo {
+            id: "1".to_string(),
+            content: "done".to_string(),
+            status: "completed".to_string(),
+            priority: "medium".to_string(),
+            notes: None,
+            due: None,
+            blocked_by: None,
+        }];
+        let rendered = format_output("ship it", &items, true);
+        assert_eq!(open_todo_count_from_output(&rendered), 0);
+    }
+
+    #[test]
+    fn open_todo_count_is_zero_for_an_empty_list() {
+        let rendered = format_output("ship it", &[], true);
+        assert_eq!(open_todo_count_from_output(&rendered), 0);
+    }
 
     // ========================================================================
     // TodoArgs Deserialization Tests
@@ -644,6 +738,8 @@ mod tests {
 
     #[test]
     fn test_store_path_default() {
+        let _guard = TODO_ENV_LOCK.lock().expect("todo env lock");
+        let previous = std::env::var("MAESTRO_TODO_FILE").ok();
         std::env::remove_var("MAESTRO_TODO_FILE");
         let path = store_path();
         let path_str = path.to_string_lossy();
@@ -652,13 +748,22 @@ mod tests {
             "Path should contain todos.json: {}",
             path_str
         );
+        if let Some(previous) = previous {
+            std::env::set_var("MAESTRO_TODO_FILE", previous);
+        }
     }
 
     #[test]
     fn test_store_path_from_env() {
+        let _guard = TODO_ENV_LOCK.lock().expect("todo env lock");
+        let previous = std::env::var("MAESTRO_TODO_FILE").ok();
         std::env::set_var("MAESTRO_TODO_FILE", "/custom/path/todos.json");
         let path = store_path();
         assert_eq!(path, PathBuf::from("/custom/path/todos.json"));
-        std::env::remove_var("MAESTRO_TODO_FILE");
+        if let Some(previous) = previous {
+            std::env::set_var("MAESTRO_TODO_FILE", previous);
+        } else {
+            std::env::remove_var("MAESTRO_TODO_FILE");
+        }
     }
 }

@@ -79,11 +79,7 @@ fn short_commit_hash(cwd: &Path) -> Option<String> {
 
     if output.status.success() {
         let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if hash.is_empty() {
-            None
-        } else {
-            Some(hash)
-        }
+        if hash.is_empty() { None } else { Some(hash) }
     } else {
         None
     }
@@ -111,11 +107,7 @@ pub fn repo_root(cwd: &Path) -> Option<String> {
 
     if output.status.success() {
         let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if root.is_empty() {
-            None
-        } else {
-            Some(root)
-        }
+        if root.is_empty() { None } else { Some(root) }
     } else {
         None
     }

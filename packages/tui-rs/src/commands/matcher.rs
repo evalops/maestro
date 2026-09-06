@@ -344,7 +344,7 @@ impl SlashCommandMatcher {
         }
 
         // Sort by score descending
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
         matches
     }
 
@@ -422,12 +422,18 @@ impl SlashCommandMatcher {
         matches
     }
 
-    /// Get completions for tab cycling
+    /// Get completions for tab cycling.
+    ///
+    /// Each entry is a full slash invocation with **exactly one** leading `/`
+    /// (e.g. `/help`). Callers must not prepend another slash.
     #[must_use]
     pub fn get_completions(&self, query: &str) -> Vec<String> {
         self.get_matches(query)
             .into_iter()
-            .map(|m| format!("/{}", m.matched_name))
+            .map(|m| {
+                let name = m.matched_name.trim_start_matches('/');
+                format!("/{name}")
+            })
             .collect()
     }
 
@@ -558,6 +564,17 @@ impl SlashCycleState {
         self.completions
             .get(self.index)
             .map(std::string::String::as_str)
+    }
+
+    /// Select a completion by index (e.g. from a mouse click).
+    ///
+    /// Out-of-range indices are ignored so a click below the visible window
+    /// does not disturb the current selection.
+    pub fn select(&mut self, index: usize) {
+        if index < self.completions.len() {
+            self.index = index;
+            self.list_state.select(Some(index));
+        }
     }
 
     /// Reset the cycle state
@@ -828,6 +845,23 @@ mod tests {
 
         assert!(!completions.is_empty());
         assert!(completions[0].starts_with('/'));
+        // Exactly one leading slash — never `//help`
+        assert!(!completions[0].starts_with("//"));
+        assert_eq!(completions[0].matches('/').count(), 1);
+    }
+
+    #[test]
+    fn completions_never_double_slash_even_if_matched_name_has_slash() {
+        // Defensive: trim any accidental leading slash on matched names.
+        let matcher = create_matcher();
+        let completions = matcher.get_completions("/help");
+        assert!(!completions.is_empty());
+        for c in completions {
+            assert!(
+                c.starts_with('/') && !c.starts_with("//"),
+                "bad completion: {c}"
+            );
+        }
     }
 
     #[test]
@@ -882,5 +916,27 @@ mod tests {
         let completions = matcher.get_arg_completions("/export ");
         assert!(!completions.is_empty());
         assert!(completions.contains(&"markdown".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod select_tests {
+    use super::*;
+    use crate::commands::build_command_registry;
+
+    #[test]
+    fn select_by_index_updates_current() {
+        let registry = Arc::new(build_command_registry());
+        let matcher = SlashCommandMatcher::new(registry);
+        let mut cycle = SlashCycleState::new();
+        cycle.set_query("", &matcher);
+
+        cycle.select(1);
+        assert_eq!(cycle.current_index(), 1);
+        assert!(cycle.current().is_some());
+
+        // Out of range leaves the selection alone.
+        cycle.select(9999);
+        assert_eq!(cycle.current_index(), 1);
     }
 }

@@ -1,0 +1,26 @@
+{
+  "name": "dex-appearance",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "/dex accessory-beanie"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Accessory: beanie"
+    },
+    {
+      "text": "/dex accent-mint"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Accent: mint"
+    }
+  ]
+}

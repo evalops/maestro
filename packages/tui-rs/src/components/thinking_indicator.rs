@@ -63,7 +63,11 @@ impl ThinkingPhase {
     #[must_use]
     pub fn color(&self) -> Color {
         match self {
-            Self::Analyzing => Color::Cyan,
+            Self::Analyzing => Color::Rgb(
+                crate::shimmer::DEIXIC_VIOLET.0,
+                crate::shimmer::DEIXIC_VIOLET.1,
+                crate::shimmer::DEIXIC_VIOLET.2,
+            ),
             Self::Reasoning => Color::Yellow,
             Self::Synthesizing => Color::Magenta,
             Self::Verifying => Color::Blue,
@@ -552,7 +556,14 @@ mod tests {
 
     #[test]
     fn test_thinking_phase_color() {
-        assert_eq!(ThinkingPhase::Analyzing.color(), Color::Cyan);
+        assert_eq!(
+            ThinkingPhase::Analyzing.color(),
+            Color::Rgb(
+                crate::shimmer::DEIXIC_VIOLET.0,
+                crate::shimmer::DEIXIC_VIOLET.1,
+                crate::shimmer::DEIXIC_VIOLET.2,
+            )
+        );
         assert_eq!(ThinkingPhase::Complete.color(), Color::Green);
     }
 

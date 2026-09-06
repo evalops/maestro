@@ -1,0 +1,9 @@
+{
+  "name": "context-guidance",
+  "steps": [
+    {"wait": "(?s)Dex.*GPT-4o.*release-planner"},
+    {"text": "/context"},
+    {"key": "Enter"},
+    {"wait": "Next step:.*largest category"}
+  ]
+}

@@ -1,6 +1,12 @@
-# Maestro TUI (Rust)
+# Deixic Code TUI (Rust)
 
-Native terminal UI for Maestro, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
+Native terminal UI for Deixic Code, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
+
+## User Guide
+
+Numbered end-user docs for install, auth, shortcuts, slash commands, config, MCP, skills, hooks, plan mode, sessions, safety, headless mode, and worktrees:
+
+- **[TUI User Guide](docs/user-guide/README.md)**
 
 ## Why Rust?
 
@@ -35,7 +41,7 @@ This is a **pure Rust implementation** - no subprocess communication, no Node.js
 - **Chat Interface**: Message rendering with markdown support, syntax highlighting
 - **Extended Thinking**: Support for Claude's extended thinking mode (`/thinking`)
 - **Slash Commands**: `/help`, `/clear`, `/theme`, `/model`, `/thinking`, `/zen`, etc.
-- **Command Palette**: Ctrl+P for fuzzy command search
+- **Resource Palette**: Ctrl+K for commands, files, sessions, models, and themes
 - **File Search Modal**: `@` for fuzzy file search with workspace indexing
 - **Session Management**: Ctrl+O to browse/switch sessions, auto-save
 - **Tool Approval**: Interactive approve/deny for tool calls (`/approvals`)
@@ -51,7 +57,7 @@ cd packages/tui-rs
 cargo build --release
 ```
 
-The binary will be at `target/release/composer-tui`.
+The binary will be at `target/release/maestro-tui`.
 
 ## Running
 
@@ -62,14 +68,14 @@ export ANTHROPIC_API_KEY=sk-...
 export OPENAI_API_KEY=sk-...
 
 # Run with default settings (uses Claude by default)
-./target/release/composer-tui
+./target/release/maestro-tui
 
 # Specify a model
-./target/release/composer-tui --model gpt-4o
-./target/release/composer-tui --model claude-sonnet-4-5-20250514
+./target/release/maestro-tui --model gpt-4o
+./target/release/maestro-tui --model claude-sonnet-4-5-20250514
 
 # Resume last session
-./target/release/composer-tui --resume
+./target/release/maestro-tui --resume
 ```
 
 ## Environment Variables
@@ -94,13 +100,13 @@ background_tasks action=waitForRotation taskId=<id> timeoutMs=10000
 
 ## Conductor Bridge Helpers
 
-The Rust crate exposes helper types for probing a Maestro web server bridge:
+The Rust crate exposes helper types for probing a Deixic Code web server bridge:
 
 ```rust
 use maestro_tui::bridge::fetch_bridge_status;
 
 let status = fetch_bridge_status("http://localhost:8080").await?;
-println!("Maestro version: {:?}", status.version);
+println!("Deixic Code version: {:?}", status.version);
 ```
 
 This is useful for tooling or diagnostics that need to confirm the bridge is
@@ -160,7 +166,7 @@ src/
 | `Shift+Enter` | Insert newline (multi-line input) |
 | `Esc` | Cancel/close modal |
 | `Ctrl+C` | Interrupt agent / Quit |
-| `Ctrl+P` | Command palette |
+| `Ctrl+K` | Unified resource palette |
 | `Ctrl+O` | Session switcher |
 | `Ctrl+T` | Toggle last tool call details |
 | `Tab` | Toggle thinking / Cycle completions |
@@ -183,6 +189,16 @@ src/
 | `/diag` | Show diagnostics |
 | `/compact` | Summarize older messages |
 | `/mcp` | Show MCP server status |
+| `/plugins` | List discovered plugins (skills/commands/hooks/MCP packages) |
+| `/plugins [name]` | Show details for one plugin |
+
+## Plugins
+
+Deixic Code discovers filesystem plugins under `.maestro/plugins/*` and
+`~/.maestro/plugins/*` (plus legacy `.composer/plugins` paths). Each plugin
+may bundle skills, command templates, hooks, and MCP configs. See
+[docs/plugins.md](docs/plugins.md) for layout, `plugin.json` schema, and
+examples.
 
 ## Status
 

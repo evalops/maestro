@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Composer Web API",
-    "version": "0.10.0",
+    "title": "Maestro Web API",
+    "version": "0.10.54",
     "description": "Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas."
   },
   "servers": [
@@ -31,6 +31,229 @@
             "description": "OK"
           }
         }
+      }
+    },
+    "/api/a2a/cockpit": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/connections": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/events": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/subscribe": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/unsubscribe": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/heartbeat": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/disconnect": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/headless/sessions/{id}/messages": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/debug/z": {
@@ -189,6 +412,52 @@
             }
           }
         }
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/prompt-suggestion": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/bridge/status": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/config": {
@@ -397,6 +666,50 @@
             "ComposerApiKey": []
           }
         ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/package": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/usage": {
@@ -419,6 +732,432 @@
             }
           }
         }
+      }
+    },
+    "/api/usage/analytics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/usage/analytics/{period}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/traces": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/traces/{id}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/workspace-configs": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/workspace-configs/{workspaceId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "put": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/generate-report": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/controls": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/evidence/{controlId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "controlId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/attribution/record-outcome": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/attribution/roi/{agentId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/decisions": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/metrics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/overrides": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/overrides/{taskType}": {
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "taskType",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/fleet": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/background": {
@@ -487,6 +1226,141 @@
             "description": "Invalid background action"
           }
         }
+      }
+    },
+    "/api/automations": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/automations/preview": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/automations/magic-docs": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/automations/{id}": {
+      "patch": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/automations/{id}/run": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/undo": {
@@ -1345,6 +2219,31 @@
         }
       }
     },
+    "/api/pending-requests/{requestId}/resume": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/chat/approval": {
       "post": {
         "summary": "Auto-generated from route definition",
@@ -1377,6 +2276,22 @@
         ]
       }
     },
+    "/api/chat/tool-retry": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/attachments/extract": {
       "post": {
         "summary": "Auto-generated from route definition",
@@ -1394,6 +2309,31 @@
       }
     },
     "/api/sessions/{id}/artifacts": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifact-access": {
       "get": {
         "summary": "Auto-generated from route definition",
         "parameters": [
@@ -1600,6 +2540,56 @@
         ]
       }
     },
+    "/api/sessions/{id}/timeline": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/replay-lab": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/sessions": {
       "get": {
         "summary": "List sessions",
@@ -1689,6 +2679,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "messagesView",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "summary",
+                "notLoaded"
+              ],
+              "default": "full"
+            },
+            "description": "Controls session message hydration. Use notLoaded for metadata-only fetches or summary for a compact preview."
           }
         ],
         "responses": {
@@ -1932,14 +2937,27 @@
     "schemas": {
       "ChatRequest": {
         "type": "object",
+        "required": [
+          "messages"
+        ],
         "properties": {
           "model": {
             "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "persistProfile": {
+            "type": "boolean"
           },
           "messages": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "role",
+                "content"
+              ],
               "properties": {
                 "role": {
                   "anyOf": [
@@ -1972,6 +2990,10 @@
                         "anyOf": [
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "text",
@@ -1983,14 +3005,15 @@
                               "textSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "text"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "data",
+                              "mimeType"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "image",
@@ -2002,15 +3025,14 @@
                               "mimeType": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "data",
-                              "mimeType"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "thinking"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "thinking",
@@ -2022,14 +3044,16 @@
                               "thinkingSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "thinking"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "arguments"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "toolCall",
@@ -2050,13 +3074,7 @@
                               "thoughtSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "id",
-                              "name",
-                              "arguments"
-                            ]
+                            }
                           }
                         ]
                       }
@@ -2067,6 +3085,13 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "id",
+                      "type",
+                      "fileName",
+                      "mimeType",
+                      "size"
+                    ],
                     "properties": {
                       "id": {
                         "type": "string"
@@ -2104,14 +3129,7 @@
                       "preview": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "fileName",
-                      "mimeType",
-                      "size"
-                    ]
+                    }
                   }
                 },
                 "timestamp": {
@@ -2124,6 +3142,10 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "name",
+                      "status"
+                    ],
                     "properties": {
                       "name": {
                         "type": "string"
@@ -2158,11 +3180,7 @@
                       "toolCallId": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "name",
-                      "status"
-                    ]
+                    }
                   }
                 },
                 "toolName": {
@@ -2173,6 +3191,10 @@
                 },
                 "usage": {
                   "type": "object",
+                  "required": [
+                    "input",
+                    "output"
+                  ],
                   "properties": {
                     "input": {
                       "type": "number"
@@ -2188,6 +3210,10 @@
                     },
                     "cost": {
                       "type": "object",
+                      "required": [
+                        "input",
+                        "output"
+                      ],
                       "properties": {
                         "input": {
                           "type": "number"
@@ -2204,23 +3230,168 @@
                         "total": {
                           "type": "number"
                         }
-                      },
-                      "required": [
-                        "input",
-                        "output"
-                      ]
+                      }
                     }
-                  },
+                  }
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "api": {
+                  "type": "string"
+                },
+                "routingReceipt": {
+                  "type": "object",
                   "required": [
-                    "input",
-                    "output"
-                  ]
+                    "decisionId",
+                    "requestedProfile",
+                    "source",
+                    "resolvedProfileId",
+                    "resolvedProfileVersion",
+                    "provider",
+                    "model",
+                    "reasoningEffort",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "decisionId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "requestedProfile": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "request",
+                          "type": "string"
+                        },
+                        {
+                          "const": "session",
+                          "type": "string"
+                        },
+                        {
+                          "const": "compatibility_default",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "resolvedProfileId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "resolvedProfileVersion": {
+                      "minimum": 1,
+                      "type": "number"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "model": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reasoningEffort": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "oracle": {
+                      "type": "object",
+                      "required": [
+                        "policyVersion",
+                        "mode",
+                        "reasons"
+                      ],
+                      "properties": {
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "const": "available",
+                              "type": "string"
+                            },
+                            {
+                              "const": "recommended",
+                              "type": "string"
+                            },
+                            {
+                              "const": "required",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "fallback": {
+                      "type": "object",
+                      "required": [
+                        "reason"
+                      ],
+                      "properties": {
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "experiment": {
+                      "type": "object",
+                      "required": [
+                        "experimentId",
+                        "arm",
+                        "policyVersion"
+                      ],
+                      "properties": {
+                        "experimentId": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "arm": {
+                          "anyOf": [
+                            {
+                              "const": "control",
+                              "type": "string"
+                            },
+                            {
+                              "const": "treatment",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "model": {
+                  "type": "string"
                 }
-              },
-              "required": [
-                "role",
-                "content"
-              ]
+              }
             }
           },
           "thinkingLevel": {
@@ -2253,25 +3424,26 @@
           "stream": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "messages"
-        ]
+        }
       },
       "ModelSetRequest": {
         "type": "object",
+        "required": [
+          "model"
+        ],
         "properties": {
           "model": {
             "minLength": 1,
             "type": "string"
           }
-        },
-        "required": [
-          "model"
-        ]
+        }
       },
       "ChatMessage": {
         "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
         "properties": {
           "role": {
             "anyOf": [
@@ -2304,6 +3476,10 @@
                   "anyOf": [
                     {
                       "type": "object",
+                      "required": [
+                        "type",
+                        "text"
+                      ],
                       "properties": {
                         "type": {
                           "const": "text",
@@ -2315,14 +3491,15 @@
                         "textSignature": {
                           "type": "string"
                         }
-                      },
-                      "required": [
-                        "type",
-                        "text"
-                      ]
+                      }
                     },
                     {
                       "type": "object",
+                      "required": [
+                        "type",
+                        "data",
+                        "mimeType"
+                      ],
                       "properties": {
                         "type": {
                           "const": "image",
@@ -2334,15 +3511,14 @@
                         "mimeType": {
                           "type": "string"
                         }
-                      },
-                      "required": [
-                        "type",
-                        "data",
-                        "mimeType"
-                      ]
+                      }
                     },
                     {
                       "type": "object",
+                      "required": [
+                        "type",
+                        "thinking"
+                      ],
                       "properties": {
                         "type": {
                           "const": "thinking",
@@ -2354,14 +3530,16 @@
                         "thinkingSignature": {
                           "type": "string"
                         }
-                      },
-                      "required": [
-                        "type",
-                        "thinking"
-                      ]
+                      }
                     },
                     {
                       "type": "object",
+                      "required": [
+                        "type",
+                        "id",
+                        "name",
+                        "arguments"
+                      ],
                       "properties": {
                         "type": {
                           "const": "toolCall",
@@ -2382,13 +3560,7 @@
                         "thoughtSignature": {
                           "type": "string"
                         }
-                      },
-                      "required": [
-                        "type",
-                        "id",
-                        "name",
-                        "arguments"
-                      ]
+                      }
                     }
                   ]
                 }
@@ -2399,6 +3571,13 @@
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "id",
+                "type",
+                "fileName",
+                "mimeType",
+                "size"
+              ],
               "properties": {
                 "id": {
                   "type": "string"
@@ -2436,14 +3615,7 @@
                 "preview": {
                   "type": "string"
                 }
-              },
-              "required": [
-                "id",
-                "type",
-                "fileName",
-                "mimeType",
-                "size"
-              ]
+              }
             }
           },
           "timestamp": {
@@ -2456,6 +3628,10 @@
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "name",
+                "status"
+              ],
               "properties": {
                 "name": {
                   "type": "string"
@@ -2490,11 +3666,7 @@
                 "toolCallId": {
                   "type": "string"
                 }
-              },
-              "required": [
-                "name",
-                "status"
-              ]
+              }
             }
           },
           "toolName": {
@@ -2505,6 +3677,10 @@
           },
           "usage": {
             "type": "object",
+            "required": [
+              "input",
+              "output"
+            ],
             "properties": {
               "input": {
                 "type": "number"
@@ -2520,6 +3696,10 @@
               },
               "cost": {
                 "type": "object",
+                "required": [
+                  "input",
+                  "output"
+                ],
                 "properties": {
                   "input": {
                     "type": "number"
@@ -2536,26 +3716,176 @@
                   "total": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "input",
-                  "output"
-                ]
+                }
               }
-            },
+            }
+          },
+          "provider": {
+            "type": "string"
+          },
+          "api": {
+            "type": "string"
+          },
+          "routingReceipt": {
+            "type": "object",
             "required": [
-              "input",
-              "output"
-            ]
+              "decisionId",
+              "requestedProfile",
+              "source",
+              "resolvedProfileId",
+              "resolvedProfileVersion",
+              "provider",
+              "model",
+              "reasoningEffort",
+              "createdAt"
+            ],
+            "properties": {
+              "decisionId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "requestedProfile": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "const": "request",
+                    "type": "string"
+                  },
+                  {
+                    "const": "session",
+                    "type": "string"
+                  },
+                  {
+                    "const": "compatibility_default",
+                    "type": "string"
+                  }
+                ]
+              },
+              "resolvedProfileId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "resolvedProfileVersion": {
+                "minimum": 1,
+                "type": "number"
+              },
+              "provider": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "model": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reasoningEffort": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "createdAt": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "oracle": {
+                "type": "object",
+                "required": [
+                  "policyVersion",
+                  "mode",
+                  "reasons"
+                ],
+                "properties": {
+                  "policyVersion": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "available",
+                        "type": "string"
+                      },
+                      {
+                        "const": "recommended",
+                        "type": "string"
+                      },
+                      {
+                        "const": "required",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "fallback": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                }
+              },
+              "experiment": {
+                "type": "object",
+                "required": [
+                  "experimentId",
+                  "arm",
+                  "policyVersion"
+                ],
+                "properties": {
+                  "experimentId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "arm": {
+                    "anyOf": [
+                      {
+                        "const": "control",
+                        "type": "string"
+                      },
+                      {
+                        "const": "treatment",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "policyVersion": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "model": {
+            "type": "string"
           }
-        },
-        "required": [
-          "role",
-          "content"
-        ]
+        }
       },
       "ModelEntry": {
         "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "name"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2583,6 +3913,10 @@
           },
           "cost": {
             "type": "object",
+            "required": [
+              "input",
+              "output"
+            ],
             "properties": {
               "input": {
                 "type": "number"
@@ -2599,11 +3933,7 @@
               "total": {
                 "type": "number"
               }
-            },
-            "required": [
-              "input",
-              "output"
-            ]
+            }
           },
           "capabilities": {
             "type": "object",
@@ -2622,20 +3952,23 @@
               }
             }
           }
-        },
-        "required": [
-          "id",
-          "provider",
-          "name"
-        ]
+        }
       },
       "ModelsResponse": {
         "type": "object",
+        "required": [
+          "models"
+        ],
         "properties": {
           "models": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "id",
+                "provider",
+                "name"
+              ],
               "properties": {
                 "id": {
                   "type": "string"
@@ -2663,6 +3996,10 @@
                 },
                 "cost": {
                   "type": "object",
+                  "required": [
+                    "input",
+                    "output"
+                  ],
                   "properties": {
                     "input": {
                       "type": "number"
@@ -2679,11 +4016,7 @@
                     "total": {
                       "type": "number"
                     }
-                  },
-                  "required": [
-                    "input",
-                    "output"
-                  ]
+                  }
                 },
                 "capabilities": {
                   "type": "object",
@@ -2702,21 +4035,18 @@
                     }
                   }
                 }
-              },
-              "required": [
-                "id",
-                "provider",
-                "name"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "models"
-        ]
+        }
       },
       "ModelSelectionResponse": {
         "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "name"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2744,6 +4074,10 @@
           },
           "cost": {
             "type": "object",
+            "required": [
+              "input",
+              "output"
+            ],
             "properties": {
               "input": {
                 "type": "number"
@@ -2760,11 +4094,7 @@
               "total": {
                 "type": "number"
               }
-            },
-            "required": [
-              "input",
-              "output"
-            ]
+            }
           },
           "capabilities": {
             "type": "object",
@@ -2783,20 +4113,22 @@
               }
             }
           }
-        },
-        "required": [
-          "id",
-          "provider",
-          "name"
-        ]
+        }
       },
       "CommandsResponse": {
         "type": "object",
+        "required": [
+          "commands"
+        ],
         "properties": {
           "commands": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "name",
+                "prompt"
+              ],
               "properties": {
                 "name": {
                   "type": "string"
@@ -2811,6 +4143,9 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "name"
+                    ],
                     "properties": {
                       "name": {
                         "type": "string"
@@ -2818,26 +4153,20 @@
                       "required": {
                         "type": "boolean"
                       }
-                    },
-                    "required": [
-                      "name"
-                    ]
+                    }
                   }
                 }
-              },
-              "required": [
-                "name",
-                "prompt"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "commands"
-        ]
+        }
       },
       "CommandPrefs": {
         "type": "object",
+        "required": [
+          "favorites",
+          "recents"
+        ],
         "properties": {
           "favorites": {
             "type": "array",
@@ -2851,25 +4180,24 @@
               "type": "string"
             }
           }
-        },
-        "required": [
-          "favorites",
-          "recents"
-        ]
+        }
       },
       "CommandPrefsWriteResponse": {
         "type": "object",
+        "required": [
+          "ok"
+        ],
         "properties": {
           "ok": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "ok"
-        ]
+        }
       },
       "FilesResponse": {
         "type": "object",
+        "required": [
+          "files"
+        ],
         "properties": {
           "files": {
             "type": "array",
@@ -2877,13 +4205,13 @@
               "type": "string"
             }
           }
-        },
-        "required": [
-          "files"
-        ]
+        }
       },
       "ConfigWriteRequest": {
         "type": "object",
+        "required": [
+          "config"
+        ],
         "properties": {
           "config": {
             "type": "object",
@@ -2891,13 +4219,14 @@
               "^(.*)$": {}
             }
           }
-        },
-        "required": [
-          "config"
-        ]
+        }
       },
       "ConfigResponse": {
         "type": "object",
+        "required": [
+          "config",
+          "configPath"
+        ],
         "properties": {
           "config": {
             "type": "object",
@@ -2908,37 +4237,50 @@
           "configPath": {
             "type": "string"
           }
-        },
-        "required": [
-          "config",
-          "configPath"
-        ]
+        }
       },
       "ConfigWriteResponse": {
         "type": "object",
+        "required": [
+          "success"
+        ],
         "properties": {
           "success": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "success"
-        ]
+        }
       },
       "GuardianStatusResponse": {
         "type": "object",
+        "required": [
+          "enabled",
+          "state"
+        ],
         "properties": {
           "enabled": {
             "type": "boolean"
           },
           "state": {
             "type": "object",
+            "required": [
+              "enabled"
+            ],
             "properties": {
               "enabled": {
                 "type": "boolean"
               },
               "lastRun": {
                 "type": "object",
+                "required": [
+                  "status",
+                  "exitCode",
+                  "startedAt",
+                  "durationMs",
+                  "target",
+                  "filesScanned",
+                  "summary",
+                  "toolResults"
+                ],
                 "properties": {
                   "status": {
                     "anyOf": [
@@ -3003,6 +4345,13 @@
                     "type": "array",
                     "items": {
                       "type": "object",
+                      "required": [
+                        "tool",
+                        "exitCode",
+                        "stdout",
+                        "stderr",
+                        "durationMs"
+                      ],
                       "properties": {
                         "tool": {
                           "type": "string"
@@ -3025,41 +4374,27 @@
                         "reason": {
                           "type": "string"
                         }
-                      },
-                      "required": [
-                        "tool",
-                        "exitCode",
-                        "stdout",
-                        "stderr",
-                        "durationMs"
-                      ]
+                      }
                     }
                   }
-                },
-                "required": [
-                  "status",
-                  "exitCode",
-                  "startedAt",
-                  "durationMs",
-                  "target",
-                  "filesScanned",
-                  "summary",
-                  "toolResults"
-                ]
+                }
               }
-            },
-            "required": [
-              "enabled"
-            ]
+            }
           }
-        },
-        "required": [
-          "enabled",
-          "state"
-        ]
+        }
       },
       "GuardianRunResponse": {
         "type": "object",
+        "required": [
+          "status",
+          "exitCode",
+          "startedAt",
+          "durationMs",
+          "target",
+          "filesScanned",
+          "summary",
+          "toolResults"
+        ],
         "properties": {
           "status": {
             "anyOf": [
@@ -3124,6 +4459,13 @@
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "tool",
+                "exitCode",
+                "stdout",
+                "stderr",
+                "durationMs"
+              ],
               "properties": {
                 "tool": {
                   "type": "string"
@@ -3146,41 +4488,28 @@
                 "reason": {
                   "type": "string"
                 }
-              },
-              "required": [
-                "tool",
-                "exitCode",
-                "stdout",
-                "stderr",
-                "durationMs"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "status",
-          "exitCode",
-          "startedAt",
-          "durationMs",
-          "target",
-          "filesScanned",
-          "summary",
-          "toolResults"
-        ]
+        }
       },
       "GuardianConfigRequest": {
         "type": "object",
+        "required": [
+          "enabled"
+        ],
         "properties": {
           "enabled": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "enabled"
-        ]
+        }
       },
       "GuardianConfigResponse": {
         "type": "object",
+        "required": [
+          "success",
+          "enabled"
+        ],
         "properties": {
           "success": {
             "type": "boolean"
@@ -3188,19 +4517,25 @@
           "enabled": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "success",
-          "enabled"
-        ]
+        }
       },
       "PlanStatusResponse": {
         "type": "object",
+        "required": [
+          "state",
+          "content"
+        ],
         "properties": {
           "state": {
             "anyOf": [
               {
                 "type": "object",
+                "required": [
+                  "active",
+                  "filePath",
+                  "createdAt",
+                  "updatedAt"
+                ],
                 "properties": {
                   "active": {
                     "type": "boolean"
@@ -3226,13 +4561,7 @@
                   "name": {
                     "type": "string"
                   }
-                },
-                "required": [
-                  "active",
-                  "filePath",
-                  "createdAt",
-                  "updatedAt"
-                ]
+                }
               },
               {
                 "type": "null"
@@ -3249,16 +4578,15 @@
               }
             ]
           }
-        },
-        "required": [
-          "state",
-          "content"
-        ]
+        }
       },
       "PlanRequest": {
         "anyOf": [
           {
             "type": "object",
+            "required": [
+              "action"
+            ],
             "properties": {
               "action": {
                 "const": "enter",
@@ -3270,25 +4598,26 @@
               "sessionId": {
                 "type": "string"
               }
-            },
-            "required": [
-              "action"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "action"
+            ],
             "properties": {
               "action": {
                 "const": "exit",
                 "type": "string"
               }
-            },
-            "required": [
-              "action"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "action",
+              "content"
+            ],
             "properties": {
               "action": {
                 "const": "update",
@@ -3297,11 +4626,7 @@
               "content": {
                 "type": "string"
               }
-            },
-            "required": [
-              "action",
-              "content"
-            ]
+            }
           }
         ]
       },
@@ -3309,12 +4634,22 @@
         "anyOf": [
           {
             "type": "object",
+            "required": [
+              "success",
+              "state"
+            ],
             "properties": {
               "success": {
                 "type": "boolean"
               },
               "state": {
                 "type": "object",
+                "required": [
+                  "active",
+                  "filePath",
+                  "createdAt",
+                  "updatedAt"
+                ],
                 "properties": {
                   "active": {
                     "type": "boolean"
@@ -3340,38 +4675,36 @@
                   "name": {
                     "type": "string"
                   }
-                },
-                "required": [
-                  "active",
-                  "filePath",
-                  "createdAt",
-                  "updatedAt"
-                ]
+                }
               }
-            },
-            "required": [
-              "success",
-              "state"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "success"
+            ],
             "properties": {
               "success": {
                 "type": "boolean"
               }
-            },
-            "required": [
-              "success"
-            ]
+            }
           }
         ]
       },
       "BackgroundStatusResponse": {
         "type": "object",
+        "required": [
+          "settings",
+          "snapshot"
+        ],
         "properties": {
           "settings": {
             "type": "object",
+            "required": [
+              "notificationsEnabled",
+              "statusDetailsEnabled"
+            ],
             "properties": {
               "notificationsEnabled": {
                 "type": "boolean"
@@ -3379,16 +4712,18 @@
               "statusDetailsEnabled": {
                 "type": "boolean"
               }
-            },
-            "required": [
-              "notificationsEnabled",
-              "statusDetailsEnabled"
-            ]
+            }
           },
           "snapshot": {
             "anyOf": [
               {
                 "type": "object",
+                "required": [
+                  "running",
+                  "total",
+                  "failed",
+                  "detailsRedacted"
+                ],
                 "properties": {
                   "running": {
                     "type": "number"
@@ -3402,32 +4737,32 @@
                   "detailsRedacted": {
                     "type": "boolean"
                   }
-                },
-                "required": [
-                  "running",
-                  "total",
-                  "failed",
-                  "detailsRedacted"
-                ]
+                }
               },
               {
                 "type": "null"
               }
             ]
           }
-        },
-        "required": [
-          "settings",
-          "snapshot"
-        ]
+        }
       },
       "BackgroundHistoryResponse": {
         "type": "object",
+        "required": [
+          "history",
+          "truncated"
+        ],
         "properties": {
           "history": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "timestamp",
+                "event",
+                "taskId",
+                "command"
+              ],
               "properties": {
                 "timestamp": {
                   "type": "string"
@@ -3467,6 +4802,11 @@
                 },
                 "limitBreach": {
                   "type": "object",
+                  "required": [
+                    "kind",
+                    "limit",
+                    "actual"
+                  ],
                   "properties": {
                     "kind": {
                       "anyOf": [
@@ -3486,33 +4826,23 @@
                     "actual": {
                       "type": "number"
                     }
-                  },
-                  "required": [
-                    "kind",
-                    "limit",
-                    "actual"
-                  ]
+                  }
                 }
-              },
-              "required": [
-                "timestamp",
-                "event",
-                "taskId",
-                "command"
-              ]
+              }
             }
           },
           "truncated": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "history",
-          "truncated"
-        ]
+        }
       },
       "BackgroundPathResponse": {
         "type": "object",
+        "required": [
+          "path",
+          "exists",
+          "overridden"
+        ],
         "properties": {
           "path": {
             "type": "string"
@@ -3523,26 +4853,25 @@
           "overridden": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "path",
-          "exists",
-          "overridden"
-        ]
+        }
       },
       "BackgroundUpdateRequest": {
         "type": "object",
+        "required": [
+          "enabled"
+        ],
         "properties": {
           "enabled": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "enabled"
-        ]
+        }
       },
       "BackgroundUpdateResponse": {
         "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
         "properties": {
           "success": {
             "type": "boolean"
@@ -3550,14 +4879,14 @@
           "message": {
             "type": "string"
           }
-        },
-        "required": [
-          "success",
-          "message"
-        ]
+        }
       },
       "ApprovalsStatusResponse": {
         "type": "object",
+        "required": [
+          "mode",
+          "availableModes"
+        ],
         "properties": {
           "mode": {
             "anyOf": [
@@ -3594,14 +4923,13 @@
               ]
             }
           }
-        },
-        "required": [
-          "mode",
-          "availableModes"
-        ]
+        }
       },
       "ApprovalsUpdateRequest": {
         "type": "object",
+        "required": [
+          "mode"
+        ],
         "properties": {
           "mode": {
             "anyOf": [
@@ -3622,13 +4950,15 @@
           "sessionId": {
             "type": "string"
           }
-        },
-        "required": [
-          "mode"
-        ]
+        }
       },
       "ApprovalsUpdateResponse": {
         "type": "object",
+        "required": [
+          "success",
+          "mode",
+          "message"
+        ],
         "properties": {
           "success": {
             "type": "boolean"
@@ -3652,15 +4982,16 @@
           "message": {
             "type": "string"
           }
-        },
-        "required": [
-          "success",
-          "mode",
-          "message"
-        ]
+        }
       },
       "FrameworkStatusResponse": {
         "type": "object",
+        "required": [
+          "framework",
+          "source",
+          "locked",
+          "scope"
+        ],
         "properties": {
           "framework": {
             "type": "string"
@@ -3683,21 +5014,22 @@
               }
             ]
           }
-        },
-        "required": [
-          "framework",
-          "source",
-          "locked",
-          "scope"
-        ]
+        }
       },
       "FrameworkListResponse": {
         "type": "object",
+        "required": [
+          "frameworks"
+        ],
         "properties": {
           "frameworks": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "id",
+                "summary"
+              ],
               "properties": {
                 "id": {
                   "type": "string"
@@ -3705,17 +5037,10 @@
                 "summary": {
                   "type": "string"
                 }
-              },
-              "required": [
-                "id",
-                "summary"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "frameworks"
-        ]
+        }
       },
       "FrameworkUpdateRequest": {
         "type": "object",
@@ -3746,6 +5071,11 @@
       },
       "FrameworkUpdateResponse": {
         "type": "object",
+        "required": [
+          "success",
+          "message",
+          "framework"
+        ],
         "properties": {
           "success": {
             "type": "boolean"
@@ -3778,15 +5108,15 @@
               }
             ]
           }
-        },
-        "required": [
-          "success",
-          "message",
-          "framework"
-        ]
+        }
       },
       "UndoStatusResponse": {
         "type": "object",
+        "required": [
+          "totalChanges",
+          "canUndo",
+          "checkpoints"
+        ],
         "properties": {
           "totalChanges": {
             "type": "number"
@@ -3798,6 +5128,11 @@
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "name",
+                "changeCount",
+                "timestamp"
+              ],
               "properties": {
                 "name": {
                   "type": "string"
@@ -3811,28 +5146,26 @@
                 "timestamp": {
                   "type": "number"
                 }
-              },
-              "required": [
-                "name",
-                "changeCount",
-                "timestamp"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "totalChanges",
-          "canUndo",
-          "checkpoints"
-        ]
+        }
       },
       "UndoHistoryResponse": {
         "type": "object",
+        "required": [
+          "history"
+        ],
         "properties": {
           "history": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "description",
+                "fileCount",
+                "timestamp"
+              ],
               "properties": {
                 "description": {
                   "type": "string"
@@ -3843,18 +5176,10 @@
                 "timestamp": {
                   "type": "number"
                 }
-              },
-              "required": [
-                "description",
-                "fileCount",
-                "timestamp"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "history"
-        ]
+        }
       },
       "UndoRequest": {
         "type": "object",
@@ -3896,6 +5221,11 @@
         "anyOf": [
           {
             "type": "object",
+            "required": [
+              "success",
+              "undone",
+              "errors"
+            ],
             "properties": {
               "success": {
                 "type": "boolean"
@@ -3909,15 +5239,14 @@
                   "type": "string"
                 }
               }
-            },
-            "required": [
-              "success",
-              "undone",
-              "errors"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "success",
+              "message"
+            ],
             "properties": {
               "success": {
                 "type": "boolean"
@@ -3931,35 +5260,50 @@
                   "type": "string"
                 }
               }
-            },
-            "required": [
-              "success",
-              "message"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "message"
+            ],
             "properties": {
               "message": {
                 "type": "string"
               }
-            },
-            "required": [
-              "message"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "preview"
+            ],
             "properties": {
               "preview": {
                 "anyOf": [
                   {
                     "type": "object",
+                    "required": [
+                      "changes",
+                      "restores",
+                      "conflicts"
+                    ],
                     "properties": {
                       "changes": {
                         "type": "array",
                         "items": {
                           "type": "object",
+                          "required": [
+                            "id",
+                            "type",
+                            "path",
+                            "before",
+                            "after",
+                            "toolName",
+                            "toolCallId",
+                            "timestamp",
+                            "isGitTracked"
+                          ],
                           "properties": {
                             "id": {
                               "type": "string"
@@ -4018,24 +5362,17 @@
                             "messageId": {
                               "type": "string"
                             }
-                          },
-                          "required": [
-                            "id",
-                            "type",
-                            "path",
-                            "before",
-                            "after",
-                            "toolName",
-                            "toolCallId",
-                            "timestamp",
-                            "isGitTracked"
-                          ]
+                          }
                         }
                       },
                       "restores": {
                         "type": "array",
                         "items": {
                           "type": "object",
+                          "required": [
+                            "path",
+                            "action"
+                          ],
                           "properties": {
                             "path": {
                               "type": "string"
@@ -4056,17 +5393,17 @@
                                 }
                               ]
                             }
-                          },
-                          "required": [
-                            "path",
-                            "action"
-                          ]
+                          }
                         }
                       },
                       "conflicts": {
                         "type": "array",
                         "items": {
                           "type": "object",
+                          "required": [
+                            "path",
+                            "reason"
+                          ],
                           "properties": {
                             "path": {
                               "type": "string"
@@ -4074,22 +5411,16 @@
                             "reason": {
                               "type": "string"
                             }
-                          },
-                          "required": [
-                            "path",
-                            "reason"
-                          ]
+                          }
                         }
                       }
-                    },
-                    "required": [
-                      "changes",
-                      "restores",
-                      "conflicts"
-                    ]
+                    }
                   },
                   {
                     "type": "object",
+                    "required": [
+                      "message"
+                    ],
                     "properties": {
                       "message": {
                         "type": "string"
@@ -4100,26 +5431,29 @@
                       "description": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "message"
-                    ]
+                    }
                   }
                 ]
               }
-            },
-            "required": [
-              "preview"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "success",
+              "checkpoint"
+            ],
             "properties": {
               "success": {
                 "type": "boolean"
               },
               "checkpoint": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "changeCount",
+                  "timestamp"
+                ],
                 "properties": {
                   "name": {
                     "type": "string"
@@ -4130,26 +5464,25 @@
                   "timestamp": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "name",
-                  "changeCount",
-                  "timestamp"
-                ]
+                }
               }
-            },
-            "required": [
-              "success",
-              "checkpoint"
-            ]
+            }
           },
           {
             "type": "object",
+            "required": [
+              "checkpoints"
+            ],
             "properties": {
               "checkpoints": {
                 "type": "array",
                 "items": {
                   "type": "object",
+                  "required": [
+                    "name",
+                    "changeCount",
+                    "timestamp"
+                  ],
                   "properties": {
                     "name": {
                       "type": "string"
@@ -4163,23 +5496,26 @@
                     "timestamp": {
                       "type": "number"
                     }
-                  },
-                  "required": [
-                    "name",
-                    "changeCount",
-                    "timestamp"
-                  ]
+                  }
                 }
               }
-            },
-            "required": [
-              "checkpoints"
-            ]
+            }
           }
         ]
       },
       "StatusResponse": {
         "type": "object",
+        "required": [
+          "cwd",
+          "git",
+          "context",
+          "server",
+          "database",
+          "backgroundTasks",
+          "hooks",
+          "lastUpdated",
+          "lastLatencyMs"
+        ],
         "properties": {
           "cwd": {
             "type": "string"
@@ -4188,12 +5524,23 @@
             "anyOf": [
               {
                 "type": "object",
+                "required": [
+                  "branch",
+                  "status"
+                ],
                 "properties": {
                   "branch": {
                     "type": "string"
                   },
                   "status": {
                     "type": "object",
+                    "required": [
+                      "modified",
+                      "added",
+                      "deleted",
+                      "untracked",
+                      "total"
+                    ],
                     "properties": {
                       "modified": {
                         "type": "number"
@@ -4210,20 +5557,9 @@
                       "total": {
                         "type": "number"
                       }
-                    },
-                    "required": [
-                      "modified",
-                      "added",
-                      "deleted",
-                      "untracked",
-                      "total"
-                    ]
+                    }
                   }
-                },
-                "required": [
-                  "branch",
-                  "status"
-                ]
+                }
               },
               {
                 "type": "null"
@@ -4232,6 +5568,10 @@
           },
           "context": {
             "type": "object",
+            "required": [
+              "agentMd",
+              "claudeMd"
+            ],
             "properties": {
               "agentMd": {
                 "type": "boolean"
@@ -4239,14 +5579,69 @@
               "claudeMd": {
                 "type": "boolean"
               }
-            },
+            }
+          },
+          "onboarding": {
+            "type": "object",
             "required": [
-              "agentMd",
-              "claudeMd"
-            ]
+              "shouldShow",
+              "completed",
+              "seenCount",
+              "steps"
+            ],
+            "properties": {
+              "shouldShow": {
+                "type": "boolean"
+              },
+              "completed": {
+                "type": "boolean"
+              },
+              "seenCount": {
+                "type": "number"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "text",
+                    "isComplete",
+                    "isEnabled"
+                  ],
+                  "properties": {
+                    "key": {
+                      "anyOf": [
+                        {
+                          "const": "workspace",
+                          "type": "string"
+                        },
+                        {
+                          "const": "instructions",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "isComplete": {
+                      "type": "boolean"
+                    },
+                    "isEnabled": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
           },
           "server": {
             "type": "object",
+            "required": [
+              "uptime",
+              "version"
+            ],
             "properties": {
               "uptime": {
                 "type": "number"
@@ -4257,14 +5652,14 @@
               "staticCacheMaxAgeSeconds": {
                 "type": "number"
               }
-            },
-            "required": [
-              "uptime",
-              "version"
-            ]
+            }
           },
           "database": {
             "type": "object",
+            "required": [
+              "configured",
+              "connected"
+            ],
             "properties": {
               "configured": {
                 "type": "boolean"
@@ -4272,16 +5667,24 @@
               "connected": {
                 "type": "boolean"
               }
-            },
-            "required": [
-              "configured",
-              "connected"
-            ]
+            }
           },
           "backgroundTasks": {
             "anyOf": [
               {
                 "type": "object",
+                "required": [
+                  "total",
+                  "running",
+                  "restarting",
+                  "failed",
+                  "entries",
+                  "truncated",
+                  "notificationsEnabled",
+                  "detailsRedacted",
+                  "history",
+                  "historyTruncated"
+                ],
                 "properties": {
                   "total": {
                     "type": "number"
@@ -4299,6 +5702,14 @@
                     "type": "array",
                     "items": {
                       "type": "object",
+                      "required": [
+                        "id",
+                        "status",
+                        "summary",
+                        "command",
+                        "issues",
+                        "durationSeconds"
+                      ],
                       "properties": {
                         "id": {
                           "type": "string"
@@ -4330,15 +5741,7 @@
                         "durationSeconds": {
                           "type": "number"
                         }
-                      },
-                      "required": [
-                        "id",
-                        "status",
-                        "summary",
-                        "command",
-                        "issues",
-                        "durationSeconds"
-                      ]
+                      }
                     }
                   },
                   "truncated": {
@@ -4354,6 +5757,14 @@
                     "type": "array",
                     "items": {
                       "type": "object",
+                      "required": [
+                        "event",
+                        "taskId",
+                        "status",
+                        "command",
+                        "timestamp",
+                        "restartAttempts"
+                      ],
                       "properties": {
                         "event": {
                           "anyOf": [
@@ -4399,6 +5810,11 @@
                         },
                         "limitBreach": {
                           "type": "object",
+                          "required": [
+                            "kind",
+                            "limit",
+                            "actual"
+                          ],
                           "properties": {
                             "kind": {
                               "anyOf": [
@@ -4418,40 +5834,15 @@
                             "actual": {
                               "type": "number"
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "limit",
-                            "actual"
-                          ]
+                          }
                         }
-                      },
-                      "required": [
-                        "event",
-                        "taskId",
-                        "status",
-                        "command",
-                        "timestamp",
-                        "restartAttempts"
-                      ]
+                      }
                     }
                   },
                   "historyTruncated": {
                     "type": "boolean"
                   }
-                },
-                "required": [
-                  "total",
-                  "running",
-                  "restarting",
-                  "failed",
-                  "entries",
-                  "truncated",
-                  "notificationsEnabled",
-                  "detailsRedacted",
-                  "history",
-                  "historyTruncated"
-                ]
+                }
               },
               {
                 "type": "null"
@@ -4460,12 +5851,21 @@
           },
           "hooks": {
             "type": "object",
+            "required": [
+              "asyncInFlight",
+              "concurrency"
+            ],
             "properties": {
               "asyncInFlight": {
                 "type": "number"
               },
               "concurrency": {
                 "type": "object",
+                "required": [
+                  "max",
+                  "active",
+                  "queued"
+                ],
                 "properties": {
                   "max": {
                     "type": "number"
@@ -4476,18 +5876,9 @@
                   "queued": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "max",
-                  "active",
-                  "queued"
-                ]
+                }
               }
-            },
-            "required": [
-              "asyncInFlight",
-              "concurrency"
-            ]
+            }
           },
           "lastUpdated": {
             "type": "number"
@@ -4495,24 +5886,28 @@
           "lastLatencyMs": {
             "type": "number"
           }
-        },
-        "required": [
-          "cwd",
-          "git",
-          "context",
-          "server",
-          "database",
-          "backgroundTasks",
-          "hooks",
-          "lastUpdated",
-          "lastLatencyMs"
-        ]
+        }
       },
       "UsageResponse": {
         "type": "object",
+        "required": [
+          "summary",
+          "hasData"
+        ],
         "properties": {
           "summary": {
             "type": "object",
+            "required": [
+              "totalCost",
+              "totalRequests",
+              "totalTokens",
+              "tokensDetailed",
+              "totalTokensDetailed",
+              "totalTokensBreakdown",
+              "totalCachedTokens",
+              "byProvider",
+              "byModel"
+            ],
             "properties": {
               "totalCost": {
                 "type": "number"
@@ -4525,6 +5920,13 @@
               },
               "tokensDetailed": {
                 "type": "object",
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ],
                 "properties": {
                   "input": {
                     "type": "number"
@@ -4541,17 +5943,17 @@
                   "total": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "input",
-                  "output",
-                  "cacheRead",
-                  "cacheWrite",
-                  "total"
-                ]
+                }
               },
               "totalTokensDetailed": {
                 "type": "object",
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ],
                 "properties": {
                   "input": {
                     "type": "number"
@@ -4568,17 +5970,17 @@
                   "total": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "input",
-                  "output",
-                  "cacheRead",
-                  "cacheWrite",
-                  "total"
-                ]
+                }
               },
               "totalTokensBreakdown": {
                 "type": "object",
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ],
                 "properties": {
                   "input": {
                     "type": "number"
@@ -4595,14 +5997,7 @@
                   "total": {
                     "type": "number"
                   }
-                },
-                "required": [
-                  "input",
-                  "output",
-                  "cacheRead",
-                  "cacheWrite",
-                  "total"
-                ]
+                }
               },
               "totalCachedTokens": {
                 "type": "number"
@@ -4612,6 +6007,14 @@
                 "patternProperties": {
                   "^(.*)$": {
                     "type": "object",
+                    "required": [
+                      "cost",
+                      "requests",
+                      "tokens",
+                      "tokensDetailed",
+                      "calls",
+                      "cachedTokens"
+                    ],
                     "properties": {
                       "cost": {
                         "type": "number"
@@ -4624,6 +6027,13 @@
                       },
                       "tokensDetailed": {
                         "type": "object",
+                        "required": [
+                          "input",
+                          "output",
+                          "cacheRead",
+                          "cacheWrite",
+                          "total"
+                        ],
                         "properties": {
                           "input": {
                             "type": "number"
@@ -4640,14 +6050,7 @@
                           "total": {
                             "type": "number"
                           }
-                        },
-                        "required": [
-                          "input",
-                          "output",
-                          "cacheRead",
-                          "cacheWrite",
-                          "total"
-                        ]
+                        }
                       },
                       "calls": {
                         "type": "number"
@@ -4655,15 +6058,7 @@
                       "cachedTokens": {
                         "type": "number"
                       }
-                    },
-                    "required": [
-                      "cost",
-                      "requests",
-                      "tokens",
-                      "tokensDetailed",
-                      "calls",
-                      "cachedTokens"
-                    ]
+                    }
                   }
                 }
               },
@@ -4672,6 +6067,14 @@
                 "patternProperties": {
                   "^(.*)$": {
                     "type": "object",
+                    "required": [
+                      "cost",
+                      "requests",
+                      "tokens",
+                      "tokensDetailed",
+                      "calls",
+                      "cachedTokens"
+                    ],
                     "properties": {
                       "cost": {
                         "type": "number"
@@ -4684,6 +6087,13 @@
                       },
                       "tokensDetailed": {
                         "type": "object",
+                        "required": [
+                          "input",
+                          "output",
+                          "cacheRead",
+                          "cacheWrite",
+                          "total"
+                        ],
                         "properties": {
                           "input": {
                             "type": "number"
@@ -4700,14 +6110,7 @@
                           "total": {
                             "type": "number"
                           }
-                        },
-                        "required": [
-                          "input",
-                          "output",
-                          "cacheRead",
-                          "cacheWrite",
-                          "total"
-                        ]
+                        }
                       },
                       "calls": {
                         "type": "number"
@@ -4715,82 +6118,72 @@
                       "cachedTokens": {
                         "type": "number"
                       }
-                    },
-                    "required": [
-                      "cost",
-                      "requests",
-                      "tokens",
-                      "tokensDetailed",
-                      "calls",
-                      "cachedTokens"
-                    ]
+                    }
                   }
                 }
               }
-            },
-            "required": [
-              "totalCost",
-              "totalRequests",
-              "totalTokens",
-              "tokensDetailed",
-              "totalTokensDetailed",
-              "totalTokensBreakdown",
-              "totalCachedTokens",
-              "byProvider",
-              "byModel"
-            ]
+            }
           },
           "hasData": {
             "type": "boolean"
           }
-        },
-        "required": [
-          "summary",
-          "hasData"
-        ]
+        }
       },
       "SessionSummary": {
         "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "type": "string"
-          },
-          "messageCount": {
-            "type": "number"
-          },
-          "favorite": {
-            "type": "boolean"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
         "required": [
           "id",
           "createdAt",
           "updatedAt",
           "messageCount"
-        ]
-      },
-      "Session": {
-        "type": "object",
+        ],
         "properties": {
           "id": {
             "type": "string"
           },
           "title": {
+            "type": "string"
+          },
+          "resumeSummary": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          },
+          "favorite": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "createdAt",
+          "updatedAt",
+          "messageCount",
+          "messages"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "resumeSummary": {
             "type": "string"
           },
           "createdAt": {
@@ -4811,10 +6204,30 @@
               "type": "string"
             }
           },
+          "messagesView": {
+            "anyOf": [
+              {
+                "const": "full",
+                "type": "string"
+              },
+              {
+                "const": "summary",
+                "type": "string"
+              },
+              {
+                "const": "notLoaded",
+                "type": "string"
+              }
+            ]
+          },
           "messages": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "role",
+                "content"
+              ],
               "properties": {
                 "role": {
                   "anyOf": [
@@ -4847,6 +6260,10 @@
                         "anyOf": [
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "text",
@@ -4858,14 +6275,15 @@
                               "textSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "text"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "data",
+                              "mimeType"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "image",
@@ -4877,15 +6295,14 @@
                               "mimeType": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "data",
-                              "mimeType"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "thinking"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "thinking",
@@ -4897,14 +6314,16 @@
                               "thinkingSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "thinking"
-                            ]
+                            }
                           },
                           {
                             "type": "object",
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "arguments"
+                            ],
                             "properties": {
                               "type": {
                                 "const": "toolCall",
@@ -4925,13 +6344,7 @@
                               "thoughtSignature": {
                                 "type": "string"
                               }
-                            },
-                            "required": [
-                              "type",
-                              "id",
-                              "name",
-                              "arguments"
-                            ]
+                            }
                           }
                         ]
                       }
@@ -4942,6 +6355,13 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "id",
+                      "type",
+                      "fileName",
+                      "mimeType",
+                      "size"
+                    ],
                     "properties": {
                       "id": {
                         "type": "string"
@@ -4979,14 +6399,7 @@
                       "preview": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "fileName",
-                      "mimeType",
-                      "size"
-                    ]
+                    }
                   }
                 },
                 "timestamp": {
@@ -4999,6 +6412,10 @@
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "name",
+                      "status"
+                    ],
                     "properties": {
                       "name": {
                         "type": "string"
@@ -5033,11 +6450,7 @@
                       "toolCallId": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "name",
-                      "status"
-                    ]
+                    }
                   }
                 },
                 "toolName": {
@@ -5048,6 +6461,10 @@
                 },
                 "usage": {
                   "type": "object",
+                  "required": [
+                    "input",
+                    "output"
+                  ],
                   "properties": {
                     "input": {
                       "type": "number"
@@ -5063,6 +6480,10 @@
                     },
                     "cost": {
                       "type": "object",
+                      "required": [
+                        "input",
+                        "output"
+                      ],
                       "properties": {
                         "input": {
                           "type": "number"
@@ -5079,46 +6500,456 @@
                         "total": {
                           "type": "number"
                         }
-                      },
-                      "required": [
-                        "input",
-                        "output"
-                      ]
+                      }
                     }
-                  },
+                  }
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "api": {
+                  "type": "string"
+                },
+                "routingReceipt": {
+                  "type": "object",
                   "required": [
-                    "input",
-                    "output"
-                  ]
+                    "decisionId",
+                    "requestedProfile",
+                    "source",
+                    "resolvedProfileId",
+                    "resolvedProfileVersion",
+                    "provider",
+                    "model",
+                    "reasoningEffort",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "decisionId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "requestedProfile": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "request",
+                          "type": "string"
+                        },
+                        {
+                          "const": "session",
+                          "type": "string"
+                        },
+                        {
+                          "const": "compatibility_default",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "resolvedProfileId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "resolvedProfileVersion": {
+                      "minimum": 1,
+                      "type": "number"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "model": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reasoningEffort": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "oracle": {
+                      "type": "object",
+                      "required": [
+                        "policyVersion",
+                        "mode",
+                        "reasons"
+                      ],
+                      "properties": {
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "const": "available",
+                              "type": "string"
+                            },
+                            {
+                              "const": "recommended",
+                              "type": "string"
+                            },
+                            {
+                              "const": "required",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "fallback": {
+                      "type": "object",
+                      "required": [
+                        "reason"
+                      ],
+                      "properties": {
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "experiment": {
+                      "type": "object",
+                      "required": [
+                        "experimentId",
+                        "arm",
+                        "policyVersion"
+                      ],
+                      "properties": {
+                        "experimentId": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "arm": {
+                          "anyOf": [
+                            {
+                              "const": "control",
+                              "type": "string"
+                            },
+                            {
+                              "const": "treatment",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "model": {
+                  "type": "string"
                 }
-              },
+              }
+            }
+          },
+          "pendingApprovalRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
               "required": [
-                "role",
-                "content"
-              ]
+                "id",
+                "toolName",
+                "args",
+                "reason"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "summaryLabel": {
+                  "type": "string"
+                },
+                "actionDescription": {
+                  "type": "string"
+                },
+                "args": {},
+                "reason": {
+                  "type": "string"
+                },
+                "startedAtMs": {
+                  "type": "number"
+                },
+                "platform": {
+                  "type": "object",
+                  "required": [
+                    "source"
+                  ],
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "approvals_service",
+                          "type": "string"
+                        },
+                        {
+                          "const": "tool_execution",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "toolExecutionId": {
+                      "type": "string"
+                    },
+                    "approvalRequestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pendingClientToolRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "toolCallId",
+                "toolName",
+                "args"
+              ],
+              "properties": {
+                "toolCallId": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "args": {},
+                "kind": {
+                  "anyOf": [
+                    {
+                      "const": "client_tool",
+                      "type": "string"
+                    },
+                    {
+                      "const": "mcp_elicitation",
+                      "type": "string"
+                    },
+                    {
+                      "const": "user_input",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "pendingToolRetryRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "toolCallId",
+                "toolName",
+                "args",
+                "errorMessage",
+                "attempt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "args": {},
+                "errorMessage": {
+                  "type": "string"
+                },
+                "attempt": {
+                  "type": "number"
+                },
+                "maxAttempts": {
+                  "type": "number"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "pendingRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind",
+                "status",
+                "visibility",
+                "toolCallId",
+                "toolName",
+                "args",
+                "reason",
+                "createdAt",
+                "source"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "anyOf": [
+                    {
+                      "const": "approval",
+                      "type": "string"
+                    },
+                    {
+                      "const": "client_tool",
+                      "type": "string"
+                    },
+                    {
+                      "const": "mcp_elicitation",
+                      "type": "string"
+                    },
+                    {
+                      "const": "user_input",
+                      "type": "string"
+                    },
+                    {
+                      "const": "tool_retry",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "status": {
+                  "const": "pending",
+                  "type": "string"
+                },
+                "visibility": {
+                  "const": "user",
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "summaryLabel": {
+                  "type": "string"
+                },
+                "actionDescription": {
+                  "type": "string"
+                },
+                "args": {},
+                "reason": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "type": "string"
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "const": "local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "platform",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "platform": {
+                  "type": "object",
+                  "required": [
+                    "source"
+                  ],
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "approvals_service",
+                          "type": "string"
+                        },
+                        {
+                          "const": "tool_execution",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "toolExecutionId": {
+                      "type": "string"
+                    },
+                    "approvalRequestId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
             }
           }
-        },
-        "required": [
-          "id",
-          "createdAt",
-          "updatedAt",
-          "messageCount",
-          "messages"
-        ]
+        }
       },
       "SessionsResponse": {
         "type": "object",
+        "required": [
+          "sessions"
+        ],
         "properties": {
           "sessions": {
             "type": "array",
             "items": {
               "type": "object",
+              "required": [
+                "id",
+                "createdAt",
+                "updatedAt",
+                "messageCount"
+              ],
               "properties": {
                 "id": {
                   "type": "string"
                 },
                 "title": {
+                  "type": "string"
+                },
+                "resumeSummary": {
                   "type": "string"
                 },
                 "createdAt": {
@@ -5139,22 +6970,16 @@
                     "type": "string"
                   }
                 }
-              },
-              "required": [
-                "id",
-                "createdAt",
-                "updatedAt",
-                "messageCount"
-              ]
+              }
             }
           }
-        },
-        "required": [
-          "sessions"
-        ]
+        }
       },
       "ErrorResponse": {
         "type": "object",
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "string"
@@ -5171,8 +6996,12 @@
               }
             }
           },
-          "composer": {
+          "maestro": {
             "type": "object",
+            "required": [
+              "code",
+              "category"
+            ],
             "properties": {
               "code": {
                 "type": "string"
@@ -5246,16 +7075,9 @@
                   "^(.*)$": {}
                 }
               }
-            },
-            "required": [
-              "code",
-              "category"
-            ]
+            }
           }
-        },
-        "required": [
-          "error"
-        ]
+        }
       }
     }
   }

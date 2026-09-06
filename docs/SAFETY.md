@@ -1,184 +1,253 @@
-# Safety & Action Approvals
+# Safety and Action Approvals
 
-Audience: operators and contributors configuring approvals/sandboxing.  
-Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Web UI](WEB_UI.md) · [Tools Reference](TOOLS_REFERENCE.md)
+> **Status:** Current Rust runtime. The controls documented here live under
+> `packages/tui-rs/src/safety/`, `packages/tui-rs/src/sandbox.rs`, and
+> `packages/runtime-gateway-rs/src/auth.rs`.
 
-Contents: [Action Firewall](#action-firewall) · [Approval Modes](#approval-modes) · [Safe Mode](#safe-mode) · [Sandbox Execution](#sandbox-execution) · [Guardian](#guardian) · [Troubleshooting](#troubleshooting)
+Audience: operators and contributors configuring approvals and sandboxing.
 
-Maestro executes shell commands and writes files on your machine, so it ships
-with a conservative “action firewall” and approval system. This guide explains
-how commands are vetted and how you can extend or relax the defaults.
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Web UI](WEB_UI.md)
 
-**Web auto-approval:** The web server runs with auto-approval for tools (see `docs/WEB_UI.md`). If you expose it outside a local sandbox, pair it with Docker/file mount constraints or add auth in front.
+Deixic Code can execute shell commands and change files on the host. The action
+firewall, approval flow, policy checks, and optional native sandbox are
+independent layers. No layer makes an untrusted repository safe by itself.
 
-## Action Firewall
+## Action firewall
 
-Located in `src/safety/action-firewall.ts`, the firewall inspects the tool name
-and its arguments before execution. The default rules watch for high-risk bash
-patterns such as:
+`packages/tui-rs/src/safety/firewall.rs` is the central tool-call checkpoint.
+It returns one of:
 
-| Rule ID         | Pattern                         | Description                    |
-| --------------- | -------------------------------- | ------------------------------ |
-| `bash-rm-rf`    | `rm -rf` (+ variants)            | Destructive recursive delete   |
-| `bash-mkfs`     | `mkfs` or `mkfs.<fs>`           | Filesystem formatting          |
-| `bash-disk-zero`| `dd if=/dev/zero` or `/dev/null` | Disk zeroing                   |
-| `bash-chmod-000`| `chmod 0000` variants            | Permission removal (lockout)   |
+- `Allow`
+- `RequireApproval`
+- `Block`
 
-If a command matches, the verdict is `require_approval` and the agent pauses.
-You’ll see a prompt in the TUI asking to allow or deny; CLI mode errors out
-unless you set `--approval-mode auto`.
+For bash, the firewall combines high-severity dangerous-pattern blocks with
+parsed command analysis. The rules cover destructive operations, filesystem
+formatting, disk writes, privilege changes, shell metacharacter risk, and
+other command shapes. File reads/writes and path-bearing tools also pass
+containment and policy checks.
 
-### Extending or Disabling Rules
+The firewall checks network-tool URLs against the enterprise policy and
+requires approval for MCP tools by default. Server-provided MCP annotations
+cannot lower that approval requirement.
 
-- To add rules, instantiate `new ActionFirewall([...defaultFirewallRules, myRule])`
-  and pass it to the agent constructor.
-- To disable approvals entirely, use `--approval-mode auto` (CLI) or set
-  `MAESTRO_APPROVAL_MODE=auto`. Only do this in trusted sandboxes.
+### Approval modes
 
-### Bash Guard / YOLO toggle
+Use `--approval-mode` or `MAESTRO_APPROVAL_MODE`:
 
-The tree-sitter/bash guard can feel heavy-handed. Control it with
-`MAESTRO_BASH_GUARD`:
+| Mode | Behavior |
+| --- | --- |
+| `prompt` | Ask the user for approval; approval-gated work fails when no interactive approver exists. |
+| `auto` | Approve approval-gated work automatically. Use only in a trusted, isolated environment. |
+| `fail` | Reject approval-gated work immediately. |
 
-| Value | Effect |
-| ----- | ------ |
-| unset | Guard **on** (current default) |
-| `1`/`on`/`true` | Force the guard on (extra scrutiny, approvals for pipes/exec/etc.) |
-| `0`/`off`/`false` | YOLO mode: skip the bash guard and rely only on the hard regex rules (still blocks `rm -rf`, `mkfs`, etc.) |
+High-severity firewall blocks remain blocks; changing approval mode does not
+turn them into allowed operations. A request to bypass an active native
+sandbox (`bypass_sandbox: true`) is separately approval-gated.
 
-Use `0` only in trusted environments; it removes the tree-sitter and heuristic
-checks that would normally require approvals for risky shell shapes (pipes,
-command substitution, curl | sh, etc.). Safe mode / prod profile still keep the
-rest of the firewall (system paths, containment, regex rules) in place.
+### Bash guard and egress
 
-### Bash allowlist (reduce false positives)
+The bash analyzer is enabled by default. `MAESTRO_BASH_GUARD=1` forces it on;
+`MAESTRO_BASH_GUARD=0` disables the additional analysis and leaves the
+hard-pattern and path/policy checks in place. Use the latter only for trusted
+compatibility cases.
 
-Place common-safe commands in `.maestro/bash-allow.json` (workspace) or
-`~/.maestro/bash-allow.json` (user). Format: either an array or `{ "allow":
-["pattern", ...] }` with glob-style patterns (minimatch). Example:
+Set `MAESTRO_NO_EGRESS_SHELL=1` to require approval for shell commands
+containing common egress primitives such as `curl`, `wget`, `ssh`, `scp`, `nc`,
+or `/dev/tcp`. An explicit allowlist or
+`MAESTRO_ALLOW_EGRESS_SHELL=1` can override that gate; review such overrides.
+
+### Enterprise policy
+
+The policy loader checks, in order, explicit paths in
+`MAESTRO_ENTERPRISE_POLICY_PATH` and `MAESTRO_POLICY_PATH`, then
+`$MAESTRO_HOME/policy.json` or the legacy Composer home. Policy can constrain:
+
+- tools, commands, dependencies, and models;
+- filesystem paths;
+- allowed/blocked network hosts and private or localhost addresses; and
+- token, session-duration, and concurrent-session limits.
+
+Malformed or unreadable policy fails closed. Keep policy files owner-readable
+and validate changes before deploying them.
+
+#### Managed organization policy
+
+Set `MAESTRO_MANAGED_POLICY_PATH` to opt into a signed organization policy
+bundle. The bundle uses an Ed25519 signature over a canonical payload and
+includes an SHA-256 policy hash, organization/workspace scope, version, expiry,
+and an optional kill switch.
+
+Set `MAESTRO_MANAGED_POLICY_PUBLIC_KEY` to the base64url or hex public key.
+`MAESTRO_MANAGED_POLICY_STATE_PATH` optionally selects the persistent rollback
+watermark; otherwise it is stored beside the managed bundle.
+`MAESTRO_MANAGED_POLICY_KEY_ID`, `MAESTRO_ORG_ID`, and
+`MAESTRO_WORKSPACE_ID` can pin the signing key and deployment scope. A
+configured bundle that is missing, invalid, expired, rolled back, tampered
+with, or revoked fails closed. The local policy may only narrow its limits.
+Authenticated `GET /api/admin/enterprise-policy/status` and
+`POST /api/admin/enterprise-policy/refresh` expose safe status metadata.
+
+#### Managed policy publishing and audit
+
+Keep the private signing key in the organization KMS or HSM. The publisher
+service signs the canonical envelope outside Deixic Code and submits it through
+the authenticated runtime gateway; Deixic Code never receives private-key material.
+Configure `MAESTRO_MANAGED_POLICY_AUDIT_PATH` to select the local JSONL audit
+file. By default it is the managed-policy state path with `.audit.jsonl`
+appended.
+
+The publisher endpoints are:
+
+- `POST /api/admin/enterprise-policy/publish` with
+  `{ "envelope": <ManagedPolicyEnvelope> }` validates the signature, scope,
+  expiry, hash, and monotonic version, then atomically activates the bundle.
+- `GET /api/admin/enterprise-policy/audit?limit=50` returns the newest
+  accepted and rejected publication events, capped at 100 entries.
+
+Publication is authenticated and CSRF-protected like other state-changing
+runtime-gateway API calls. A malformed request returns `400`; a rejected
+signature, scope, expiry, rollback, or kill-switch-reason validation returns
+`409`.
+Successful publication returns the safe managed-policy status. A valid
+kill-switch envelope is recorded as published, but its status is invalid so
+policy-gated actions remain blocked. Accepted publications and
+envelope-validation failures are recorded with the authenticated actor,
+outcome, safe policy metadata, and bounded failure reason; malformed HTTP
+requests are rejected before publication processing. Audit records never
+contain the policy signature or private key.
+
+The intended customer flow is:
+
+1. Render a versioned envelope from the organization policy source.
+2. Ask the KMS/HSM to sign the canonical payload and attach the signature and
+   policy hash.
+3. POST the envelope with the publisher service's runtime-gateway credentials.
+4. Monitor the returned status and the audit endpoint, while keeping the
+   remote KMS/HSM and proxy logs as the authoritative organization audit trail.
+
+The request shape is intentionally redacted here; the publisher fills the
+fields from the existing `ManagedPolicyEnvelope` contract and supplies the
+KMS/HSM output:
+
+```sh
+curl -X POST "$MAESTRO_URL/api/admin/enterprise-policy/publish" \
+  -H "Authorization: Bearer <runtime-gateway-credential>" \
+  -H "X-Maestro-CSRF: <csrf-token>" \
+  -H "Content-Type: application/json" \
+  --data @signed-envelope.json
+```
 
 ```json
 {
-  "allow": [
-    "git status",
-    "ls | wc -l",
-    "npm run build",
-    "git log --oneline | head -5"
-  ]
-}
-```
-
-You can also point to custom files via `MAESTRO_BASH_ALLOWLIST_PATHS` (path
-delimiter separated).
-
-### Shell egress kill switch
-
-Set `MAESTRO_NO_EGRESS_SHELL=1` to require approval for shell commands that use
-curl/wget/ssh/nc or `/dev/tcp`. Override per-run with
-`MAESTRO_ALLOW_EGRESS_SHELL=1` or by allowlisting the specific command.
-
-## Approval Modes
-
-You control approval behavior via CLI flag or env var:
-
-| Mode    | Behavior                                             |
-| ------- | ---------------------------------------------------- |
-| `prompt` (default) | Ask the user in the TUI; fail in headless mode |
-| `auto`  | Automatically approve (use carefully)                |
-| `fail`  | Immediately reject high-risk commands                |
-
-Safe mode (`MAESTRO_SAFE_MODE=1` or `--safe-mode`) additionally disables shell
-writes (chmod, mv) unless explicitly approved and surfaces a shield icon in the
-footer.
-
-## Sandbox Mode
-
-Maestro supports running tool operations in an isolated sandbox environment,
-providing an extra layer of protection when exploring untrusted code.
-
-### Available Modes
-
-| Mode    | Description                                           |
-| ------- | ----------------------------------------------------- |
-| `none`  | No sandbox (default) - tools run directly on the host |
-| `local` | Local sandbox - minimal isolation (same as `none`)    |
-| `docker`| Docker container - full isolation                     |
-
-### Enabling Sandbox Mode
-
-Via CLI flag:
-```bash
-maestro --sandbox docker
-maestro exec --sandbox docker "Analyze this codebase"
-```
-
-Via environment variable:
-```bash
-export MAESTRO_SANDBOX_MODE=docker
-maestro
-```
-
-Via configuration file (`.maestro/sandbox.json`):
-```json
-{
-  "mode": "docker",
-  "docker": {
-    "image": "node:20-slim",
-    "workspaceMount": "/workspace"
+  "envelope": {
+    "schemaVersion": 1,
+    "orgId": "org-example",
+    "workspaceId": "workspace-example",
+    "policyVersion": 42,
+    "issuedAt": 0,
+    "expiresAt": 0,
+    "keyId": "org-policy-key",
+    "policy": {},
+    "killSwitch": false,
+    "policyHash": "<sha256-of-canonical-payload>",
+    "signature": "<kms-hsm-signature>"
   }
 }
 ```
 
-### Docker Sandbox Details
+Use `GET /api/admin/enterprise-policy/audit?limit=50` for the newest local
+events; the endpoint caps reads at 100 records.
 
-When using Docker mode:
-- A detached container is started with your workspace mounted
-- All bash commands execute inside the container
-- File operations (read, write, edit) are sandboxed
-- Container is cleaned up on exit
+## Safe mode
 
-Requirements:
-- Docker must be installed and running
-- Current user must have permission to run Docker commands
+Set `MAESTRO_SAFE_MODE=1` to enable the safe-mode gates in
+`packages/tui-rs/src/safety/safe_mode.rs`. With plan requirements enabled,
+mutating tools require a satisfied plan. Validators can run after file changes,
+and configured LSP diagnostics can block unsafe results.
 
-If Docker is unavailable, Maestro falls back to local mode with a warning.
+`MAESTRO_SAFE_REQUIRE_PLAN=0` disables only the plan requirement; it does not
+disable the action firewall or path containment. Use `/sandbox` in the
+interactive UI to inspect the active native policy.
 
-## Best Practices
+## Native sandbox
 
-- Keep the firewall enabled locally; treat `auto` mode as CI-only.
-- Use `--sandbox docker` when exploring untrusted repositories.
-- If a legitimate command trips a rule, prefer an explicit approval over
-  disabling the rule. If you need a custom rule, submit a PR so others benefit.
-- Document approvals in team workflows: "Maestro asked to run `rm -rf`.
-  Approved because we're deleting `tmp/`."
-- When adjusting system-protected paths, update `docs/system-paths.json` and
-  run `node scripts/validate-system-paths.js` (or `bun run bun:lint`) to catch
-  Windows backslash escaping issues.
+`packages/tui-rs/src/sandbox.rs` defines three policies:
 
-## Hardened “prod” profile
+| Policy | Effect |
+| --- | --- |
+| `read-only` | No filesystem writes and no network access for the sandboxed child. |
+| `workspace-write` | Writes are limited to the workspace and configured writable roots; network access is explicit in the policy. |
+| `danger-full-access` | No native filesystem or network restriction. |
 
-Enable secure defaults by setting `MAESTRO_PROFILE=prod` (or `MAESTRO_WEB_PROFILE=prod` for web-only). This is meant for hosted or shared environments; local dev stays lenient unless you opt in.
+Platform backends:
 
-What it flips on by default:
-- Approval mode defaults to `fail` (can still be overridden explicitly).
-- Strict egress tagging: human-facing tools must be annotated in `TOOL_TAGS`; untagged egress is blocked unless `MAESTRO_FAIL_UNTAGGED_EGRESS=0`.
-- Background shell tasks blocked when launched with `background_tasks` + `shell:true` unless `MAESTRO_BACKGROUND_SHELL_DISABLE=0`.
-- Safe mode and plan-required guards are enabled.
-- Web security headers (CSP, Referrer-Policy, Permissions-Policy, X-Content-Type-Options) are emitted for static assets.
-- CSRF enforcement is activated when `MAESTRO_WEB_CSRF_TOKEN` is set (auto-required in prod profile unless `MAESTRO_WEB_REQUIRE_CSRF=0`).
+- macOS: Seatbelt via `/usr/bin/sandbox-exec`;
+- Linux: Landlock for filesystem access plus seccomp for network-disabled
+  policies;
+- other platforms: native sandboxing is unavailable.
 
-Recommended hardened web start:
-```bash
+The sandbox is applied in the child immediately before `exec`. The child
+environment is cleared and replaced with the filtered environment passed by
+the executor. If the native mechanism is unavailable, the current interactive
+path reports the condition rather than silently claiming isolation. Verify the
+status in the TUI and use OS/container isolation when enforcement is required.
+
+The `danger-full-access` policy is an explicit escape hatch, not a safe
+default. Avoid `bypass_sandbox` and full-access mode for untrusted work.
+
+## Credentials and PII
+
+`packages/tui-rs/src/agent/credential_store.rs` recognizes and redacts common
+credential formats in tool arguments and serialized output. The workflow
+tracker in `safety/workflow_state.rs` can block unredacted PII before
+human-facing tools.
+
+These are pattern-based controls, not a guarantee. Do not paste long-lived
+secrets into prompts or use an untrusted repository with a credential that can
+modify production systems. Anything intentionally sent to a model provider or
+external tool is disclosed to that service.
+
+## Runtime-gateway safety
+
+For a shared or remote web deployment:
+
+```
 MAESTRO_PROFILE=prod \
-MAESTRO_WEB_API_KEY=<strong-token> \
-MAESTRO_WEB_CSRF_TOKEN=<csrf-secret> \
-MAESTRO_WEB_ORIGIN=https://your.host \
+MAESTRO_JWT_JWKS_URL="https://identity.example/.well-known/jwks.json" \
+MAESTRO_WEB_CSRF_TOKEN="$(openssl rand -hex 32)" \
 maestro web
 ```
 
-Temporarily relax for local hacking:
-```bash
-MAESTRO_PROFILE=dev \
-MAESTRO_FAIL_UNTAGGED_EGRESS=0 \
-MAESTRO_BACKGROUND_SHELL_DISABLE=0
-```
+The runtime gateway requires authentication on non-loopback binds. It accepts
+API-key, shared-secret, JWT/JWKS, or trusted-proxy authentication as described
+in `docs/THREAT_MODEL.md`. Core session and chat routes in production require
+tenant-bearing JWT or trusted-proxy identity; the static process API key alone
+does not grant access to tenant data. State-changing API and A2A requests are CSRF
+protected when CSRF enforcement is enabled. `MAESTRO_WEB_REQUIRE_KEY=0` is a
+loopback-only development switch.
+
+The Rust runtime gateway does not provide general RBAC or SSO. If remote access
+depends on a proxy for identity or authorization, make that proxy part of the
+deployment threat model.
+
+## Release and extension safety
+
+The installer verifies a release checksum and, when the release publishes the
+signed bundle, verifies its Cosign identity before atomically switching the
+launcher. Set `MAESTRO_REQUIRE_SIGNED_INSTALL=1` to reject unsigned legacy
+artifacts.
+
+MCP servers are separate trust boundaries with broad tool access. Pin and
+review them before enabling them. The `maestro-execpolicy` crate is currently a
+dependency-light parsing/migration leaf and is not the live approval path.
+
+## Recommended operating posture
+
+- Use `prompt` or `fail` approval for untrusted work.
+- Prefer `read-only` or `workspace-write` native sandboxing.
+- Set `MAESTRO_NO_EGRESS_SHELL=1` for sensitive repositories.
+- Use `MAESTRO_PROFILE=prod` for shared runtime-gateway deployments.
+- Keep provider and MCP credentials short-lived and least-privileged.
+- Run `maestro setup` after installation and `maestro doctor --live` when
+  diagnosing a deployment; do not paste diagnostic secrets into tickets.

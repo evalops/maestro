@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --all-features
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::hooks::{
     HookRegistry, HookResult, IntegratedHookSystem, PreToolUseHook, PreToolUseInput, SafetyHook,
 };
@@ -176,6 +176,7 @@ fn bench_integrated_system_post_tool_use(c: &mut Criterion) {
                 black_box(&serde_json::json!({"command": "ls"})),
                 black_box("output"),
                 black_box(false),
+                black_box(0),
             );
             black_box(result)
         });

@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+
+import {
+	appendFileSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+
+function parseArgs(argv) {
+	const args = {
+		check: false,
+		manifest: ".github/release-mirror-manifest.json",
+		source: process.cwd(),
+		target: "",
+	};
+
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		switch (arg) {
+			case "--check":
+				args.check = true;
+				break;
+			case "--manifest":
+				args.manifest = argv[++index] ?? args.manifest;
+				break;
+			case "--source":
+				args.source = argv[++index] ?? args.source;
+				break;
+			case "--target":
+				args.target = argv[++index] ?? args.target;
+				break;
+			default:
+				throw new Error(`Unknown argument: ${arg}`);
+		}
+	}
+
+	if (!args.target) {
+		throw new Error("Missing required --target <path>");
+	}
+
+	return args;
+}
+
+const options = parseArgs(process.argv.slice(2));
+const sourceRoot = resolve(options.source);
+const targetRoot = resolve(options.target);
+const manifestPath = resolve(sourceRoot, options.manifest);
+const publicMirrorExcludePath = resolve(
+	sourceRoot,
+	".github/public-release-mirror.exclude",
+);
+if (!existsSync(manifestPath)) {
+	if (existsSync(publicMirrorExcludePath)) {
+		throw new Error(`Missing release mirror manifest: ${manifestPath}`);
+	}
+	console.log(
+		"Release mirror manifest is absent in this public tree; skipping helper sync.",
+	);
+	process.exit(0);
+}
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const files = Array.isArray(manifest.files) ? manifest.files : [];
+const changedFiles = [];
+
+function appendStepSummary(lines) {
+	const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+	if (!summaryPath) {
+		return;
+	}
+	appendFileSync(summaryPath, `${lines.join("\n")}\n`);
+}
+
+function appendDriftSummary(files) {
+	appendStepSummary([
+		"",
+		"## Release Mirror Drift",
+		"",
+		`- Internal ref: \`${process.env.INTERNAL_REF || "(unknown)"}\``,
+		`- Public ref: \`${process.env.PUBLIC_MIRROR_REF || "(unknown)"}\``,
+		`- Public ref source: \`${process.env.PUBLIC_MIRROR_REF_SOURCE || "(unknown)"}\``,
+		`- Source: \`${sourceRoot}\``,
+		`- Target: \`${targetRoot}\``,
+		"",
+		"### Drifted Files",
+		"",
+		...files.map((file) => `- \`${file}\``),
+		"",
+		"### Local Sync Command",
+		"",
+		"```sh",
+		`node scripts/sync-release-mirror.mjs --source "${sourceRoot}" --target "${targetRoot}"`,
+		"```",
+		"",
+	]);
+}
+
+for (const relativePath of files) {
+	const sourcePath = resolve(sourceRoot, relativePath);
+	const targetPath = resolve(targetRoot, relativePath);
+
+	if (!existsSync(sourcePath)) {
+		throw new Error(`Missing source file for mirror sync: ${sourcePath}`);
+	}
+
+	const sourceContent = readFileSync(sourcePath);
+	const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
+	if (targetContent && sourceContent.equals(targetContent)) {
+		continue;
+	}
+
+	changedFiles.push(relativePath);
+	if (!options.check) {
+		mkdirSync(dirname(targetPath), { recursive: true });
+		copyFileSync(sourcePath, targetPath);
+	}
+}
+
+if (options.check) {
+	if (changedFiles.length > 0) {
+		console.error("Release mirror drift detected:");
+		for (const file of changedFiles) {
+			console.error(`- ${file}`);
+		}
+		appendDriftSummary(changedFiles);
+		process.exit(1);
+	}
+	console.log("Release mirror is in sync.");
+} else if (changedFiles.length > 0) {
+	console.log(`Synced ${changedFiles.length} mirrored release files.`);
+} else {
+	console.log("Release mirror already in sync.");
+}

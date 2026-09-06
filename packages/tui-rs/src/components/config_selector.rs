@@ -2,13 +2,8 @@
 //!
 //! Provides a UI for viewing and modifying runtime configuration settings.
 
-use ratatui::{
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
-};
+use maestro_ui::{Modal, SettingField, SettingsForm};
+use ratatui::{Frame, layout::Rect, widgets::ListState};
 
 /// A single configurable setting
 #[derive(Debug, Clone)]
@@ -333,123 +328,62 @@ impl ConfigSelector {
             return;
         }
 
-        // Calculate modal size
-        let modal_width = 70.min(area.width.saturating_sub(4));
-        let modal_height = 20.min(area.height.saturating_sub(4));
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-
-        let modal_area = Rect {
-            x: area.x + modal_x,
-            y: area.y + modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
-
-        // Clear the area
-        frame.render_widget(Clear, modal_area);
-
-        // Create the outer block
-        let block = Block::default()
-            .title(" Preferences ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black));
-
-        let inner = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // Layout: settings list + description
-        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
-
-        // Build list items grouped by category
-        let mut items: Vec<ListItem> = Vec::new();
-        let mut current_category: Option<ConfigCategory> = None;
-
-        for (i, opt) in self.options.iter().enumerate() {
-            // Add category header if changed
-            if current_category != Some(opt.category) {
-                current_category = Some(opt.category);
-                if !items.is_empty() {
-                    items.push(ListItem::new(Line::from(""))); // Spacer
-                }
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("─── {} ───", opt.category.display_name()),
-                    Style::default().fg(Color::DarkGray),
-                ))));
-            }
-
-            let is_selected = i == self.selected;
-            let style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else {
-                Style::default()
-            };
-
-            let name_span = Span::styled(
-                format!("  {} ", opt.name),
-                style.add_modifier(Modifier::BOLD),
-            );
-
-            // Show current value with arrows if selected
-            let value_str = if is_selected {
-                format!("< {} >", opt.value)
-            } else {
-                opt.value.clone()
-            };
-
-            let value_style = style.fg(if is_selected {
-                Color::Cyan
-            } else {
-                Color::Green
-            });
-
-            let line = Line::from(vec![
-                name_span,
-                Span::styled(
-                    format!(
-                        "{:>width$}",
-                        value_str,
-                        width = 20 - opt.value.len().min(15)
-                    ),
-                    value_style,
-                ),
-            ]);
-
-            items.push(ListItem::new(line));
-        }
-
-        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
-        frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
-
-        // Description area
-        let desc_block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let description = self
-            .selected_option()
-            .map_or("", |o| o.description.as_str());
-
-        let help_text = Line::from(vec![
-            Span::styled(description, Style::default().fg(Color::Gray)),
-            Span::raw("  "),
-            Span::styled("← →", Style::default().fg(Color::Yellow)),
-            Span::styled(" change  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-        ]);
-
-        let desc_paragraph = Paragraph::new(help_text).block(desc_block);
-        frame.render_widget(desc_paragraph, chunks[1]);
+        let theme = crate::themes::current_ui_theme();
+        let inner = Modal::new(" Preferences ", 70, 20)
+            .theme(theme)
+            .render(frame, area);
+        let fields: Vec<_> = self
+            .options
+            .iter()
+            .map(|option| SettingField {
+                category: option.category.display_name(),
+                label: &option.name,
+                value: &option.value,
+                description: &option.description,
+                error: if option.options.get(option.current_option).is_none() {
+                    Some("Choose a valid option with the left or right arrow")
+                } else {
+                    None
+                },
+            })
+            .collect();
+        SettingsForm::new(&fields, Some(self.selected), theme)
+            .help("↑ ↓ select  ← → change  Enter confirm  Esc cancel")
+            .render(frame, inner, &mut self.list_state);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_navigation_scrolls_to_the_selected_option_after_group_headers() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut selector = ConfigSelector::new();
+        selector.show();
+        for _ in 0..selector.options.len() {
+            selector.move_down();
+        }
+        let label = selector.selected_option().unwrap().name.clone();
+        let old_value = selector.selected_option().unwrap().value.clone();
+        selector.next_value();
+        assert_ne!(selector.selected_option().unwrap().value, old_value);
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains(&label));
+        assert!(selector.list_state.offset() > 0);
+        assert!(selector.list_state.selected().unwrap() > selector.selected);
+    }
 
     #[test]
     fn test_config_selector_creation() {

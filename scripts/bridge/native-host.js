@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Native messaging host for the Conductor <-> Composer bridge.
+// Native messaging host for the Conductor <-> Maestro bridge.
 // Implements Chrome's length-prefixed JSON protocol and launches/monitors
-// the local Composer web server as needed.
+// the local Maestro web server as needed.
 
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -21,6 +21,19 @@ const LAUNCH_TIMEOUT_MS = Number.parseInt(
 	process.env.MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS || "15000",
 	10,
 );
+const PLATFORM_RUNTIME_TIMEOUT_MS = Number.parseInt(
+	process.env.MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS ||
+		process.env.MAESTRO_AGENT_RUNTIME_TIMEOUT_MS ||
+		process.env.MAESTRO_AGENT_RUNTIME_SERVICE_TIMEOUT_MS ||
+		process.env.AGENT_RUNTIME_SERVICE_TIMEOUT_MS ||
+		"2000",
+	10,
+);
+const RECORD_RUN_EVENT_PATH =
+	"/agentruntime.v1.AgentRuntimeService/RecordRunEvent";
+const HANDLE_TRIGGER_PATH =
+	"/agentruntime.v1.AgentRuntimeService/HandleTrigger";
+const AGENT_RUNTIME_SERVICE_SUFFIX = "/agentruntime.v1.AgentRuntimeService";
 
 let webProcess = null;
 let statusTimer = null;
@@ -117,11 +130,47 @@ function getPortFromBaseUrl(baseUrl) {
 	}
 }
 
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/([a-p]{32})\/?$/;
+
+/**
+ * Resolve the concrete `chrome-extension://<id>` origin allowed to call the
+ * local Maestro server. Chrome starts a native messaging host with the calling
+ * extension's origin as a command-line argument, and that argument is
+ * authenticated by the host manifest's `allowed_origins`, so it is the most
+ * trustworthy source. `CONDUCTOR_EXTENSION_ID` is the documented fallback used
+ * by `install-native-host.mjs`.
+ *
+ * Returns null when the extension identity cannot be established. Callers must
+ * not fall back to "*": a wildcard origin lets any page the user visits reach
+ * the local agent runtime.
+ */
+function resolveExtensionOrigin() {
+	for (const arg of process.argv.slice(1)) {
+		const match = EXTENSION_ORIGIN_PATTERN.exec(String(arg).trim());
+		if (match) return `chrome-extension://${match[1]}`;
+	}
+	const configured = process.env.CONDUCTOR_EXTENSION_ID?.trim();
+	if (configured && EXTENSION_ID_PATTERN.test(configured)) {
+		return `chrome-extension://${configured}`;
+	}
+	return null;
+}
+
 function buildLaunchEnv() {
 	const env = { ...process.env };
-	if (!env.MAESTRO_WEB_REQUIRE_KEY) env.MAESTRO_WEB_REQUIRE_KEY = "0";
+	// MAESTRO_WEB_REQUIRE_KEY is deliberately left alone. The bridge launches
+	// `maestro web` on its default loopback bind, where the control plane
+	// already runs without an API key; forcing the kill-switch on would also
+	// strip auth from a non-loopback bind the operator configured on purpose.
 	if (!env.MAESTRO_WEB_REQUIRE_REDIS) env.MAESTRO_WEB_REQUIRE_REDIS = "0";
-	if (!env.MAESTRO_WEB_ORIGIN) env.MAESTRO_WEB_ORIGIN = "*";
+	if (!env.MAESTRO_WEB_ORIGIN) {
+		const extensionOrigin = resolveExtensionOrigin();
+		// No wildcard fallback. Leaving MAESTRO_WEB_ORIGIN unset keeps the
+		// server's built-in localhost allowlist, which is still correct for the
+		// web UI even when the extension identity is unknown.
+		if (extensionOrigin) env.MAESTRO_WEB_ORIGIN = extensionOrigin;
+	}
 	return env;
 }
 
@@ -153,7 +202,7 @@ async function ensureComposerWeb(baseUrl) {
 				reachable: false,
 				baseUrl: currentBaseUrl,
 				bridgeStatus: null,
-				error: `Failed to launch Composer: ${error instanceof Error ? error.message : String(error)}`,
+				error: `Failed to launch Maestro: ${error instanceof Error ? error.message : String(error)}`,
 				launched: false,
 			};
 		}
@@ -172,7 +221,7 @@ async function ensureComposerWeb(baseUrl) {
 		reachable: false,
 		baseUrl: currentBaseUrl,
 		bridgeStatus: null,
-		error: "Composer did not become reachable in time",
+		error: "Maestro did not become reachable in time",
 		launched: false,
 	};
 }
@@ -258,9 +307,230 @@ function sendNotification(method, params) {
 	});
 }
 
+function firstEnv(...names) {
+	for (const name of names) {
+		const value = process.env[name]?.trim();
+		if (value) return value;
+	}
+	return "";
+}
+
+function normalizeAgentRuntimeBaseUrl(value) {
+	let normalized = value.trim().replace(/\/+$/, "");
+	for (const suffix of [
+		RECORD_RUN_EVENT_PATH,
+		HANDLE_TRIGGER_PATH,
+		AGENT_RUNTIME_SERVICE_SUFFIX,
+	]) {
+		if (normalized.endsWith(suffix)) {
+			normalized = normalized.slice(0, -suffix.length).replace(/\/+$/, "");
+		}
+	}
+	return normalized;
+}
+
+function platformRuntimeConfigFromEnv() {
+	const baseUrl = firstEnv(
+		"MAESTRO_BRIDGE_AGENT_RUNTIME_URL",
+		"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+		"AGENT_RUNTIME_SERVICE_URL",
+	);
+	if (!baseUrl) return null;
+	return {
+		baseUrl: normalizeAgentRuntimeBaseUrl(baseUrl),
+		token: firstEnv(
+			"MAESTRO_BRIDGE_AGENT_RUNTIME_TOKEN",
+			"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
+			"AGENT_RUNTIME_SERVICE_TOKEN",
+			"MAESTRO_EVALOPS_ACCESS_TOKEN",
+			"EVALOPS_TOKEN",
+		),
+		organizationId: firstEnv(
+			"MAESTRO_BRIDGE_AGENT_RUNTIME_ORG_ID",
+			"MAESTRO_AGENT_RUNTIME_ORG_ID",
+			"MAESTRO_AGENT_RUNTIME_ORGANIZATION_ID",
+			"AGENT_RUNTIME_ORG_ID",
+			"AGENT_RUNTIME_ORGANIZATION_ID",
+			"MAESTRO_EVALOPS_ORG_ID",
+			"EVALOPS_ORGANIZATION_ID",
+			"EVALOPS_ORG_ID",
+			"MAESTRO_ENTERPRISE_ORG_ID",
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+		),
+		runId: firstEnv(
+			"MAESTRO_BRIDGE_PLATFORM_RUN_ID",
+			"MAESTRO_AGENT_RUNTIME_RUN_ID",
+			"AGENT_RUNTIME_RUN_ID",
+		),
+		timeoutMs: Number.isFinite(PLATFORM_RUNTIME_TIMEOUT_MS)
+			? PLATFORM_RUNTIME_TIMEOUT_MS
+			: 2000,
+	};
+}
+
+function cleanString(value, maxLength = 256) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (!trimmed) return "";
+	return trimmed.slice(0, maxLength);
+}
+
+function cleanBoolean(value) {
+	return typeof value === "boolean" ? value : undefined;
+}
+
+function compactObject(values) {
+	const result = {};
+	for (const [key, value] of Object.entries(values)) {
+		if (value === undefined || value === null || value === "") continue;
+		result[key] = value;
+	}
+	return result;
+}
+
+function browserControlDecisionRunId(params, config) {
+	return (
+		cleanString(params?.platformRunId, 160) ||
+		cleanString(params?.platform_run_id, 160) ||
+		cleanString(params?.runId, 160) ||
+		cleanString(params?.run_id, 160) ||
+		config.runId
+	);
+}
+
+function buildBrowserControlDecisionRuntimeEvent(params, config) {
+	if (!params || typeof params !== "object") return null;
+	const runId = browserControlDecisionRunId(params, config);
+	if (!runId) return null;
+	const method = cleanString(params.method, 120) || "unknown";
+	const decision = cleanString(params.decision, 32) || "unknown";
+	const denyReason = cleanString(params.denyReason ?? params.deny_reason, 120);
+	const methodProfile = cleanString(
+		params.methodProfile ?? params.method_profile,
+		120,
+	);
+	const safeSummary =
+		decision === "denied"
+			? `Browser-control denied: ${method}${denyReason ? ` (${denyReason})` : ""}`
+			: `Browser-control ${decision}: ${method}`;
+
+	return {
+		runId,
+		type: "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+		message: safeSummary,
+		attributes: compactObject({
+			schemaVersion: "browser-control-runtime-decision/v1",
+			adapter: "maestro-conductor-native-host",
+			source: "conductor-browser-control-native-host",
+			nativeHost: HOST_NAME,
+			traceId: cleanString(params.traceId ?? params.trace_id, 160),
+			observedAt: cleanString(params.observedAt ?? params.observed_at, 80),
+			method,
+			methodProfile,
+			policyHash: cleanString(params.policyHash ?? params.policy_hash, 160),
+			platformReceiptPresent: cleanBoolean(
+				params.platformReceiptPresent ?? params.platform_receipt_present,
+			),
+			platformReceiptId: cleanString(
+				params.platformReceiptId ?? params.platform_receipt_id,
+				160,
+			),
+			platformRequestHash: cleanString(
+				params.platformRequestHash ?? params.platform_request_hash,
+				160,
+			),
+			approvalRequired: cleanBoolean(
+				params.approvalRequired ?? params.approval_required,
+			),
+			decision,
+			denyReason: denyReason || "none",
+			conductorContractVersion: cleanString(
+				params.conductorContractVersion ??
+					params.conductor_contract_version,
+				80,
+			),
+		}),
+		visibility: {
+			level: "RUNTIME_VISIBILITY_LEVEL_ADMIN_VISIBLE",
+			audiences: [
+				"RUNTIME_AUDIENCE_WORKSPACE_ADMINS",
+				"RUNTIME_AUDIENCE_AUDIT",
+				"RUNTIME_AUDIENCE_SYSTEM",
+			],
+			sensitivity: "RUNTIME_SENSITIVITY_INTERNAL",
+			safeSummary,
+		},
+	};
+}
+
+function runtimeHeaders(config) {
+	return compactObject({
+		Authorization: config.token ? `Bearer ${config.token}` : undefined,
+		"Content-Type": "application/json",
+		"Connect-Protocol-Version": "1",
+		"X-Organization-ID": config.organizationId,
+	});
+}
+
+async function postBrowserControlDecisionToPlatform(params) {
+	const config = platformRuntimeConfigFromEnv();
+	if (!config) {
+		return { recorded: false, reason: "platform_runtime_not_configured" };
+	}
+	const event = buildBrowserControlDecisionRuntimeEvent(params, config);
+	if (!event) {
+		return { recorded: false, reason: "platform_run_id_missing" };
+	}
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+	try {
+		const response = await fetch(`${config.baseUrl}${RECORD_RUN_EVENT_PATH}`, {
+			method: "POST",
+			headers: runtimeHeaders(config),
+			body: JSON.stringify(event),
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			return { recorded: false, reason: `platform_runtime_${response.status}` };
+		}
+		const body = await response.json().catch(() => ({}));
+		return {
+			recorded: true,
+			eventId: cleanString(body?.event?.id, 160),
+			sequence: typeof body?.event?.sequence === "number" ? body.event.sequence : undefined,
+		};
+	} catch (error) {
+		return {
+			recorded: false,
+			reason: error instanceof Error ? error.message : String(error),
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function handleJsonRpcNotification(message) {
+	if (
+		message.method !== "onBrowserControlDecision" ||
+		Object.hasOwn(message, "id")
+	) {
+		return false;
+	}
+	const params = message.params ?? {};
+	void postBrowserControlDecisionToPlatform(params);
+	return true;
+}
+
 function handleMessage(message) {
 	if (!message || typeof message !== "object") {
 		return;
+	}
+	if (message.jsonrpc === "2.0" && typeof message.method === "string") {
+		if (handleJsonRpcNotification(message)) {
+			return;
+		}
 	}
 	const { id, type } = message;
 	if (id == null || typeof type !== "string") {

@@ -1,4 +1,4 @@
-//! Hook system for Composer
+//! Hook system for Maestro
 //!
 //! Provides a comprehensive hook system for intercepting and modifying agent
 //! behavior. Supports multiple execution backends:
@@ -6,7 +6,6 @@
 //! - **Native Rust hooks** - Trait-based, zero overhead
 //! - **Lua scripts** - Lightweight scripting for custom logic
 //! - **WASM plugins** - Sandboxed, polyglot plugins
-//! - **TypeScript hooks** - IPC bridge to Node.js hooks
 //!
 //! # Architecture
 //!
@@ -18,10 +17,10 @@
 //! └─────────────┘   Allow/Block/Modify │  │  Rust   │ │   Lua   │   │
 //!                                      │  │ Traits  │ │ Scripts │   │
 //!                                      │  └─────────┘ └─────────┘   │
-//!                                      │  ┌─────────┐ ┌─────────┐   │
-//!                                      │  │  WASM   │ │ Node.js │   │
-//!                                      │  │ Plugins │ │  Bridge │   │
-//!                                      │  └─────────┘ └─────────┘   │
+//!                                      │  ┌─────────┐                │
+//!                                      │  │  WASM   │                │
+//!                                      │  │ Plugins │                │
+//!                                      │  └─────────┘                │
 //!                                      └─────────────────────────────┘
 //! ```
 //!
@@ -36,7 +35,7 @@
 //!
 //! Hooks can be configured via TOML files:
 //! - `~/.composer/hooks.toml` - Global hooks
-//! - `.composer/hooks.toml` - Project-local hooks
+//! - `.composer/hooks.toml` - Workspace hooks
 //!
 //! ```toml
 //! [settings]
@@ -71,22 +70,26 @@
 //! registry.register_pre_tool_use(Arc::new(LoggingHook));
 //! ```
 
-mod bridge;
+mod claude_code_import;
 mod config;
+mod context;
 mod hot_reload;
 mod integration;
 mod lua;
+mod matcher;
 mod notify;
 mod overflow;
 mod registry;
 mod types;
 mod wasm;
 
-pub use bridge::*;
+pub use claude_code_import::*;
 pub use config::*;
+pub use context::*;
 pub use hot_reload::*;
 pub use integration::*;
 pub use lua::*;
+pub use matcher::*;
 pub use notify::*;
 pub use overflow::*;
 pub use registry::*;

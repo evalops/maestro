@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use super::pricing::{ModelPricing, DEFAULT_PRICING};
+use super::pricing::{DEFAULT_PRICING, ModelPricing};
 use crate::headless::TokenUsage;
 
 /// Usage data for a single turn (request/response pair)
@@ -416,7 +416,7 @@ impl UsageTracker {
     pub fn summary(&self) -> String {
         let stats = self.stats();
         format!(
-            "{} turns | {} in / {} out | ${:.4}",
+            "{} turns · {} in / {} out · ${:.4}",
             stats.turns,
             format_tokens(stats.input_tokens),
             format_tokens(stats.output_tokens),
@@ -583,6 +583,10 @@ mod tests {
         assert_eq!(tracker.turn_count(), 1);
         assert!(tracker.total_cost() > 0.0);
         assert_eq!(tracker.total_tokens(), 2500);
+        let summary = tracker.summary();
+        assert!(!summary.contains('|'), "{summary}");
+        assert!(summary.contains("1 turns"), "{summary}");
+        assert!(summary.contains("in /"), "{summary}");
     }
 
     #[test]

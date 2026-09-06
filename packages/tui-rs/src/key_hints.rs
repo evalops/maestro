@@ -188,7 +188,7 @@ impl KeyHint {
 
 // Common key bindings
 pub mod bindings {
-    use super::{ctrl, plain, KeyBinding, KeyCode};
+    use super::{KeyBinding, KeyCode, ctrl, plain};
 
     pub const QUIT: KeyBinding = ctrl(KeyCode::Char('c'));
     pub const ESCAPE: KeyBinding = plain(KeyCode::Esc);

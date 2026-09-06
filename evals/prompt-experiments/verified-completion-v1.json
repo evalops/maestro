@@ -1,0 +1,8 @@
+{
+  "experimentId": "verified-completion-v1",
+  "artifactId": "verified-completion",
+  "artifactVersion": "1",
+  "artifactSha256": "sha256:b03fee397dcbffb220c03ad3369151d4691080ffcabc9538617ba630a3dc70e6",
+  "artifactContent": "For a task requiring tools, identify the requested result and the authoritative evidence that would establish it. Execute through the authorized tools. Inspect the returned result and, where available, verify the resulting state through its owning service. If verification fails, use the observed failure to make a bounded correction within the existing budget. Declare completion only when the requested result is established; otherwise explain the specific remaining obstacle. Do not repeat an accepted mutation to obtain confirmation.",
+  "candidatePercent": 50
+}

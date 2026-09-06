@@ -1,0 +1,226 @@
+{
+  "schemaVersion": "evalops.maestro.protocol-compatibility-manifest.v1",
+  "digestEncoding": {
+    "hash": "sha256",
+    "canonicalization": "rfc8785",
+    "encoding": "utf-8"
+  },
+  "compatibilityDigest": "sha256:8efa2454532caab7f4bd47be2bccf25ccd8606bd4b56544c20221895f87c979e",
+  "buildIdentity": {
+    "sourceSha": null,
+    "buildDigest": null,
+    "hooks": {
+      "sourceShaEnvironmentVariable": "MAESTRO_SOURCE_SHA",
+      "buildDigestEnvironmentVariable": "MAESTRO_BUILD_DIGEST"
+    },
+    "receiptDigest": null
+  },
+  "generatedFrom": [
+    "proto/maestro/v1/headless.proto",
+    "packages/tui-rs/src/headless/generated_protocol.rs",
+    "packages/tui-rs/src/headless/messages.rs",
+    "packages/runtime-rs/src/protocol.rs",
+    "packages/runtime-rs/fixtures/headless-protocol-v1.json",
+    "packages/runtime-rs/src/receipts.rs",
+    "packages/runtime-rs/fixtures/runtime-receipt-v1.json",
+    "packages/runtime-rs/fixtures/runtime-receipt-contract-v1.json",
+    "packages/tui-rs/src/transcript.rs",
+    "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+    "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
+    "packages/tui-rs/src/hosted_runner_cli.rs",
+    "packages/tui-rs/src/hosted_runner.rs",
+    "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs"
+  ],
+  "compatibility": {
+    "headless": {
+      "supportedVersions": [
+        "2026-08-08"
+      ],
+      "schemaDeclaredVersion": "2026-08-08",
+      "schemaContractDigest": "sha256:cf65a6aa422720c6cec243479ba4c3a6c2f3e54f838d6cd1b3e2b788d04229d5",
+      "runtimeContractDigest": "sha256:3002399fbaa357ed66286181526739c6de943e4062328a77ada7562e00e1f1c0",
+      "messages": {
+        "toRuntime": [
+          "hello",
+          "init",
+          "governed_init",
+          "restore_conversation",
+          "prompt",
+          "governed_prompt",
+          "steer",
+          "governed_steer",
+          "apply_workspace_capability_set",
+          "configure_prompt_experiment",
+          "interrupt",
+          "tool_response",
+          "client_tool_result",
+          "governed_client_tool_result",
+          "server_request_response",
+          "utility_command_start",
+          "utility_command_terminate",
+          "utility_command_stdin",
+          "utility_command_resize",
+          "utility_file_search",
+          "utility_file_read",
+          "utility_file_watch_start",
+          "utility_file_watch_stop",
+          "cancel",
+          "shutdown"
+        ],
+        "fromRuntime": [
+          "conversation_snapshot",
+          "hello_ok",
+          "response_accepted",
+          "process_budget_checkpoint",
+          "managed_gateway_receipt",
+          "workspace_capability_set_applied",
+          "ready",
+          "response_start",
+          "response_chunk",
+          "response_end",
+          "turn_completed",
+          "turn_interrupted",
+          "codex_session_state",
+          "codex_turn_state",
+          "codex_usage_state",
+          "codex_compatibility",
+          "tool_call",
+          "tool_start",
+          "tool_output",
+          "tool_end",
+          "client_tool_request",
+          "governed_client_tool_request",
+          "server_request",
+          "server_request_resolved",
+          "error",
+          "provider_error",
+          "delegation_event",
+          "status",
+          "compaction",
+          "session_info",
+          "connection_info",
+          "raw_agent_event",
+          "utility_command_started",
+          "utility_command_resized",
+          "utility_command_output",
+          "utility_command_exited",
+          "utility_file_search_results",
+          "utility_file_read_result",
+          "utility_file_watch_started",
+          "utility_file_watch_event",
+          "utility_file_watch_stopped"
+        ],
+        "schemaOnlyToRuntime": [],
+        "schemaOnlyFromRuntime": [],
+        "runtimeOnlyToRuntime": [
+          "restore_conversation",
+          "steer"
+        ],
+        "runtimeOnlyFromRuntime": [
+          "conversation_snapshot",
+          "process_budget_checkpoint",
+          "managed_gateway_receipt",
+          "codex_session_state",
+          "codex_turn_state",
+          "codex_usage_state",
+          "codex_compatibility"
+        ]
+      },
+      "capabilities": {
+        "notifications": [
+          "status",
+          "heartbeat",
+          "connection_info",
+          "compaction"
+        ],
+        "serverRequests": [
+          "approval",
+          "client_tool",
+          "user_input",
+          "tool_retry"
+        ],
+        "connectionRoles": [
+          "viewer",
+          "controller"
+        ],
+        "utilityOperations": [
+          "command_exec",
+          "file_search",
+          "file_read",
+          "file_watch"
+        ],
+        "codeModes": [
+          "governed_code"
+        ],
+        "clientFields": [
+          "server_requests",
+          "utility_operations",
+          "raw_agent_events",
+          "transcript_grade",
+          "governed_code_mode"
+        ],
+        "transcriptGrades": [
+          "off",
+          "turn",
+          "block",
+          "delta"
+        ],
+        "schemaOnlyServerRequests": [
+          "mcp_elicitation"
+        ],
+        "runtimeOnlyClientFields": [
+          "transcript_grade"
+        ]
+      }
+    },
+    "thread": {
+      "contractDigest": "sha256:424b43325bbb2fcf1ce979e8f87ef12a6ffc6854d683ba7dcf11fdf154a55bf0",
+      "supportedVersions": [
+        {
+          "version": "evalops.maestro.thread.v1",
+          "governedCode": false
+        },
+        {
+          "version": "evalops.maestro.thread.v2",
+          "governedCode": true,
+          "requiredFields": [
+            "codeMode",
+            "toolGrant"
+          ]
+        }
+      ]
+    },
+    "resident": {
+      "contractDigest": "sha256:d8faca326f10de874bc3e55c4a6435537d4d9bbd4715ab9b7e7cc616af160af6",
+      "modelReadyContractRevision": "maestro-resident-model-ready-v3",
+      "identityProtocolVersion": "evalops.remote-runner.identity.v1",
+      "identityBindingProtocolVersion": "evalops.maestro.hosted-runner-identity-binding.v1",
+      "rendezvousProtocolVersion": "evalops.maestro.hosted-runner-rendezvous.v1"
+    },
+    "runtime": {
+      "schemaVersion": "evalops.maestro.headless-protocol.v1",
+      "contractDigest": "sha256:191794d318091af702b473448e446be5ab26d409a2890f453ea92d6ae933f6c7",
+      "receipt": {
+        "schemaVersion": "evalops.maestro.runtime-receipt.v1",
+        "sourceDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921",
+        "contractDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921"
+      }
+    },
+    "governedCode": {
+      "codeModes": [
+        "governed_code"
+      ],
+      "clientCapability": "governed_code_mode",
+      "threadProtocolVersion": "evalops.maestro.thread.v2",
+      "toRuntimeMessages": [
+        "governed_init",
+        "governed_prompt",
+        "governed_steer",
+        "governed_client_tool_result"
+      ],
+      "fromRuntimeMessages": [
+        "governed_client_tool_request"
+      ]
+    }
+  }
+}

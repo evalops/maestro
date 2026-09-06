@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn force_save_bypasses_debounce() {
         let mut history: UndoHistory<String> =
-            UndoHistory::new().with_debounce(Duration::from_millis(1000));
+            UndoHistory::new().with_debounce(Duration::from_secs(1));
 
         history.save("state1".to_string());
         history.force_save("state2".to_string()); // Should succeed despite debounce

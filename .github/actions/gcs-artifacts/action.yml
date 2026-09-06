@@ -1,0 +1,178 @@
+name: GCS artifacts
+description: >-
+  Store or restore GitHub Actions artifacts in the shared EvalOps GCS bucket via
+  GitHub OIDC / Workload Identity Federation instead of GitHub Actions artifact
+  storage. Supports terminal evidence uploads and cross-job artifact handoff
+  through a caller-provided, run-scoped object prefix.
+
+inputs:
+  mode:
+    description: '"upload" to store paths in GCS, "download" to restore a prefix.'
+    required: true
+  prefix:
+    description: >-
+      Bucket-relative object prefix. Callers must make this unique per run
+      (e.g. include github.run_id / github.run_attempt) so cross-job handoff and
+      parallel matrix legs never collide.
+    required: true
+  workload-identity-provider:
+    description: GCP workload identity provider used by GitHub Actions.
+    required: true
+  paths:
+    description: Newline-delimited files or directories to upload (upload mode).
+    required: false
+    default: ""
+  destination:
+    description: Local directory to restore objects into (download mode).
+    required: false
+    default: "."
+  bucket:
+    description: gs:// bucket root that stores the artifacts.
+    required: false
+    default: ""
+  service-account:
+    description: GCP service account impersonated for the transfer.
+    required: false
+    default: ""
+  if-missing:
+    description: >-
+      Upload behavior when a configured path does not exist: "error", "warn", or
+      "ignore".
+    required: false
+    default: "error"
+
+outputs:
+  object-prefix:
+    description: Fully-qualified gs:// prefix that received or supplied objects.
+    value: ${{ steps.transfer.outputs.object_prefix }}
+  transferred-file-count:
+    description: Number of files uploaded or downloaded.
+    value: ${{ steps.transfer.outputs.transferred_file_count }}
+
+runs:
+  using: composite
+  steps:
+    # Callers pass vars/secrets.GCP_WORKLOAD_IDENTITY_PROVIDER, which may be
+    # unset in repos/environments without GCS access. google-github-actions/auth
+    # hard-fails with "must specify exactly one of workload_identity_provider or
+    # credentials_json" in that case; degrade to a warning + skip instead so
+    # best-effort uploads stay quiet and real misconfig stays loud.
+    - name: Preflight auth configuration
+      id: preflight
+      shell: bash
+      env:
+        WIF_PROVIDER: ${{ inputs.workload-identity-provider }}
+        BUCKET: ${{ inputs.bucket }}
+        SERVICE_ACCOUNT: ${{ inputs.service-account }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${WIF_PROVIDER}" || -z "${BUCKET}" || -z "${SERVICE_ACCOUNT}" ]]; then
+          echo "::warning title=GCS artifacts skipped::workload identity provider, bucket, and service account must all be configured; skipping GCS transfer."
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Authenticate to Google Cloud
+      if: steps.preflight.outputs.configured != 'false'
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+      with:
+        workload_identity_provider: ${{ inputs.workload-identity-provider }}
+        service_account: ${{ inputs.service-account }}
+        create_credentials_file: true
+        cleanup_credentials: true
+
+    - name: Set up Cloud SDK
+      if: steps.preflight.outputs.configured != 'false'
+      uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+    - name: Transfer artifacts
+      if: steps.preflight.outputs.configured != 'false'
+      id: transfer
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ARTIFACT_PATHS: ${{ inputs.paths }}
+        OBJECT_PREFIX: ${{ inputs.prefix }}
+        DESTINATION: ${{ inputs.destination }}
+        BUCKET: ${{ inputs.bucket }}
+        IF_MISSING: ${{ inputs.if-missing }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${BUCKET}" != gs://* ]]; then
+          echo "::error title=Invalid GCS bucket::bucket must be a gs:// prefix."
+          exit 2
+        fi
+        if [[ -z "${OBJECT_PREFIX}" || "${OBJECT_PREFIX}" == /* || "${OBJECT_PREFIX}" == *..* ]]; then
+          echo "::error title=Invalid GCS prefix::prefix must be a non-empty relative path without '..'."
+          exit 2
+        fi
+
+        destination_prefix="${BUCKET%/}/${OBJECT_PREFIX}"
+        transferred_file_count=0
+
+        case "${MODE}" in
+          upload)
+            missing_paths=()
+            while IFS= read -r source_path || [[ -n "${source_path}" ]]; do
+              [[ -n "${source_path}" ]] || continue
+              shopt -s nullglob dotglob
+              # shellcheck disable=SC2206
+              matches=(${source_path})
+              shopt -u nullglob dotglob
+              if [[ "${#matches[@]}" -eq 0 ]]; then
+                missing_paths+=("${source_path}")
+                continue
+              fi
+              for match in "${matches[@]}"; do
+                if [[ -d "${match}" ]]; then
+                  gcloud storage cp --recursive "${match}" "${destination_prefix}/"
+                  transferred_file_count=$((transferred_file_count + $(find "${match}" -type f | wc -l)))
+                else
+                  gcloud storage cp "${match}" "${destination_prefix}/$(basename "${match}")"
+                  transferred_file_count=$((transferred_file_count + 1))
+                fi
+              done
+            done <<< "${ARTIFACT_PATHS}"
+
+            if [[ "${#missing_paths[@]}" -gt 0 ]]; then
+              message="$(IFS=', '; echo "${missing_paths[*]}")"
+              case "${IF_MISSING}" in
+                error)
+                  echo "::error title=GCS upload missing paths::${message}"
+                  exit 1
+                  ;;
+                warn)
+                  echo "::warning title=GCS upload missing paths::${message}"
+                  ;;
+                ignore) ;;
+                *)
+                  echo "::error title=Invalid if-missing::if-missing must be error, warn, or ignore."
+                  exit 2
+                  ;;
+              esac
+            fi
+            ;;
+          download)
+            mkdir -p "${DESTINATION}"
+            gcloud storage cp --recursive "${destination_prefix}/*" "${DESTINATION}/"
+            transferred_file_count=$(gcloud storage ls --recursive "${destination_prefix}/**" 2>/dev/null | grep -c '^gs://' || true)
+            ;;
+          *)
+            echo "::error title=Invalid mode::mode must be upload or download."
+            exit 2
+            ;;
+        esac
+
+        {
+          echo "object_prefix=${destination_prefix}/"
+          echo "transferred_file_count=${transferred_file_count}"
+        } >> "${GITHUB_OUTPUT}"
+
+        {
+          echo "## GCS artifacts (${MODE})"
+          echo ""
+          echo "- Object prefix: \`${destination_prefix}/\`"
+          echo "- Files: ${transferred_file_count}"
+        } >> "${GITHUB_STEP_SUMMARY}"

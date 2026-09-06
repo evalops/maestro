@@ -1,0 +1,48 @@
+{
+	"schemaVersion": 1,
+	"cases": [
+		{
+			"name": "version",
+			"argv": ["--version"],
+			"route": "native",
+			"exitCode": 0
+		},
+		{ "name": "help", "argv": ["--help"], "route": "native", "exitCode": 0 },
+		{
+			"name": "hidden-help",
+			"argv": ["--help-hidden"],
+			"route": "native",
+			"exitCode": 0
+		},
+		{ "name": "interactive", "argv": [], "route": "native-tui" },
+		{ "name": "print", "argv": ["-p", "hello"], "route": "native-tui" },
+		{ "name": "exec", "argv": ["exec", "hello"], "route": "native-tui" },
+		{
+			"name": "headless-flag",
+			"argv": ["--headless"],
+			"route": "native-headless"
+		},
+		{
+			"name": "headless-mode",
+			"argv": ["--mode", "headless"],
+			"route": "native-headless"
+		},
+		{ "name": "web", "argv": ["web"], "route": "native-control-plane" },
+		{ "name": "a2a", "argv": ["a2a", "--help"], "route": "native" },
+		{
+			"name": "hosted-runner",
+			"argv": ["hosted-runner", "--help"],
+			"route": "native"
+		},
+		{ "name": "init", "argv": ["init", "--help"], "route": "native" },
+		{ "name": "remote", "argv": ["remote", "--help"], "route": "native" },
+		{ "name": "skill", "argv": ["skill", "--help"], "route": "native" },
+		{ "name": "update", "argv": ["update", "--help"], "route": "native" },
+		{
+			"name": "web-rejects-prompt",
+			"argv": ["web", "prompt"],
+			"route": "native-control-plane",
+			"exitCode": 1
+		}
+	]
+}

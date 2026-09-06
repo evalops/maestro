@@ -1,0 +1,915 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-inspection.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"replaySchemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"scoreSchemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"run": {
+		"id": "hosted-governed-recovery-1",
+		"sessionId": "hosted-governed-recovery-1",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"redaction": {
+		"default": "redacted",
+		"omitted": [
+			"raw prompts",
+			"raw tool arguments",
+			"raw tool outputs",
+			"full file diffs",
+			"timeline metadata values",
+			"secrets"
+		]
+	},
+	"counts": {
+		"timelineItems": 16,
+		"events": 16,
+		"replayDeltas": 0,
+		"scoreFindings": 5,
+		"scoreFailures": 0,
+		"scoreWarnings": 0,
+		"jumpTargets": 22
+	},
+	"finalAnswer": {
+		"eventId": "trajectory:message:hosted-assistant-3",
+		"timelineItemIds": ["message:hosted-assistant-3"],
+		"title": "Assistant response",
+		"summary": "State was inspected and the run is safe to finalize without restart.",
+		"redacted": true
+	},
+	"timelineItems": [
+		{
+			"id": "session-started:hosted-governed-recovery-1",
+			"timestamp": "2026-05-09T18:00:00.000Z",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Hosted session started",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "model-change:hosted-model",
+			"timestamp": "2026-05-09T18:00:01.000Z",
+			"type": "model.changed",
+			"status": "info",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Model changed",
+			"summary": "openai/gpt-5.5",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "message:hosted-user-1",
+			"timestamp": "2026-05-09T18:00:02.000Z",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "User message",
+			"summary": "Restart the hosted worker after approval.",
+			"role": "user",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "message:hosted-assistant-1",
+			"timestamp": "2026-05-09T18:00:03.000Z",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "I will request the guarded restart.",
+			"role": "assistant",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-requested:hosted-assistant-1:call-hosted-restart",
+			"timestamp": "2026-05-09T18:00:04.000Z",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested restart_worker",
+			"toolName": "restart_worker",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "pending:pending-approval-hosted-1",
+			"timestamp": "2026-05-09T18:00:05.000Z",
+			"type": "wait.pending",
+			"status": "pending",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Waiting for approval: restart_worker",
+			"summary": "Production restart requires approval.",
+			"toolName": "restart_worker",
+			"pendingRequestKind": "approval",
+			"platformOperation": "ResumeToolExecution",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "policy-decision:hosted-assistant-1:call-hosted-restart",
+			"timestamp": "2026-05-09T18:00:06.000Z",
+			"type": "policy.decision",
+			"status": "pending",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Policy decision for restart_worker",
+			"summary": "Outcome: approval_required | Code: approval_required",
+			"toolName": "restart_worker",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-result:hosted-restart-1:call-hosted-restart",
+			"timestamp": "2026-05-09T18:00:07.000Z",
+			"type": "tool.failed",
+			"status": "failed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "restart_worker failed",
+			"role": "tool",
+			"toolName": "restart_worker",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "runtime:hosted-recovery-1",
+			"timestamp": "2026-05-09T18:00:08.000Z",
+			"type": "runtime.recovery",
+			"status": "failed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Runtime scheduled recovery",
+			"summary": "Approval timeout triggered hosted recovery path.",
+			"toolName": "restart_worker",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "message:hosted-assistant-2",
+			"timestamp": "2026-05-09T18:00:09.000Z",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "Approval timed out, so I will inspect state before retrying.",
+			"role": "assistant",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "pending:pending-mcp-hosted-1",
+			"timestamp": "2026-05-09T18:00:10.000Z",
+			"type": "wait.pending",
+			"status": "pending",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Waiting for MCP input",
+			"summary": "Collect restart window from MCP operator.",
+			"toolName": "mcp__ops__elicit_restart_window",
+			"pendingRequestKind": "mcp_elicitation",
+			"platformOperation": "ResumeRun",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-requested:hosted-assistant-2:call-hosted-read",
+			"timestamp": "2026-05-09T18:00:11.000Z",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested read_runtime_state",
+			"toolName": "read_runtime_state",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-result:hosted-read-1:call-hosted-read",
+			"timestamp": "2026-05-09T18:00:12.000Z",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "read_runtime_state completed",
+			"role": "tool",
+			"toolName": "read_runtime_state",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "artifact-linked:hosted-read-1:call-hosted-read",
+			"timestamp": "2026-05-09T18:00:13.000Z",
+			"type": "artifact.linked",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Skill artifact loaded: ops-recovery",
+			"summary": "ops-recovery | v2 | service | workspace",
+			"toolName": "read_runtime_state",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "message:hosted-assistant-3",
+			"timestamp": "2026-05-09T18:00:14.000Z",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "State was inspected and the run is safe to finalize without restart.",
+			"role": "assistant",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "runtime:hosted-finished-1",
+			"timestamp": "2026-05-09T18:00:15.000Z",
+			"type": "runtime.finished",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Runtime finished",
+			"metadataKeys": [],
+			"redacted": true
+		}
+	],
+	"events": [
+		{
+			"id": "trajectory:session-started:hosted-governed-recovery-1",
+			"sequence": 1,
+			"timestamp": "2026-05-09T18:00:00.000Z",
+			"kind": "session",
+			"phase": "setup",
+			"actor": "platform",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Hosted session started",
+			"relatedIds": [],
+			"timelineItemIds": ["session-started:hosted-governed-recovery-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:hosted-governed-recovery-1",
+					"redacted": true,
+					"label": "timeline_item:session-started:hosted-governed-recovery-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:model-change:hosted-model",
+			"sequence": 2,
+			"timestamp": "2026-05-09T18:00:01.000Z",
+			"kind": "context",
+			"phase": "setup",
+			"actor": "platform",
+			"type": "model.changed",
+			"status": "info",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Model changed",
+			"summary": "openai/gpt-5.5",
+			"relatedIds": [],
+			"timelineItemIds": ["model-change:hosted-model"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "model-change:hosted-model",
+					"redacted": true,
+					"label": "timeline_item:model-change:hosted-model"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:hosted-user-1",
+			"sequence": 3,
+			"timestamp": "2026-05-09T18:00:02.000Z",
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "User message",
+			"summary": "Restart the hosted worker after approval.",
+			"relatedIds": [],
+			"timelineItemIds": ["message:hosted-user-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-user-1",
+					"redacted": true,
+					"label": "timeline_item:message:hosted-user-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:hosted-assistant-1",
+			"sequence": 4,
+			"timestamp": "2026-05-09T18:00:03.000Z",
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "I will request the guarded restart.",
+			"relatedIds": [],
+			"timelineItemIds": ["message:hosted-assistant-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-1",
+					"redacted": true,
+					"label": "timeline_item:message:hosted-assistant-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:hosted-assistant-1:call-hosted-restart",
+			"sequence": 5,
+			"timestamp": "2026-05-09T18:00:04.000Z",
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested restart_worker",
+			"toolName": "restart_worker",
+			"relatedIds": ["call-hosted-restart"],
+			"timelineItemIds": [
+				"tool-requested:hosted-assistant-1:call-hosted-restart"
+			],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-1:call-hosted-restart",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"id": "trajectory:pending:pending-approval-hosted-1",
+			"sequence": 6,
+			"timestamp": "2026-05-09T18:00:05.000Z",
+			"kind": "wait",
+			"phase": "wait",
+			"actor": "platform",
+			"type": "wait.pending",
+			"status": "pending",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Waiting for approval: restart_worker",
+			"summary": "Production restart requires approval.",
+			"toolName": "restart_worker",
+			"relatedIds": [
+				"approval-hosted-1",
+				"call-hosted-restart",
+				"pending-approval-hosted-1",
+				"tool-exec-hosted-1"
+			],
+			"timelineItemIds": ["pending:pending-approval-hosted-1"],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"redacted": true,
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1",
+					"redacted": true,
+					"label": "pending_request:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1",
+					"redacted": true,
+					"label": "timeline_item:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"redacted": true,
+					"label": "tool_execution:tool-exec-hosted-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:policy-decision:hosted-assistant-1:call-hosted-restart",
+			"sequence": 7,
+			"timestamp": "2026-05-09T18:00:06.000Z",
+			"kind": "governance",
+			"phase": "govern",
+			"actor": "platform",
+			"type": "policy.decision",
+			"status": "pending",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Policy decision for restart_worker",
+			"summary": "Outcome: approval_required | Code: approval_required",
+			"toolName": "restart_worker",
+			"relatedIds": ["approval-hosted-1", "call-hosted-restart"],
+			"timelineItemIds": [
+				"policy-decision:hosted-assistant-1:call-hosted-restart"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"redacted": true,
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:hosted-assistant-1:call-hosted-restart",
+					"redacted": true,
+					"label": "timeline_item:policy-decision:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+			"sequence": 8,
+			"timestamp": "2026-05-09T18:00:07.000Z",
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.failed",
+			"status": "failed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "restart_worker failed",
+			"toolName": "restart_worker",
+			"relatedIds": [
+				"approval-hosted-1",
+				"call-hosted-restart",
+				"tool-exec-hosted-1"
+			],
+			"timelineItemIds": ["tool-result:hosted-restart-1:call-hosted-restart"],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"redacted": true,
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"redacted": true,
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"redacted": true,
+					"label": "tool_execution:tool-exec-hosted-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:runtime:hosted-recovery-1",
+			"sequence": 9,
+			"timestamp": "2026-05-09T18:00:08.000Z",
+			"kind": "runtime",
+			"phase": "recover",
+			"actor": "platform",
+			"type": "runtime.recovery",
+			"status": "failed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Runtime scheduled recovery",
+			"summary": "Approval timeout triggered hosted recovery path.",
+			"toolName": "restart_worker",
+			"relatedIds": ["call-hosted-restart"],
+			"timelineItemIds": ["runtime:hosted-recovery-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1",
+					"redacted": true,
+					"label": "timeline_item:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:hosted-assistant-2",
+			"sequence": 10,
+			"timestamp": "2026-05-09T18:00:09.000Z",
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "Approval timed out, so I will inspect state before retrying.",
+			"relatedIds": [],
+			"timelineItemIds": ["message:hosted-assistant-2"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-2",
+					"redacted": true,
+					"label": "timeline_item:message:hosted-assistant-2"
+				}
+			]
+		},
+		{
+			"id": "trajectory:pending:pending-mcp-hosted-1",
+			"sequence": 11,
+			"timestamp": "2026-05-09T18:00:10.000Z",
+			"kind": "wait",
+			"phase": "wait",
+			"actor": "platform",
+			"type": "wait.pending",
+			"status": "pending",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Waiting for MCP input",
+			"summary": "Collect restart window from MCP operator.",
+			"toolName": "mcp__ops__elicit_restart_window",
+			"relatedIds": ["call-hosted-elicit", "pending-mcp-hosted-1"],
+			"timelineItemIds": ["pending:pending-mcp-hosted-1"],
+			"evidence": [
+				{
+					"kind": "pending_request",
+					"id": "pending-mcp-hosted-1",
+					"redacted": true,
+					"label": "pending_request:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-mcp-hosted-1",
+					"redacted": true,
+					"label": "timeline_item:pending:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-elicit",
+					"redacted": true,
+					"label": "tool_call:call-hosted-elicit"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:hosted-assistant-2:call-hosted-read",
+			"sequence": 12,
+			"timestamp": "2026-05-09T18:00:11.000Z",
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested read_runtime_state",
+			"toolName": "read_runtime_state",
+			"relatedIds": ["call-hosted-read"],
+			"timelineItemIds": ["tool-requested:hosted-assistant-2:call-hosted-read"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-2:call-hosted-read",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:hosted-assistant-2:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"redacted": true,
+					"label": "tool_call:call-hosted-read"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-result:hosted-read-1:call-hosted-read",
+			"sequence": 13,
+			"timestamp": "2026-05-09T18:00:12.000Z",
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "read_runtime_state completed",
+			"toolName": "read_runtime_state",
+			"relatedIds": ["call-hosted-read", "tool-exec-hosted-read-1"],
+			"timelineItemIds": ["tool-result:hosted-read-1:call-hosted-read"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-read-1:call-hosted-read",
+					"redacted": true,
+					"label": "timeline_item:tool-result:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"redacted": true,
+					"label": "tool_call:call-hosted-read"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-read-1",
+					"redacted": true,
+					"label": "tool_execution:tool-exec-hosted-read-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:artifact-linked:hosted-read-1:call-hosted-read",
+			"sequence": 14,
+			"timestamp": "2026-05-09T18:00:13.000Z",
+			"kind": "artifact",
+			"phase": "verify",
+			"actor": "platform",
+			"type": "artifact.linked",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Skill artifact loaded: ops-recovery",
+			"summary": "ops-recovery | v2 | service | workspace",
+			"toolName": "read_runtime_state",
+			"relatedIds": ["call-hosted-read", "skill_artifact_hosted_1"],
+			"timelineItemIds": ["artifact-linked:hosted-read-1:call-hosted-read"],
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_hosted_1",
+					"redacted": true,
+					"label": "artifact:skill_artifact_hosted_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:hosted-read-1:call-hosted-read",
+					"redacted": true,
+					"label": "timeline_item:artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"redacted": true,
+					"label": "tool_call:call-hosted-read"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:hosted-assistant-3",
+			"sequence": 15,
+			"timestamp": "2026-05-09T18:00:14.000Z",
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"summary": "State was inspected and the run is safe to finalize without restart.",
+			"relatedIds": [],
+			"timelineItemIds": ["message:hosted-assistant-3"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-3",
+					"redacted": true,
+					"label": "timeline_item:message:hosted-assistant-3"
+				}
+			]
+		},
+		{
+			"id": "trajectory:runtime:hosted-finished-1",
+			"sequence": 16,
+			"timestamp": "2026-05-09T18:00:15.000Z",
+			"kind": "runtime",
+			"phase": "finish",
+			"actor": "platform",
+			"type": "runtime.finished",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Runtime finished",
+			"relatedIds": [],
+			"timelineItemIds": ["runtime:hosted-finished-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-finished-1",
+					"redacted": true,
+					"label": "timeline_item:runtime:hosted-finished-1"
+				}
+			]
+		}
+	],
+	"replayDeltas": [],
+	"scoreFindings": [
+		{
+			"ruleId": "final-event-has-evidence",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final trajectory event has evidence anchors.",
+			"eventIds": ["trajectory:runtime:hosted-finished-1"],
+			"timelineItemIds": ["runtime:hosted-finished-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-finished-1",
+					"redacted": true,
+					"label": "timeline_item:runtime:hosted-finished-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-platform-backed",
+			"status": "pass",
+			"severity": "error",
+			"message": "No forbidden event matched selector hosted-platform-backed.",
+			"eventIds": [],
+			"timelineItemIds": [],
+			"evidence": [],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-approval-before-result",
+			"status": "pass",
+			"severity": "error",
+			"message": "Approval wait preceded tool result for call-hosted-restart.",
+			"eventIds": [
+				"trajectory:pending:pending-approval-hosted-1",
+				"trajectory:tool-result:hosted-restart-1:call-hosted-restart"
+			],
+			"timelineItemIds": [
+				"pending:pending-approval-hosted-1",
+				"tool-result:hosted-restart-1:call-hosted-restart"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"redacted": true,
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1",
+					"redacted": true,
+					"label": "pending_request:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1",
+					"redacted": true,
+					"label": "timeline_item:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"redacted": true,
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"redacted": true,
+					"label": "tool_execution:tool-exec-hosted-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-recovery-after-failure",
+			"status": "pass",
+			"severity": "warning",
+			"message": "Recovery followed failed tool call-hosted-restart.",
+			"eventIds": [
+				"trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+				"trajectory:runtime:hosted-recovery-1"
+			],
+			"timelineItemIds": [
+				"runtime:hosted-recovery-1",
+				"tool-result:hosted-restart-1:call-hosted-restart"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"redacted": true,
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1",
+					"redacted": true,
+					"label": "timeline_item:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"redacted": true,
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"redacted": true,
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"redacted": true,
+					"label": "tool_execution:tool-exec-hosted-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-read-artifact",
+			"status": "pass",
+			"severity": "error",
+			"message": "Tool call-hosted-read produced required artifact skill_artifact_hosted_1.",
+			"eventIds": ["trajectory:artifact-linked:hosted-read-1:call-hosted-read"],
+			"timelineItemIds": ["artifact-linked:hosted-read-1:call-hosted-read"],
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_hosted_1",
+					"redacted": true,
+					"label": "artifact:skill_artifact_hosted_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:hosted-read-1:call-hosted-read",
+					"redacted": true,
+					"label": "timeline_item:artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"redacted": true,
+					"label": "tool_call:call-hosted-read"
+				}
+			],
+			"remediation": "No action required."
+		}
+	]
+}

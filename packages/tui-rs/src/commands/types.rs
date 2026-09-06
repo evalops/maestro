@@ -216,6 +216,18 @@ pub enum CommandAction {
     SetCompactTools(Option<bool>),
     /// Set approval mode (yolo, selective, safe)
     SetApprovalMode(String),
+    /// Cycle Grok-style interaction mode (Normal → Plan → Always-approve)
+    CycleInteractionMode,
+    /// Enter plan mode (require plan before mutating tools)
+    SetPlanMode(bool),
+    /// Show the current session plan.md contents
+    ViewPlan,
+    /// Approve the plan and leave plan mode so implementation can start
+    ApprovePlan,
+    /// Manage structured review comments on the current plan
+    PlanReview(PlanReviewAction),
+    /// Ask a tool-free question outside the main conversation history
+    SideQuestion(String),
     /// Set extended thinking level (off, low, medium, high, max)
     SetThinkingLevel(String),
     /// Quit the application
@@ -228,30 +240,308 @@ pub enum CommandAction {
     SetTheme(String),
     /// Set the current model
     SetModel(String),
+    /// Increase intelligence for the current task at a safe request boundary.
+    Boost,
+    /// Review uncommitted changes with a different model (second opinion).
+    /// `None` lets the app pick a model from a different provider.
+    RubberDuck { model: Option<String> },
+    /// Set the current model and persist it as the user default
+    SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)
     CompactConversation(Option<String>),
+    /// Summarize a selected span into a saved child conversation.
+    SummarizeConversation,
     /// MCP (Model Context Protocol) actions
     Mcp(McpAction),
+    /// Native hosted Computer task console actions.
+    Orb(OrbAction),
+    /// Agent-to-Agent peer pairing actions
+    A2a(A2aAction),
     /// Hook system management action
     HooksManage(HooksAction),
     /// Show usage and cost statistics
     ShowUsage(UsageAction),
+    /// Show a token breakdown of the current session's context by category
+    ShowContext,
+    /// Exclude or include a registered tool schema for this session.
+    SetContextTool { name: String, excluded: bool },
+    /// Audit the prompt and tool surface that will be sent to the model.
+    ShowPromptAudit { json: bool },
+    /// Change the transcript's turn-level Focus projection.
+    SetFocus(Option<bool>),
     /// Export current session
     ExportSession(ExportAction),
+    /// Manage a local product issue draft; only Send performs network I/O.
+    BugReport(String),
     /// Show or search prompt history
     ShowHistory(HistoryAction),
     /// Show tool execution history
     ShowToolHistory(ToolHistoryAction),
     /// Skills system action
     Skills(SkillsAction),
+    /// Plugin discovery / listing action
+    Plugins(PluginsAction),
     /// Queue management action
     Queue(QueueAction),
     /// Submit a steering prompt
     Steer(String),
     /// Show diagnostics/status summary
     ShowDiagnostics,
+    /// List recorded alerts (agent/API errors) in the transcript
+    ShowAlerts,
+    /// List built-in tools
+    ShowTools,
+    /// Show local/cross-session memory status
+    ShowMemory,
     /// Session management actions
     Session(SessionAction),
+    /// Workspace trust (global config grant/revoke for project skills/plugins)
+    Trust(TrustAction),
+    /// Show the active interactive sandbox policy
+    ShowSandbox,
+    /// Invoke a skill as a slash command (Grok-style `/skillname args`)
+    InvokeSkill { name: String, args: String },
+    /// Invoke a flat markdown prompt/command template as a slash command
+    InvokePromptTemplate { name: String, args: String },
+    /// Invoke an executable script (Droid-style `.composer/commands/`) as a slash command
+    InvokeExecCommand { name: String, args: String },
+    /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
+    MagicTrace(MagicTraceAction),
+    /// Direct user controls for existing workers.
+    Worker(WorkerAction),
+    /// Observe output from an existing background task.
+    BackgroundMonitor(BackgroundMonitorAction),
+    /// Re-run a prompt on an interval (Grok-style `/loop`).
+    Loop(LoopAction),
+    /// Structured goal mode (create / pause / block / complete).
+    Goal(GoalAction),
+    /// Durable continual-harness refinement actions.
+    Harness(HarnessAction),
+    /// RLM-style context variable actions.
+    Rlm(RlmAction),
+    /// Durable parent/subagent mailbox actions.
+    Mailbox(MailboxAction),
+    /// Change status-bar footer density.
+    SetFooterStyle(FooterStyle),
+    /// Change Dex presentation through the existing UI preferences.
+    SetDexPresentation(String),
+    /// Manage files queued for the next prompt (`/attach`).
+    Attach(AttachAction),
+    /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
+    Init { force: bool },
+}
+
+/// Product-level hosted Computer controls exposed by `/computer` in the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrbAction {
+    List,
+    Status(String),
+    Followup {
+        id: String,
+        prompt: String,
+    },
+    Pause(String),
+    Resume(String),
+    Cancel(String),
+    Collect(String),
+    HandoffCreate {
+        source_id: String,
+        target_thread_id: String,
+        files: Vec<String>,
+        artifact_ids: Vec<String>,
+        include_diff: bool,
+    },
+    HandoffList {
+        target_thread_id: String,
+    },
+    HandoffRead {
+        target_thread_id: String,
+        package_id: String,
+    },
+}
+
+/// `/attach` subcommands.
+#[derive(Debug, Clone)]
+pub enum AttachAction {
+    /// Queue a local path for the next prompt.
+    Add(String),
+    /// List pending attachments.
+    List,
+    /// Clear all pending attachments.
+    Clear,
+    /// Drop one pending attachment by 1-based index.
+    Remove { index: usize },
+}
+
+/// Status bar density presets (Kimi-inspired `/footer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FooterStyle {
+    /// Model, cwd, git, badges, shortcuts.
+    #[default]
+    Rich,
+    /// Compact: model + goal + key badges only.
+    Solo,
+    /// Hide most chrome; keep alerts and pending approvals.
+    History,
+    /// Status bar empty (zen-adjacent; zen mode still separate).
+    Clear,
+}
+
+impl FooterStyle {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "rich" | "full" | "default" => Some(Self::Rich),
+            "solo" | "compact" | "min" => Some(Self::Solo),
+            "history" | "hist" => Some(Self::History),
+            "clear" | "off" | "none" | "hidden" => Some(Self::Clear),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rich => "rich",
+            Self::Solo => "solo",
+            Self::History => "history",
+            Self::Clear => "clear",
+        }
+    }
+}
+
+/// Goal-mode slash actions.
+#[derive(Debug, Clone)]
+pub enum GoalAction {
+    Create {
+        text: String,
+        replace: bool,
+        criteria: Option<String>,
+        /// Safety cap on auto-continue submissions; `None` uses default (50).
+        max_turns: Option<u32>,
+        /// Optional Codex-style token budget for the goal.
+        token_budget: Option<u64>,
+        /// Optional wall-clock budget for autonomous continuation.
+        max_duration_secs: Option<u64>,
+    },
+    Status,
+    Pause,
+    Resume,
+    Block {
+        reason: Option<String>,
+    },
+    Complete,
+    Clear,
+    AutoContinue {
+        enabled: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum LoopAction {
+    /// Start re-running `prompt` every `interval_secs` seconds.
+    Start { interval_secs: u64, prompt: String },
+    /// Stop the active loop.
+    Stop,
+    /// Show the active loop, if any.
+    Status,
+}
+
+/// Continual-harness slash actions.
+#[derive(Debug, Clone)]
+pub enum HarnessAction {
+    /// Show harness metadata and entries visible to the current scope.
+    Status,
+    /// List entries visible to the current scope.
+    List,
+    /// Show pending and reviewed evidence-backed proposals.
+    Review,
+    /// Stage an evidence-backed refinement proposal.
+    Propose {
+        scope: String,
+        kind: String,
+        name: String,
+        content: String,
+        evidence: String,
+    },
+    /// Add a scoped record. Evidence may be supplied after `--evidence`.
+    Add {
+        scope: String,
+        kind: String,
+        name: String,
+        content: String,
+        evidence: Option<String>,
+    },
+    /// Update a record's content. Evidence may be supplied after `--evidence`.
+    Update {
+        id: String,
+        content: String,
+        evidence: Option<String>,
+    },
+    /// Delete a record by id.
+    Delete(String),
+    /// Restore the entries captured at a prior revision.
+    Rollback(u64),
+    /// Apply a pending proposal.
+    Apply(String),
+    /// Reject a pending proposal with an optional operator note.
+    Reject { id: String, note: Option<String> },
+}
+
+/// RLM context variable actions.
+#[derive(Debug, Clone)]
+pub enum RlmAction {
+    /// Show the current variable inventory.
+    List,
+    /// Set or replace a variable.
+    Set {
+        name: String,
+        value: String,
+        description: Option<String>,
+    },
+    /// Append text to a variable.
+    Append { name: String, value: String },
+    /// Render `{{name}}` references in a template.
+    Render(String),
+    /// Remove a variable.
+    Clear(String),
+}
+
+/// Durable local mailbox actions.
+#[derive(Debug, Clone)]
+pub enum MailboxAction {
+    /// Show pending messages.
+    List,
+    /// Send a message.
+    Send { recipient: String, body: String },
+    /// Mark a message read and display it.
+    Read(String),
+    /// Display a control addressed to a locally owned subagent.
+    Inspect(String),
+    /// Acknowledge a message.
+    Acknowledge(String),
+    /// Release a held coordination message for delivery.
+    Approve(String),
+    /// Remove acknowledged messages.
+    Compact,
+}
+
+#[derive(Debug, Clone)]
+pub enum BackgroundMonitorAction {
+    Add { task_id: String, pattern: String },
+    List,
+    Remove { monitor_id: String },
+}
+
+/// magic-trace control from the TUI slash menu.
+#[derive(Debug, Clone)]
+pub enum MagicTraceAction {
+    /// Call `magic_trace_stop_indicator` once (snapshot if attached).
+    Stop,
+    /// Enable slow-frame auto snapshots.
+    EnableSlowFrame,
+    /// Disable slow-frame auto snapshots.
+    DisableSlowFrame,
+    /// Show status / how to attach.
+    Status,
 }
 
 /// Session management actions.
@@ -259,6 +549,50 @@ pub enum CommandAction {
 pub enum SessionAction {
     /// Prune old sessions by count/age limits
     Cleanup,
+    /// Start a new session (clear transcript + new session file)
+    New,
+    /// Fork current conversation into a new session branch
+    Fork,
+    /// Rewind last N user turns (default 1)
+    Rewind { turns: usize, dry_run: bool },
+    /// Rewind saved conversation and corresponding file changes.
+    RewindBoth { turns: usize, dry_run: bool },
+    /// Restore files from the most recent turn checkpoint
+    RewindFiles,
+    /// List file checkpoints recorded for this session
+    ListCheckpoints,
+    /// Continue the most recent session for this workspace
+    Continue,
+    /// Show session id, path, model, sandbox, trust
+    Status,
+}
+
+/// Workspace trust actions (writes only global `~/.composer/config.toml`).
+#[derive(Debug, Clone)]
+pub enum TrustAction {
+    /// Show whether this workspace is trusted
+    Status,
+    /// Grant trust so project skills/plugins/hooks load
+    Grant,
+    /// Revoke trust
+    Revoke,
+}
+
+/// Structured plan review actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanReviewAction {
+    Comment {
+        start_line: usize,
+        end_line: usize,
+        text: String,
+    },
+    List,
+    Resolve {
+        id: u64,
+    },
+    Reopen {
+        id: u64,
+    },
 }
 
 /// Queue mode target for queue commands.
@@ -268,6 +602,14 @@ pub enum QueueModeKind {
     FollowUp,
 }
 
+/// Direction for moving a queued prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMoveDirection {
+    Up,
+    Down,
+    Now,
+}
+
 /// Queue-related actions.
 #[derive(Debug, Clone)]
 pub enum QueueAction {
@@ -275,6 +617,11 @@ pub enum QueueAction {
     Show,
     /// Cancel a queued prompt by id
     Cancel { id: u64 },
+    /// Move a queued prompt relative to the other pending prompts.
+    Move {
+        id: u64,
+        direction: QueueMoveDirection,
+    },
     /// Set queue mode
     Mode {
         kind: QueueModeKind,
@@ -337,6 +684,8 @@ pub enum ToolHistoryAction {
 pub enum McpAction {
     /// Show MCP server status
     Status,
+    /// Mutate MCP configuration through the native safe configurator.
+    Configure { args: Vec<String> },
     /// List or read MCP resources
     Resources {
         server: Option<String>,
@@ -348,6 +697,63 @@ pub enum McpAction {
         name: Option<String>,
         arguments: HashMap<String, String>,
     },
+}
+
+/// Actions for A2A peer pairing commands.
+#[derive(Debug, Clone)]
+pub enum A2aAction {
+    /// Show native A2A pairing help.
+    Help,
+    /// Show A2A fleet health.
+    Fleet,
+    /// List paired peers.
+    Peers,
+    /// List delegated A2A tasks.
+    Tasks {
+        peer: Option<String>,
+        include_work_graph: bool,
+    },
+    /// Coordinate actionable A2A tasks.
+    Coordinate {
+        peer: Option<String>,
+        reply: Option<String>,
+        include_work_graph: bool,
+    },
+    /// Accept a pairing code.
+    Accept { code: String },
+    /// Publish this Maestro instance as a Platform A2A peer.
+    Register {
+        agent_id: Option<String>,
+        public_url: Option<String>,
+        heartbeat_only: bool,
+    },
+    /// Delegate work to a peer.
+    Delegate { peer: String, text: String },
+    /// Continue an existing A2A task.
+    Reply {
+        peer: String,
+        task_id: String,
+        text: String,
+    },
+    /// Send a message to a peer.
+    Send { peer: String, text: String },
+    /// Hand work to the default or explicitly selected peer and follow the task.
+    Handoff {
+        peer: Option<String>,
+        text: String,
+        computer_package: Option<A2aComputerHandoffSelection>,
+    },
+}
+
+/// Explicit selection used to freeze an existing hosted Computer task before
+/// handing work to an A2A peer. Computer remains the package owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aComputerHandoffSelection {
+    pub source_task_id: String,
+    pub target_thread_id: String,
+    pub files: Vec<String>,
+    pub artifact_ids: Vec<String>,
+    pub include_diff: bool,
 }
 
 /// Actions for managing the hook system
@@ -380,6 +786,21 @@ pub enum SkillsAction {
     Reload,
     /// Show detailed info about a skill
     Info(String),
+}
+
+/// Actions for the plugin discovery system
+#[derive(Debug, Clone)]
+pub enum PluginsAction {
+    /// List discovered plugins
+    List,
+    /// Show details for one plugin (by name)
+    Info(String),
+    /// Rediscover plugins from the filesystem
+    Reload,
+    /// List curated marketplace catalog
+    MarketplaceList,
+    /// Install a marketplace entry by id
+    MarketplaceInstall { id: String, trust: bool },
 }
 
 /// Types of modals that can be opened by commands
@@ -420,6 +841,8 @@ pub enum ModalType {
     ModelSelector,
     /// Session list and management modal
     SessionList,
+    /// Read-only recent persisted tool executions
+    Operations,
     /// File search and browser modal
     FileSearch,
     /// Command palette (searchable command list)
@@ -428,6 +851,8 @@ pub enum ModalType {
     ShortcutsHelp,
     /// Help documentation viewer
     Help,
+    /// First-run EvalOps Identity and optional local API key setup
+    Setup,
 }
 
 /// Error from command execution
@@ -933,5 +1358,33 @@ mod tests {
         assert_eq!(cmd.name, "test");
         assert_eq!(cmd.aliases, vec!["t"]);
         assert_eq!(cmd.arguments.len(), 1);
+    }
+}
+
+/// User-selected worker operation; execution remains in the subagent owner.
+#[derive(Debug, Clone)]
+pub enum WorkerAction {
+    List,
+    Inspect(String),
+    Steer { agent_ref: String, message: String },
+    Cancel(String),
+    Resume { id: String, message: String },
+}
+impl WorkerAction {
+    pub(crate) fn tool_call(&self) -> (&'static str, serde_json::Value) {
+        use serde_json::json;
+        match self {
+            Self::List => ("list_subagents", json!({})),
+            Self::Inspect(id) => ("get_subagent", json!({"subagent_id":id})),
+            Self::Steer { agent_ref, message } => (
+                "control_subagent",
+                json!({"agent_ref":agent_ref,"mode":"steer","message":message}),
+            ),
+            Self::Cancel(id) => ("cancel_subagent", json!({"subagent_id":id})),
+            Self::Resume { id, message } => (
+                "resume_subagent",
+                json!({"subagent_id":id,"follow_up":message}),
+            ),
+        }
     }
 }

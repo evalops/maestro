@@ -1,0 +1,75 @@
+name: preview-channel-release
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # alpha
+    - cron: "30 5 * * *" # beta, after alpha
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Preview channel to publish
+        required: true
+        type: choice
+        options:
+          - alpha
+          - beta
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-channel-${{ github.event.inputs.channel || github.event.schedule }}
+  cancel-in-progress: false
+
+jobs:
+  publish-channel-source:
+    if: github.repository == 'evalops/maestro' && github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Select staged signed preview
+        id: preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_CHANNEL: ${{ github.event.inputs.channel }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          channel="$REQUESTED_CHANNEL"
+          if [[ -z "$channel" ]]; then
+            case "$SCHEDULE" in
+              "0 5 * * *") channel=alpha ;;
+              "30 5 * * *") channel=beta ;;
+              *) echo "::error::Unknown channel schedule: ${SCHEDULE}"; exit 1 ;;
+            esac
+          fi
+          case "$channel" in alpha|beta) ;; *) exit 1 ;; esac
+          # Mono owns preview source and signed builds. Finalize an existing
+          # staged candidate; never synthesize source that differs from its binaries.
+          tag="$(timeout 60s gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+            jq -r --arg channel "$channel" '[.[] | select(.draft and (.tag_name | test("-" + $channel + "[.-]"))) |
+              select(any(.assets[]; .name == "MONO_SHA256SUMS.cosign.bundle"))] |
+              sort_by(.created_at) | last | .tag_name // empty')"
+          if [[ -z "$tag" ]]; then
+            echo "No staged signed ${channel} release is ready." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run release.yml --ref main --field "version=${tag}"
+          {
+            echo "channel=$channel"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+      - name: Summarize dispatched release
+        if: steps.preview.outputs.tag != ''
+        env:
+          CHANNEL: ${{ steps.preview.outputs.channel }}
+          TAG: ${{ steps.preview.outputs.tag }}
+        run: |
+          {
+            echo "### Preview release dispatched"
+            echo "- Channel: ${CHANNEL}"
+            echo "- Immutable tag: ${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"

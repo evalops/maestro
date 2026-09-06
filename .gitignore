@@ -1,9 +1,14 @@
 # Build output
+/bin/
 dist/
 dist-electron/
 release/
+target/
 node_modules/
 .nx/
+
+# Prebuilt native TUI binaries staged for npm pack (materialized in release.yml)
+vendor/
 
 # External checkouts
 .external/
@@ -26,6 +31,8 @@ src/**/*.js.map
 session.txt
 .cache/
 coverage
+packages/runtime-gateway-rs/sessions.json
+gha-creds-*.json
 
 # Local env (API keys)
 .env

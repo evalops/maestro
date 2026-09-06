@@ -1,0 +1,20 @@
+{
+  "name": "long-conversation",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+    },
+    {
+      "text": "Give me a detailed release review."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Release review complete"
+    },
+    {
+      "absent": "Working|Thinking|Ctrl.C cancel"
+    }
+  ]
+}

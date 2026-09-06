@@ -5,11 +5,16 @@
 //! - Health monitoring with heartbeats
 //! - Graceful degradation
 
+use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::mpsc::{self as std_mpsc, SyncSender};
 use std::time::{Duration, Instant};
 
 use rand::Rng as _;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 // Note: interval/timeout available for future health checking
 use tokio_util::sync::CancellationToken;
@@ -17,13 +22,50 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use super::async_transport::RemoteErrorKind;
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
-use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
-use super::remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransportConfig};
-use super::session::{SessionReader, SessionRecorder, SessionReplay};
+use super::messages::{
+    AgentEvent, AgentState, ClientInfo, ConnectionRole, ControllerBindingHello, FromAgentMessage,
+    InitConfig, ToAgentMessage,
+};
+use super::remote_transport::{
+    RemoteAgentTransport, RemoteConnectionResumeAuthority, RemoteIncoming, RemoteTransportConfig,
+};
+use super::session::{SessionRecorder, SessionReplay};
+use super::workspace_capabilities::{ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
-const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_secs(180);
+const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_mins(3);
+const RESPONSE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+const RESPONSE_ACK_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_RESPONSE_ACKNOWLEDGEMENTS: usize = 4096;
+
+fn workspace_capability_replay_cursor(request: &ApplyWorkspaceCapabilitySet) -> String {
+    format!(
+        "{}:{}",
+        request.activation_generation, request.capability_set_digest
+    )
+}
+
+fn workspace_capability_receipt_matches(
+    request: &ApplyWorkspaceCapabilitySet,
+    receipt: &WorkspaceCapabilitySetApplied,
+) -> bool {
+    receipt.replay_cursor == workspace_capability_replay_cursor(request)
+        && receipt.organization_id == request.organization_id
+        && receipt.workspace_id == request.workspace_id
+        && receipt.runner_session_id == request.runner_session_id
+        && receipt.runtime_generation == request.runtime_generation
+        && receipt.activation_generation == request.activation_generation
+        && receipt.effective_catalog_digest == request.capability_set_digest
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseAcknowledgement {
+    NotExpected,
+    Consumed,
+    Queued,
+    Rejected,
+}
 
 fn jittered_reconnect_delay_for_sample(
     base_delay: Duration,
@@ -48,6 +90,101 @@ fn jittered_reconnect_delay(base_delay: Duration, jitter_factor: f64) -> Duratio
 
     let mut rng = rand::rng();
     jittered_reconnect_delay_for_sample(base_delay, jitter_factor, rng.random_range(-1.0..=1.0))
+}
+
+/// Report a diagnostic to stderr without blocking the caller.
+///
+/// A plain `writeln!(std::io::stderr(), ...)` on a hot or otherwise
+/// blocking-sensitive path (this supervisor's `send`, `apply_snapshot`,
+/// `apply_agent_message`, `persist_session_snapshot`; also reused by
+/// `tools::registry::execute` for write/edit rollback diagnostics and
+/// `agent::native`'s `NativeAgentRunner` for its MCP-init diagnostic, all
+/// part of the same swallowed-result audit) takes stderr's process-global
+/// lock and performs a real write syscall; if a headless parent pipes
+/// stderr and stops draining it, that write blocks until the pipe drains
+/// or the process dies. Recorder-failure diagnostics are already
+/// rate-limited (see `session_recorder_error_to_report`) to avoid log
+/// spam, but even one occurrence stalling a caller's hot path (and,
+/// transitively, whatever `await`s it) is a real regression versus the
+/// swallowed-error status quo this audit exists to fix. A single process-wide
+/// OS thread drains a bounded queue through an independently duplicated stderr
+/// handle, so a blocked write never holds Rust's process-global stderr lock.
+/// Enqueue is nonblocking and drops diagnostics when the queue is full, so a
+/// wedged stderr can consume at most one worker thread and a fixed amount of
+/// memory. The worker does not depend on a Tokio runtime being current, so it
+/// works uniformly whether or not the caller is itself async.
+pub(crate) fn report_diagnostic_nonblocking(message: String) {
+    let _ = try_report_diagnostic_nonblocking(message);
+}
+
+fn try_report_diagnostic_nonblocking(message: String) -> bool {
+    if let Some(sender) = diagnostic_sender() {
+        return enqueue_diagnostic(sender, message);
+    }
+
+    false
+}
+
+fn enqueue_diagnostic(sender: &SyncSender<String>, message: String) -> bool {
+    sender.try_send(message).is_ok()
+}
+
+fn prepare_diagnostic_for_stderr(message: String, is_terminal: bool) -> String {
+    if is_terminal {
+        crate::output_sanitize::sanitize_control_chars(&message)
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+    } else {
+        message
+    }
+}
+
+#[cfg(unix)]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd as _;
+
+    let stderr = std::io::stderr();
+    stderr.as_fd().try_clone_to_owned().map(std::fs::File::from)
+}
+
+#[cfg(windows)]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::AsHandle as _;
+
+    let stderr = std::io::stderr();
+    stderr
+        .as_handle()
+        .try_clone_to_owned()
+        .map(std::fs::File::from)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "independent stderr handles are unavailable on this platform",
+    ))
+}
+
+fn diagnostic_sender() -> Option<&'static SyncSender<String>> {
+    static SENDER: OnceLock<Option<SyncSender<String>>> = OnceLock::new();
+    SENDER
+        .get_or_init(|| {
+            let mut stderr = duplicate_stderr_writer().ok()?;
+            let stderr_is_terminal = crate::terminal_info::is_stderr_tty();
+            let (sender, receiver) = std_mpsc::sync_channel::<String>(64);
+            std::thread::Builder::new()
+                .name("supervisor-diagnostic".to_string())
+                .spawn(move || {
+                    for message in receiver {
+                        let message = prepare_diagnostic_for_stderr(message, stderr_is_terminal);
+                        let _ = writeln!(stderr, "{message}");
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
 }
 
 /// Supervisor configuration
@@ -87,7 +224,7 @@ impl Default for SupervisorConfig {
             max_reconnect_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
             reconnect_jitter_factor: 0.25,
-            max_reconnect_elapsed: Duration::from_secs(600),
+            max_reconnect_elapsed: Duration::from_mins(10),
             health_check_interval: Duration::from_secs(30),
             health_check_timeout: Duration::from_secs(5),
             auto_reconnect: true,
@@ -115,6 +252,8 @@ pub enum HealthStatus {
 pub enum SupervisorEvent {
     /// Agent event (pass-through)
     Agent(Box<AgentEvent>),
+    /// Native response consumer accepted a control response.
+    ResponseAccepted { request_id: String },
     /// Connection established
     Connected,
     /// State was hydrated from replay or a remote snapshot.
@@ -130,12 +269,12 @@ pub enum SupervisorEvent {
 }
 
 enum ManagedTransport {
-    Local(AsyncAgentTransport),
-    Remote(RemoteAgentTransport),
+    Local(Box<AsyncAgentTransport>),
+    Remote(Box<RemoteAgentTransport>),
 }
 
 enum ManagedIncoming {
-    Message(FromAgentMessage),
+    Message(Box<FromAgentMessage>),
     Snapshot {
         state: Box<AgentState>,
         last_init: Option<InitConfig>,
@@ -165,8 +304,8 @@ impl ManagedTransport {
 
     async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
         match self {
-            Self::Local(transport) => transport.shutdown(),
-            Self::Remote(transport) => transport.shutdown_and_wait().await,
+            Self::Local(transport) => (*transport).shutdown_and_wait().await,
+            Self::Remote(transport) => (*transport).shutdown_and_wait().await,
         }
     }
 
@@ -190,25 +329,21 @@ impl ManagedTransport {
         }
     }
 
-    fn remote_connection_id(&self) -> Option<&str> {
+    fn remote_resume_authority(&self) -> Option<RemoteConnectionResumeAuthority> {
         match self {
             Self::Local(_) => None,
-            Self::Remote(transport) => Some(transport.connection_id()),
+            Self::Remote(transport) => Some(transport.resume_authority()),
         }
-    }
-
-    fn is_remote(&self) -> bool {
-        matches!(self, Self::Remote(_))
     }
 
     fn try_recv_incoming(&mut self) -> Option<Result<ManagedIncoming, AsyncTransportError>> {
         match self {
             Self::Local(transport) => transport
                 .try_recv_message()
-                .map(|result| result.map(ManagedIncoming::Message)),
+                .map(|result| result.map(|message| ManagedIncoming::Message(Box::new(message)))),
             Self::Remote(transport) => transport.try_recv_incoming().map(|result| {
                 result.map(|incoming| match incoming {
-                    RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                    RemoteIncoming::Message(message) => ManagedIncoming::Message(Box::new(message)),
                     RemoteIncoming::Snapshot { state, last_init } => {
                         ManagedIncoming::Snapshot { state, last_init }
                     }
@@ -227,15 +362,27 @@ impl ManagedTransport {
         }
     }
 
+    fn event_notification(&self) -> Arc<Notify> {
+        match self {
+            Self::Local(transport) => transport.event_notification(),
+            Self::Remote(transport) => transport.event_notification(),
+        }
+    }
+
     async fn recv_incoming(&mut self) -> Result<ManagedIncoming, AsyncTransportError> {
         match self {
-            Self::Local(transport) => transport.recv_message().await.map(ManagedIncoming::Message),
+            Self::Local(transport) => transport
+                .recv_message()
+                .await
+                .map(|message| ManagedIncoming::Message(Box::new(message))),
             Self::Remote(transport) => {
                 transport
                     .recv_incoming()
                     .await
                     .map(|incoming| match incoming {
-                        RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                        RemoteIncoming::Message(message) => {
+                            ManagedIncoming::Message(Box::new(message))
+                        }
                         RemoteIncoming::Snapshot { state, last_init } => {
                             ManagedIncoming::Snapshot { state, last_init }
                         }
@@ -282,6 +429,12 @@ pub struct AgentSupervisor {
     transport: Option<ManagedTransport>,
     /// Last init config to replay after reconnects
     last_init: Option<InitConfig>,
+    /// Private provider conversation checkpoint replayed immediately after init.
+    semantic_conversation: Option<Vec<maestro_ai::Message>>,
+    /// Last capability set proven accepted by a child receipt.
+    last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    /// Sent capability sets awaiting a matching child receipt.
+    pending_workspace_capability_sets: HashMap<String, ApplyWorkspaceCapabilitySet>,
     /// Current supervisor-owned agent state
     state: AgentState,
     /// Event sender
@@ -296,17 +449,56 @@ pub struct AgentSupervisor {
     reconnect_attempts: u32,
     /// Consecutive retryable stale connection/subscriber failures.
     stale_reference_retries: u32,
+    /// Private authority required to reclaim a server-minted remote connection.
+    remote_resume_authority: Option<RemoteConnectionResumeAuthority>,
     /// Whether a reconnect should be attempted on the next async receive cycle
     pending_auto_reconnect: bool,
     /// Background teardown for a transport that must finish before the next connect/reconnect.
     pending_transport_shutdown: Option<JoinHandle<()>>,
     /// Session recorder (optional)
     session_recorder: Option<SessionRecorder>,
+    /// Whether the current run of session-recorder failures was already reported.
+    session_recorder_error_reported: bool,
     /// Cancellation token
     cancel_token: CancellationToken,
+    /// Correlated response acknowledgements received before their waiter.
+    pending_response_acknowledgements: HashSet<String>,
+    /// Correlated protocol rejections received before their waiter.
+    pending_response_rejections: HashMap<String, String>,
+    /// Request IDs owned by responses sent through the current transport.
+    expected_response_acknowledgements: HashMap<String, u64>,
+    /// Changes whenever a new child/remote transport takes ownership.
+    transport_generation: u64,
 }
 
 impl AgentSupervisor {
+    pub(crate) async fn wait_for_response_acknowledgement_async(
+        supervisor: Arc<std::sync::Mutex<Self>>,
+        request_id: String,
+        timeout: Duration,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        let deadline = Instant::now() + timeout;
+        let mut messages = Vec::new();
+        loop {
+            let (drained, acknowledgement) = {
+                let mut supervisor = supervisor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                supervisor.wait_for_response_acknowledgement(&request_id)
+            };
+            messages.extend(drained);
+            if !matches!(acknowledgement, ResponseAcknowledgement::Queued) {
+                return (messages, acknowledgement);
+            }
+            if Instant::now() >= deadline {
+                return (messages, ResponseAcknowledgement::Queued);
+            }
+            tokio::time::sleep(
+                RESPONSE_ACK_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
+        }
+    }
     /// Create a new supervisor
     #[must_use]
     pub fn new(config: SupervisorConfig) -> Self {
@@ -315,6 +507,9 @@ impl AgentSupervisor {
             config,
             transport: None,
             last_init: None,
+            semantic_conversation: None,
+            last_workspace_capability_set: None,
+            pending_workspace_capability_sets: HashMap::new(),
             state: AgentState::default(),
             event_tx,
             event_rx,
@@ -322,10 +517,16 @@ impl AgentSupervisor {
             last_response: None,
             reconnect_attempts: 0,
             stale_reference_retries: 0,
+            remote_resume_authority: None,
             pending_auto_reconnect: false,
             pending_transport_shutdown: None,
             session_recorder: None,
+            session_recorder_error_reported: false,
             cancel_token: CancellationToken::new(),
+            pending_response_acknowledgements: HashSet::new(),
+            pending_response_rejections: HashMap::new(),
+            expected_response_acknowledgements: HashMap::new(),
+            transport_generation: 0,
         }
     }
 
@@ -333,7 +534,47 @@ impl AgentSupervisor {
     #[must_use]
     pub fn with_session_recorder(mut self, recorder: SessionRecorder) -> Self {
         self.session_recorder = Some(recorder);
+        self.session_recorder_error_reported = false;
         self
+    }
+
+    fn session_recorder_error_to_report(
+        &mut self,
+        result: std::io::Result<()>,
+    ) -> Option<std::io::Error> {
+        match result {
+            Ok(()) => {
+                self.session_recorder_error_reported = false;
+                None
+            }
+            Err(_) if self.session_recorder_error_reported => None,
+            Err(error) => {
+                self.session_recorder_error_reported = true;
+                Some(error)
+            }
+        }
+    }
+
+    fn report_session_recorder_result_with<F>(
+        &mut self,
+        result: std::io::Result<()>,
+        operation: &str,
+        reporter: F,
+    ) where
+        F: FnOnce(String) -> bool,
+    {
+        if let Some(error) = self.session_recorder_error_to_report(result) {
+            self.session_recorder_error_reported =
+                reporter(format!("[supervisor] failed to {operation}: {error}"));
+        }
+    }
+
+    fn report_session_recorder_result(&mut self, result: std::io::Result<()>, operation: &str) {
+        self.report_session_recorder_result_with(
+            result,
+            operation,
+            try_report_diagnostic_nonblocking,
+        );
     }
 
     /// Seed the supervisor with a replayed session snapshot.
@@ -347,6 +588,9 @@ impl AgentSupervisor {
     pub fn restore_session_replay(&mut self, replay: SessionReplay) {
         self.state = replay.state;
         self.last_init = replay.last_init;
+        self.semantic_conversation = replay.semantic_conversation;
+        self.last_workspace_capability_set = replay.last_workspace_capability_set;
+        self.pending_workspace_capability_sets.clear();
         self.seed_remote_session_id_if_missing(self.state.session_id.clone());
     }
 
@@ -355,12 +599,24 @@ impl AgentSupervisor {
             if remote_config.session_id.is_none() {
                 remote_config.session_id = self.state.session_id.clone();
             }
-            RemoteAgentTransport::connect(remote_config.clone())
-                .await
-                .map(ManagedTransport::Remote)
+            match RemoteAgentTransport::connect_with_resume_authority(
+                remote_config.clone(),
+                self.remote_resume_authority.clone(),
+            )
+            .await
+            {
+                Ok(transport) => Ok(ManagedTransport::Remote(Box::new(transport))),
+                Err(failure) => {
+                    if let Some(resume_authority) = failure.resume_authority {
+                        self.remote_resume_authority = Some(resume_authority);
+                    }
+                    Err(failure.error)
+                }
+            }
         } else {
             AsyncAgentTransport::spawn(self.config.transport.clone())
                 .await
+                .map(Box::new)
                 .map(ManagedTransport::Local)
         }
     }
@@ -381,10 +637,7 @@ impl AgentSupervisor {
 
     /// Disconnect from the agent
     pub fn disconnect(&mut self) {
-        let was_remote = self
-            .transport
-            .as_ref()
-            .is_some_and(ManagedTransport::is_remote);
+        let is_remote_supervisor = self.config.remote.is_some();
         if let Some(transport) = self.transport.take() {
             self.begin_transport_shutdown(transport);
         }
@@ -392,8 +645,8 @@ impl AgentSupervisor {
         self.last_response = None;
         self.pending_auto_reconnect = false;
         self.stale_reference_retries = 0;
-        if was_remote {
-            self.remember_remote_connection_id(None);
+        if is_remote_supervisor {
+            self.clear_remote_resume_authority();
         }
         self.health_status = HealthStatus::Unhealthy;
         let _ = self.event_tx.send(SupervisorEvent::Disconnected {
@@ -487,33 +740,295 @@ impl AgentSupervisor {
         };
 
         transport.send(msg.clone())?;
+        if let ToAgentMessage::ApplyWorkspaceCapabilitySet { request } = &msg {
+            self.pending_workspace_capability_sets
+                .insert(workspace_capability_replay_cursor(request), request.clone());
+        }
         self.last_response = Some(Instant::now());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.record_sent(&msg);
-            self.state = recorder.replay_state().clone();
-            self.last_init = recorder
-                .last_init()
-                .cloned()
-                .or_else(|| self.last_init.clone());
+            let result = recorder.record_sent(&msg);
+            let replay_state = recorder.replay_state().clone();
+            let recorder_last_init = recorder.last_init().cloned();
+            self.report_session_recorder_result(result, "record sent message");
+            self.state = replay_state;
+            self.last_init = recorder_last_init.or_else(|| self.last_init.clone());
         } else {
             self.state.handle_sent_message(&msg);
-            if let ToAgentMessage::Init {
-                system_prompt,
-                append_system_prompt,
-                thinking_level,
-                approval_mode,
-            } = &msg
-            {
-                self.last_init = Some(InitConfig {
+            self.last_init = match &msg {
+                ToAgentMessage::Init {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                } => Some(InitConfig {
                     system_prompt: system_prompt.clone(),
                     append_system_prompt: append_system_prompt.clone(),
                     thinking_level: *thinking_level,
                     approval_mode: *approval_mode,
-                });
-            }
+                    history: history.clone(),
+                    code_mode: None,
+                    tool_grant: None,
+                }),
+                ToAgentMessage::GovernedInit {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                    code_mode,
+                    tool_grant,
+                } => Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                    code_mode: Some(*code_mode),
+                    tool_grant: Some(tool_grant.clone()),
+                }),
+                _ => self.last_init.clone(),
+            };
         }
 
         Ok(())
+    }
+
+    /// Bind the local child to the immutable resident controller identity.
+    /// The configured extension is replayed on every later child spawn.
+    pub(crate) fn set_local_controller_binding(
+        &mut self,
+        binding: ControllerBindingHello,
+    ) -> Result<(), AsyncTransportError> {
+        if self.config.remote.is_some() {
+            return Err(AsyncTransportError::SendFailed(
+                "hosted controller binding cannot be installed on a remote child transport"
+                    .to_string(),
+            ));
+        }
+        if let Some(existing) = self.config.transport.controller_binding.as_ref() {
+            if existing != &binding {
+                return Err(AsyncTransportError::SendFailed(
+                    "hosted controller binding cannot be replaced".to_string(),
+                ));
+            }
+        } else {
+            self.config.transport.controller_binding = Some(binding.clone());
+        }
+        self.send(ToAgentMessage::Hello {
+            protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+            }),
+            capabilities: Some(super::local_controller_capabilities()),
+            role: Some(ConnectionRole::Controller),
+            opt_out_notifications: None,
+            controller_binding: Some(binding),
+        })
+    }
+
+    /// Send a protocol message and drain any agent messages that are already available.
+    pub fn send_and_drain_agent_messages(
+        &mut self,
+        msg: ToAgentMessage,
+    ) -> Result<Vec<FromAgentMessage>, AsyncTransportError> {
+        Ok(self.send_and_drain_agent_messages_with_ack(msg)?.0)
+    }
+
+    /// Send a message and report whether the native response consumer
+    /// explicitly acknowledged accepting a control response.
+    pub(crate) fn send_and_drain_agent_messages_with_ack(
+        &mut self,
+        msg: ToAgentMessage,
+    ) -> Result<(Vec<FromAgentMessage>, ResponseAcknowledgement), AsyncTransportError> {
+        let expected_acknowledgement = response_ack_request_id(&msg).map(str::to_owned);
+        if let Some(request_id) = expected_acknowledgement.as_ref() {
+            if !self.register_response_acknowledgement(request_id) {
+                return Err(AsyncTransportError::SendFailed(
+                    "response acknowledgement capacity is full".to_string(),
+                ));
+            }
+        }
+        if let Err(error) = self.send(msg) {
+            if let Some(request_id) = expected_acknowledgement.as_ref() {
+                self.expected_response_acknowledgements.remove(request_id);
+            }
+            return Err(error);
+        }
+        Ok(self.drain_agent_messages_until_ack(
+            expected_acknowledgement.as_deref(),
+            RESPONSE_ACK_TIMEOUT,
+        ))
+    }
+
+    fn drain_agent_messages_until_ack(
+        &mut self,
+        expected_acknowledgement: Option<&str>,
+        _timeout: Duration,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        let Some(expected_acknowledgement) = expected_acknowledgement else {
+            return (
+                self.drain_available_agent_messages(),
+                ResponseAcknowledgement::NotExpected,
+            );
+        };
+        if self
+            .pending_response_acknowledgements
+            .remove(expected_acknowledgement)
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (Vec::new(), ResponseAcknowledgement::Consumed);
+        }
+        if self
+            .pending_response_rejections
+            .remove(expected_acknowledgement)
+            .is_some()
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (Vec::new(), ResponseAcknowledgement::Rejected);
+        }
+        let messages = self.drain_available_agent_messages();
+        if self
+            .pending_response_rejections
+            .remove(expected_acknowledgement)
+            .is_some()
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (messages, ResponseAcknowledgement::Rejected);
+        }
+        if self
+            .pending_response_acknowledgements
+            .remove(expected_acknowledgement)
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (messages, ResponseAcknowledgement::Consumed);
+        }
+        (messages, ResponseAcknowledgement::Queued)
+    }
+
+    /// Drain currently available supervisor agent events as headless protocol messages.
+    #[must_use]
+    pub fn drain_available_agent_messages(&mut self) -> Vec<FromAgentMessage> {
+        let mut messages = Vec::new();
+        while let Some(event) = self.poll() {
+            match event {
+                SupervisorEvent::Agent(agent_event) => {
+                    let message = agent_event_to_message(&agent_event);
+                    if let FromAgentMessage::Error {
+                        request_id: Some(request_id),
+                        message: reason,
+                        error_type: Some(super::messages::HeadlessErrorType::Protocol),
+                        ..
+                    } = &message
+                    {
+                        if self
+                            .expected_response_acknowledgements
+                            .contains_key(request_id)
+                            && self.pending_response_rejections.len()
+                                < MAX_RESPONSE_ACKNOWLEDGEMENTS
+                        {
+                            self.pending_response_rejections
+                                .insert(request_id.clone(), reason.clone());
+                        }
+                    }
+                    messages.push(message);
+                }
+                SupervisorEvent::ResponseAccepted { request_id }
+                    if self
+                        .expected_response_acknowledgements
+                        .contains_key(&request_id)
+                        && self.pending_response_acknowledgements.len()
+                            < MAX_RESPONSE_ACKNOWLEDGEMENTS =>
+                {
+                    self.pending_response_acknowledgements.insert(request_id);
+                }
+                _ => {}
+            }
+        }
+        messages
+    }
+
+    pub(crate) fn wait_for_response_acknowledgement(
+        &mut self,
+        request_id: &str,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        self.drain_agent_messages_until_ack(Some(request_id), RESPONSE_ACK_TIMEOUT)
+    }
+
+    pub(crate) fn has_response_acknowledgement(&self, request_id: &str) -> bool {
+        self.pending_response_acknowledgements.contains(request_id)
+    }
+
+    pub(crate) fn has_response_rejection(&self, request_id: &str) -> bool {
+        self.pending_response_rejections.contains_key(request_id)
+    }
+
+    pub(crate) fn take_response_rejection(&mut self, request_id: &str) -> Option<String> {
+        let rejection = self.pending_response_rejections.remove(request_id);
+        if rejection.is_some() {
+            self.expected_response_acknowledgements.remove(request_id);
+            self.pending_response_acknowledgements.remove(request_id);
+        }
+        rejection
+    }
+
+    pub(crate) fn take_response_acknowledgement(&mut self, request_id: &str) -> bool {
+        let acknowledged = self.pending_response_acknowledgements.remove(request_id);
+        if acknowledged {
+            self.expected_response_acknowledgements.remove(request_id);
+        }
+        acknowledged
+    }
+
+    pub(crate) fn discard_response_acknowledgement(
+        &mut self,
+        request_id: &str,
+        transport_generation: u64,
+    ) {
+        if self.expected_response_acknowledgements.get(request_id) != Some(&transport_generation) {
+            return;
+        }
+        self.expected_response_acknowledgements.remove(request_id);
+        self.pending_response_acknowledgements.remove(request_id);
+        self.pending_response_rejections.remove(request_id);
+    }
+
+    pub(crate) fn register_response_acknowledgement(&mut self, request_id: &str) -> bool {
+        if let Some(transport_generation) = self
+            .expected_response_acknowledgements
+            .get(request_id)
+            .copied()
+        {
+            if transport_generation == self.transport_generation {
+                return true;
+            }
+            self.pending_response_acknowledgements.remove(request_id);
+            self.pending_response_rejections.remove(request_id);
+            self.expected_response_acknowledgements
+                .insert(request_id.to_string(), self.transport_generation);
+            return true;
+        }
+        if self.expected_response_acknowledgements.len() >= MAX_RESPONSE_ACKNOWLEDGEMENTS {
+            return false;
+        }
+        self.expected_response_acknowledgements
+            .insert(request_id.to_string(), self.transport_generation);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn response_acknowledgement_count(&self) -> usize {
+        self.expected_response_acknowledgements.len()
+    }
+
+    #[must_use]
+    pub(crate) fn transport_generation(&self) -> u64 {
+        self.transport_generation
     }
 
     /// Send a prompt
@@ -521,6 +1036,7 @@ impl AgentSupervisor {
         self.send(ToAgentMessage::Prompt {
             content: content.into(),
             attachments: None,
+            managed_inference_authorization: None,
         })
     }
 
@@ -537,15 +1053,37 @@ impl AgentSupervisor {
         Ok(())
     }
 
+    fn replay_saved_semantic_conversation(&mut self) -> Result<(), AsyncTransportError> {
+        if self.last_init.is_none() {
+            return Ok(());
+        }
+        if let Some(messages) = self.semantic_conversation.clone() {
+            self.send(ToAgentMessage::RestoreConversation {
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_string(),
+                messages,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn replay_saved_workspace_capability_set(&mut self) -> Result<(), AsyncTransportError> {
+        if let Some(request) = self.last_workspace_capability_set.clone() {
+            self.send(ToAgentMessage::ApplyWorkspaceCapabilitySet { request })?;
+        }
+        Ok(())
+    }
+
     fn remember_remote_session_id(&mut self, session_id: Option<String>) {
         if let (Some(remote), Some(session_id)) = (self.config.remote.as_mut(), session_id) {
             remote.session_id = Some(session_id);
         }
     }
 
-    fn remember_remote_connection_id(&mut self, connection_id: Option<String>) {
+    fn clear_remote_resume_authority(&mut self) {
+        self.remote_resume_authority = None;
         if let Some(remote) = self.config.remote.as_mut() {
-            remote.connection_id = connection_id;
+            remote.connection_id = None;
         }
     }
 
@@ -559,10 +1097,14 @@ impl AgentSupervisor {
 
     fn set_transport(&mut self, transport: ManagedTransport) -> Result<(), AsyncTransportError> {
         let remote_session_id = transport.remote_session_id().map(str::to_string);
-        let remote_connection_id = transport.remote_connection_id().map(str::to_string);
+        let remote_resume_authority = transport.remote_resume_authority();
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
+        self.transport_generation = self.transport_generation.wrapping_add(1);
+        self.pending_response_acknowledgements.clear();
+        self.pending_response_rejections.clear();
+        self.expected_response_acknowledgements.clear();
         self.stale_reference_retries = 0;
         self.last_response = Some(Instant::now());
         if let Some((state, last_init)) = snapshot {
@@ -571,9 +1113,13 @@ impl AgentSupervisor {
         self.remember_remote_session_id(
             remote_session_id.or_else(|| self.state.session_id.clone()),
         );
-        self.remember_remote_connection_id(remote_connection_id);
+        self.remote_resume_authority = remote_resume_authority;
         if should_replay_init {
-            if let Err(error) = self.replay_saved_init() {
+            if let Err(error) = self
+                .replay_saved_init()
+                .and_then(|()| self.replay_saved_semantic_conversation())
+                .and_then(|()| self.replay_saved_workspace_capability_set())
+            {
                 if let Some(transport) = self.transport.take() {
                     let _ = transport.shutdown();
                 }
@@ -584,11 +1130,23 @@ impl AgentSupervisor {
     }
 
     fn init_message(config: &InitConfig) -> ToAgentMessage {
-        ToAgentMessage::Init {
-            system_prompt: config.system_prompt.clone(),
-            append_system_prompt: config.append_system_prompt.clone(),
-            thinking_level: config.thinking_level,
-            approval_mode: config.approval_mode,
+        match (config.code_mode, config.tool_grant.as_ref()) {
+            (Some(code_mode), Some(tool_grant)) => ToAgentMessage::GovernedInit {
+                system_prompt: config.system_prompt.clone(),
+                append_system_prompt: config.append_system_prompt.clone(),
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history.clone(),
+                code_mode,
+                tool_grant: tool_grant.clone(),
+            },
+            _ => ToAgentMessage::Init {
+                system_prompt: config.system_prompt.clone(),
+                append_system_prompt: config.append_system_prompt.clone(),
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history.clone(),
+            },
         }
     }
 
@@ -598,7 +1156,8 @@ impl AgentSupervisor {
         self.last_init = resolved_last_init.clone();
         self.remember_remote_session_id(self.state.session_id.clone());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
+            let result = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
+            self.report_session_recorder_result(result, "record session snapshot");
         }
         let _ = self.event_tx.send(SupervisorEvent::StateHydrated {
             session_id: self.state.session_id.clone(),
@@ -606,11 +1165,46 @@ impl AgentSupervisor {
     }
 
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
+        if let FromAgentMessage::ResponseAccepted { request_id } = &message {
+            return Some(SupervisorEvent::ResponseAccepted {
+                request_id: request_id.clone(),
+            });
+        }
+        if let FromAgentMessage::ConversationSnapshot {
+            protocol_version,
+            messages,
+        } = &message
+        {
+            // This in-memory reconnect boundary must not depend on the optional
+            // recorder. An unsupported live version is fail-closed and clears
+            // previously replayed history immediately.
+            self.semantic_conversation = (protocol_version
+                == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                .then(|| messages.clone());
+        }
+        if let FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } = &message {
+            self.accept_workspace_capability_receipt(receipt);
+        }
         let event = self.state.handle_message(message.clone());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.record_received(&message);
+            let result = recorder.record_received(&message);
+            self.report_session_recorder_result(result, "record received message");
         }
         event.map(|event| SupervisorEvent::Agent(Box::new(event)))
+    }
+
+    fn accept_workspace_capability_receipt(&mut self, receipt: &WorkspaceCapabilitySetApplied) {
+        let Some(request) = self
+            .pending_workspace_capability_sets
+            .get(&receipt.replay_cursor)
+        else {
+            return;
+        };
+        if workspace_capability_receipt_matches(request, receipt) {
+            self.last_workspace_capability_set = self
+                .pending_workspace_capability_sets
+                .remove(&receipt.replay_cursor);
+        }
     }
 
     fn clear_transient_progress_state(&mut self) {
@@ -626,7 +1220,8 @@ impl AgentSupervisor {
 
     fn persist_session_snapshot(&mut self) {
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+            let result = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+            self.report_session_recorder_result(result, "persist session snapshot");
         }
     }
 
@@ -647,7 +1242,14 @@ impl AgentSupervisor {
 
     async fn wait_for_pending_transport_shutdown(&mut self) {
         if let Some(handle) = self.pending_transport_shutdown.take() {
-            let _ = handle.await;
+            // This handle was just taken from `self` and nothing else holds a
+            // reference to abort it, so an `Err` here is a genuine panic in
+            // the background shutdown task, not a routine cancellation.
+            if let Err(error) = handle.await {
+                report_diagnostic_nonblocking(format!(
+                    "[supervisor] transport shutdown task failed to join: {error}"
+                ));
+            }
         }
     }
 
@@ -817,7 +1419,7 @@ impl AgentSupervisor {
         match incoming {
             ManagedIncoming::Message(message) => {
                 self.mark_response_received(emit_health_event);
-                self.apply_agent_message(message)
+                self.apply_agent_message(*message)
             }
             ManagedIncoming::Snapshot { state, last_init } => {
                 self.mark_response_received(emit_health_event);
@@ -945,6 +1547,12 @@ impl AgentSupervisor {
         self.transport.is_some()
     }
 
+    pub(crate) fn event_notification(&self) -> Option<Arc<Notify>> {
+        self.transport
+            .as_ref()
+            .map(ManagedTransport::event_notification)
+    }
+
     /// Get a reference to the current supervisor-owned agent state.
     #[must_use]
     pub fn state(&self) -> &AgentState {
@@ -973,12 +1581,33 @@ impl AgentSupervisor {
         let _ = self.event_tx.send(SupervisorEvent::ShuttingDown);
     }
 
+    /// Shutdown the supervisor and wait for its active transport to be reaped.
+    pub(crate) async fn shutdown_and_wait(&mut self) {
+        self.shutdown();
+        self.wait_for_pending_transport_shutdown().await;
+    }
+
     /// Flush session recorder
     pub fn flush_session(&mut self) -> std::io::Result<()> {
         if let Some(ref mut recorder) = self.session_recorder {
             recorder.flush()?;
         }
         Ok(())
+    }
+
+    /// Return the active session recorder path, when recording is enabled.
+    #[must_use]
+    pub fn session_file(&self) -> Option<&Path> {
+        self.session_recorder.as_ref().map(SessionRecorder::path)
+    }
+}
+
+pub(crate) fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> {
+    match message {
+        ToAgentMessage::ToolResponse { call_id, .. }
+        | ToAgentMessage::ClientToolResult { call_id, .. } => Some(call_id),
+        ToAgentMessage::ServerRequestResponse { request_id, .. } => Some(request_id),
+        _ => None,
     }
 }
 
@@ -1069,8 +1698,24 @@ impl SupervisorBuilder {
         sessions_dir: impl AsRef<Path>,
         session_id: &str,
     ) -> std::io::Result<Self> {
-        let replay = SessionReader::load(sessions_dir.as_ref(), session_id)?.replay();
+        // Build the replay snapshot from the recorder's own already-resolved
+        // state (`SessionRecorder::resume` already loaded and, if the
+        // session's metadata was corrupt, rotated it aside and rebuilt it
+        // from the JSONL log) rather than a second, independent
+        // `SessionReader::load`. A separate preliminary load here previously
+        // raced that rotation: it would rotate the corrupt metadata file
+        // aside itself, so by the time `SessionRecorder::resume` ran a
+        // moment later it saw a *missing* (not corrupt) file, skipped its
+        // own rebuild-from-JSONL path, and the next flush permanently reset
+        // the session's historical title, usage totals, and message count
+        // instead of preserving them.
         let recorder = SessionRecorder::resume(sessions_dir, session_id)?;
+        let replay = SessionReplay {
+            state: recorder.replay_state().clone(),
+            last_init: recorder.last_init().cloned(),
+            semantic_conversation: recorder.replay().semantic_conversation,
+            last_workspace_capability_set: recorder.replay().last_workspace_capability_set,
+        };
         self.session_replay = Some(replay);
         self.session_recorder = Some(recorder);
         Ok(self)
@@ -1158,45 +1803,66 @@ impl Default for SupervisorBuilder {
     }
 }
 
-#[cfg(test)]
-fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
+/// Convert a supervisor agent event into the wire-level headless message shape.
+#[must_use]
+pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
     match event {
-        AgentEvent::RawAgentEvent { event_type, event } => Some(FromAgentMessage::RawAgentEvent {
+        AgentEvent::RawAgentEvent { event_type, event } => FromAgentMessage::RawAgentEvent {
             event_type: event_type.clone(),
             event: event.clone(),
-        }),
+        },
+        AgentEvent::ManagedGatewayReceipt {
+            request_id,
+            record_id,
+            lineage_id,
+            record_status,
+        } => FromAgentMessage::ManagedGatewayReceipt {
+            request_id: request_id.clone(),
+            record_id: record_id.clone(),
+            lineage_id: lineage_id.clone(),
+            record_status: record_status.clone(),
+            prompt_experiment: None,
+        },
+        AgentEvent::WorkspaceCapabilitySetApplied { receipt } => {
+            FromAgentMessage::WorkspaceCapabilitySetApplied {
+                receipt: receipt.clone(),
+            }
+        }
+        AgentEvent::DelegationEvent { event } => FromAgentMessage::DelegationEvent {
+            event: event.clone(),
+        },
         AgentEvent::Ready {
             protocol_version,
             model,
             provider,
             session_id,
-        } => Some(FromAgentMessage::Ready {
+        } => FromAgentMessage::Ready {
             protocol_version: protocol_version.clone(),
             model: model.clone(),
             provider: provider.clone(),
             session_id: session_id.clone(),
-        }),
+        },
         AgentEvent::SessionInfo {
             session_id,
             cwd,
             git_branch,
-        } => Some(FromAgentMessage::SessionInfo {
+        } => FromAgentMessage::SessionInfo {
             session_id: session_id.clone(),
             cwd: cwd.clone(),
             git_branch: git_branch.clone(),
-        }),
-        AgentEvent::ResponseStart { response_id } => Some(FromAgentMessage::ResponseStart {
+        },
+        AgentEvent::ResponseStart { response_id } => FromAgentMessage::ResponseStart {
             response_id: response_id.clone(),
-        }),
+        },
         AgentEvent::ResponseChunk {
             response_id,
             content,
             is_thinking,
-        } => Some(FromAgentMessage::ResponseChunk {
+        } => FromAgentMessage::ResponseChunk {
             response_id: response_id.clone(),
             content: content.clone(),
             is_thinking: *is_thinking,
-        }),
+        },
         AgentEvent::ResponseEnd {
             response_id,
             usage,
@@ -1204,2671 +1870,145 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
             duration_ms,
             ttft_ms,
             ..
-        } => Some(FromAgentMessage::ResponseEnd {
+        } => FromAgentMessage::ResponseEnd {
             response_id: response_id.clone(),
             usage: usage.clone(),
             tools_summary: tools_summary.clone(),
             duration_ms: *duration_ms,
             ttft_ms: *ttft_ms,
-        }),
+        },
+        AgentEvent::TurnCompleted {
+            response_id,
+            coding_completion,
+            coding_child_records,
+        } => FromAgentMessage::TurnCompleted {
+            response_id: response_id.clone(),
+            coding_completion: coding_completion.clone(),
+            coding_child_records: coding_child_records.clone(),
+        },
+        AgentEvent::TurnInterrupted {
+            response_id,
+            reason,
+        } => FromAgentMessage::TurnInterrupted {
+            response_id: response_id.clone(),
+            reason: reason.clone(),
+        },
+        AgentEvent::CodexSessionState {
+            state,
+            thread_id,
+            profile,
+        } => FromAgentMessage::CodexSessionState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            profile: profile.clone(),
+        },
+        AgentEvent::CodexTurnState {
+            state,
+            thread_id,
+            turn_id,
+        } => FromAgentMessage::CodexTurnState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+        },
+        AgentEvent::CodexUsageState { source, usage } => FromAgentMessage::CodexUsageState {
+            source: source.clone(),
+            usage: usage.clone(),
+        },
+        AgentEvent::CodexCompatibility {
+            protocol_version,
+            resume,
+            steering,
+        } => FromAgentMessage::CodexCompatibility {
+            protocol_version: protocol_version.clone(),
+            resume: *resume,
+            steering: *steering,
+        },
         AgentEvent::ToolCall {
             call_id,
             tool,
             args,
-        } => Some(FromAgentMessage::ToolCall {
+        } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
+            tool_execution_id: None,
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: false,
-        }),
+        },
         AgentEvent::ApprovalRequired {
             call_id,
             tool,
             args,
-        } => Some(FromAgentMessage::ToolCall {
+        } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
+            tool_execution_id: None,
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: true,
-        }),
-        AgentEvent::ToolStart { call_id, .. } => Some(FromAgentMessage::ToolStart {
+        },
+        AgentEvent::ToolStart { call_id, .. } => FromAgentMessage::ToolStart {
             call_id: call_id.clone(),
-        }),
-        AgentEvent::ToolOutput { call_id, content } => Some(FromAgentMessage::ToolOutput {
+        },
+        AgentEvent::ToolOutput { call_id, content } => FromAgentMessage::ToolOutput {
             call_id: call_id.clone(),
             content: content.clone(),
-        }),
+        },
         AgentEvent::ToolEnd {
-            call_id, success, ..
-        } => Some(FromAgentMessage::ToolEnd {
-            call_id: call_id.clone(),
-            success: *success,
-        }),
+            call_id,
+            tool_execution_id,
+            success,
+            receipt,
+            ..
+        } => {
+            let tool = receipt.as_ref().map(|receipt| receipt.tool_name.clone());
+            FromAgentMessage::ToolEnd {
+                call_id: call_id.clone(),
+                tool_execution_id: tool_execution_id.clone(),
+                success: *success,
+                tool,
+                details: None,
+                receipt: receipt.clone(),
+            }
+        }
         AgentEvent::Error {
             request_id,
             message,
             fatal,
+            terminal,
             error_type,
-        } => Some(FromAgentMessage::Error {
+        } => FromAgentMessage::Error {
             request_id: request_id.clone(),
             message: message.clone(),
             fatal: *fatal,
+            terminal: *terminal,
             error_type: *error_type,
-        }),
-        AgentEvent::Status { message } => Some(FromAgentMessage::Status {
+        },
+        AgentEvent::ProviderError { kind, message } => FromAgentMessage::ProviderError {
+            kind: *kind,
             message: message.clone(),
-        }),
+        },
+        AgentEvent::Status { message } => FromAgentMessage::Status {
+            message: message.clone(),
+        },
         AgentEvent::Compaction {
             summary,
             first_kept_entry_index,
             tokens_before,
             auto,
             custom_instructions,
+            continuation,
             timestamp,
-        } => Some(FromAgentMessage::Compaction {
+        } => FromAgentMessage::Compaction {
             summary: summary.clone(),
             first_kept_entry_index: *first_kept_entry_index,
             tokens_before: *tokens_before,
             auto: *auto,
             custom_instructions: custom_instructions.clone(),
+            continuation: continuation.clone(),
             timestamp: timestamp.clone(),
-        }),
+        },
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::headless::messages::{
-        ActiveFileWatch, ActiveUtilityCommand, PendingApproval, UtilityCommandTerminalMode,
-    };
-    use crate::headless::session::SessionEntry;
-    use crate::headless::{
-        ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage, UtilityCommandShellMode,
-    };
-    use std::collections::VecDeque;
-    use std::fs;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-
-    #[cfg(unix)]
-    use std::{os::unix::fs::PermissionsExt, path::Path};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::Mutex;
-
-    async fn read_http_request(
-        socket: &mut TcpStream,
-    ) -> Option<(String, Vec<(String, String)>, String)> {
-        let mut buffer = Vec::new();
-        let mut chunk = [0u8; 1024];
-
-        loop {
-            let bytes_read = socket.read(&mut chunk).await.ok()?;
-            if bytes_read == 0 {
-                return None;
-            }
-            buffer.extend_from_slice(&chunk[..bytes_read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-
-        let header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
-        let header_bytes = &buffer[..header_end];
-        let header_text = String::from_utf8_lossy(header_bytes);
-        let request_line = header_text.lines().next()?;
-        let path = request_line.split_whitespace().nth(1)?.to_string();
-        let headers = header_text
-            .lines()
-            .skip(1)
-            .filter_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
-            })
-            .collect::<Vec<_>>();
-        let content_length = headers
-            .iter()
-            .find_map(|(name, value)| {
-                if name == "content-length" {
-                    value.parse::<usize>().ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0);
-
-        let mut body = buffer[(header_end + 4)..].to_vec();
-        while body.len() < content_length {
-            let bytes_read = socket.read(&mut chunk).await.ok()?;
-            if bytes_read == 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..bytes_read]);
-        }
-
-        Some((
-            path,
-            headers,
-            String::from_utf8_lossy(&body[..content_length]).to_string(),
-        ))
-    }
-
-    async fn write_http_response(
-        socket: &mut TcpStream,
-        status_line: &str,
-        content_type: &str,
-        body: &str,
-    ) {
-        let response = format!(
-            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.shutdown().await;
-    }
-
-    async fn spawn_remote_headless_server(
-        snapshot_json: String,
-        sse_events: Vec<String>,
-    ) -> (
-        std::net::SocketAddr,
-        Arc<Mutex<Vec<String>>>,
-        Arc<Mutex<Vec<Vec<(String, String)>>>>,
-        Arc<Mutex<Vec<(String, String)>>>,
-    ) {
-        spawn_remote_headless_server_with_options(snapshot_json, sse_events, None, None).await
-    }
-
-    async fn spawn_remote_headless_server_with_options(
-        snapshot_json: String,
-        sse_events: Vec<String>,
-        disconnect_response_delay: Option<Duration>,
-        lifecycle_markers: Option<Arc<Mutex<Vec<String>>>>,
-    ) -> (
-        std::net::SocketAddr,
-        Arc<Mutex<Vec<String>>>,
-        Arc<Mutex<Vec<Vec<(String, String)>>>>,
-        Arc<Mutex<Vec<(String, String)>>>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let posted_bodies = Arc::new(Mutex::new(Vec::new()));
-        let request_headers = Arc::new(Mutex::new(Vec::new()));
-        let request_bodies = Arc::new(Mutex::new(Vec::new()));
-        let events = Arc::new(Mutex::new(VecDeque::from(sse_events)));
-        let snapshot_value =
-            serde_json::from_str::<serde_json::Value>(&snapshot_json).expect("valid snapshot json");
-        let snapshot_session_id = snapshot_value
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("sess_remote")
-            .to_string();
-
-        tokio::spawn({
-            let posted_bodies = Arc::clone(&posted_bodies);
-            let request_headers = Arc::clone(&request_headers);
-            let request_bodies = Arc::clone(&request_bodies);
-            let events = Arc::clone(&events);
-            let snapshot_session_id = snapshot_session_id.clone();
-            let lifecycle_markers = lifecycle_markers.clone();
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let posted_bodies = Arc::clone(&posted_bodies);
-                    let request_headers = Arc::clone(&request_headers);
-                    let request_bodies = Arc::clone(&request_bodies);
-                    let events = Arc::clone(&events);
-                    let snapshot_json = snapshot_json.clone();
-                    let snapshot_session_id = snapshot_session_id.clone();
-                    let disconnect_response_delay = disconnect_response_delay;
-                    let lifecycle_markers = lifecycle_markers.clone();
-
-                    tokio::spawn(async move {
-                        let Some((path, headers, body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        request_headers.lock().await.push(headers);
-                        request_bodies
-                            .lock()
-                            .await
-                            .push((path.clone(), body.clone()));
-
-                        if path == "/api/headless/connections" {
-                            if let Some(markers) = lifecycle_markers.as_ref() {
-                                markers.lock().await.push("bootstrap".to_string());
-                            }
-                            let body = serde_json::json!({
-                                "session_id": snapshot_session_id,
-                                "connection_id": "conn_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/disconnect")
-                        {
-                            if let Some(markers) = lifecycle_markers.as_ref() {
-                                markers.lock().await.push("disconnect:start".to_string());
-                            }
-                            if let Some(delay) = disconnect_response_delay {
-                                tokio::time::sleep(delay).await;
-                            }
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
-                            )
-                            .await;
-                            if let Some(markers) = lifecycle_markers.as_ref() {
-                                markers.lock().await.push("disconnect:end".to_string());
-                            }
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/subscribe")
-                        {
-                            let body = serde_json::json!({
-                                "connection_id": "conn_remote",
-                                "subscription_id": "sub_remote",
-                                "controller_connection_id": "conn_remote",
-                                "lease_expires_at": "2026-04-02T00:00:15Z",
-                                "heartbeat_interval_ms": 15000,
-                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                    .expect("valid snapshot json"),
-                            })
-                            .to_string();
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                &body,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/heartbeat")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/unsubscribe")
-                        {
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/messages")
-                        {
-                            posted_bodies.lock().await.push(body);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"success":true}"#,
-                            )
-                            .await;
-                            return;
-                        }
-
-                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
-                        {
-                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-                            if socket.write_all(headers.as_bytes()).await.is_err() {
-                                return;
-                            }
-                            while let Some(event) = events.lock().await.pop_front() {
-                                let payload = format!("data: {event}\n\n");
-                                if socket.write_all(payload.as_bytes()).await.is_err() {
-                                    break;
-                                }
-                            }
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                            let _ = socket.shutdown().await;
-                            return;
-                        }
-
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        (addr, posted_bodies, request_headers, request_bodies)
-    }
-
-    #[test]
-    fn test_supervisor_config_defaults() {
-        let config = SupervisorConfig::default();
-        assert_eq!(config.max_reconnect_attempts, 5);
-        assert_eq!(config.reconnect_delay, Duration::from_secs(1));
-        assert!((config.reconnect_jitter_factor - 0.25).abs() < f64::EPSILON);
-        assert_eq!(config.max_reconnect_elapsed, Duration::from_secs(600));
-        assert!(config.auto_reconnect);
-    }
-
-    #[test]
-    fn reconnect_jitter_sample_stays_within_expected_bounds() {
-        let base_delay = Duration::from_secs(4);
-
-        assert_eq!(
-            jittered_reconnect_delay_for_sample(base_delay, 0.25, -1.0),
-            Duration::from_secs(3)
-        );
-        assert_eq!(
-            jittered_reconnect_delay_for_sample(base_delay, 0.25, 1.0),
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            jittered_reconnect_delay_for_sample(base_delay, 0.25, 0.0),
-            base_delay
-        );
-    }
-
-    #[test]
-    fn test_health_status() {
-        assert_eq!(HealthStatus::Healthy, HealthStatus::Healthy);
-        assert_ne!(HealthStatus::Healthy, HealthStatus::Unhealthy);
-    }
-
-    #[test]
-    fn health_transitions_after_silence() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
-            health_check_interval: Duration::from_secs(30),
-            health_check_timeout: Duration::from_secs(5),
-            ..SupervisorConfig::default()
-        });
-        let start = Instant::now();
-        supervisor.health_status = HealthStatus::Healthy;
-        supervisor.last_response = Some(start);
-
-        assert!(supervisor
-            .due_health_transition(start + Duration::from_secs(29))
-            .is_none());
-        assert!(matches!(
-            supervisor.due_health_transition(start + Duration::from_secs(30)),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Degraded
-            })
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Degraded);
-        assert!(supervisor
-            .due_health_transition(start + Duration::from_secs(34))
-            .is_none());
-        assert!(matches!(
-            supervisor.due_health_transition(start + Duration::from_secs(35)),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Unhealthy
-            })
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-    }
-
-    #[test]
-    fn remote_viewer_skips_silence_health_timeouts() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
-            health_check_interval: Duration::from_secs(30),
-            health_check_timeout: Duration::from_secs(5),
-            remote: Some(RemoteTransportConfig {
-                role: Some("viewer".to_string()),
-                ..RemoteTransportConfig::default()
-            }),
-            ..SupervisorConfig::default()
-        });
-        let start = Instant::now();
-        supervisor.health_status = HealthStatus::Healthy;
-        supervisor.last_response = Some(start);
-
-        assert!(supervisor.next_health_deadline().is_none());
-        assert!(supervisor
-            .due_health_transition(start + Duration::from_secs(35))
-            .is_none());
-        assert_eq!(supervisor.health(), HealthStatus::Healthy);
-    }
-
-    #[test]
-    fn compacting_remote_sessions_use_extended_silence_deadline() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
-            health_check_interval: Duration::from_secs(30),
-            health_check_timeout: Duration::from_secs(5),
-            remote: Some(RemoteTransportConfig {
-                role: Some("controller".to_string()),
-                ..RemoteTransportConfig::default()
-            }),
-            ..SupervisorConfig::default()
-        });
-        let start = Instant::now();
-        supervisor.health_status = HealthStatus::Healthy;
-        supervisor.last_response = Some(start);
-        supervisor.state.is_responding = true;
-        supervisor.state.last_status = Some(" compacting ".to_string());
-
-        assert_eq!(
-            supervisor.next_health_deadline(),
-            Some(start + REMOTE_COMPACTION_SILENCE_TIMEOUT)
-        );
-        assert!(supervisor
-            .due_health_transition(start + Duration::from_secs(35))
-            .is_none());
-        assert_eq!(supervisor.health(), HealthStatus::Healthy);
-    }
-
-    #[test]
-    fn completed_remote_responses_do_not_keep_compaction_timeout_override() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
-            health_check_interval: Duration::from_secs(30),
-            health_check_timeout: Duration::from_secs(5),
-            remote: Some(RemoteTransportConfig {
-                role: Some("controller".to_string()),
-                ..RemoteTransportConfig::default()
-            }),
-            ..SupervisorConfig::default()
-        });
-        let start = Instant::now();
-        supervisor.health_status = HealthStatus::Healthy;
-        supervisor.last_response = Some(start);
-        supervisor.state.is_responding = false;
-        supervisor.state.last_status = Some("compacting".to_string());
-
-        assert_eq!(
-            supervisor.next_health_deadline(),
-            Some(start + Duration::from_secs(30))
-        );
-        assert!(matches!(
-            supervisor.due_health_transition(start + Duration::from_secs(30)),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Degraded
-            })
-        ));
-    }
-
-    #[test]
-    fn compacting_remote_sessions_become_unhealthy_after_extended_timeout() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
-            health_check_interval: Duration::from_secs(30),
-            health_check_timeout: Duration::from_secs(5),
-            remote: Some(RemoteTransportConfig {
-                role: Some("controller".to_string()),
-                ..RemoteTransportConfig::default()
-            }),
-            auto_reconnect: true,
-            ..SupervisorConfig::default()
-        });
-        let start = Instant::now();
-        supervisor.health_status = HealthStatus::Healthy;
-        supervisor.last_response = Some(start);
-        supervisor.state.is_responding = true;
-        supervisor.state.last_status = Some("compacting".to_string());
-
-        assert!(matches!(
-            supervisor.due_health_transition(start + REMOTE_COMPACTION_SILENCE_TIMEOUT),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Unhealthy
-            })
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(supervisor.pending_auto_reconnect);
-    }
-
-    #[test]
-    fn incoming_heartbeat_restores_healthy_status() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
-        supervisor.health_status = HealthStatus::Degraded;
-        supervisor.last_response = Some(
-            Instant::now()
-                .checked_sub(Duration::from_secs(90))
-                .expect("monotonic clock supports subtraction"),
-        );
-
-        supervisor.mark_response_received(true);
-        assert_eq!(supervisor.health(), HealthStatus::Healthy);
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-    }
-
-    #[test]
-    fn retryable_transport_disconnect_preserves_transient_progress_state() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
-        supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
-        supervisor.state.is_responding = true;
-        let approval = PendingApproval {
-            call_id: "call_disconnect".to_string(),
-            request_id: Some("req_disconnect".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "git push" }),
-        };
-        let client_tool = PendingApproval {
-            call_id: "call_client_disconnect".to_string(),
-            request_id: Some("req_client_disconnect".to_string()),
-            tool: "client_tool".to_string(),
-            args: serde_json::json!({ "name": "artifacts" }),
-        };
-        let user_input = PendingApproval {
-            call_id: "call_user_disconnect".to_string(),
-            request_id: Some("req_user_disconnect".to_string()),
-            tool: "ask_user".to_string(),
-            args: serde_json::json!({ "question": "continue?" }),
-        };
-        let tool_retry = PendingApproval {
-            call_id: "call_retry_disconnect".to_string(),
-            request_id: Some("req_retry_disconnect".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "retry" }),
-        };
-        supervisor.state.pending_approvals.push(approval.clone());
-        supervisor
-            .state
-            .pending_client_tools
-            .push(client_tool.clone());
-        supervisor
-            .state
-            .pending_user_inputs
-            .push(user_input.clone());
-        supervisor
-            .state
-            .pending_tool_retries
-            .push(tool_retry.clone());
-        supervisor
-            .state
-            .tracked_tools
-            .insert(approval.call_id.clone(), approval);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(client_tool.call_id.clone(), client_tool);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(user_input.call_id.clone(), user_input);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(tool_retry.call_id.clone(), tool_retry);
-        supervisor.state.active_tools.insert(
-            "call_disconnect".to_string(),
-            ActiveTool {
-                call_id: "call_disconnect".to_string(),
-                tool: "read".to_string(),
-                output: "partial".to_string(),
-                started: Instant::now(),
-            },
-        );
-        supervisor.state.active_utility_commands.insert(
-            "cmd_disconnect".to_string(),
-            ActiveUtilityCommand {
-                command_id: "cmd_disconnect".to_string(),
-                command: "sleep 10".to_string(),
-                cwd: Some("/tmp/project".to_string()),
-                shell_mode: UtilityCommandShellMode::Shell,
-                terminal_mode: UtilityCommandTerminalMode::Pipe,
-                pid: Some(42),
-                columns: None,
-                rows: None,
-                owner_connection_id: Some("conn_remote".to_string()),
-                output: "partial".to_string(),
-            },
-        );
-        supervisor.state.active_file_watches.insert(
-            "watch_disconnect".to_string(),
-            ActiveFileWatch {
-                watch_id: "watch_disconnect".to_string(),
-                root_dir: "/tmp/project".to_string(),
-                include_patterns: None,
-                exclude_patterns: None,
-                debounce_ms: 250,
-                owner_connection_id: Some("conn_remote".to_string()),
-            },
-        );
-
-        assert!(matches!(
-            supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed),
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-
-        assert!(supervisor.pending_auto_reconnect);
-        assert!(supervisor.state().current_response.is_some());
-        assert_eq!(supervisor.state().pending_approvals.len(), 1);
-        assert_eq!(supervisor.state().pending_client_tools.len(), 1);
-        assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
-        assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
-        assert_eq!(supervisor.state().active_tools.len(), 1);
-        assert_eq!(supervisor.state().active_utility_commands.len(), 1);
-        assert_eq!(supervisor.state().active_file_watches.len(), 1);
-        assert_eq!(supervisor.state().tracked_tools.len(), 4);
-        assert!(supervisor.state().is_responding);
-    }
-
-    #[test]
-    fn manual_disconnect_clears_transient_progress_state() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
-        supervisor.state.current_response = Some(StreamingResponse::new("resp_manual".into()));
-        supervisor.state.is_responding = true;
-        let approval = PendingApproval {
-            call_id: "call_manual".to_string(),
-            request_id: Some("req_manual".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "git push" }),
-        };
-        let client_tool = PendingApproval {
-            call_id: "call_client_manual".to_string(),
-            request_id: Some("req_client_manual".to_string()),
-            tool: "client_tool".to_string(),
-            args: serde_json::json!({ "name": "artifacts" }),
-        };
-        let user_input = PendingApproval {
-            call_id: "call_user_manual".to_string(),
-            request_id: Some("req_user_manual".to_string()),
-            tool: "ask_user".to_string(),
-            args: serde_json::json!({ "question": "continue?" }),
-        };
-        let tool_retry = PendingApproval {
-            call_id: "call_retry_manual".to_string(),
-            request_id: Some("req_retry_manual".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "retry" }),
-        };
-        supervisor.state.pending_approvals.push(approval.clone());
-        supervisor
-            .state
-            .pending_client_tools
-            .push(client_tool.clone());
-        supervisor
-            .state
-            .pending_user_inputs
-            .push(user_input.clone());
-        supervisor
-            .state
-            .pending_tool_retries
-            .push(tool_retry.clone());
-        supervisor
-            .state
-            .tracked_tools
-            .insert(approval.call_id.clone(), approval);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(client_tool.call_id.clone(), client_tool);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(user_input.call_id.clone(), user_input);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(tool_retry.call_id.clone(), tool_retry);
-        supervisor.state.active_tools.insert(
-            "call_manual".to_string(),
-            ActiveTool {
-                call_id: "call_manual".to_string(),
-                tool: "write".to_string(),
-                output: "partial".to_string(),
-                started: Instant::now(),
-            },
-        );
-        supervisor.state.active_utility_commands.insert(
-            "cmd_manual".to_string(),
-            ActiveUtilityCommand {
-                command_id: "cmd_manual".to_string(),
-                command: "tail -f log".to_string(),
-                cwd: Some("/tmp/project".to_string()),
-                shell_mode: UtilityCommandShellMode::Direct,
-                terminal_mode: UtilityCommandTerminalMode::Pty,
-                pid: Some(7),
-                columns: Some(80),
-                rows: Some(24),
-                owner_connection_id: Some("conn_remote".to_string()),
-                output: "partial".to_string(),
-            },
-        );
-        supervisor.state.active_file_watches.insert(
-            "watch_manual".to_string(),
-            ActiveFileWatch {
-                watch_id: "watch_manual".to_string(),
-                root_dir: "/tmp/project".to_string(),
-                include_patterns: Some(vec!["src/**".to_string()]),
-                exclude_patterns: None,
-                debounce_ms: 250,
-                owner_connection_id: Some("conn_remote".to_string()),
-            },
-        );
-
-        supervisor.disconnect();
-
-        assert!(supervisor.state().current_response.is_none());
-        assert!(supervisor.state().pending_approvals.is_empty());
-        assert!(supervisor.state().pending_client_tools.is_empty());
-        assert!(supervisor.state().pending_user_inputs.is_empty());
-        assert!(supervisor.state().pending_tool_retries.is_empty());
-        assert!(supervisor.state().active_tools.is_empty());
-        assert!(supervisor.state().active_utility_commands.is_empty());
-        assert!(supervisor.state().active_file_watches.is_empty());
-        assert!(supervisor.state().tracked_tools.is_empty());
-        assert!(!supervisor.state().is_responding);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn send_resets_health_deadline_before_remote_reply_arrives() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = create_test_headless_script(temp.path()).expect("script");
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.health_check_interval = Duration::from_millis(10);
-        config.health_check_timeout = Duration::from_millis(10);
-        config.auto_reconnect = false;
-        let degraded_timeout = config.health_check_interval + config.health_check_timeout;
-
-        let mut supervisor = AgentSupervisor::new(config);
-        supervisor.connect().await.expect("connect");
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        let _ = supervisor.recv().await.expect("ready");
-
-        supervisor.health_status = HealthStatus::Degraded;
-        let stale_response_at = Instant::now()
-            .checked_sub(Duration::from_millis(25))
-            .expect("monotonic clock supports subtraction");
-        supervisor.last_response = Some(stale_response_at);
-
-        supervisor.prompt("hello after idle").expect("prompt");
-
-        let stale_deadline = stale_response_at + degraded_timeout;
-        assert!(supervisor.due_health_transition(stale_deadline).is_none());
-        assert_eq!(supervisor.health(), HealthStatus::Degraded);
-    }
-
-    #[test]
-    fn transport_disconnect_schedules_auto_reconnect_when_enabled() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
-        let event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
-
-        assert!(matches!(
-            event,
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Reconnecting);
-        assert!(supervisor.pending_auto_reconnect);
-    }
-
-    #[test]
-    fn test_supervisor_builder() {
-        let supervisor = SupervisorBuilder::new()
-            .cli_path("/usr/bin/composer")
-            .cwd("/home/user/project")
-            .env("MAESTRO_EVALOPS_ACCESS_TOKEN", "delegated-token")
-            .max_reconnect_attempts(10)
-            .auto_reconnect(false)
-            .build();
-
-        assert!(!supervisor.is_connected());
-        assert_eq!(supervisor.health(), HealthStatus::Unknown);
-        assert!(supervisor.state().model.is_none());
-        assert_eq!(
-            supervisor.config.transport.env,
-            vec![(
-                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
-                "delegated-token".to_string(),
-            )]
-        );
-    }
-
-    #[test]
-    fn test_supervisor_builder_restores_session_replay() {
-        let replay = SessionReplay {
-            state: AgentState {
-                model: Some("claude-3-opus".to_string()),
-                provider: Some("anthropic".to_string()),
-                is_ready: true,
-                ..AgentState::default()
-            },
-            last_init: Some(InitConfig {
-                system_prompt: Some("You are Maestro".to_string()),
-                append_system_prompt: None,
-                thinking_level: Some(super::super::messages::ThinkingLevel::High),
-                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-            }),
-        };
-
-        let supervisor = SupervisorBuilder::new().session_replay(replay).build();
-        assert_eq!(supervisor.state().model.as_deref(), Some("claude-3-opus"));
-        assert_eq!(supervisor.state().provider.as_deref(), Some("anthropic"));
-        assert!(supervisor.state().is_ready);
-    }
-
-    #[test]
-    fn session_replay_does_not_override_explicit_remote_session_id() {
-        let replay = SessionReplay {
-            state: AgentState {
-                session_id: Some("sess_replayed".to_string()),
-                is_ready: true,
-                ..AgentState::default()
-            },
-            last_init: None,
-        };
-
-        let supervisor = SupervisorBuilder::new()
-            .remote_base_url("http://127.0.0.1:8080")
-            .remote_session_id("sess_explicit")
-            .session_replay(replay)
-            .build();
-
-        assert_eq!(
-            supervisor
-                .config
-                .remote
-                .as_ref()
-                .and_then(|remote| remote.session_id.as_deref()),
-            Some("sess_explicit")
-        );
-        assert_eq!(
-            supervisor.state().session_id.as_deref(),
-            Some("sess_replayed")
-        );
-    }
-
-    #[test]
-    fn snapshot_incoming_preserves_existing_event_queue_order() {
-        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
-        let _ = supervisor.event_tx.send(SupervisorEvent::Connected);
-
-        let event = supervisor.handle_transport_incoming(ManagedIncoming::Snapshot {
-            state: Box::new(AgentState {
-                session_id: Some("sess_snapshot".to_string()),
-                ..AgentState::default()
-            }),
-            last_init: None,
-        });
-
-        assert!(event.is_none());
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::StateHydrated {
-                session_id: Some(ref session_id)
-            }) if session_id == "sess_snapshot"
-        ));
-    }
-
-    #[test]
-    fn test_supervisor_builder_remote_config_helpers() {
-        let supervisor = SupervisorBuilder::new()
-            .remote_base_url("http://127.0.0.1:8080")
-            .remote_api_key("secret")
-            .remote_session_id("sess_remote")
-            .remote_opt_out_notification("status")
-            .build();
-
-        let remote = supervisor.config.remote.expect("remote config");
-        assert_eq!(remote.base_url, "http://127.0.0.1:8080");
-        assert_eq!(remote.api_key.as_deref(), Some("secret"));
-        assert_eq!(remote.session_id.as_deref(), Some("sess_remote"));
-        assert_eq!(remote.opt_out_notifications, vec!["status".to_string()]);
-    }
-
-    #[test]
-    fn resume_recorded_session_restores_replay_and_recorder() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path();
-        let mut recorder = SessionRecorder::new(sessions_dir).expect("recorder");
-        let session_id = recorder.id().to_string();
-        recorder
-            .record_sent(&ToAgentMessage::Init {
-                system_prompt: Some("Saved system prompt".to_string()),
-                append_system_prompt: None,
-                thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
-                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-            })
-            .expect("record init");
-        recorder
-            .record_received(&FromAgentMessage::Ready {
-                protocol_version: Some("2026-03-30".to_string()),
-                model: "gpt-5.4".to_string(),
-                provider: "openai".to_string(),
-                session_id: Some("sess_saved".to_string()),
-            })
-            .expect("record ready");
-        recorder.flush().expect("flush");
-        drop(recorder);
-
-        let supervisor = SupervisorBuilder::new()
-            .resume_recorded_session(sessions_dir, &session_id)
-            .expect("resume builder")
-            .build();
-
-        assert_eq!(supervisor.state().model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(supervisor.state().provider.as_deref(), Some("openai"));
-        assert_eq!(supervisor.state().session_id.as_deref(), Some("sess_saved"));
-        assert!(supervisor.session_recorder.is_some());
-        assert_eq!(
-            supervisor
-                .last_init
-                .as_ref()
-                .and_then(|init| init.system_prompt.as_deref()),
-            Some("Saved system prompt")
-        );
-    }
-
-    #[test]
-    fn session_recorder_keeps_last_init_in_sync_with_sent_messages() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path();
-        let mut recorder = SessionRecorder::new(sessions_dir).expect("recorder");
-        recorder
-            .record_sent(&ToAgentMessage::Init {
-                system_prompt: Some("Saved system prompt".to_string()),
-                append_system_prompt: None,
-                thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
-                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-            })
-            .expect("record init");
-        recorder.flush().expect("flush");
-        let session_id = recorder.id().to_string();
-        drop(recorder);
-
-        let replay = SessionReader::load(sessions_dir, &session_id)
-            .expect("load session")
-            .replay();
-        let recorder = SessionRecorder::resume(sessions_dir, &session_id).expect("resume recorder");
-
-        assert_eq!(recorder.last_init(), replay.last_init.as_ref());
-    }
-
-    #[test]
-    fn apply_snapshot_keeps_session_recorder_state_in_sync() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path();
-        let recorder = SessionRecorder::new(sessions_dir).expect("recorder");
-        let mut supervisor =
-            AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
-        let snapshot_state = AgentState {
-            model: Some("gpt-5.4".to_string()),
-            provider: Some("openai".to_string()),
-            session_id: Some("sess_remote".to_string()),
-            is_ready: true,
-            ..AgentState::default()
-        };
-        let snapshot_init = InitConfig {
-            system_prompt: Some("Persisted prompt".to_string()),
-            append_system_prompt: None,
-            thinking_level: Some(super::super::messages::ThinkingLevel::High),
-            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-        };
-
-        supervisor.apply_snapshot(snapshot_state.clone(), Some(snapshot_init.clone()));
-
-        let recorder = supervisor
-            .session_recorder
-            .as_ref()
-            .expect("session recorder");
-        assert_eq!(recorder.replay_state().model, snapshot_state.model);
-        assert_eq!(recorder.replay_state().provider, snapshot_state.provider);
-        assert_eq!(
-            recorder.replay_state().session_id,
-            snapshot_state.session_id
-        );
-        assert_eq!(recorder.replay_state().is_ready, snapshot_state.is_ready);
-        assert_eq!(recorder.last_init(), Some(&snapshot_init));
-        assert_eq!(supervisor.last_init.as_ref(), Some(&snapshot_init));
-    }
-
-    #[test]
-    fn disconnect_writes_one_checkpoint_after_clearing_disconnect_state() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path();
-        let recorder = SessionRecorder::new(sessions_dir).expect("recorder");
-        let session_id = recorder.id().to_string();
-        let mut supervisor =
-            AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
-        let approval = PendingApproval {
-            call_id: "call_disconnect".to_string(),
-            request_id: Some("req_disconnect".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "git push" }),
-        };
-
-        supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
-        supervisor.state.is_responding = true;
-        supervisor.state.pending_approvals.push(approval.clone());
-        supervisor
-            .state
-            .tracked_tools
-            .insert(approval.call_id.clone(), approval);
-        supervisor.state.active_tools.insert(
-            "call_disconnect".to_string(),
-            ActiveTool {
-                call_id: "call_disconnect".to_string(),
-                tool: "grep".to_string(),
-                output: "partial".to_string(),
-                started: Instant::now(),
-            },
-        );
-
-        supervisor.disconnect();
-        supervisor
-            .session_recorder
-            .as_mut()
-            .expect("session recorder")
-            .flush()
-            .expect("flush");
-        drop(supervisor);
-
-        let reader = SessionReader::load(sessions_dir, &session_id).expect("load session");
-        let checkpoints = reader
-            .entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                SessionEntry::Checkpoint { state, .. } => Some(state.as_ref()),
-                SessionEntry::Sent { .. } | SessionEntry::Received { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(checkpoints.len(), 1);
-        let checkpoint = checkpoints[0];
-        assert!(checkpoint.current_response.is_none());
-        assert!(!checkpoint.is_responding);
-        assert!(checkpoint.pending_approvals.is_empty());
-        assert!(checkpoint.tracked_tools.is_empty());
-        assert!(checkpoint.active_tools.is_empty());
-    }
-
-    #[test]
-    fn event_to_message_preserves_headless_metadata() {
-        let ready = event_to_message(&AgentEvent::Ready {
-            protocol_version: Some("2026-03-30".to_string()),
-            model: "claude-3-opus".to_string(),
-            provider: "anthropic".to_string(),
-            session_id: Some("sess_123".to_string()),
-        })
-        .expect("ready message");
-        assert!(matches!(
-            ready,
-            super::super::messages::FromAgentMessage::Ready {
-                protocol_version: Some(ref version),
-                session_id: Some(ref session_id),
-                ..
-            } if version == "2026-03-30" && session_id == "sess_123"
-        ));
-
-        let response_end = event_to_message(&AgentEvent::ResponseEnd {
-            response_id: "resp_1".to_string(),
-            usage: Some(TokenUsage {
-                input_tokens: 10,
-                output_tokens: 20,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                cost: Some(0.1),
-                total_tokens: Some(30),
-                model_id: Some("claude-sonnet".to_string()),
-                provider: Some("anthropic".to_string()),
-            }),
-            tools_summary: None,
-            duration_ms: Some(2400),
-            ttft_ms: Some(150),
-            full_text: Some("Hello".to_string()),
-        })
-        .expect("response end message");
-        assert!(matches!(
-            response_end,
-            super::super::messages::FromAgentMessage::ResponseEnd {
-                duration_ms: Some(2400),
-                ttft_ms: Some(150),
-                ..
-            }
-        ));
-
-        let error = event_to_message(&AgentEvent::Error {
-            request_id: None,
-            message: "cancelled".to_string(),
-            fatal: false,
-            error_type: Some(HeadlessErrorType::Cancelled),
-        })
-        .expect("error message");
-        assert!(matches!(
-            error,
-            super::super::messages::FromAgentMessage::Error {
-                error_type: Some(HeadlessErrorType::Cancelled),
-                ..
-            }
-        ));
-    }
-
-    #[cfg(unix)]
-    fn create_test_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
-        let script_path = dir.join("fake-maestro-headless.sh");
-        fs::write(
-            &script_path,
-            r#"#!/bin/sh
-log_file="${MAESTRO_TEST_LOG:-}"
-if [ -n "$log_file" ]; then
-  : > "$log_file"
-fi
-printf '{"type":"ready","model":"test","provider":"test"}\n'
-while IFS= read -r line; do
-  if [ -n "$log_file" ]; then
-    printf '%s\n' "$line" >> "$log_file"
-  fi
-done
-"#,
-        )?;
-
-        let mut permissions = fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions)?;
-        Ok(script_path)
-    }
-
-    #[cfg(unix)]
-    fn create_streaming_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
-        let script_path = dir.join("fake-maestro-headless-stream.sh");
-        fs::write(
-            &script_path,
-            r#"#!/bin/sh
-printf '{"type":"ready","protocol_version":"2026-03-30","model":"test","provider":"test","session_id":"sess_ready"}\n'
-printf '{"type":"session_info","session_id":"sess_state","cwd":"/tmp/project","git_branch":"main"}\n'
-printf '{"type":"response_start","response_id":"resp_1"}\n'
-printf '{"type":"response_chunk","response_id":"resp_1","content":"Partial reply","is_thinking":false}\n'
-while IFS= read -r line; do
-  :
-done
-"#,
-        )?;
-
-        let mut permissions = fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions)?;
-        Ok(script_path)
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn supervisor_recv_updates_replayed_state_from_transport_events() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = create_streaming_headless_script(temp.path()).expect("script");
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.auto_reconnect = false;
-
-        let mut supervisor = AgentSupervisor::new(config);
-        supervisor.connect().await.expect("connect");
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        for _ in 0..4 {
-            let event = supervisor.recv().await.expect("event");
-            assert!(matches!(event, SupervisorEvent::Agent(_)));
-        }
-
-        assert_eq!(
-            supervisor.state().protocol_version.as_deref(),
-            Some("2026-03-30")
-        );
-        assert_eq!(supervisor.state().model.as_deref(), Some("test"));
-        assert_eq!(supervisor.state().provider.as_deref(), Some("test"));
-        assert_eq!(supervisor.state().session_id.as_deref(), Some("sess_state"));
-        assert_eq!(supervisor.state().cwd.as_deref(), Some("/tmp/project"));
-        assert_eq!(supervisor.state().git_branch.as_deref(), Some("main"));
-        assert!(supervisor.state().is_ready);
-        assert!(supervisor.state().is_responding);
-        assert_eq!(
-            supervisor
-                .state()
-                .current_response
-                .as_ref()
-                .map(|response| response.text.as_str()),
-            Some("Partial reply")
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn connect_replays_saved_init_from_restored_session_snapshot() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let log_path = temp.path().join("agent-stdin.log");
-        let script_path = create_test_headless_script(temp.path()).expect("script");
-        fs::write(&log_path, "").expect("create log");
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.transport.env.push((
-            "MAESTRO_TEST_LOG".to_string(),
-            log_path.to_string_lossy().into_owned(),
-        ));
-        config.auto_reconnect = false;
-
-        let init = InitConfig {
-            system_prompt: Some("system prompt".to_string()),
-            append_system_prompt: Some("appendix".to_string()),
-            thinking_level: Some(super::super::messages::ThinkingLevel::High),
-            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-        };
-        let replay = SessionReplay {
-            state: AgentState {
-                session_id: Some("sess_replayed".to_string()),
-                last_status: Some("Resuming session".to_string()),
-                is_ready: true,
-                ..AgentState::default()
-            },
-            last_init: Some(init.clone()),
-        };
-
-        let mut supervisor = AgentSupervisor::new(config).with_session_replay(replay);
-        assert_eq!(
-            supervisor.state().session_id.as_deref(),
-            Some("sess_replayed")
-        );
-        assert_eq!(
-            supervisor.state().last_status.as_deref(),
-            Some("Resuming session")
-        );
-        assert!(supervisor.state().is_ready);
-
-        supervisor.connect().await.expect("connect");
-        for _ in 0..80 {
-            let log_contents = fs::read_to_string(&log_path).expect("read log");
-            if log_contents.contains(r#""type":"init""#) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        supervisor.disconnect();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let logged_inits: Vec<_> = fs::read_to_string(&log_path)
-            .expect("read log")
-            .lines()
-            .filter_map(|line| {
-                let message = serde_json::from_str::<ToAgentMessage>(line).expect("parse message");
-                match message {
-                    ToAgentMessage::Init {
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    } => Some((
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    )),
-                    _ => None,
-                }
-            })
-            .collect();
-
-        assert_eq!(
-            logged_inits,
-            vec![(
-                init.system_prompt,
-                init.append_system_prompt,
-                init.thinking_level,
-                init.approval_mode,
-            )]
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn reconnect_replays_last_init_config() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = create_test_headless_script(temp.path()).expect("script");
-        let sessions_dir = temp.path().join("sessions");
-        let recorder = SessionRecorder::new(&sessions_dir).expect("recorder");
-        let session_id = recorder.id().to_string();
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.auto_reconnect = false;
-
-        let init = InitConfig {
-            system_prompt: Some("system prompt".to_string()),
-            append_system_prompt: Some("appendix".to_string()),
-            thinking_level: Some(super::super::messages::ThinkingLevel::High),
-            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
-        };
-
-        let mut supervisor = AgentSupervisor::new(config).with_session_recorder(recorder);
-        supervisor.connect().await.expect("connect");
-        supervisor.init(init.clone()).expect("initial init");
-
-        supervisor.disconnect();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        supervisor.reconnect().await.expect("reconnect");
-        supervisor.disconnect();
-        supervisor.flush_session().expect("flush");
-
-        let logged_inits: Vec<_> = SessionReader::load(&sessions_dir, &session_id)
-            .expect("load session")
-            .sent_messages()
-            .into_iter()
-            .filter_map(|message| match message {
-                ToAgentMessage::Init {
-                    system_prompt,
-                    append_system_prompt,
-                    thinking_level,
-                    approval_mode,
-                } => Some((
-                    system_prompt.clone(),
-                    append_system_prompt.clone(),
-                    *thinking_level,
-                    *approval_mode,
-                )),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(logged_inits.len(), 2);
-        for (system_prompt, append_system_prompt, thinking_level, approval_mode) in logged_inits {
-            assert_eq!(system_prompt, init.system_prompt);
-            assert_eq!(append_system_prompt, init.append_system_prompt);
-            assert_eq!(thinking_level, init.thinking_level);
-            assert_eq!(approval_mode, init.approval_mode);
-        }
-    }
-
-    #[tokio::test]
-    async fn remote_connect_hydrates_state_without_replaying_init() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "last_init": {
-                "system_prompt": "Persisted prompt",
-                "approval_mode": "prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "cwd": "/tmp/project",
-                "git_branch": "main",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 1,
-            "message": {
-                "type": "status",
-                "message": "Remote status"
-            }
-        })
-        .to_string();
-        let (addr, posted_bodies, request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .remote_api_key("secret")
-            .remote_session_id("sess_remote")
-            .build();
-
-        supervisor.connect().await.expect("connect");
-
-        assert_eq!(supervisor.state().model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(supervisor.state().provider.as_deref(), Some("openai"));
-        assert_eq!(
-            supervisor.state().session_id.as_deref(),
-            Some("sess_remote")
-        );
-        assert_eq!(supervisor.state().last_status.as_deref(), Some("Attached"));
-
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::StateHydrated {
-                session_id: Some(ref session_id)
-            }) if session_id == "sess_remote"
-        ));
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.poll(),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Agent(agent_event))
-                if matches!(
-                    *agent_event,
-                    AgentEvent::Status { ref message } if message == "Remote status"
-                )
-        ));
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let posted_bodies = posted_bodies.lock().await.clone();
-        assert_eq!(posted_bodies.len(), 1);
-        let sent =
-            serde_json::from_str::<ToAgentMessage>(&posted_bodies[0]).expect("parse sent message");
-        assert!(matches!(sent, ToAgentMessage::Hello { .. }));
-        let headers = request_headers.lock().await.clone();
-        assert!(headers.first().is_some_and(|request| {
-            request
-                .iter()
-                .any(|(name, value)| name == "authorization" && value == "Bearer secret")
-        }));
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn recv_prioritizes_supervisor_events_before_remote_agent_messages() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "last_init": {
-                "system_prompt": "Persisted prompt",
-                "approval_mode": "prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "cwd": "/tmp/project",
-                "git_branch": "main",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let status_event = serde_json::json!({
-            "type": "message",
-            "cursor": 1,
-            "message": {
-                "type": "status",
-                "message": "Remote status"
-            }
-        })
-        .to_string();
-        let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .remote_api_key("secret")
-            .remote_session_id("sess_remote")
-            .build();
-
-        supervisor.connect().await.expect("connect");
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::StateHydrated {
-                session_id: Some(ref session_id)
-            }) if session_id == "sess_remote"
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Agent(agent_event))
-                if matches!(
-                    *agent_event,
-                    AgentEvent::Status { ref message } if message == "Remote status"
-                )
-        ));
-
-        supervisor.disconnect();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn recv_auto_reconnects_after_transport_disconnect() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = create_streaming_headless_script(temp.path()).expect("script");
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.reconnect_delay = Duration::from_millis(5);
-        config.max_reconnect_attempts = 1;
-        config.auto_reconnect = true;
-
-        let mut supervisor = AgentSupervisor::new(config);
-        supervisor.connect().await.expect("connect");
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        for _ in 0..4 {
-            let _ = supervisor.recv().await.expect("initial agent event");
-        }
-
-        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Reconnecting {
-                attempt: 1,
-                max_attempts: 1
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Agent(agent_event))
-                if matches!(*agent_event, AgentEvent::Ready { .. })
-        ));
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn failed_auto_reconnect_emits_disconnected_instead_of_hanging() {
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = "/definitely/missing/maestro-headless".to_string();
-        config.reconnect_delay = Duration::from_millis(1);
-        config.max_reconnect_attempts = 1;
-        config.auto_reconnect = true;
-
-        let mut supervisor = AgentSupervisor::new(config);
-        supervisor.pending_auto_reconnect = true;
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Reconnecting {
-                attempt: 1,
-                max_attempts: 1
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Unhealthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Disconnected { ref error })
-                if error.contains("Failed to spawn agent")
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(!supervisor.pending_auto_reconnect);
-        assert!(!supervisor.is_connected());
-    }
-
-    #[tokio::test]
-    async fn non_retryable_remote_disconnect_does_not_schedule_auto_reconnect() {
-        let mut supervisor = SupervisorBuilder::new().build();
-
-        let disconnect =
-            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                status: 409,
-                retryable: false,
-                kind: RemoteErrorKind::ControllerLeaseConflict,
-                message: "remote request failed with status 409 Conflict".to_string(),
-            });
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error.contains("409 Conflict")
-        ));
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(!supervisor.pending_auto_reconnect);
-        assert!(supervisor.poll().is_none());
-    }
-
-    #[tokio::test]
-    async fn non_retryable_remote_disconnect_shuts_down_transport() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
-            base_url: format!("http://{addr}"),
-            ..RemoteTransportConfig::default()
-        })
-        .await
-        .expect("connect");
-        let cancel_token = transport.cancel_token();
-
-        let mut supervisor = SupervisorBuilder::new().build();
-        supervisor.transport = Some(ManagedTransport::Remote(transport));
-
-        let disconnect =
-            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                status: 409,
-                retryable: false,
-                kind: RemoteErrorKind::ControllerLeaseConflict,
-                message: "remote request failed with status 409 Conflict".to_string(),
-            });
-
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error.contains("409 Conflict")
-        ));
-        tokio::time::timeout(Duration::from_secs(1), cancel_token.cancelled())
-            .await
-            .expect("cancel token should be cancelled");
-        assert!(supervisor.transport.is_none());
-    }
-
-    #[test]
-    fn stale_reference_disconnects_respect_retry_budget() {
-        let mut supervisor = SupervisorBuilder::new().max_reconnect_attempts(0).build();
-
-        for attempt in 1..=MAX_STALE_REMOTE_REFERENCE_RETRIES {
-            let disconnect =
-                supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                    status: 404,
-                    retryable: true,
-                    kind: RemoteErrorKind::StaleSubscriber,
-                    message: "remote request failed with status 404 Not Found: {\"error\":\"Headless subscriber not found\"}".to_string(),
-                });
-            assert!(matches!(
-                disconnect,
-                SupervisorEvent::HealthChanged {
-                    status: HealthStatus::Reconnecting
-                }
-            ));
-            assert_eq!(supervisor.stale_reference_retries, attempt);
-            assert!(supervisor.pending_auto_reconnect);
-            supervisor.pending_auto_reconnect = false;
-        }
-
-        let disconnect =
-            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: true,
-                kind: RemoteErrorKind::StaleSubscriber,
-                message: "remote request failed with status 404 Not Found: {\"error\":\"Headless subscriber not found\"}".to_string(),
-            });
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error.contains("Headless subscriber not found")
-        ));
-        assert_eq!(
-            supervisor.stale_reference_retries,
-            MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
-        );
-        assert!(!supervisor.pending_auto_reconnect);
-    }
-
-    #[test]
-    fn stale_session_disconnects_respect_retry_budget() {
-        let mut supervisor = SupervisorBuilder::new().max_reconnect_attempts(0).build();
-
-        for attempt in 1..=MAX_STALE_REMOTE_REFERENCE_RETRIES {
-            let disconnect =
-                supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                    status: 404,
-                    retryable: true,
-                    kind: RemoteErrorKind::StaleSession,
-                    message: "remote request failed with status 404 Not Found: {\"error\":\"Headless session not found\"}".to_string(),
-                });
-            assert!(matches!(
-                disconnect,
-                SupervisorEvent::HealthChanged {
-                    status: HealthStatus::Reconnecting
-                }
-            ));
-            assert_eq!(supervisor.stale_reference_retries, attempt);
-            assert!(supervisor.pending_auto_reconnect);
-            supervisor.pending_auto_reconnect = false;
-        }
-
-        let disconnect =
-            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: true,
-                kind: RemoteErrorKind::StaleSession,
-                message: "remote request failed with status 404 Not Found: {\"error\":\"Headless session not found\"}".to_string(),
-            });
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error.contains("Headless session not found")
-        ));
-        assert_eq!(
-            supervisor.stale_reference_retries,
-            MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
-        );
-        assert!(!supervisor.pending_auto_reconnect);
-    }
-
-    #[tokio::test]
-    async fn remote_reconnect_stale_session_errors_respect_retry_budget() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
-        let subscribe_attempts = Arc::new(AtomicUsize::new(0));
-
-        tokio::spawn({
-            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-            let subscribe_attempts = Arc::clone(&subscribe_attempts);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-                    let subscribe_attempts = Arc::clone(&subscribe_attempts);
-                    tokio::spawn(async move {
-                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        if path == "/api/headless/connections" {
-                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 200 OK",
-                                "application/json",
-                                r#"{"session_id":"sess_remote","connection_id":"conn_remote"}"#,
-                            )
-                            .await;
-                            return;
-                        }
-                        if path.starts_with("/api/headless/sessions/")
-                            && path.ends_with("/subscribe")
-                        {
-                            subscribe_attempts.fetch_add(1, Ordering::SeqCst);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 404 Not Found",
-                                "application/json",
-                                r#"{"error":"Headless session not found"}"#,
-                            )
-                            .await;
-                            return;
-                        }
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(0)
-            .reconnect_delay(Duration::from_millis(1))
-            .build();
-
-        let error = supervisor
-            .reconnect()
-            .await
-            .expect_err("reconnect should stop after stale-session retry budget is exhausted");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 404,
-                retryable: true,
-                kind: RemoteErrorKind::StaleSession,
-                ..
-            }
-        ));
-        assert_eq!(
-            bootstrap_attempts.load(Ordering::SeqCst),
-            (MAX_STALE_REMOTE_REFERENCE_RETRIES + 1) as usize
-        );
-        assert_eq!(
-            subscribe_attempts.load(Ordering::SeqCst),
-            (MAX_STALE_REMOTE_REFERENCE_RETRIES + 1) as usize
-        );
-        assert_eq!(
-            supervisor.stale_reference_retries,
-            MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
-        );
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(!supervisor.pending_auto_reconnect);
-    }
-
-    #[tokio::test]
-    async fn successful_remote_connect_resets_stale_reference_retry_budget() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .build();
-        supervisor.stale_reference_retries = MAX_STALE_REMOTE_REFERENCE_RETRIES;
-
-        supervisor.connect().await.expect("connect");
-        assert_eq!(supervisor.stale_reference_retries, 0);
-    }
-
-    #[tokio::test]
-    async fn remote_auto_reconnect_reuses_bootstrapped_session_id() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "last_init": {
-                "system_prompt": "Persisted prompt",
-                "approval_mode": "prompt"
-            },
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "cwd": "/tmp/project",
-                "git_branch": "main",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        assert_eq!(
-            supervisor
-                .config
-                .remote
-                .as_ref()
-                .and_then(|config| config.session_id.as_deref()),
-            Some("sess_remote")
-        );
-
-        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::StateHydrated {
-                session_id: Some(ref session_id)
-            }) if session_id == "sess_remote"
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Reconnecting {
-                attempt: 1,
-                max_attempts: 1
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::StateHydrated {
-                session_id: Some(ref session_id)
-            }) if session_id == "sess_remote"
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-
-        let request_bodies = request_bodies.lock().await.clone();
-        let connection_requests = request_bodies
-            .into_iter()
-            .filter(|(path, _body)| path == "/api/headless/connections")
-            .map(|(_path, body)| {
-                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(connection_requests.len(), 2);
-        assert!(connection_requests[0].get("sessionId").is_none());
-        assert_eq!(
-            connection_requests[1]
-                .get("sessionId")
-                .and_then(serde_json::Value::as_str),
-            Some("sess_remote")
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn remote_reconnect_stops_after_non_retryable_bootstrap_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
-
-        tokio::spawn({
-            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-                    tokio::spawn(async move {
-                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        if path == "/api/headless/connections" {
-                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 409 Conflict",
-                                "application/json",
-                                r#"{"error":"Controller lease is already held by another connection"}"#,
-                            )
-                            .await;
-                            return;
-                        }
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(5)
-            .reconnect_delay(Duration::from_millis(1))
-            .build();
-
-        let error = supervisor
-            .reconnect()
-            .await
-            .expect_err("reconnect should fail");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 409,
-                retryable: false,
-                ..
-            }
-        ));
-        assert_eq!(bootstrap_attempts.load(Ordering::SeqCst), 1);
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(!supervisor.pending_auto_reconnect);
-    }
-
-    #[tokio::test]
-    async fn remote_reconnect_stops_after_elapsed_time_budget_for_retryable_errors() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
-
-        tokio::spawn({
-            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-            async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
-                    tokio::spawn(async move {
-                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
-                        else {
-                            return;
-                        };
-                        if path == "/api/headless/connections" {
-                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
-                            write_http_response(
-                                &mut socket,
-                                "HTTP/1.1 500 Internal Server Error",
-                                "application/json",
-                                r#"{"error":"temporary upstream failure"}"#,
-                            )
-                            .await;
-                            return;
-                        }
-                        write_http_response(
-                            &mut socket,
-                            "HTTP/1.1 404 Not Found",
-                            "text/plain",
-                            "not found",
-                        )
-                        .await;
-                    });
-                }
-            }
-        });
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(0)
-            .reconnect_delay(Duration::from_millis(5))
-            .max_reconnect_elapsed(Duration::from_millis(500))
-            .build();
-
-        let error = supervisor
-            .reconnect()
-            .await
-            .expect_err("reconnect should stop after the elapsed time budget");
-        assert!(matches!(
-            error,
-            AsyncTransportError::RemoteStatus {
-                status: 500,
-                retryable: true,
-                ..
-            }
-        ));
-        assert!(bootstrap_attempts.load(Ordering::SeqCst) >= 1);
-        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
-        assert!(!supervisor.pending_auto_reconnect);
-    }
-
-    #[tokio::test]
-    async fn remote_auto_reconnect_reuses_previous_connection_id_without_take_control() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-
-        for _ in 0..6 {
-            let _ = supervisor.recv().await.expect("supervisor event");
-        }
-
-        let request_bodies = request_bodies.lock().await.clone();
-        let connection_requests = request_bodies
-            .into_iter()
-            .filter(|(path, _body)| path == "/api/headless/connections")
-            .map(|(_path, body)| {
-                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(connection_requests.len(), 2);
-        assert_eq!(
-            connection_requests[1]
-                .get("connectionId")
-                .and_then(serde_json::Value::as_str),
-            Some("conn_remote")
-        );
-        assert!(
-            connection_requests[1].get("takeControl").is_none(),
-            "unexpected remote reconnects should reclaim their prior connection id before forcing controller takeover"
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn clean_remote_disconnect_does_not_force_take_control_on_manual_reconnect() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        supervisor.disconnect();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        supervisor.reconnect().await.expect("manual reconnect");
-
-        let request_bodies = request_bodies.lock().await.clone();
-        let connection_requests = request_bodies
-            .into_iter()
-            .filter(|(path, _body)| path == "/api/headless/connections")
-            .map(|(_path, body)| {
-                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(connection_requests.len(), 2);
-        assert!(
-            connection_requests[1].get("connectionId").is_none(),
-            "clean disconnects clear the remembered connection id before a manual reconnect"
-        );
-        assert!(
-            connection_requests[1].get("takeControl").is_none(),
-            "clean disconnects should not force controller takeover on the next manual reconnect"
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn manual_remote_reconnect_shuts_down_existing_transport() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        let cancel_token = supervisor
-            .transport
-            .as_ref()
-            .and_then(|transport| match transport {
-                ManagedTransport::Remote(transport) => Some(transport.cancel_token()),
-                ManagedTransport::Local(_) => None,
-            })
-            .expect("remote transport");
-
-        supervisor.reconnect().await.expect("manual reconnect");
-
-        tokio::time::timeout(Duration::from_secs(1), cancel_token.cancelled())
-            .await
-            .expect("manual reconnect should shut down the previous transport");
-        assert!(supervisor.is_connected());
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn manual_remote_reconnect_disconnects_before_next_bootstrap() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let (addr, _posted_bodies, _request_headers, request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        supervisor.reconnect().await.expect("manual reconnect");
-
-        let request_paths = request_bodies
-            .lock()
-            .await
-            .iter()
-            .map(|(path, _body)| path.clone())
-            .collect::<Vec<_>>();
-        let disconnect_index = request_paths
-            .iter()
-            .position(|path| path.ends_with("/disconnect"))
-            .expect("disconnect request");
-        let second_bootstrap_index = request_paths
-            .iter()
-            .enumerate()
-            .filter_map(|(index, path)| (path == "/api/headless/connections").then_some(index))
-            .nth(1)
-            .expect("second bootstrap request");
-        assert!(
-            disconnect_index < second_bootstrap_index,
-            "manual reconnect should disconnect the stale transport before bootstrapping a replacement"
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[tokio::test]
-    async fn auto_remote_reconnect_waits_for_disconnect_completion_before_next_bootstrap() {
-        let snapshot = serde_json::json!({
-            "protocolVersion": "2026-03-30",
-            "session_id": "sess_remote",
-            "cursor": 0,
-            "state": {
-                "protocol_version": "2026-03-30",
-                "model": "gpt-5.4",
-                "provider": "openai",
-                "session_id": "sess_remote",
-                "pending_approvals": [],
-                "active_tools": [],
-                "last_status": "Attached",
-                "is_ready": true,
-                "is_responding": false
-            }
-        });
-        let lifecycle_markers = Arc::new(Mutex::new(Vec::new()));
-        let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server_with_options(
-                snapshot.to_string(),
-                vec![],
-                Some(Duration::from_millis(50)),
-                Some(Arc::clone(&lifecycle_markers)),
-            )
-            .await;
-
-        let mut supervisor = SupervisorBuilder::new()
-            .remote_base_url(format!("http://{addr}"))
-            .max_reconnect_attempts(1)
-            .reconnect_delay(Duration::from_millis(5))
-            .build();
-
-        supervisor.connect().await.expect("connect");
-        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
-        assert!(matches!(
-            disconnect,
-            SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
-            }
-        ));
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let markers = lifecycle_markers.lock().await.clone();
-                let bootstrap_count = markers
-                    .iter()
-                    .filter(|marker| *marker == "bootstrap")
-                    .count();
-                let saw_disconnect_end = markers.iter().any(|marker| marker == "disconnect:end");
-                if bootstrap_count >= 2 && saw_disconnect_end {
-                    break;
-                }
-                let _ = supervisor.recv().await.expect("supervisor event");
-            }
-        })
-        .await
-        .expect("auto reconnect should complete");
-
-        let lifecycle_markers = lifecycle_markers.lock().await.clone();
-        let disconnect_end_index = lifecycle_markers
-            .iter()
-            .position(|marker| marker == "disconnect:end")
-            .expect("disconnect completion marker");
-        let second_bootstrap_index = lifecycle_markers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, marker)| (marker == "bootstrap").then_some(index))
-            .nth(1)
-            .expect("second bootstrap marker");
-        assert!(
-            disconnect_end_index < second_bootstrap_index,
-            "auto reconnect should wait for remote disconnect completion before bootstrapping a replacement"
-        );
-
-        supervisor.disconnect();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn unhealthy_silence_schedules_auto_reconnect_for_next_recv() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = create_streaming_headless_script(temp.path()).expect("script");
-
-        let mut config = SupervisorConfig::default();
-        config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.health_check_interval = Duration::from_millis(10);
-        config.health_check_timeout = Duration::from_millis(10);
-        config.reconnect_delay = Duration::from_millis(5);
-        config.max_reconnect_attempts = 1;
-        config.auto_reconnect = true;
-
-        let mut supervisor = AgentSupervisor::new(config);
-        supervisor.connect().await.expect("connect");
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::Connected)
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Healthy
-            })
-        ));
-        for _ in 0..4 {
-            let _ = supervisor.recv().await.expect("initial agent event");
-        }
-
-        supervisor.health_status = HealthStatus::Degraded;
-        supervisor.last_response = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(25))
-                .expect("monotonic clock supports subtraction"),
-        );
-        supervisor.state.current_response = Some(StreamingResponse::new("resp_silence".into()));
-        supervisor.state.is_responding = true;
-        let approval = PendingApproval {
-            call_id: "call_silence".to_string(),
-            request_id: Some("req_silence".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "git push" }),
-        };
-        let client_tool = PendingApproval {
-            call_id: "call_client_silence".to_string(),
-            request_id: Some("req_client_silence".to_string()),
-            tool: "client_tool".to_string(),
-            args: serde_json::json!({ "name": "artifacts" }),
-        };
-        let user_input = PendingApproval {
-            call_id: "call_user_silence".to_string(),
-            request_id: Some("req_user_silence".to_string()),
-            tool: "ask_user".to_string(),
-            args: serde_json::json!({ "question": "continue?" }),
-        };
-        let tool_retry = PendingApproval {
-            call_id: "call_retry_silence".to_string(),
-            request_id: Some("req_retry_silence".to_string()),
-            tool: "bash".to_string(),
-            args: serde_json::json!({ "command": "retry" }),
-        };
-        supervisor.state.pending_approvals.push(approval.clone());
-        supervisor
-            .state
-            .pending_client_tools
-            .push(client_tool.clone());
-        supervisor
-            .state
-            .pending_user_inputs
-            .push(user_input.clone());
-        supervisor
-            .state
-            .pending_tool_retries
-            .push(tool_retry.clone());
-        supervisor
-            .state
-            .tracked_tools
-            .insert(approval.call_id.clone(), approval);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(client_tool.call_id.clone(), client_tool);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(user_input.call_id.clone(), user_input);
-        supervisor
-            .state
-            .tracked_tools
-            .insert(tool_retry.call_id.clone(), tool_retry);
-        supervisor.state.active_tools.insert(
-            "call_silence".to_string(),
-            ActiveTool {
-                call_id: "call_silence".to_string(),
-                tool: "grep".to_string(),
-                output: "partial".to_string(),
-                started: Instant::now(),
-            },
-        );
-        supervisor.state.active_utility_commands.insert(
-            "cmd_silence".to_string(),
-            ActiveUtilityCommand {
-                command_id: "cmd_silence".to_string(),
-                command: "sleep 10".to_string(),
-                cwd: Some("/tmp/project".to_string()),
-                shell_mode: UtilityCommandShellMode::Shell,
-                terminal_mode: UtilityCommandTerminalMode::Pipe,
-                pid: Some(99),
-                columns: None,
-                rows: None,
-                owner_connection_id: Some("conn_remote".to_string()),
-                output: "partial".to_string(),
-            },
-        );
-        supervisor.state.active_file_watches.insert(
-            "watch_silence".to_string(),
-            ActiveFileWatch {
-                watch_id: "watch_silence".to_string(),
-                root_dir: "/tmp/project".to_string(),
-                include_patterns: None,
-                exclude_patterns: Some(vec!["dist/**".to_string()]),
-                debounce_ms: 500,
-                owner_connection_id: Some("conn_remote".to_string()),
-            },
-        );
-
-        assert!(matches!(
-            supervisor.due_health_transition(Instant::now()),
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Unhealthy
-            })
-        ));
-        assert!(!supervisor.is_connected());
-        assert!(supervisor.pending_auto_reconnect);
-        assert!(supervisor.state().current_response.is_some());
-        assert_eq!(supervisor.state().pending_approvals.len(), 1);
-        assert_eq!(supervisor.state().pending_client_tools.len(), 1);
-        assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
-        assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
-        assert_eq!(supervisor.state().active_tools.len(), 1);
-        assert_eq!(supervisor.state().active_utility_commands.len(), 1);
-        assert_eq!(supervisor.state().active_file_watches.len(), 1);
-        assert_eq!(supervisor.state().tracked_tools.len(), 4);
-        assert!(supervisor.state().is_responding);
-    }
-}
+mod tests;

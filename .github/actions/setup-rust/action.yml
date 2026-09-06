@@ -18,14 +18,119 @@ inputs:
     description: Rust-cache workspaces (newline-separated "$workspace -> $target")
     required: false
     default: ". -> target"
+  cache-group:
+    description: Compatible Cargo artifact group shared across jobs and workflows
+    required: false
+    default: "validation"
   install-cargo-llvm-cov:
     description: Whether to install cargo-llvm-cov (prebuilt)
     required: false
     default: "false"
+  install-cargo-nextest:
+    description: Whether to install cargo-nextest (prebuilt)
+    required: false
+    default: "false"
+  use-sccache:
+    description: Whether to cache rustc outputs independently of the target directory
+    required: false
+    default: "false"
+  ensure-ripgrep:
+    description: Whether to install ripgrep if missing
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
+    - name: Configure isolated Rust toolchain home
+      id: rust-paths
+      shell: bash
+      env:
+        CACHE_GROUP_INPUT: ${{ inputs.cache-group }}
+        TOOLCHAIN_INPUT: ${{ inputs.toolchain }}
+        WORKSPACES_INPUT: ${{ inputs.workspaces }}
+      run: | # zizmor: ignore[github-env] every exported value is scrubbed to a safe charset by the safe_* substitutions below
+        set -euo pipefail
+        safe_repo="${GITHUB_REPOSITORY:-repo}"
+        safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
+        safe_toolchain="${TOOLCHAIN_INPUT:-stable}"
+        safe_toolchain="${safe_toolchain//[^A-Za-z0-9_.-]/-}"
+        safe_cache_group="${CACHE_GROUP_INPUT:-validation}"
+        safe_cache_group="${safe_cache_group//[^A-Za-z0-9_.-]/-}"
+        case "${RUNNER_OS:-}" in
+          Linux|macOS) cache_root=/tmp/maestro-rust ;;
+          *) cache_root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust" ;;
+        esac
+        # Cache archive paths and toolchain homes stay stable across compatible
+        # jobs. Profile-specific target artifacts remain separated by cache-group.
+        base="${cache_root%/}/${safe_repo}/${safe_toolchain}"
+        root="$base/home"
+        cargo_home="$root/cargo"
+        rustup_home="$root/rustup"
+        workspace_links="$base/workspaces/$safe_cache_group"
+        mkdir -p "$base"
+        if [[ "$root" == "$base"/home ]]; then
+          rm -rf "$root"
+        fi
+        mkdir -p "$cargo_home/bin" "$rustup_home"
+
+        # rust-cache archives target directories by absolute path. Point stable
+        # aliases at each checkout so archives restore across runner root layouts.
+        if [[ "$workspace_links" == "$base"/workspaces/* ]]; then
+          rm -rf "$workspace_links"
+        fi
+        mkdir -p "$workspace_links"
+        cache_workspaces="$base/cache-workspaces-$safe_cache_group.txt"
+        : > "$cache_workspaces"
+        workspace_index=0
+        while IFS= read -r mapping || [[ -n "$mapping" ]]; do
+          [[ -z "${mapping//[[:space:]]/}" ]] && continue
+          if [[ "$mapping" == *"->"* ]]; then
+            workspace_root="${mapping%%->*}"
+            target_path="${mapping#*->}"
+          else
+            workspace_root="$mapping"
+            target_path=target
+          fi
+          workspace_root="${workspace_root#"${workspace_root%%[![:space:]]*}"}"
+          workspace_root="${workspace_root%"${workspace_root##*[![:space:]]}"}"
+          target_path="${target_path#"${target_path%%[![:space:]]*}"}"
+          target_path="${target_path%"${target_path##*[![:space:]]}"}"
+          if [[ -z "$workspace_root" || -z "$target_path" || "$target_path" == /* || "/$target_path/" == *"/../"* ]]; then
+            echo "::error::Invalid Rust cache workspace mapping: $mapping"
+            exit 1
+          fi
+          resolved_root="$(cd "$workspace_root" && pwd -P)"
+          workspace_link="$workspace_links/$workspace_index"
+          ln -s "$resolved_root" "$workspace_link"
+          printf '%s -> %s\n' "$workspace_link" "$target_path" >> "$cache_workspaces"
+          workspace_index=$((workspace_index + 1))
+        done <<< "$WORKSPACES_INPUT"
+        if [[ "$workspace_index" -eq 0 ]]; then
+          echo "::error::At least one Rust cache workspace is required"
+          exit 1
+        fi
+
+        export CARGO_HOME="$cargo_home"
+        export RUSTUP_HOME="$rustup_home"
+        export PATH="$cargo_home/bin:$PATH"
+
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "No rustup binary found before toolchain setup; rust-toolchain action will install one."
+        elif [[ "$(command -v rustup)" != "$cargo_home/bin/rustup" ]]; then
+          cp "$(command -v rustup)" "$cargo_home/bin/rustup"
+          chmod +x "$cargo_home/bin/rustup"
+        fi
+
+        echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+        echo "RUSTUP_HOME=$rustup_home" >> "$GITHUB_ENV"
+        echo "$cargo_home/bin" >> "$GITHUB_PATH"
+        {
+          echo "cache-workspaces<<MAESTRO_CACHE_WORKSPACES"
+          cat "$cache_workspaces"
+          echo "MAESTRO_CACHE_WORKSPACES"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Install Rust toolchain (toolchain only)
       if: ${{ inputs.components == '' && inputs.targets == '' }}
       uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -54,13 +159,90 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    - name: Cache Cargo
-      uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+    - name: Ensure Rustup tool proxies
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+        rustup_bin="$cargo_bin/rustup"
+        if [ ! -x "$rustup_bin" ]; then
+          rustup_bin="$(command -v rustup || true)"
+        fi
+        if [ -z "$rustup_bin" ] || [ ! -x "$rustup_bin" ]; then
+          echo "::error::rustup is required to create Cargo tool proxies"
+          exit 1
+        fi
+
+        mkdir -p "$cargo_bin"
+        for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do
+          if [ ! -x "$cargo_bin/$proxy" ]; then
+            ln -sf "$rustup_bin" "$cargo_bin/$proxy"
+          fi
+        done
+        "$cargo_bin/cargo" --version
+
+    - name: Ensure ripgrep
+      if: ${{ inputs.ensure-ripgrep == 'true' }}
+      uses: ./.github/actions/ensure-ripgrep
+
+    - name: Scope native cache to the host ABI
+      id: host-abi
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v getconf >/dev/null 2>&1 && descriptor="$(getconf GNU_LIBC_VERSION 2>/dev/null)" && [[ -n "$descriptor" ]]; then
+          :
+        elif command -v ldd >/dev/null 2>&1; then
+          descriptor="$(ldd --version 2>&1 || true)"
+          descriptor="${descriptor%%$'\n'*}"
+        elif command -v sw_vers >/dev/null 2>&1; then
+          descriptor="$(sw_vers -productVersion)"
+        else
+          descriptor="$(uname -sr)"
+        fi
+        safe_abi="${descriptor//[^A-Za-z0-9_.-]/-}"
+        printf 'value=%s\n' "${safe_abi:0:80}" >> "$GITHUB_OUTPUT"
+
+    - name: Install sccache
+      if: ${{ inputs.use-sccache == 'true' }}
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       with:
-        workspaces: ${{ inputs.workspaces }}
+        version: v0.17.0
+
+    - name: Configure sccache
+      if: ${{ inputs.use-sccache == 'true' }}
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+    - name: Cache Cargo
+      uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      with:
+        workspaces: ${{ steps.rust-paths.outputs.cache-workspaces }}
+        shared-key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.host-abi.outputs.value }}-target-path-v2-${{ inputs.cache-group }}
+        add-job-id-key: "false"
+        # The action always hashes Cargo/Rust variables. The home paths above are
+        # normalized, and these prefixes add the remaining build-affecting inputs.
+        env-vars: "CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_INCREMENTAL CARGO_PROFILE RUSTC_WRAPPER RUSTFLAGS CC CFLAGS CXX CMAKE"
+
+    - name: Configure Cargo network resilience
+      shell: bash
+      run: |
+        # Retry transient crates.io fetch failures and bound HTTP timeouts so
+        # spurious network errors (e.g. "download of ba/se/base64 failed") do
+        # not fail CI runs that would otherwise pass.
+        echo "CARGO_NET_RETRY=5" >> "$GITHUB_ENV"
+        echo "CARGO_HTTP_TIMEOUT=30" >> "$GITHUB_ENV"
 
     - name: Install cargo-llvm-cov
       if: ${{ inputs.install-cargo-llvm-cov == 'true' }}
-      uses: taiki-e/install-action@d850aa816998e5cf15f67a78c7b933f2a5033f8a # v2.63.3
+      uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
       with:
         tool: cargo-llvm-cov
+
+    - name: Install cargo-nextest
+      if: ${{ inputs.install-cargo-nextest == 'true' }}
+      uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+      with:
+        tool: cargo-nextest@0.9.143

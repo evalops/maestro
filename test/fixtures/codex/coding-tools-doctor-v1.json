@@ -1,0 +1,2176 @@
+{
+	"version": 1,
+	"source": {
+		"codingTools": "src/tools/index.ts",
+		"profiles": "src/codex/compatibility.ts"
+	},
+	"tools": [
+		{
+			"name": "read",
+			"description": "Read file contents. Supports text, images (JPEG, PNG, GIF, WebP), PDFs, and Jupyter notebooks (.ipynb).\n\nParameters:\n- path: File path (relative/absolute, supports ~/)\n- offset: Start line (1-indexed)\n- limit: Max lines\n- mode: \"normal\", \"head\", \"tail\"\n- encoding: utf-8 (default), utf-16le, latin1, ascii\n\nAuto-detects images, PDFs, and notebooks. Provides syntax highlighting and handles large files.\nEmit multiple read tool calls in one turn when you need parallel reads; the runtime will execute them concurrently—no batch wrapper required.",
+			"parameters": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"description": "Path to the file to read (relative or absolute)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"offset": {
+						"description": "Line number to start reading from (1-indexed)",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"limit": {
+						"description": "Maximum number of lines to read",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"mode": {
+						"description": "Reading mode: normal offset/limit, head, or tail",
+						"default": "normal",
+						"anyOf": [
+							{
+								"const": "normal",
+								"type": "string"
+							},
+							{
+								"const": "head",
+								"type": "string"
+							},
+							{
+								"const": "tail",
+								"type": "string"
+							}
+						]
+					},
+					"lineNumbers": {
+						"description": "Prefix output lines with line numbers",
+						"default": true,
+						"type": "boolean"
+					},
+					"wrapInCodeFence": {
+						"description": "Wrap text output in a Markdown code fence",
+						"default": true,
+						"type": "boolean"
+					},
+					"asBase64": {
+						"description": "Return binary files as base64 instead of text",
+						"default": false,
+						"type": "boolean"
+					},
+					"withDiagnostics": {
+						"description": "Include LSP diagnostics (errors/warnings) if available",
+						"default": true,
+						"type": "boolean"
+					},
+					"language": {
+						"description": "Language identifier for the code fence (overrides auto-detection)",
+						"type": "string"
+					},
+					"encoding": {
+						"description": "Text encoding for the file (default: utf-8). Use latin1 for legacy files.",
+						"default": "utf-8",
+						"anyOf": [
+							{
+								"const": "utf-8",
+								"type": "string"
+							},
+							{
+								"const": "utf-16le",
+								"type": "string"
+							},
+							{
+								"const": "latin1",
+								"type": "string"
+							},
+							{
+								"const": "ascii",
+								"type": "string"
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "list",
+			"description": "List files and directories using glob patterns with filtering and sorting.\n\nParameters:\n- path: Directory to list (default: current directory)\n- pattern: Glob pattern (default: *)\n- excludePatterns: Array of patterns to exclude (e.g., ['node_modules/**', 'dist/**'])\n- limit: Max entries (1-500, default: 200)\n- maxDepth: Directory depth limit (0 = unlimited)\n- includeHidden: Include dotfiles\n- includeMetadata: Include size and timestamps\n- sortBy: name, type, size, mtime\n- format: text or json\n\nExamples:\n  {path: \"src\", pattern: \"**/*.ts\"}\n  {excludePatterns: [\"node_modules/**\", \"*.log\"]}",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"description": "Directory to list (relative or absolute). Defaults to current directory.",
+						"minLength": 1,
+						"type": "string"
+					},
+					"pattern": {
+						"description": "Glob pattern relative to the directory. Defaults to *",
+						"minLength": 1,
+						"type": "string"
+					},
+					"limit": {
+						"description": "Maximum number of entries to return (1-500). Defaults to 200.",
+						"minimum": 1,
+						"maximum": 500,
+						"type": "integer"
+					},
+					"includeHidden": {
+						"description": "Whether to include dotfiles (hidden files)",
+						"type": "boolean"
+					},
+					"maxDepth": {
+						"description": "Maximum directory depth to traverse (0 = unlimited)",
+						"minimum": 0,
+						"maximum": 10,
+						"type": "integer"
+					},
+					"includeMetadata": {
+						"description": "Include file size and modified timestamps",
+						"default": false,
+						"type": "boolean"
+					},
+					"format": {
+						"description": "Output format",
+						"default": "text",
+						"anyOf": [
+							{
+								"const": "text",
+								"type": "string"
+							},
+							{
+								"const": "json",
+								"type": "string"
+							}
+						]
+					},
+					"sortBy": {
+						"description": "Sort results by this field",
+						"default": "name",
+						"anyOf": [
+							{
+								"const": "name",
+								"type": "string"
+							},
+							{
+								"const": "type",
+								"type": "string"
+							},
+							{
+								"const": "size",
+								"type": "string"
+							},
+							{
+								"const": "mtime",
+								"type": "string"
+							}
+						]
+					},
+					"sortDirection": {
+						"description": "Sort direction",
+						"default": "asc",
+						"anyOf": [
+							{
+								"const": "asc",
+								"type": "string"
+							},
+							{
+								"const": "desc",
+								"type": "string"
+							}
+						]
+					},
+					"excludePatterns": {
+						"description": "Array of glob patterns to exclude (e.g., ['node_modules/**', '*.log', 'dist/**'])",
+						"type": "array",
+						"items": {
+							"description": "Glob pattern to exclude",
+							"minLength": 1,
+							"type": "string"
+						}
+					}
+				}
+			}
+		},
+		{
+			"name": "oracle",
+			"description": "Summon the Seer - a mystical systems advisor that foresees consequences of complex engineering decisions. Ideal for architecture reviews, deep debugging, and strategic guidance.",
+			"parameters": {
+				"type": "object",
+				"required": ["task"],
+				"properties": {
+					"task": {
+						"description": "The task or question you want the Oracle to help with. Be specific about what kind of guidance, review, or planning you need.",
+						"type": "string"
+					},
+					"model": {
+						"description": "Optional model id to use for the Oracle (must be available in your configured models). Defaults to a reasoning-capable model such as o3-mini.",
+						"type": "string"
+					},
+					"context": {
+						"description": "Optional context about the current situation, what you've tried, or background information that would help the Oracle provide better guidance.",
+						"type": "string"
+					},
+					"files": {
+						"description": "Optional list of specific file paths that the Oracle should examine as part of its analysis.",
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				}
+			}
+		},
+		{
+			"name": "painter",
+			"description": "Generate or edit images via an image model (default gpt-image-2). Use for UI mockups, app icons, illustrations, and editing existing images (e.g. redacting a screenshot). Outputs are persisted to disk and returned as absolute paths; reference them by path in later turns. Requires OPENAI_API_KEY.",
+			"parameters": {
+				"type": "object",
+				"required": ["mode", "prompt"],
+				"properties": {
+					"mode": {
+						"description": "generate = create a new image from a text prompt. edit = modify one or more existing images using a prompt (and optional mask).",
+						"anyOf": [
+							{
+								"const": "generate",
+								"type": "string"
+							},
+							{
+								"const": "edit",
+								"type": "string"
+							}
+						]
+					},
+					"prompt": {
+						"description": "The image prompt. For edit mode, describe the desired change. Be concrete about subject, style, composition, and any text to render.",
+						"type": "string"
+					},
+					"images": {
+						"description": "Edit mode only. 1-3 absolute or workspace-relative paths to input images to edit.",
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"mask": {
+						"description": "Edit mode only. Path to a mask image; transparent regions mark areas the model may change. Omit to edit the whole image. Mutually exclusive with maskRegion (which synthesizes the mask for you).",
+						"type": "string"
+					},
+					"maskRegion": {
+						"description": "Edit mode only. A pixel bounding box; the mask is synthesized automatically (transparent = editable). Coordinates outside the image are clipped.",
+						"type": "object",
+						"required": ["x", "y", "width", "height"],
+						"properties": {
+							"x": {
+								"description": "Region left edge, in pixels.",
+								"type": "number"
+							},
+							"y": {
+								"description": "Region top edge, in pixels.",
+								"type": "number"
+							},
+							"width": {
+								"description": "Region width, in pixels.",
+								"type": "number"
+							},
+							"height": {
+								"description": "Region height, in pixels.",
+								"type": "number"
+							}
+						}
+					},
+					"maskSize": {
+						"description": "Explicit input image dimensions, used only for mask synthesis when the input is not a PNG and Sharp is unavailable. Optional.",
+						"type": "object",
+						"required": ["width", "height"],
+						"properties": {
+							"width": {
+								"minimum": 1,
+								"type": "integer"
+							},
+							"height": {
+								"minimum": 1,
+								"type": "integer"
+							}
+						}
+					},
+					"size": {
+						"description": "Output size. Standard: 1024x1024, 1536x1024, 1024x1536, 1792x1024, 1024x1792, or auto. gpt-image-2 also accepts arbitrary WxH divisible by 16 with aspect ratio 1:3 to 3:1.",
+						"type": "string"
+					},
+					"quality": {
+						"description": "Output quality. Higher quality is slower and more expensive. Defaults to auto.",
+						"anyOf": [
+							{
+								"const": "low",
+								"type": "string"
+							},
+							{
+								"const": "medium",
+								"type": "string"
+							},
+							{
+								"const": "high",
+								"type": "string"
+							},
+							{
+								"const": "auto",
+								"type": "string"
+							}
+						]
+					},
+					"n": {
+						"description": "Number of images to produce (1-4). Defaults to 1.",
+						"minimum": 1,
+						"maximum": 4,
+						"type": "integer"
+					}
+				}
+			}
+		},
+		{
+			"name": "find",
+			"description": "Search for files by glob pattern using fd. Returns matching file paths relative to the search directory. Respects .gitignore. Use this for fast file discovery across large codebases.",
+			"parameters": {
+				"type": "object",
+				"required": ["pattern"],
+				"properties": {
+					"pattern": {
+						"description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
+						"type": "string"
+					},
+					"path": {
+						"description": "Directory to search in (default: current directory)",
+						"type": "string"
+					},
+					"limit": {
+						"description": "Maximum number of results (default: 1000)",
+						"type": "number"
+					},
+					"includeHidden": {
+						"description": "Include hidden files (default: true)",
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "extract_document",
+			"description": "Download a document from a URL and extract its text. Supports PDF, DOCX, XLSX, PPTX, common text formats, and optional MarkItDown-backed Markdown conversion when available. Use this when you need text from a linked document.",
+			"parameters": {
+				"type": "object",
+				"required": ["url"],
+				"properties": {
+					"url": {
+						"description": "HTTP(S) URL of a document (PDF, DOCX, XLSX, PPTX, or text file)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"maxChars": {
+						"description": "Maximum characters of extracted text to return",
+						"minimum": 1,
+						"maximum": 1000000,
+						"type": "number"
+					}
+				}
+			}
+		},
+		{
+			"name": "search",
+			"description": "Find text across files using ripgrep with optional globbing and context controls.\n\nOutput modes (outputMode parameter):\n- \"content\": Show matching lines with file:line:content format (default)\n- \"files\": List only file paths containing matches (fast for finding files)\n- \"count\": Show match counts per file (useful for gauging scope)\n\nModifiers:\n- invertMatch: Show lines that do NOT match\n- onlyMatching: Show only the matched text (content mode only)\n- headLimit: Limit output to first N entries (useful for sampling)\n\nExamples:\n  {pattern: \"TODO\", outputMode: \"files\"}  → list files containing TODO\n  {pattern: \"function\", outputMode: \"count\"}  → count functions per file\n  {pattern: \"^#\", invertMatch: true}  → lines not starting with #",
+			"parameters": {
+				"description": "Use either context or before/after context options, not both.",
+				"type": "object",
+				"required": ["pattern"],
+				"properties": {
+					"pattern": {
+						"description": "Regex pattern (or literal when literal=true)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"paths": {
+						"anyOf": [
+							{
+								"description": "Directory or file to search",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple directories or files to search",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					},
+					"glob": {
+						"anyOf": [
+							{
+								"description": "Glob pattern passed to ripgrep",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple glob patterns",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					},
+					"ignoreCase": {
+						"description": "Perform case-insensitive search (-i).",
+						"default": false,
+						"type": "boolean"
+					},
+					"literal": {
+						"description": "Treat the pattern as a literal string (--fixed-strings).",
+						"default": false,
+						"type": "boolean"
+					},
+					"word": {
+						"description": "Match only whole words (-w).",
+						"default": false,
+						"type": "boolean"
+					},
+					"multiline": {
+						"description": "Enable multiline matching (--multiline).",
+						"default": false,
+						"type": "boolean"
+					},
+					"maxResults": {
+						"description": "Stop after this many matches (-m).",
+						"minimum": 1,
+						"maximum": 1000,
+						"type": "integer"
+					},
+					"context": {
+						"description": "Show this many lines of context before and after (-C).",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"beforeContext": {
+						"description": "Show this many lines of context before each match (-B).",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"afterContext": {
+						"description": "Show this many lines of context after each match (-A).",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"cwd": {
+						"description": "Working directory to run ripgrep from",
+						"minLength": 1,
+						"type": "string"
+					},
+					"includeHidden": {
+						"description": "Include hidden files (--hidden)",
+						"default": false,
+						"type": "boolean"
+					},
+					"useGitIgnore": {
+						"description": "Respect .gitignore (set false to pass --no-ignore)",
+						"default": true,
+						"type": "boolean"
+					},
+					"outputMode": {
+						"description": "Output mode: 'content' shows matching lines (default), 'files' lists only file paths, 'count' shows match counts per file.",
+						"default": "content",
+						"anyOf": [
+							{
+								"const": "content",
+								"type": "string"
+							},
+							{
+								"const": "files",
+								"type": "string"
+							},
+							{
+								"const": "count",
+								"type": "string"
+							}
+						]
+					},
+					"format": {
+						"description": "Output format for content mode. JSON not supported with files/count modes.",
+						"default": "text",
+						"anyOf": [
+							{
+								"const": "text",
+								"type": "string"
+							},
+							{
+								"const": "json",
+								"type": "string"
+							}
+						]
+					},
+					"invertMatch": {
+						"description": "Show lines that do NOT match the pattern (--invert-match).",
+						"default": false,
+						"type": "boolean"
+					},
+					"onlyMatching": {
+						"description": "Only show the matched text, not the entire line (--only-matching). Only works with content mode.",
+						"default": false,
+						"type": "boolean"
+					},
+					"headLimit": {
+						"description": "Limit output to first N lines/entries. Useful for sampling large result sets.",
+						"minimum": 1,
+						"maximum": 10000,
+						"type": "integer"
+					}
+				}
+			}
+		},
+		{
+			"name": "parallel_ripgrep",
+			"description": "Search for multiple patterns simultaneously. Runs ripgrep queries in parallel, automatically merges overlapping line ranges, and returns consolidated content. Ideal for finding related code (e.g., function definitions AND usages) or multiple related patterns without duplicate context.",
+			"parameters": {
+				"type": "object",
+				"required": ["patterns"],
+				"properties": {
+					"patterns": {
+						"minItems": 1,
+						"maxItems": 10,
+						"description": "Regex patterns to search for in parallel (1-10). Results are merged when matches overlap.",
+						"type": "array",
+						"items": {
+							"minLength": 1,
+							"type": "string"
+						}
+					},
+					"paths": {
+						"anyOf": [
+							{
+								"description": "Directory or file to search",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple directories or files to search",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					},
+					"glob": {
+						"anyOf": [
+							{
+								"description": "Glob pattern passed to ripgrep",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple glob patterns",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					},
+					"ignoreCase": {
+						"description": "Case-insensitive search (-i) for all patterns",
+						"default": false,
+						"type": "boolean"
+					},
+					"literal": {
+						"description": "Treat patterns as literal strings, not regex (--fixed-strings)",
+						"default": false,
+						"type": "boolean"
+					},
+					"word": {
+						"description": "Match whole words only (-w)",
+						"default": false,
+						"type": "boolean"
+					},
+					"multiline": {
+						"description": "Enable multiline matching (--multiline)",
+						"default": false,
+						"type": "boolean"
+					},
+					"maxResults": {
+						"description": "Max matches per pattern (-m)",
+						"minimum": 1,
+						"maximum": 1000,
+						"type": "integer"
+					},
+					"context": {
+						"description": "Lines of context before and after each match (-C)",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"beforeContext": {
+						"description": "Lines of context before each match (-B)",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"afterContext": {
+						"description": "Lines of context after each match (-A)",
+						"minimum": 0,
+						"maximum": 20,
+						"type": "integer"
+					},
+					"cwd": {
+						"description": "Working directory for ripgrep",
+						"minLength": 1,
+						"type": "string"
+					},
+					"includeHidden": {
+						"description": "Include hidden files (--hidden)",
+						"default": false,
+						"type": "boolean"
+					},
+					"useGitIgnore": {
+						"description": "Respect .gitignore (false to pass --no-ignore)",
+						"default": true,
+						"type": "boolean"
+					},
+					"headLimit": {
+						"description": "Max number of merged line ranges to return",
+						"minimum": 1,
+						"maximum": 200,
+						"type": "integer"
+					}
+				}
+			}
+		},
+		{
+			"name": "diff",
+			"description": "Inspect git diffs with optional staging, revision, and path filters.",
+			"parameters": {
+				"description": "Cannot request both name-only and word-diff output (diff mode only).",
+				"type": "object",
+				"properties": {
+					"mode": {
+						"description": "Show patch output (default).",
+						"const": "diff",
+						"type": "string"
+					},
+					"cwd": {
+						"description": "Working directory for git commands (internal/testing).",
+						"type": "string"
+					},
+					"staged": {
+						"description": "Show staged (index) changes instead of working tree modifications.",
+						"default": false,
+						"type": "boolean"
+					},
+					"range": {
+						"description": "Git revision or range (for example HEAD~1..HEAD). Overrides staged/worktree scope.",
+						"minLength": 1,
+						"type": "string"
+					},
+					"context": {
+						"description": "Number of context lines to include (git -U).",
+						"minimum": 0,
+						"maximum": 1000,
+						"type": "integer"
+					},
+					"stat": {
+						"description": "Include a summary (--stat) alongside the patch.",
+						"default": false,
+						"type": "boolean"
+					},
+					"wordDiff": {
+						"description": "Highlight changes at the word level (--word-diff=color).",
+						"default": false,
+						"type": "boolean"
+					},
+					"nameOnly": {
+						"description": "List only filenames that changed (--name-only).",
+						"default": false,
+						"type": "boolean"
+					},
+					"ignoreWhitespace": {
+						"description": "Ignore whitespace changes (--ignore-space-change). Useful for comparing reformatted code.",
+						"default": false,
+						"type": "boolean"
+					},
+					"ignoreBlankLines": {
+						"description": "Ignore changes that only add or remove blank lines (--ignore-blank-lines).",
+						"default": false,
+						"type": "boolean"
+					},
+					"paths": {
+						"anyOf": [
+							{
+								"description": "Limit diff to a specific path",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple paths to include in the diff",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "bash",
+			"description": "Execute bash commands.\n\nUsage guidelines:\n- ALWAYS quote paths with spaces: cd \"/path with spaces\"\n- DO NOT use: find, grep, cat, head, tail, ls (use search, read, list tools instead)\n- Prefer rg over grep if you must search\n- Chain commands with ';' or '&&', avoid cd\n- Use 'gh' CLI for GitHub operations (gh pr create, gh issue list, gh repo view)\n\nSupports interpolation in command:\n- ${cwd} - current working directory\n- ${home} - user home directory\n- ${env.VAR} - environment variable\n\nTimeout: 90s default, 600s max. Output truncates at 40KB.",
+			"parameters": {
+				"type": "object",
+				"required": ["command"],
+				"properties": {
+					"command": {
+						"description": "Bash command to execute",
+						"minLength": 1,
+						"type": "string"
+					},
+					"timeout": {
+						"description": "Timeout in seconds (optional, no default timeout)",
+						"exclusiveMinimum": 0,
+						"type": "number"
+					},
+					"cwd": {
+						"description": "Working directory for the command (relative or absolute)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"env": {
+						"description": "Additional environment variables for the command",
+						"type": "object",
+						"patternProperties": {
+							"^(.*)$": {
+								"type": "string"
+							}
+						}
+					},
+					"runInBackground": {
+						"description": "Run command as a managed background task (use background_tasks tool to inspect/stop)",
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "background_tasks",
+			"description": "Run commands in the background and manage their lifecycle.",
+			"parameters": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["action", "command"],
+						"properties": {
+							"action": {
+								"const": "start",
+								"type": "string"
+							},
+							"command": {
+								"description": "Command to run in the background",
+								"minLength": 1,
+								"type": "string"
+							},
+							"shell": {
+								"description": "Run the command through the system shell (allows pipes/redirection). Defaults to false for direct execution.",
+								"type": "boolean"
+							},
+							"cwd": {
+								"description": "Working directory for the command",
+								"minLength": 1,
+								"type": "string"
+							},
+							"env": {
+								"description": "Additional environment variables for the command",
+								"type": "object",
+								"patternProperties": {
+									"^(.*)$": {
+										"type": "string"
+									}
+								}
+							},
+							"restart": {
+								"type": "object",
+								"required": ["maxAttempts", "delayMs"],
+								"properties": {
+									"maxAttempts": {
+										"description": "Maximum number of restart attempts when the task exits with a non-zero status",
+										"minimum": 1,
+										"maximum": 5,
+										"type": "integer"
+									},
+									"delayMs": {
+										"description": "Delay in milliseconds between restart attempts",
+										"minimum": 50,
+										"maximum": 60000,
+										"type": "integer"
+									},
+									"strategy": {
+										"type": "string",
+										"enum": ["fixed", "exponential"]
+									},
+									"maxDelayMs": {
+										"description": "Upper bound for exponential backoff delays",
+										"minimum": 50,
+										"maximum": 600000,
+										"type": "integer"
+									},
+									"jitterRatio": {
+										"description": "Random jitter ratio applied to restart delays (0-1)",
+										"minimum": 0,
+										"maximum": 1,
+										"type": "number"
+									}
+								}
+							},
+							"limits": {
+								"type": "object",
+								"properties": {
+									"logSizeLimit": {
+										"description": "Per-task log size limit in bytes (overrides default). Minimum 0, maximum 50MB.",
+										"minimum": 0,
+										"maximum": 52428800,
+										"type": "integer"
+									},
+									"logSegments": {
+										"description": "Number of gzip-compressed log segments to retain when rotating.",
+										"minimum": 0,
+										"maximum": 10,
+										"type": "integer"
+									},
+									"retentionMs": {
+										"description": "Milliseconds to retain finished task metadata and logs before cleanup.",
+										"minimum": 1000,
+										"maximum": 86400000,
+										"type": "integer"
+									},
+									"maxRssKb": {
+										"description": "Maximum resident set size in kilobytes before the task is terminated (0 disables).",
+										"minimum": 0,
+										"maximum": 4194304,
+										"type": "integer"
+									},
+									"maxCpuMs": {
+										"description": "Maximum combined user+system CPU time in milliseconds before termination (0 disables).",
+										"minimum": 0,
+										"maximum": 86400000,
+										"type": "integer"
+									}
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["action", "taskId"],
+						"properties": {
+							"action": {
+								"const": "stop",
+								"type": "string"
+							},
+							"taskId": {
+								"description": "Identifier of the background task to stop",
+								"minLength": 1,
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["action"],
+						"properties": {
+							"action": {
+								"const": "list",
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["action", "taskId"],
+						"properties": {
+							"action": {
+								"const": "logs",
+								"type": "string"
+							},
+							"taskId": {
+								"description": "Identifier of the background task",
+								"minLength": 1,
+								"type": "string"
+							},
+							"lines": {
+								"description": "Number of log lines to show",
+								"minimum": 1,
+								"maximum": 200,
+								"type": "number"
+							}
+						}
+					}
+				]
+			}
+		},
+		{
+			"name": "apply_patch",
+			"description": "Apply an OpenAI/Codex apply_patch block directly.\n\nParameters:\n- patch: Patch text using *** Begin Patch / *** End Patch with Add, Update, or Delete File operations.\n- dryRun: Preview only (default: false).\n\nUse this when a Codex-family model emits its native apply_patch grammar. Use edit for targeted find-and-replace edits.",
+			"parameters": {
+				"type": "object",
+				"required": ["patch"],
+				"properties": {
+					"patch": {
+						"description": "OpenAI apply_patch block from *** Begin Patch to *** End Patch",
+						"minLength": 1,
+						"type": "string"
+					},
+					"dryRun": {
+						"description": "Preview the patch without writing changes",
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "edit",
+			"description": "Edit files with find-and-replace. oldText must match exactly (whitespace, indentation, newlines).\n\nParameters:\n- path: File path\n- oldText/newText: Single edit (text to find and replacement)\n- edits: Array of {oldText, newText} for multiple sequential edits (1-50)\n- replaceAll: Replace all occurrences (default: false). For single edit only.\n- occurrence: Which match (default: 1). For single edit only.\n- dryRun: Preview only (default: false)\n\nUse either oldText/newText OR edits array, not both.\n\nBest practices:\n- Read file first to verify exact formatting\n- Include context (5-10 lines) for uniqueness\n- Match indentation style (tabs vs spaces)\n- Use dryRun for complex edits\n- Use edits array for multiple related changes (atomic)\n\nIf \"not found\", read file to check actual content.",
+			"parameters": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"description": "Path to the file to edit (relative or absolute)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"oldText": {
+						"description": "Exact text to find and replace (must match exactly)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"newText": {
+						"description": "New text to replace the old text with",
+						"default": "",
+						"type": "string"
+					},
+					"edits": {
+						"description": "Multiple edits to apply sequentially (alternative to oldText/newText)",
+						"minItems": 1,
+						"maxItems": 50,
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["oldText"],
+							"properties": {
+								"oldText": {
+									"description": "Exact text to find and replace",
+									"minLength": 1,
+									"type": "string"
+								},
+								"newText": {
+									"description": "Replacement text (omit or empty string to delete)",
+									"default": "",
+									"type": "string"
+								}
+							}
+						}
+					},
+					"replaceAll": {
+						"description": "Replace all occurrences (useful for variable renaming). Cannot be used with occurrence or edits.",
+						"default": false,
+						"type": "boolean"
+					},
+					"occurrence": {
+						"description": "Which occurrence of the text to replace (1-based). Cannot be used with replaceAll or edits.",
+						"minimum": 1,
+						"default": 1,
+						"type": "integer"
+					},
+					"dryRun": {
+						"description": "Preview the diff without writing changes",
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "write",
+			"description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+			"parameters": {
+				"type": "object",
+				"required": ["path", "content", "previewDiff", "backup"],
+				"properties": {
+					"path": {
+						"description": "Path to the file to write (relative or absolute)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"content": {
+						"description": "Content to write to the file",
+						"default": "",
+						"type": "string"
+					},
+					"previewDiff": {
+						"description": "If true, return the diff between previous content and new content (when file exists)",
+						"default": true,
+						"type": "boolean"
+					},
+					"backup": {
+						"description": "If true, writes a .bak copy alongside the file before overwriting",
+						"default": true,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "notebook_edit",
+			"description": "Edit Jupyter notebook (.ipynb) files at the cell level.\n\nParameters:\n- path: Path to the notebook file\n- cell_id: ID of the cell to edit (optional, use cell_index if not available)\n- cell_index: 0-based index of the cell (used if cell_id not provided)\n- new_source: New content for the cell\n- cell_type: \"code\" or \"markdown\" (required for insert, optional for replace)\n- edit_mode: \"replace\" (default), \"insert\", or \"delete\"\n\nModes:\n- replace: Replace cell content (default)\n- insert: Insert new cell after specified cell (or at beginning if no cell specified)\n- delete: Remove the specified cell (new_source is ignored)\n\nUse 'read' tool first to view notebook structure and get cell IDs/indices.",
+			"parameters": {
+				"type": "object",
+				"required": ["path", "new_source"],
+				"properties": {
+					"path": {
+						"description": "Path to the Jupyter notebook file (.ipynb)",
+						"minLength": 1,
+						"type": "string"
+					},
+					"cell_id": {
+						"description": "Cell ID to edit. For insert mode, new cell is inserted after this cell. Omit to insert at beginning.",
+						"type": "string"
+					},
+					"cell_index": {
+						"description": "Cell index (0-based) to edit. Used if cell_id is not provided.",
+						"minimum": 0,
+						"type": "integer"
+					},
+					"new_source": {
+						"description": "The new source content for the cell",
+						"type": "string"
+					},
+					"cell_type": {
+						"description": "Cell type (code or markdown). Required for insert mode, defaults to current type for replace.",
+						"anyOf": [
+							{
+								"const": "code",
+								"type": "string"
+							},
+							{
+								"const": "markdown",
+								"type": "string"
+							}
+						]
+					},
+					"edit_mode": {
+						"description": "Edit mode: replace (default), insert (add new cell), or delete (remove cell)",
+						"default": "replace",
+						"anyOf": [
+							{
+								"const": "replace",
+								"type": "string"
+							},
+							{
+								"const": "insert",
+								"type": "string"
+							},
+							{
+								"const": "delete",
+								"type": "string"
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "todo",
+			"description": "Track tasks for coding sessions. Use for complex, multi-step work to demonstrate progress.\n\nWhen to use:\n- 3+ steps or non-trivial work\n- User requests multiple tasks\n- After receiving new instructions\n\nWhen NOT to use:\n- Single, straightforward tasks\n- Trivial work (<3 steps)\n- Conversational requests\n\nTask states:\n- pending: Not started\n- in_progress: Currently working (ONE AT A TIME)\n- completed: Finished\n\nManagement:\n- Mark in_progress BEFORE starting work\n- Mark completed IMMEDIATELY when done\n- Only ONE in_progress task at a time\n- Use 'updates' to modify existing tasks by id\n\nCall this tool IN PARALLEL with other tools to save time.",
+			"parameters": {
+				"type": "object",
+				"required": ["goal"],
+				"properties": {
+					"goal": {
+						"description": "Overall objective for this checklist",
+						"minLength": 1,
+						"type": "string"
+					},
+					"items": {
+						"anyOf": [
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"type": "object",
+									"required": ["content"],
+									"properties": {
+										"id": {
+											"description": "Stable identifier for the task",
+											"minLength": 1,
+											"type": "string"
+										},
+										"content": {
+											"description": "Human readable description of the task",
+											"minLength": 1,
+											"type": "string"
+										},
+										"status": {
+											"description": "Current progress state of the task",
+											"default": "pending",
+											"anyOf": [
+												{
+													"const": "pending",
+													"type": "string"
+												},
+												{
+													"const": "in_progress",
+													"type": "string"
+												},
+												{
+													"const": "completed",
+													"type": "string"
+												}
+											]
+										},
+										"priority": {
+											"description": "Relative urgency of the task",
+											"default": "medium",
+											"anyOf": [
+												{
+													"const": "high",
+													"type": "string"
+												},
+												{
+													"const": "medium",
+													"type": "string"
+												},
+												{
+													"const": "low",
+													"type": "string"
+												}
+											]
+										},
+										"notes": {
+											"description": "Additional context or reminders",
+											"minLength": 1,
+											"type": "string"
+										},
+										"due": {
+											"description": "Due date or target milestone",
+											"minLength": 1,
+											"type": "string"
+										},
+										"blockedBy": {
+											"type": "array",
+											"items": {
+												"description": "Task or dependency blocking progress",
+												"minLength": 1,
+												"type": "string"
+											}
+										}
+									}
+								}
+							},
+							{
+								"description": "JSON stringified array of TodoWrite-style task objects",
+								"minLength": 2,
+								"type": "string"
+							}
+						]
+					},
+					"updates": {
+						"description": "Updates to apply to existing tasks (identified by their id)",
+						"minItems": 1,
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["id"],
+							"properties": {
+								"id": {
+									"description": "Identifier of the task to update",
+									"minLength": 1,
+									"type": "string"
+								},
+								"status": {
+									"anyOf": [
+										{
+											"const": "pending",
+											"type": "string"
+										},
+										{
+											"const": "in_progress",
+											"type": "string"
+										},
+										{
+											"const": "completed",
+											"type": "string"
+										}
+									]
+								},
+								"priority": {
+									"anyOf": [
+										{
+											"const": "high",
+											"type": "string"
+										},
+										{
+											"const": "medium",
+											"type": "string"
+										},
+										{
+											"const": "low",
+											"type": "string"
+										}
+									]
+								},
+								"notes": {
+									"description": "Replace notes associated with the task",
+									"type": "string"
+								},
+								"due": {
+									"description": "Replace due date or milestone",
+									"type": "string"
+								},
+								"blockedBy": {
+									"type": "array",
+									"items": {
+										"description": "Replace blockers list",
+										"minLength": 1,
+										"type": "string"
+									}
+								},
+								"content": {
+									"description": "Replace the task description",
+									"type": "string"
+								},
+								"remove": {
+									"description": "Remove the task entirely",
+									"type": "boolean"
+								}
+							}
+						}
+					},
+					"includeSummary": {
+						"description": "Include status summary section",
+						"default": true,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "ask_user",
+			"description": "Ask the user structured questions with predefined options.\n\nUse this tool when you need to:\n- Gather user preferences or requirements\n- Clarify ambiguous instructions\n- Get decisions on implementation choices\n- Offer choices about direction to take\n\nParameters:\n- questions: Array of 1-4 questions, each with:\n  - question: The full question text\n  - header: Short label (max 12 chars) like \"Library\", \"Approach\"\n  - options: 2-4 choices with label and description\n  - options[].preview: Optional markdown/text/diff preview for concrete artifacts\n  - multiSelect: Allow multiple selections (default: false)\n\nAn \"Other\" option is automatically added to allow custom input.\nUsers can respond with option numbers, labels, or free text.\nPreview HTML is not supported; use markdown, text, or diff so clients can render previews safely.",
+			"parameters": {
+				"type": "object",
+				"required": ["questions"],
+				"properties": {
+					"questions": {
+						"description": "Questions to ask the user (1-4 questions)",
+						"minItems": 1,
+						"maxItems": 4,
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["question", "header", "options"],
+							"properties": {
+								"question": {
+									"description": "The complete question to ask. Should be clear, specific, and end with a question mark. E.g., \"Which library should we use for date formatting?\"",
+									"minLength": 5,
+									"maxLength": 500,
+									"type": "string"
+								},
+								"header": {
+									"description": "Short label displayed as a chip/tag (max 12 chars). E.g., \"Auth method\", \"Library\", \"Approach\".",
+									"minLength": 1,
+									"maxLength": 12,
+									"type": "string"
+								},
+								"options": {
+									"description": "Available choices (2-4 options). Each should be distinct. An 'Other' option is automatically added.",
+									"minItems": 2,
+									"maxItems": 4,
+									"type": "array",
+									"items": {
+										"type": "object",
+										"required": ["label", "description"],
+										"properties": {
+											"label": {
+												"description": "The display text for this option (1-5 words). Should clearly describe the choice.",
+												"minLength": 1,
+												"maxLength": 50,
+												"type": "string"
+											},
+											"description": {
+												"description": "Explanation of what this option means or what will happen if chosen.",
+												"minLength": 1,
+												"maxLength": 200,
+												"type": "string"
+											},
+											"preview": {
+												"type": "object",
+												"required": ["kind", "body"],
+												"properties": {
+													"kind": {
+														"description": "Preview format. Raw HTML is intentionally unsupported; use markdown, text, or diff.",
+														"anyOf": [
+															{
+																"const": "markdown",
+																"type": "string"
+															},
+															{
+																"const": "text",
+																"type": "string"
+															},
+															{
+																"const": "diff",
+																"type": "string"
+															}
+														]
+													},
+													"title": {
+														"description": "Optional short preview title.",
+														"minLength": 1,
+														"maxLength": 80,
+														"type": "string"
+													},
+													"body": {
+														"description": "Preview content shown with the option. Keep it focused; large artifacts should be summarized.",
+														"minLength": 1,
+														"maxLength": 12000,
+														"type": "string"
+													}
+												}
+											}
+										}
+									}
+								},
+								"multiSelect": {
+									"description": "Allow selecting multiple options. Use when choices are not mutually exclusive.",
+									"default": false,
+									"type": "boolean"
+								}
+							}
+						}
+					}
+				}
+			},
+			"deferApiDefinition": true
+		},
+		{
+			"name": "websearch",
+			"description": "Search the web for current information. Returns URLs, titles, and optional text/summaries. Use for recent docs, news, or research beyond training data.",
+			"parameters": {
+				"type": "object",
+				"required": ["query"],
+				"properties": {
+					"query": {
+						"description": "Search query",
+						"minLength": 1,
+						"maxLength": 2000,
+						"type": "string"
+					},
+					"numResults": {
+						"description": "Number of results to return (max varies by type)",
+						"minimum": 1,
+						"maximum": 100,
+						"default": 5,
+						"type": "integer"
+					},
+					"type": {
+						"description": "Search type: neural (embeddings), keyword (SERP), auto (intelligent mix), fast (streamlined)",
+						"default": "auto",
+						"anyOf": [
+							{
+								"const": "neural",
+								"type": "string"
+							},
+							{
+								"const": "keyword",
+								"type": "string"
+							},
+							{
+								"const": "auto",
+								"type": "string"
+							},
+							{
+								"const": "fast",
+								"type": "string"
+							}
+						]
+					},
+					"category": {
+						"description": "Data category to focus on",
+						"anyOf": [
+							{
+								"const": "company",
+								"type": "string"
+							},
+							{
+								"const": "research paper",
+								"type": "string"
+							},
+							{
+								"const": "news",
+								"type": "string"
+							},
+							{
+								"const": "pdf",
+								"type": "string"
+							},
+							{
+								"const": "github",
+								"type": "string"
+							},
+							{
+								"const": "tweet",
+								"type": "string"
+							},
+							{
+								"const": "personal site",
+								"type": "string"
+							},
+							{
+								"const": "linkedin profile",
+								"type": "string"
+							},
+							{
+								"const": "financial report",
+								"type": "string"
+							}
+						]
+					},
+					"includeDomains": {
+						"description": "List of domains to include (results only from these domains)",
+						"maxItems": 50,
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"excludeDomains": {
+						"description": "List of domains to exclude from results",
+						"maxItems": 50,
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"text": {
+						"description": "Return full page text content in markdown format",
+						"default": true,
+						"type": "boolean"
+					},
+					"summary": {
+						"description": "Return AI-generated summary (boolean) or customize via target/model",
+						"anyOf": [
+							{
+								"description": "Return AI-generated summary",
+								"default": false,
+								"type": "boolean"
+							},
+							{
+								"type": "object",
+								"properties": {
+									"target": {
+										"description": "Hint the summary for a specific target (docs, news, finance, etc.)",
+										"type": "string"
+									},
+									"model": {
+										"description": "Override Exa summary model (e.g., exa:claude-3)",
+										"type": "string"
+									},
+									"includeQuotes": {
+										"description": "Include quoted sentences in the summary",
+										"default": false,
+										"type": "boolean"
+									}
+								}
+							}
+						]
+					},
+					"highlights": {
+						"description": "Control highlight extraction (boolean or config object with numSentences/highlightsPerUrl)",
+						"anyOf": [
+							{
+								"description": "Return relevant highlights/excerpts",
+								"type": "boolean"
+							},
+							{
+								"type": "object",
+								"properties": {
+									"numSentences": {
+										"description": "Number of sentences per highlight",
+										"minimum": 1,
+										"maximum": 10,
+										"default": 3,
+										"type": "integer"
+									},
+									"highlightsPerUrl": {
+										"description": "Maximum highlights per URL",
+										"minimum": 1,
+										"maximum": 20,
+										"default": 5,
+										"type": "integer"
+									}
+								}
+							}
+						]
+					},
+					"context": {
+						"description": "Return LLM-optimized context string combining all results (recommended for RAG). Better than individual text for LLM consumption.",
+						"default": true,
+						"type": "boolean"
+					},
+					"startPublishedDate": {
+						"description": "Only results published after this date (ISO 8601 format: YYYY-MM-DD)",
+						"type": "string"
+					},
+					"endPublishedDate": {
+						"description": "Only results published before this date (ISO 8601 format: YYYY-MM-DD)",
+						"type": "string"
+					},
+					"livecrawl": {
+						"description": "Live crawling preference: never (cache only), fallback (use cache unless needed), preferred (prefer live crawl), always",
+						"anyOf": [
+							{
+								"const": "never",
+								"type": "string"
+							},
+							{
+								"const": "fallback",
+								"type": "string"
+							},
+							{
+								"const": "preferred",
+								"type": "string"
+							},
+							{
+								"const": "always",
+								"type": "string"
+							}
+						]
+					},
+					"subpages": {
+						"type": "object",
+						"required": ["limit"],
+						"properties": {
+							"limit": {
+								"description": "Number of subpages to crawl per root result",
+								"minimum": 1,
+								"maximum": 20,
+								"default": 5,
+								"type": "integer"
+							},
+							"depth": {
+								"description": "Subpage crawl depth",
+								"minimum": 1,
+								"maximum": 5,
+								"default": 1,
+								"type": "integer"
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"name": "codesearch",
+			"description": "Search GitHub, docs, and Stack Overflow for code examples. Returns working code snippets. Use for API syntax, framework patterns, or library usage.",
+			"parameters": {
+				"type": "object",
+				"required": ["query"],
+				"properties": {
+					"query": {
+						"description": "Code-related search query (e.g., 'React hooks for state management', 'Express.js middleware patterns')",
+						"minLength": 1,
+						"maxLength": 2000,
+						"type": "string"
+					},
+					"tokensNum": {
+						"description": "Token limit for response. 'dynamic' (recommended) adjusts automatically. 5000 is good default, 10000 for more context",
+						"default": "dynamic",
+						"anyOf": [
+							{
+								"const": "dynamic",
+								"type": "string"
+							},
+							{
+								"minimum": 50,
+								"maximum": 100000,
+								"type": "integer"
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "webfetch",
+			"description": "Fetch content from URLs. Returns clean markdown with optional summaries and highlights. Use when you have specific URLs to read.",
+			"parameters": {
+				"type": "object",
+				"required": ["urls"],
+				"properties": {
+					"urls": {
+						"description": "URL(s) to fetch content from",
+						"anyOf": [
+							{
+								"description": "Single URL to fetch content from",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"description": "Multiple URLs to fetch content from",
+								"minItems": 1,
+								"maxItems": 100,
+								"type": "array",
+								"items": {
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					},
+					"text": {
+						"description": "Return full page text content in markdown format",
+						"default": true,
+						"type": "boolean"
+					},
+					"summary": {
+						"description": "Return AI-generated summary (boolean) or customize via target/model",
+						"anyOf": [
+							{
+								"description": "Return AI-generated summary",
+								"default": false,
+								"type": "boolean"
+							},
+							{
+								"type": "object",
+								"properties": {
+									"target": {
+										"description": "Hint the summary for a specific target (docs, news, finance, etc.)",
+										"type": "string"
+									},
+									"model": {
+										"description": "Override Exa summary model (e.g., exa:claude-3)",
+										"type": "string"
+									},
+									"includeQuotes": {
+										"description": "Include quoted sentences in the summary",
+										"default": false,
+										"type": "boolean"
+									}
+								}
+							}
+						]
+					},
+					"highlights": {
+						"description": "Control highlight extraction (boolean or config object with numSentences/highlightsPerUrl)",
+						"anyOf": [
+							{
+								"description": "Return relevant highlights/excerpts",
+								"type": "boolean"
+							},
+							{
+								"type": "object",
+								"properties": {
+									"numSentences": {
+										"description": "Number of sentences per highlight",
+										"minimum": 1,
+										"maximum": 10,
+										"default": 3,
+										"type": "integer"
+									},
+									"highlightsPerUrl": {
+										"description": "Maximum highlights per URL",
+										"minimum": 1,
+										"maximum": 20,
+										"default": 5,
+										"type": "integer"
+									}
+								}
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "status",
+			"description": "Show git status (porcelain v2) with optional branch and ignored info, returning structured output.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"branchSummary": {
+						"description": "Include branch/ahead-behind data (-b)",
+						"default": true,
+						"type": "boolean"
+					},
+					"includeIgnored": {
+						"description": "Include ignored files (--ignored=matching)",
+						"default": false,
+						"type": "boolean"
+					},
+					"paths": {
+						"anyOf": [
+							{
+								"description": "Limit status to a specific path",
+								"minLength": 1,
+								"type": "string"
+							},
+							{
+								"minItems": 1,
+								"type": "array",
+								"items": {
+									"description": "Multiple paths",
+									"minLength": 1,
+									"type": "string"
+								}
+							}
+						]
+					}
+				}
+			}
+		},
+		{
+			"name": "gh_pr",
+			"description": "GitHub pull request operations via gh CLI.\n\nActions:\n  create    - Create PR from current branch (requires: title)\n  checkout  - Checkout PR locally (requires: number)\n  view      - View PR details (optional: number for specific PR, json for structured output)\n  list      - List PRs (filters: state, author, label, milestone, limit)\n  comment   - Add comment (requires: number, body)\n  checks    - View PR review status and CI checks (requires: number)\n  diff      - View PR diff or changed files (requires: number, nameOnly for file list only)\n\nExamples:\n  {action: \"create\", title: \"Fix bug\", body: \"Details\", base: \"main\"}\n  {action: \"checkout\", number: 123}\n  {action: \"list\", state: \"open\", label: [\"bug\", \"priority\"]}\n  {action: \"list\", milestone: \"v1.0\"}\n  {action: \"comment\", number: 42, body: \"LGTM\"}\n  {action: \"checks\", number: 42, json: true}\n  {action: \"diff\", number: 42, nameOnly: true}",
+			"parameters": {
+				"type": "object",
+				"required": ["action"],
+				"properties": {
+					"action": {
+						"anyOf": [
+							{
+								"const": "create",
+								"type": "string"
+							},
+							{
+								"const": "checkout",
+								"type": "string"
+							},
+							{
+								"const": "view",
+								"type": "string"
+							},
+							{
+								"const": "list",
+								"type": "string"
+							},
+							{
+								"const": "comment",
+								"type": "string"
+							},
+							{
+								"const": "checks",
+								"type": "string"
+							},
+							{
+								"const": "diff",
+								"type": "string"
+							}
+						]
+					},
+					"number": {
+						"minimum": 1,
+						"type": "number"
+					},
+					"title": {
+						"minLength": 1,
+						"type": "string"
+					},
+					"body": {
+						"type": "string"
+					},
+					"branch": {
+						"type": "string"
+					},
+					"base": {
+						"type": "string"
+					},
+					"draft": {
+						"default": false,
+						"type": "boolean"
+					},
+					"state": {
+						"anyOf": [
+							{
+								"const": "open",
+								"type": "string"
+							},
+							{
+								"const": "closed",
+								"type": "string"
+							},
+							{
+								"const": "all",
+								"type": "string"
+							}
+						]
+					},
+					"author": {
+						"type": "string"
+					},
+					"label": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"milestone": {
+						"type": "string"
+					},
+					"limit": {
+						"minimum": 1,
+						"maximum": 100,
+						"default": 30,
+						"type": "number"
+					},
+					"json": {
+						"default": false,
+						"type": "boolean"
+					},
+					"nameOnly": {
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "gh_issue",
+			"description": "GitHub issue operations via gh CLI.\n\nActions:\n  create   - Create issue (requires: title)\n  view     - View issue details (requires: number)\n  list     - List issues (filters: state, author, labels, limit)\n  comment  - Add comment (requires: number, body)\n  close    - Close issue (requires: number)\n\nExamples:\n  {action: \"create\", title: \"Bug report\", body: \"Details\", labels: [\"bug\"]}\n  {action: \"view\", number: 42, json: true}\n  {action: \"list\", state: \"open\", labels: [\"bug\", \"priority\"]}\n  {action: \"close\", number: 42}",
+			"parameters": {
+				"type": "object",
+				"required": ["action"],
+				"properties": {
+					"action": {
+						"anyOf": [
+							{
+								"const": "create",
+								"type": "string"
+							},
+							{
+								"const": "view",
+								"type": "string"
+							},
+							{
+								"const": "list",
+								"type": "string"
+							},
+							{
+								"const": "comment",
+								"type": "string"
+							},
+							{
+								"const": "close",
+								"type": "string"
+							}
+						]
+					},
+					"number": {
+						"minimum": 1,
+						"type": "number"
+					},
+					"title": {
+						"minLength": 1,
+						"type": "string"
+					},
+					"body": {
+						"type": "string"
+					},
+					"labels": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"state": {
+						"anyOf": [
+							{
+								"const": "open",
+								"type": "string"
+							},
+							{
+								"const": "closed",
+								"type": "string"
+							},
+							{
+								"const": "all",
+								"type": "string"
+							}
+						]
+					},
+					"author": {
+						"type": "string"
+					},
+					"limit": {
+						"minimum": 1,
+						"maximum": 100,
+						"default": 30,
+						"type": "number"
+					},
+					"json": {
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "gh_repo",
+			"description": "GitHub repository operations via gh CLI.\n\nActions:\n  view   - View current repo info\n  fork   - Fork current repo to your account\n  clone  - Clone a repo (requires: repository as \"owner/repo\")\n\nExamples:\n  {action: \"view\", json: true}\n  {action: \"fork\"}\n  {action: \"clone\", repository: \"owner/repo\", directory: \"my-dir\"}",
+			"parameters": {
+				"type": "object",
+				"required": ["action"],
+				"properties": {
+					"action": {
+						"anyOf": [
+							{
+								"const": "view",
+								"type": "string"
+							},
+							{
+								"const": "fork",
+								"type": "string"
+							},
+							{
+								"const": "clone",
+								"type": "string"
+							}
+						]
+					},
+					"repository": {
+						"description": "owner/repo format",
+						"type": "string"
+					},
+					"directory": {
+						"type": "string"
+					},
+					"json": {
+						"default": false,
+						"type": "boolean"
+					}
+				}
+			}
+		},
+		{
+			"name": "pipeline_search_contacts",
+			"description": "Search Pipeline CRM contacts using the internal evalops Pipeline service.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"query": {
+						"description": "Free-text contact query (maps to name)",
+						"type": "string"
+					},
+					"name": {
+						"description": "Name to search for (partial match)",
+						"type": "string"
+					},
+					"email": {
+						"description": "Email to search for (partial match)",
+						"type": "string"
+					},
+					"stage": {
+						"description": "Pipeline stage filter",
+						"type": "string"
+					},
+					"companyId": {
+						"description": "Filter by company UUID",
+						"type": "string"
+					},
+					"limit": {
+						"description": "Maximum results to return",
+						"minimum": 1,
+						"maximum": 100,
+						"default": 10,
+						"type": "integer"
+					}
+				}
+			}
+		},
+		{
+			"name": "pipeline_search_deals",
+			"description": "Search Pipeline CRM deals using the internal evalops Pipeline service.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"stage": {
+						"description": "Deal stage filter",
+						"type": "string"
+					},
+					"contactId": {
+						"description": "Filter by contact UUID",
+						"type": "string"
+					},
+					"companyId": {
+						"description": "Filter by company UUID",
+						"type": "string"
+					},
+					"limit": {
+						"description": "Maximum results to return",
+						"minimum": 1,
+						"maximum": 100,
+						"default": 10,
+						"type": "integer"
+					}
+				}
+			}
+		},
+		{
+			"name": "pipeline_create_signal",
+			"description": "Create a signal in Pipeline CRM using the internal evalops Pipeline service.",
+			"parameters": {
+				"type": "object",
+				"required": ["ownerType", "ownerId", "signalType", "source"],
+				"properties": {
+					"ownerType": {
+						"description": "Signal owner type, typically contact or company",
+						"type": "string"
+					},
+					"ownerId": {
+						"description": "Signal owner UUID",
+						"type": "string"
+					},
+					"signalType": {
+						"description": "Signal type",
+						"type": "string"
+					},
+					"source": {
+						"description": "Signal source",
+						"type": "string"
+					},
+					"strength": {
+						"description": "Signal strength from 0-100",
+						"minimum": 0,
+						"maximum": 100,
+						"type": "integer"
+					},
+					"summary": {
+						"description": "Human-readable signal summary",
+						"type": "string"
+					},
+					"data": {
+						"description": "Arbitrary signal payload"
+					}
+				}
+			}
+		},
+		{
+			"name": "pipeline_log_activity",
+			"description": "Log an activity in Pipeline CRM using the internal evalops Pipeline service.",
+			"parameters": {
+				"type": "object",
+				"required": ["ownerType", "ownerId", "activityType", "channel"],
+				"properties": {
+					"ownerType": {
+						"description": "Activity owner type, such as contact, company, or deal",
+						"type": "string"
+					},
+					"ownerId": {
+						"description": "Activity owner UUID",
+						"type": "string"
+					},
+					"activityType": {
+						"description": "Activity type identifier",
+						"type": "string"
+					},
+					"channel": {
+						"description": "Activity channel",
+						"type": "string"
+					},
+					"direction": {
+						"description": "Direction, defaults to outbound",
+						"type": "string"
+					},
+					"subject": {
+						"description": "Activity subject or topic",
+						"type": "string"
+					},
+					"body": {
+						"description": "Activity body or notes",
+						"type": "string"
+					},
+					"outcome": {
+						"description": "Optional activity outcome",
+						"type": "string"
+					},
+					"occurredAt": {
+						"description": "Occurred-at timestamp (ISO-8601)",
+						"type": "string"
+					}
+				}
+			}
+		}
+	],
+	"profiles": {
+		"lean": [
+			"read",
+			"list",
+			"find",
+			"search",
+			"diff",
+			"bash",
+			"apply_patch",
+			"edit",
+			"write",
+			"todo",
+			"status",
+			"gh_pr"
+		],
+		"default": [
+			"read",
+			"list",
+			"find",
+			"search",
+			"diff",
+			"bash",
+			"apply_patch",
+			"edit",
+			"write",
+			"todo",
+			"status",
+			"gh_pr"
+		],
+		"read-only": ["read", "list", "find", "search", "diff", "status"],
+		"readonly": ["read", "list", "find", "search", "diff", "status"],
+		"extended": [
+			"read",
+			"list",
+			"find",
+			"search",
+			"parallel_ripgrep",
+			"diff",
+			"bash",
+			"background_tasks",
+			"apply_patch",
+			"edit",
+			"write",
+			"todo",
+			"status",
+			"gh_pr",
+			"gh_issue",
+			"gh_repo"
+		]
+	}
+}

@@ -1,6 +1,6 @@
-//! # Composer TUI - Native Terminal Interface Library
+//! # Maestro TUI - Native Terminal Interface Library
 //!
-//! This crate provides the primary terminal UI and native agent for Composer,
+//! This crate provides the primary terminal UI and native agent for Maestro,
 //! including LSP diagnostics, workflow gating, and MCP annotations support.
 //! The Rust binary is the user entry point: it owns terminal rendering, AI
 //! calls, tool execution, and safety enforcement without any Node.js
@@ -55,9 +55,32 @@
 /// Handles spawning, messaging, and coordinating with the AI agent subprocess.
 pub mod agent;
 
+pub mod acp_cli;
+pub mod agents_cli;
+pub mod model_dynamics;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
-pub mod ai;
+/// Lives in the `maestro-ai` crate (packages/ai-rs); re-exported here under
+/// its historical module path so existing `crate::ai::...` call sites are
+/// unaffected.
+pub use maestro_ai as ai;
+/// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
+pub mod checkpoints;
+pub mod connections_cli;
+pub mod credential_mode;
+pub mod doctor;
+/// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
+/// for persisted JSON/text state. See module docs for crash-safety vs.
+/// power-loss-safety guarantees.
+pub mod fs_atomic;
+pub mod local_models;
+pub mod managed_setup;
+pub mod model_catalog;
+pub mod model_monitor;
+mod native_credentials;
+pub mod orb_connection;
+pub mod palette_resource;
+pub mod platform_provider_refs;
 
 /// Slash command system.
 /// Parses and executes commands like /help, /clear, /model, etc.
@@ -71,28 +94,53 @@ pub mod components;
 /// Reads from config files, environment variables, and CLI overrides.
 pub mod config;
 
+/// Async-signal-safe crash handler for SIGSEGV/SIGBUS.
+/// Complements the panic hook: records hard crashes and restores the terminal.
+pub mod crash_handler;
+
 /// Visual effects (spinners, shimmers, animations).
 /// Terminal-based animations for loading states and visual feedback.
 pub mod effects;
 
+/// Native CLI entrypoint shared by the `maestro-tui` and canonical `maestro` binaries.
+pub mod entrypoint;
+pub use entrypoint::run_cli;
+
 /// File system operations (search, workspace management).
 /// Handles file listing, fuzzy search, and workspace-relative paths.
 pub mod files;
+pub(crate) mod path_utils;
+
+/// Inline `@file` mention expansion for the composer.
+pub mod file_mentions;
 
 /// Headless mode communication protocol.
 /// JSON-based IPC protocol for communicating with the Node.js agent.
 pub mod headless;
+pub mod headless_server;
+
+/// Hosted runner contract primitives for Platform-managed Maestro runtimes.
+pub mod hosted_runner;
+pub mod hosted_runner_conformance;
+
+/// Rust hosted runner command-line entrypoints.
+pub mod hosted_runner_cli;
 
 /// Message protocol definitions.
 /// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;
 
-/// Composer <-> Conductor bridge status types and helpers.
+/// Maestro <-> Conductor bridge status types and helpers.
 pub mod bridge;
 
+pub mod service_connections;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;
+pub mod session_transfer;
+pub mod setup_cli;
+pub mod skill_cli;
+pub mod skill_package_cli;
 
 /// Application state management.
 /// Central state struct that holds all mutable application data.
@@ -117,13 +165,34 @@ pub mod tools;
 /// Platform-specific clipboard access for copying code blocks.
 pub mod clipboard;
 
+/// Interactive goal mode (create / pause / block / complete + auto-continue).
+pub mod goal;
+
+/// Durable supplemental prompt, memory, skill, and subagent context.
+pub mod harness;
+
+/// Persistent RLM-style context variables for prompt composition.
+pub mod rlm;
+
+/// Durable local messages for parent and delegated agent sessions.
+pub mod mailbox;
+
+mod dex_actions;
+pub mod dex_delight;
+/// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
+pub mod ui_prefs;
+
 /// Diff generation and rendering.
 /// Shows file changes with colored additions/deletions.
 pub mod diff;
 
 /// Execution policy (command approval/blocking).
 /// Security rules for which bash commands are auto-approved or blocked.
-pub mod execpolicy;
+///
+/// The implementation lives in the dependency-light maestro-execpolicy
+/// crate; this re-export preserves the historical maestro_tui::execpolicy
+/// path for importers and fixture harnesses.
+pub use maestro_execpolicy as execpolicy;
 
 /// Hook system for intercepting and modifying agent behavior.
 /// Provides trait-based hooks for tool calls, session events, and overflow handling.
@@ -156,13 +225,66 @@ pub mod pager;
 /// Handles different color capability levels (16, 256, true color).
 pub mod palette;
 
+pub mod a2a_cli;
+pub mod cli_commands;
+pub mod codex_app_server;
+pub mod codex_auth;
+pub mod codex_cli;
+pub mod codex_identity;
+pub mod codex_session;
+pub mod config_cli;
+pub mod context_cli;
+pub mod device_identity;
+pub mod evalops_cli;
+mod evidence;
+/// Droid-style executable slash commands from `.composer/commands/`.
+pub mod exec_commands;
+pub mod import_claude_cli;
+pub mod init_cli;
+pub mod memory_cli;
+pub mod mission_cli;
+pub mod mission_readiness;
+pub mod mode_cli;
+pub mod openai_cli;
+pub mod operating_plane_cli;
+pub mod operating_plane_client;
+pub mod operating_plane_summary;
+pub mod orb_cli;
+pub mod painter_cli;
+pub mod plan_mode;
+pub mod plugins_cli;
+pub mod print_mode;
+/// Pre-main process hardening (core dumps, ptrace, loader-injection env vars).
+pub mod process_hardening;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.
 pub mod prompts;
+pub mod remote_attach;
+pub mod remote_cli;
+/// Second-opinion review of uncommitted changes by a different model (`/rubber-duck`).
+pub mod rubber_duck;
+pub mod run_cli;
+pub mod scenario_cli;
+pub mod search_cli;
+pub mod update_cli;
+pub mod value_cli;
+pub mod video;
+
+/// Droid-style session worktrees (`-w` / `--worktree`).
+pub mod worktree;
+
+/// Jane Street magic-trace stop indicator + slow-frame hooks.
+/// Linux/Intel PT only; see module docs and `scripts/magic-trace-tui.sh`.
+pub mod magic_trace;
 
 /// Command sandboxing (macOS Seatbelt, Linux Landlock).
 /// Restricts file system access for executed commands.
 pub mod sandbox;
+
+/// Structured sandbox policy documents and their multi-source merge.
+/// Parses user, repository, and team-admin policies and combines them
+/// monotonically toward restriction.
+pub mod sandbox_policy;
 
 /// Safety and security controls for agent operations.
 /// Includes action firewall, dangerous pattern detection, and path containment.
@@ -187,13 +309,17 @@ pub mod wrapping;
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
+pub mod mcp_config_cli;
 
 /// LSP diagnostics bridge (optional Node-based CLI integration).
 pub mod lsp;
 
+pub mod pending_decisions;
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.
 pub mod telemetry;
+pub mod transcript;
+pub mod workflow_runtime;
 
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.
@@ -216,6 +342,7 @@ pub mod config_watcher;
 pub mod text_format;
 pub mod tool_output;
 pub mod tool_summary;
+pub mod turn_summary;
 
 /// Live/incremental text wrapping for streaming content.
 /// Allows text to be pushed in fragments and wrapped correctly.
@@ -252,6 +379,11 @@ pub mod key_binding;
 /// ANSI terminal commands for scroll regions and terminal control.
 /// Essential for proper scrolling over SSH.
 pub mod ansi_commands;
+
+/// Control-character sanitization for content that reaches a real terminal
+/// outside ratatui's `Buffer` (which filters it for the TUI chat pane).
+/// Use this at every raw `print!`/`write!`/`queue!(Print(_))` boundary.
+pub mod output_sanitize;
 
 /// Synchronized output for flicker-free terminal updates.
 /// Buffers output for atomic display.
@@ -349,6 +481,9 @@ pub mod ascii_animation;
 /// Skills can modify system prompts, provide tools, and change how the agent approaches tasks.
 pub mod skills;
 
+/// Grok-style plugin discovery (skills, commands, hooks, MCP packages).
+pub mod plugins;
+
 /// Swarm mode for multi-agent task orchestration.
 /// Execute complex tasks across multiple agents in parallel with dependency management.
 pub mod swarm;
@@ -386,7 +521,8 @@ pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
 
 // Telemetry types - for wide events tracking
 pub use telemetry::{
-    CanonicalTurnEvent, // The wide event emitted per turn
+    CanonicalTurnEvent, // The rich local event emitted per turn
+    ExternalTurnEvent,  // Content-free projection for external exporters
     TailSamplingConfig, // Sampling configuration
     TurnCollector,      // Accumulates context during a turn
     TurnTracker,        // Integrates with agent events
@@ -396,13 +532,13 @@ pub use telemetry::{
 
 // AI client types - for making API calls to different providers
 pub use ai::{
-    create_client,           // Factory function to create a client by provider name
-    create_client_for_model, // Factory function that infers provider from model
     AiClient,                // Trait that all clients implement
     AiProvider,              // Enum of supported providers
     AnthropicClient,         // Anthropic-specific client
     OpenAiClient,            // OpenAI-specific client
     UnifiedClient,           // Client that can switch between providers
+    create_client,           // Factory function to create a client by provider name
+    create_client_for_model, // Factory function that infers provider from model
 };
 
 // Core application types
@@ -411,25 +547,25 @@ pub use state::AppState; // Application state
 
 // Command system
 pub use commands::{
-    build_command_registry, // Creates the registry with all commands
     CommandRegistry,        // Holds all registered slash commands
     SlashCommandMatcher,    // Fuzzy matches user input to commands
+    build_command_registry, // Creates the registry with all commands
 };
 
 // Diff utilities
 pub use diff::{
-    generate_diff, // Creates a diff between two strings
-    render_diff,   // Renders diff as colored terminal output
     Diff,          // Represents a single diff change
     DiffStats,     // Summary statistics (lines added/removed)
+    generate_diff, // Creates a diff between two strings
+    render_diff,   // Renders diff as colored terminal output
 };
 
 // Bridge status types
 pub use bridge::{
-    fetch_bridge_status, // Fetches bridge status from a Composer web server
     BridgeClientTools,
     BridgeDefaults,
     BridgeStatus,
+    fetch_bridge_status, // Fetches bridge status from a Maestro web server
 };
 
 // Headless protocol types - extensive as it's the IPC contract
@@ -454,6 +590,9 @@ pub use headless::{
     FromAgentMessage, // Messages we receive from the agent
     HealthStatus,     // Agent health/readiness status
 
+    HistoryMessage, // Seeded multi-turn history entry for init
+    HistoryRole,    // Role of a seeded history message
+    InitConfig,     // Init payload (system prompt, history, ...)
     RemoteAgentTransport,
     RemoteTransportConfig,
     // Session management
@@ -485,25 +624,32 @@ pub use pager::Pager;
 
 // Color palette utilities
 pub use palette::{
+    ColorLevel,  // Enum: Basic16, Ansi256, TrueColor
     best_color,  // Picks best color for terminal capabilities
     color_level, // Detects terminal color support
     has_true_color,
-    theme,      // Gets current theme
-    ColorLevel, // Enum: Basic16, Ansi256, TrueColor
+    theme, // Gets current theme
 };
 
 // Tool system
+pub use tools::executor; // Tool execution boundary (in-process / out-of-process)
 pub use tools::process_registry; // Process registry module for fine-grained control
 pub use tools::{
-    background_process_count,     // Count of tracked background processes
-    cleanup_background_processes, // Kill all tracked background processes
     BashTool,                     // Executes shell commands
     HistoryFilter,                // Filter for tool history search
+    InProcessExecutor,            // Runs one invocation on this process's tool stack
+    OutputSink,                   // Where a running tool's incremental output goes
+    OutputStream,                 // stdout / stderr discriminator for streamed output
+    SandboxPolicySnapshot,        // Serializable form of the agent's sandbox decision
     ToolExecution,                // Single tool execution record
-    ToolExecutor,                 // Trait for tool execution
+    ToolExecutor,                 // Registry dispatcher for tool execution
     ToolHistory,                  // Tool execution history tracker
+    ToolInvocation,               // One fully-resolved tool call
+    ToolIsolation,                // Where a tool invocation runs
     ToolRegistry,                 // Registry of available tools
     ToolStats,                    // Statistics about tool executions
+    background_process_count,     // Count of tracked background processes
+    cleanup_background_processes, // Kill all tracked background processes
 };
 
 // Tooltips
@@ -511,9 +657,9 @@ pub use tooltips::random_tooltip;
 
 // Text wrapping
 pub use wrapping::{
+    RtOptions,       // Wrapping options
     word_wrap_line,  // Wraps a single line
     word_wrap_lines, // Wraps multiple lines
-    RtOptions,       // Wrapping options
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -528,6 +674,11 @@ pub use wrapping::{
 /// This is useful when the original name would conflict or be unclear
 /// at the crate root level.
 pub use notifications::{
+    FocusGate,
+    NotificationConfig,
+    NotificationEvent,
+    NotificationPayload,
+    TerminalStateNotifier,
     is_enabled as is_notification_enabled, // Renamed to be clearer at crate root
     is_terminal_enabled,
     load_config as load_notify_config, // Renamed to avoid conflict with config::load_config
@@ -536,9 +687,8 @@ pub use notifications::{
     notify_turn_complete,
     send_notification,
     send_terminal_notification,
-    NotificationConfig,
-    NotificationEvent,
-    NotificationPayload,
+    tab_progress_enabled,
+    term_supports_tab_progress,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -547,16 +697,17 @@ pub use notifications::{
 
 /// Custom prompt system for user-defined prompt templates.
 pub use prompts::{
-    find_prompt, // Finds a prompt by name
-    format_prompt_list_item,
-    get_usage_hint,   // Gets usage help for a prompt
-    load_prompts,     // Loads all prompts from disk
-    parse_args,       // Parses prompt arguments
-    render_prompt,    // Renders prompt with substituted args
-    validate_args,    // Validates arguments match schema
     ParsedArgs,       // Parsed argument values
     PromptDefinition, // Schema for a prompt
     PromptSource,     // Where prompt was loaded from
+    find_prompt,      // Finds a prompt by name
+    format_prompt_invoke,
+    format_prompt_list_item,
+    get_usage_hint, // Gets usage help for a prompt
+    load_prompts,   // Loads all prompts from disk
+    parse_args,     // Parses prompt arguments
+    render_prompt,  // Renders prompt with substituted args
+    validate_args,  // Validates arguments match schema
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,13 +721,6 @@ pub use prompts::{
 /// - Blocked (dangerous commands like `rm -rf /`)
 /// - Require user approval (everything else)
 pub use execpolicy::{
-    append_allow_prefix_rule, // Adds a new allow rule to policy
-    is_command_allowed,       // Checks if command is auto-approved
-    is_command_forbidden,     // Checks if command is blocked
-    load_policy,              // Loads policy from config files
-    parse_command,            // Tokenizes a command string
-    parse_policy,             // Parses policy file content
-    whitelist_command,        // Adds command to allow list
     Decision,                 // Allow, Deny, or NeedsApproval
     Evaluation,               // Result of evaluating a command
     PatternToken,             // Part of a command pattern
@@ -584,6 +728,13 @@ pub use execpolicy::{
     PrefixPattern,            // Matches command prefixes
     PrefixRule,               // A single prefix-based rule
     RuleMatch,                // Which rule matched
+    append_allow_prefix_rule, // Adds a new allow rule to policy
+    is_command_allowed,       // Checks if command is auto-approved
+    is_command_forbidden,     // Checks if command is blocked
+    load_policy,              // Loads policy from config files
+    parse_command,            // Tokenizes a command string
+    parse_policy,             // Parses policy file content
+    whitelist_command,        // Adds command to allow list
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -599,19 +750,12 @@ pub use execpolicy::{
 /// 4. Environment variables (MAESTRO_*)
 /// 5. CLI arguments
 pub use config::{
-    // Loading functions
-    clear_config_cache,     // Clears cached config (for testing)
-    get_available_profiles, // Lists available config profiles
-    get_config_summary,     // Human-readable config summary
-    load_config,            // Main config loading function
-    load_config_with_overrides,
-    parse_cli_override, // Parses --config overrides
-
     // Policy enums
     ApprovalPolicy, // How tool execution is approved
     // Main config struct
     ComposerConfig, // The complete configuration
 
+    DEFAULT_CONFIG, // Default configuration values
     // Nested config structs
     FeaturesConfig,       // Feature flags
     FileOpener,           // How to open files externally
@@ -635,7 +779,13 @@ pub use config::{
     TuiConfig,              // TUI appearance settings
     WireApi,                // API wire format settings
 
-    DEFAULT_CONFIG, // Default configuration values
+    // Loading functions
+    clear_config_cache,     // Clears cached config (for testing)
+    get_available_profiles, // Lists available config profiles
+    get_config_summary,     // Human-readable config summary
+    load_config,            // Main config loading function
+    load_config_with_overrides,
+    parse_cli_override, // Parses --config overrides
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -651,15 +801,15 @@ pub use config::{
 /// Sandboxing limits what files/directories commands can access,
 /// providing defense-in-depth against malicious commands.
 pub use sandbox::{
-    is_sandbox_available,      // Checks if sandboxing is supported
-    sandbox_type,              // Returns "seatbelt", "landlock", or "none"
-    spawn_sandboxed_command,   // Runs command in sandbox
-    spawn_unsandboxed_command, // Runs command without sandbox
+    SANDBOX_ENV_VAR,           // Environment variable indicating sandbox mode
     SandboxError,              // Error type for sandbox operations
     SandboxPolicy,             // Configuration for sandbox restrictions
     SandboxResult,             // Result type alias
     WritableRoot,              // A directory the sandbox can write to
-    SANDBOX_ENV_VAR,           // Environment variable indicating sandbox mode
+    is_sandbox_available,      // Checks if sandboxing is supported
+    sandbox_type,              // Returns "seatbelt", "landlock", or "none"
+    spawn_sandboxed_command,   // Runs command in sandbox
+    spawn_unsandboxed_command, // Runs command without sandbox
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -674,12 +824,6 @@ pub use sandbox::{
 /// - **Bash Analyzer**: Parse and classify shell command risk
 /// - **Path Containment**: Ensure operations stay within safe directories
 pub use safety::{
-    // Bash analysis
-    analyze_bash_command, // Analyze a command for risk
-    // Dangerous pattern detection
-    check_dangerous_patterns, // Check input against all patterns
-    // Path containment
-    is_path_contained, // Check if path is in safe zones
     // Firewall - main entry point
     ActionFirewall, // Central security gateway
     BashAnalysis,   // Analysis result with risk level
@@ -690,6 +834,12 @@ pub use safety::{
 
     PathContainment, // Contained, Escaped, or SystemProtected
     PatternMatch,    // Result of a pattern match
+    // Bash analysis
+    analyze_bash_command, // Analyze a command for risk
+    // Dangerous pattern detection
+    check_dangerous_patterns, // Check input against all patterns
+    // Path containment
+    is_path_contained, // Check if path is in safe zones
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -702,8 +852,6 @@ pub use safety::{
 /// additional tools. Servers are configured via JSON files and can use
 /// different transports (stdio, HTTP, SSE).
 pub use mcp::{
-    // Configuration
-    load_mcp_config, // Load config from standard locations
     // Client types
     McpClient,      // Manages multiple server connections
     McpConfig,      // Merged configuration from all sources
@@ -718,6 +866,10 @@ pub use mcp::{
     McpTool,                                // Tool definition from server
     McpToolResult,                          // Result of tool execution
     McpTransport,                           // Transport type (Stdio, Http, Sse)
+    // Configuration
+    append_managed_mcp_connections,
+    load_mcp_config, // Load config from standard locations
+    load_mcp_config_with_managed_connections,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -732,6 +884,7 @@ pub use mcp::{
 /// - Exportable statistics
 pub use usage::{
     CostAlert,       // Configurable cost threshold alert
+    DEFAULT_PRICING, // Global default pricing
     ModelPricing,    // Per-model pricing database
     PricingTier,     // Cost per token tier
     SessionUsage,    // Aggregated session usage
@@ -739,7 +892,6 @@ pub use usage::{
     UsageExport,     // Exportable usage data
     UsageStats,      // Aggregated statistics
     UsageTracker,    // Main usage tracker
-    DEFAULT_PRICING, // Global default pricing
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -786,9 +938,9 @@ pub use config_watcher::{
 /// Useful for rendering streaming AI responses in real-time, maintaining
 /// correct wrapping regardless of how text fragments arrive.
 pub use live_wrap::{
-    take_prefix_by_width, // Take a prefix of text fitting within a width
     Row,                  // A single visual row with text and line break info
     RowBuilder,           // Incremental text wrapper
+    take_prefix_by_width, // Take a prefix of text fitting within a width
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -823,13 +975,13 @@ pub use render_utils::{
 /// - Format JSON in compact single-line format
 /// - Center-truncate paths with ellipsis in middle
 pub use text_format::{
+    TOOL_OUTPUT_MAX_LINES,           // Default max lines for tool output
     center_truncate_path,            // Path truncation preserving endpoints
     format_and_truncate_tool_result, // Format and truncate tool output
     format_json_compact,             // Single-line JSON with spaces
     relativize_to_home,              // Replace home dir with ~
     truncate_lines,                  // Line count truncation
     truncate_text,                   // Character count truncation
-    TOOL_OUTPUT_MAX_LINES,           // Default max lines for tool output
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -840,13 +992,13 @@ pub use text_format::{
 ///
 /// Provides perceptual color matching, blending, and terminal capability detection.
 pub use color_utils::{
+    XTERM_COLORS,                   // 256 color palette
     best_color as best_color_match, // Find best matching color for terminal (renamed to avoid conflict)
     blend,                          // Blend two RGB colors
     has_256_color_support,          // Check for 256 color support
     has_true_color_support,         // Check for true color (24-bit)
     is_light,                       // Check if color is light
     perceptual_distance,            // CIE76 color distance
-    XTERM_COLORS,                   // 256 color palette
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -870,6 +1022,7 @@ pub use markdown_stream::MarkdownStreamCollector;
 /// - SSH session detection
 /// - WSL detection and path conversion
 pub use terminal_info::{
+    TerminalInfo,                // Full terminal info struct
     convert_windows_path_to_wsl, // Convert Windows paths in WSL
     is_interactive,              // Check if fully interactive terminal
     is_ssh_session,              // Check if SSH session
@@ -879,7 +1032,6 @@ pub use terminal_info::{
     is_wsl,                      // Check if WSL
     normalize_pasted_path,       // Normalize pasted file paths
     ssh_connection_info,         // Get SSH connection details
-    TerminalInfo,                // Full terminal info struct
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -891,11 +1043,11 @@ pub use terminal_info::{
 /// Uses keystroke timing heuristics to detect paste-like input,
 /// preventing accidental form submission when pasting multiline content.
 pub use paste_burst::{
-    retro_start_index, // Find byte index for retro-grabbing chars
     CharDecision,      // Decision for how to handle a character
     FlushResult,       // Result of flushing the buffer
     PasteBurst,        // Main detector struct
     RetroGrab,         // Info about retroactively grabbed text
+    retro_start_index, // Find byte index for retro-grabbing chars
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -916,6 +1068,7 @@ pub use scroll_state::ScrollState;
 ///
 /// Platform-aware modifier display (⌥ on macOS, alt elsewhere).
 pub use key_binding::{
+    KeyBinding as KeyShortcut, // Key binding struct (renamed to avoid conflict)
     alt,                       // Alt + key binding
     ctrl,                      // Ctrl + key binding
     ctrl_alt,                  // Ctrl + Alt + key binding
@@ -925,7 +1078,6 @@ pub use key_binding::{
     is_altgr,                  // Check for AltGr (Windows)
     plain,                     // Plain key binding
     shift,                     // Shift + key binding
-    KeyBinding as KeyShortcut, // Key binding struct (renamed to avoid conflict)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -940,8 +1092,6 @@ pub use key_binding::{
 /// - Desktop notifications (OSC 9)
 /// - Cursor save/restore
 pub use ansi_commands::{
-    scroll_region_down,     // Scroll down within region using RI
-    scroll_region_up,       // Scroll up within region using IND
     DisableAlternateScroll, // Disable mouse wheel translation in alt screen
     EnableAlternateScroll,  // Enable mouse wheel translation in alt screen
     Index,                  // Move cursor down, scroll at bottom (ESC D)
@@ -953,6 +1103,8 @@ pub use ansi_commands::{
     ScrollDown,             // Scroll down N lines (CSI T)
     ScrollUp,               // Scroll up N lines (CSI S)
     SetScrollRegion,        // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
+    scroll_region_down,     // Scroll down within region using RI
+    scroll_region_up,       // Scroll up within region using IND
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -964,10 +1116,10 @@ pub use ansi_commands::{
 /// Wrap rendering in BeginSynchronizedUpdate/EndSynchronizedUpdate to buffer
 /// all output and display it atomically. Essential for reducing flicker over SSH.
 pub use sync_output::{
-    with_synchronized_output, // Execute closure with sync output
     BeginSynchronizedUpdate,  // Start buffering (ESC [ ? 2026 h)
     EndSynchronizedUpdate,    // Flush buffer (ESC [ ? 2026 l)
     SynchronizedOutputGuard,  // RAII guard for sync output
+    with_synchronized_output, // Execute closure with sync output
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1006,12 +1158,12 @@ pub use inline_scroll::insert_history_lines;
 ///
 /// Includes fuzzy matching, aligned descriptions, and smart wrapping.
 pub use selection_list::{
-    fuzzy_filter,        // Filter items by fuzzy match
-    fuzzy_match,         // Perform fuzzy matching
-    fuzzy_score,         // Score a fuzzy match
     SelectionList,       // Selection list widget
     SelectionListConfig, // Configuration for selection list
     SelectionRow,        // A row in a selection list
+    fuzzy_filter,        // Filter items by fuzzy match
+    fuzzy_match,         // Perform fuzzy matching
+    fuzzy_score,         // Score a fuzzy match
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1022,16 +1174,16 @@ pub use selection_list::{
 ///
 /// Includes compact duration formatting and animated spinners.
 pub use elapsed::{
+    PausableTimer,           // Timer with pause/resume
+    SPINNER_ASCII,           // ASCII spinner frames
+    SPINNER_DOTS,            // Braille dots spinner
+    SPINNER_FRAMES,          // Default spinner frames
     format_duration_compact, // Format Duration compactly
     format_elapsed_compact,  // Format seconds compactly
     format_elapsed_precise,  // Format with ms precision
     spinner,                 // Get current spinner frame
     spinner_frame,           // Get spinner frame with custom interval
     spinner_span,            // Get spinner as ratatui Span
-    PausableTimer,           // Timer with pause/resume
-    SPINNER_ASCII,           // ASCII spinner frames
-    SPINNER_DOTS,            // Braille dots spinner
-    SPINNER_FRAMES,          // Default spinner frames
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1068,6 +1220,7 @@ pub use ansi_text::{
 
 /// Box and border drawing utilities.
 pub use borders::{
+    BorderStyle,          // Border style configuration
     card_inner_width,     // Calculate usable inner width
     horizontal_separator, // Create horizontal separator line
     padded_emoji,         // Emoji with hair space
@@ -1075,7 +1228,6 @@ pub use borders::{
     with_border,          // Wrap content in rounded border
     with_border_style,    // Wrap with custom border style
     with_border_width,    // Wrap with minimum width
-    BorderStyle,          // Border style configuration
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1084,9 +1236,9 @@ pub use borders::{
 
 /// Field formatting for aligned displays.
 pub use field_format::{
+    FieldFormatter,              // Aligned field/value formatter
     truncate_line_to_width,      // Truncate line to width
     truncate_line_with_ellipsis, // Truncate with ellipsis
-    FieldFormatter,              // Aligned field/value formatter
 };
 // Note: is_blank_line, line_display_width, line_to_static already exported from render_utils
 
@@ -1094,14 +1246,25 @@ pub use field_format::{
 // SHIMMER EXPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Shimmer animation effect for loading indicators.
+/// Shimmer animation effect for loading indicators (Deixic palette + sheen).
 pub use shimmer::{
+    DEIXIC_BORDER,
+    DEIXIC_MUTED,
+    DEIXIC_SOFT,
+    DEIXIC_SURFACE,
+    DEIXIC_TEXT,
+    DEIXIC_VIOLET,
+    SHIMMER_FPS,
+    ShimmerConfig, // Shimmer configuration
+    anim_phase_secs,
+    diagonal_shimmer_lines,
+    shimmer_frame,
     shimmer_line,              // Create shimmer line
     shimmer_line_with_config,  // With custom config
     shimmer_spans,             // Create shimmer spans
     shimmer_spans_at_time,     // At specific time offset
     shimmer_spans_with_config, // With custom config
-    ShimmerConfig,             // Shimmer configuration
+    shine_opacity,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1116,10 +1279,6 @@ pub use shimmer::{
 /// - Responsive breakpoints
 /// - Priority-based degradation
 pub use layout_constraints::{
-    allocate_priority_zones, // Allocate space by priority
-    content_width,           // Calculate inner content width
-    distribute_flex,         // Distribute width among flex items
-    responsive_width,        // Calculate responsive width
     Breakpoint,              // Terminal width breakpoints
     FlexItem,                // Flex item configuration
     LayoutConstraints,       // Core constraint struct
@@ -1128,6 +1287,10 @@ pub use layout_constraints::{
     Spacing,                 // Padding/margin spacing
     ZoneConfig,              // Zone configuration
     ZoneLayout,              // Multi-zone layout builder
+    allocate_priority_zones, // Allocate space by priority
+    content_width,           // Calculate inner content width
+    distribute_flex,         // Distribute width among flex items
+    responsive_width,        // Calculate responsive width
 };
 
 /// Layout presets for common UI elements.
@@ -1146,6 +1309,13 @@ pub use layout_constraints::presets;
 /// - Ctrl+Y: yank (paste) last killed text
 /// - Alt+Y: rotate through kill ring
 pub use kill_ring::{
+    // Constants
+    DEFAULT_KILL_RING_SIZE,
+    KillResult, // Result of a kill operation
+    // Kill ring
+    KillRing, // Main kill ring struct
+    WORD_SEPARATORS,
+    YankInfo, // Info about last yank for replacement
     // Word boundaries
     current_word_end,   // Find end of current word
     current_word_start, // Find start of current word
@@ -1160,13 +1330,6 @@ pub use kill_ring::{
     previous_word_start, // Find start of previous word
     transpose_chars,     // Transpose characters (Ctrl+T)
     transpose_words,     // Transpose words (Alt+T)
-    KillResult,          // Result of a kill operation
-    // Kill ring
-    KillRing, // Main kill ring struct
-    YankInfo, // Info about last yank for replacement
-    // Constants
-    DEFAULT_KILL_RING_SIZE,
-    WORD_SEPARATORS,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1200,6 +1363,10 @@ pub use hyperlink::{
 
 /// ASCII animation system with built-in presets.
 pub use ascii_animation::{
+    AnimationPreset, // Built-in animation presets
+    // Core
+    AsciiAnimation, // Main animation struct
+    DEFAULT_FRAME_DURATION,
     // Built-in animations
     bouncing_ball,
     box_spin,
@@ -1212,10 +1379,6 @@ pub use ascii_animation::{
     spinner_line,
     thinking,
     wave,
-    AnimationPreset, // Built-in animation presets
-    // Core
-    AsciiAnimation, // Main animation struct
-    DEFAULT_FRAME_DURATION,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1233,7 +1396,6 @@ pub use ascii_animation::{
 /// - `~/.composer/skills/` for global user skills
 /// - `.composer/skills/` for project-specific skills
 pub use skills::{
-    skills_to_prompt,     // Generate XML prompt block for skills
     ActiveSkill,          // Runtime skill state
     LoadedSkill,          // Result of loading a skill file
     SkillActivationState, // Inactive, Activating, Active, etc.
@@ -1245,6 +1407,12 @@ pub use skills::{
     SkillRegistry,        // Skill management registry
     SkillResources,       // Resource directories (scripts, references, assets)
     SkillSource,          // Builtin, User, Plugin, Remote
+    skills_to_prompt,     // Generate XML prompt block for skills
+};
+
+/// Plugin discovery foundation (filesystem packages bundling skills/commands/hooks/MCP).
+pub use plugins::{
+    DiscoveredPlugin, PluginComponents, PluginManifest, PluginOrigin, PluginRegistry,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1259,9 +1427,6 @@ pub use skills::{
 /// - Progress tracking and event streaming
 /// - Markdown-based plan parsing
 pub use swarm::{
-    parse_plan,        // Parse markdown plan to SwarmPlan
-    parse_simple_list, // Parse simple task list format
-    validate_plan,     // Validate plan for consistency
     AgentId,           // Unique agent identifier
     SwarmConfig,       // Execution configuration
     SwarmEvent,        // Execution events
@@ -1274,4 +1439,12 @@ pub use swarm::{
     TaskPriority,      // Low, Normal, High, Critical
     TaskResult,        // Task execution result
     TaskStatus,        // Pending, Running, Completed, etc.
+    parse_plan,        // Parse markdown plan to SwarmPlan
+    parse_simple_list, // Parse simple task list format
+    validate_plan,     // Validate plan for consistency
 };
+
+pub mod code_authority;
+
+/// Session-backed product issue drafts and the product feedback client.
+pub(crate) mod bug_report;

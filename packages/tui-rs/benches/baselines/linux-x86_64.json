@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "platform": "linux-x86_64",
+  "scenarios": {
+    "agent_loop_16_multi_tool_turns": 78020028,
+    "agent_loop_32_tool_turns": 81210954,
+    "agent_loop_32_turns": 6430604,
+    "agent_loop_96_long_history_turns": 82305328,
+    "execpolicy_eval": 18902,
+    "message_layout_steady": 45092,
+    "model_selector_local_refresh_search": 247000,
+    "session_read_full": 1786971,
+    "session_read_header": 243135,
+    "session_wire_roundtrip": 1663459
+  }
+}

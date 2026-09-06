@@ -61,6 +61,8 @@ const SYSTEM_PATHS: &[&str] = &[
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const SYSTEM_PATHS: &[&str] = &["/etc", "/usr", "/var", "/bin", "/sbin"];
 
+const TRUSTED_RUNNER_WORKSPACE_ROOTS_ENV: &str = "MAESTRO_TRUSTED_RUNNER_WORKSPACE_ROOTS";
+
 fn system_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -88,6 +90,109 @@ fn system_paths() -> Vec<PathBuf> {
     #[cfg(not(windows))]
     {
         SYSTEM_PATHS.iter().map(PathBuf::from).collect()
+    }
+}
+
+fn system_protected_path(path: &Path) -> Option<PathBuf> {
+    system_paths()
+        .into_iter()
+        .find(|sys_path| path_starts_with(path, sys_path))
+}
+
+fn configured_trusted_runner_workspace_roots() -> Vec<PathBuf> {
+    std::env::var_os(TRUSTED_RUNNER_WORKSPACE_ROOTS_ENV)
+        .map(|roots| std::env::split_paths(&roots).collect())
+        .unwrap_or_default()
+}
+
+fn is_trusted_system_workspace(path: &Path) -> bool {
+    is_trusted_system_workspace_with_roots(path, &configured_trusted_runner_workspace_roots())
+}
+
+fn is_trusted_system_workspace_with_roots(path: &Path, configured_roots: &[PathBuf]) -> bool {
+    let normalized = normalize_path(path);
+    if configured_roots
+        .iter()
+        .map(|root| normalize_path(root))
+        .filter(|root| root.is_absolute() && root.parent().is_some())
+        .any(|root| path_starts_with(&normalized, &root))
+    {
+        return true;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        has_trusted_linux_runner_workspace_shape(&normalized)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_trusted_linux_runner_workspace_shape(path: &Path) -> bool {
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+
+    for (index, component) in components.iter().enumerate() {
+        if component != "_work" || components.len() < index + 3 {
+            continue;
+        }
+
+        if index == 0 {
+            continue;
+        }
+
+        if has_verified_actions_runner_root(&components[..index]) {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_verified_actions_runner_root(prefix_before_work: &[String]) -> bool {
+    if !has_allowed_actions_runner_base(prefix_before_work) {
+        return false;
+    }
+
+    if prefix_before_work
+        .last()
+        .is_some_and(|component| component == "actions-runner")
+    {
+        return true;
+    }
+
+    let Some(listener) = prefix_before_work.last() else {
+        return false;
+    };
+    if !listener.starts_with("listener-") {
+        return false;
+    }
+
+    prefix_before_work
+        .iter()
+        .rev()
+        .nth(1)
+        .is_some_and(|component| component == "actions-runner")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_allowed_actions_runner_base(prefix_before_work: &[String]) -> bool {
+    match prefix_before_work {
+        [first, second, ..] if first == "opt" && second == "actions-runner" => true,
+        [first, second, third, ..]
+            if first == "usr" && second == "local" && third == "actions-runner" =>
+        {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -120,7 +225,7 @@ pub fn is_path_contained(
                     Err(_) => {
                         return PathContainment::Escaped {
                             reason: format!("Cannot resolve path: {e}"),
-                        }
+                        };
                     }
                 }
             } else {
@@ -148,7 +253,7 @@ pub fn is_path_contained(
     }
 
     // Check canonicalized temp_dir (e.g., /private/var/folders/...)
-    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+    if let Ok(temp_canonical) = dunce::canonicalize(&temp_dir) {
         if path_starts_with(&resolved, &temp_canonical) {
             return PathContainment::Contained {
                 zone: "temp".to_string(),
@@ -174,22 +279,33 @@ pub fn is_path_contained(
         }
     }
 
-    // Check against system-protected paths
-    for sys_path in system_paths() {
-        if path_starts_with(&resolved, &sys_path) {
-            return PathContainment::SystemProtected {
-                protected_path: sys_path.display().to_string(),
+    // Resolve workspace path
+    let workspace_resolved =
+        dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+
+    let target_in_workspace = path_starts_with(&resolved, &workspace_resolved);
+
+    // Treat both the resolved target and the logical path as system-protected.
+    // Resolved-only checks miss platform layouts where system config paths
+    // symlink outside SYSTEM_PATHS (e.g. nix-darwin: /etc/hosts → /nix/store/...).
+    if let Some(sys_path) =
+        system_protected_path(&resolved).or_else(|| system_protected_path(target))
+    {
+        // Self-hosted CI workspaces can live under system-owned roots. Trust only
+        // recognizable runner workspaces (or operator-configured runner roots)
+        // while keeping arbitrary /etc, /usr, /opt, etc. workspaces blocked.
+        if target_in_workspace && is_trusted_system_workspace(&workspace_resolved) {
+            return PathContainment::Contained {
+                zone: "workspace".to_string(),
             };
         }
+
+        return PathContainment::SystemProtected {
+            protected_path: sys_path.display().to_string(),
+        };
     }
 
-    // Resolve workspace path
-    let workspace_resolved = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-
-    // Check if contained in workspace
-    if path_starts_with(&resolved, &workspace_resolved) {
+    if target_in_workspace {
         return PathContainment::Contained {
             zone: "workspace".to_string(),
         };
@@ -197,7 +313,7 @@ pub fn is_path_contained(
 
     // Check additional safe zones
     for zone in additional_safe_zones {
-        if let Ok(zone_resolved) = zone.canonicalize() {
+        if let Ok(zone_resolved) = dunce::canonicalize(zone) {
             if path_starts_with(&resolved, &zone_resolved) {
                 return PathContainment::Contained {
                     zone: zone.display().to_string(),
@@ -208,7 +324,7 @@ pub fn is_path_contained(
 
     // Check user home directory (allowed for certain operations)
     if let Some(home) = dirs::home_dir() {
-        if let Ok(home_resolved) = home.canonicalize() {
+        if let Ok(home_resolved) = dunce::canonicalize(&home) {
             if path_starts_with(&resolved, &home_resolved) {
                 // Home is allowed but noted
                 return PathContainment::Contained {
@@ -242,7 +358,7 @@ fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
     };
 
     // Try to canonicalize (follows symlinks, fails if doesn't exist)
-    absolute.canonicalize().or_else(|_| {
+    dunce::canonicalize(&absolute).or_else(|_| {
         if let Some(resolved) = resolve_existing_parent(&absolute) {
             return Ok(resolved);
         }
@@ -257,7 +373,7 @@ fn resolve_existing_parent(path: &Path) -> Option<PathBuf> {
 
     loop {
         if current.exists() {
-            let resolved_parent = current.canonicalize().ok()?;
+            let resolved_parent = dunce::canonicalize(current).ok()?;
             let mut resolved = resolved_parent;
             for component in remainder.iter().rev() {
                 resolved.push(component);
@@ -371,7 +487,7 @@ pub fn is_system_path(path: &Path) -> bool {
     // First check if path is in temp directory (which may be under /var on macOS)
     // Temp should NOT be considered a system path
     let temp_dir = std::env::temp_dir();
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let resolved = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     // Check raw temp path (e.g., /var/folders/...)
     if path_starts_with(&resolved, &temp_dir) {
@@ -379,7 +495,7 @@ pub fn is_system_path(path: &Path) -> bool {
     }
 
     // Check canonicalized temp path (e.g., /private/var/folders/...)
-    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+    if let Ok(temp_canonical) = dunce::canonicalize(&temp_dir) {
         if path_starts_with(&resolved, &temp_canonical) {
             return false;
         }
@@ -398,9 +514,10 @@ pub fn is_system_path(path: &Path) -> bool {
         }
     }
 
-    system_paths()
-        .iter()
-        .any(|sys_path| path_starts_with(&resolved, sys_path))
+    // Resolved target under a system root (e.g. /private/etc/passwd after macOS
+    // /etc → /private/etc), or logical path under a system root when the
+    // symlink target leaves SYSTEM_PATHS (nix-darwin /etc/hosts → /nix/store).
+    system_protected_path(&resolved).is_some() || system_protected_path(path).is_some()
 }
 
 /// Check for path traversal attempts in a path string
@@ -417,7 +534,15 @@ mod tests {
     use std::path::PathBuf;
 
     fn workspace_root() -> PathBuf {
-        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+        #[cfg(windows)]
+        {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/workspace/composer-workspace")
+        }
     }
 
     fn system_path_sample() -> PathBuf {
@@ -452,6 +577,126 @@ mod tests {
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_owned_runner_workspace_under_opt_is_contained() {
+        let workspace = PathBuf::from("/opt/actions-runner/_work/sample-project/sample-project");
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_github_actions_runner_workspace_shape_is_verified() {
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/usr/local/actions-runner/_work/sample-project/sample-project",
+        )));
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/actions-runner/listener-03/_work/sample-project/sample-project",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/not-really-runner-malicious/_work/sample-project/sample-project",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/private-heavy-runner-01/_work/sample-project/sample-project",
+        )));
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/actions-runner/_work/sample-project/other-repo",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/etc/actions-runner/_work/sample-project/sample-project",
+        )));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_actions_runner_workspace_under_usr_local_is_contained() {
+        let workspace =
+            PathBuf::from("/usr/local/actions-runner/_work/sample-project/sample-project");
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_actions_runner_listener_workspace_under_opt_is_contained() {
+        let workspace =
+            PathBuf::from("/opt/actions-runner/listener-03/_work/sample-project/sample-project");
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_configured_runner_workspace_root_is_trusted() {
+        let workspace = PathBuf::from("/opt/example-ci/_work/sample-project/sample-project");
+        let configured_roots = [PathBuf::from("/opt/example-ci/_work")];
+
+        assert!(is_trusted_system_workspace_with_roots(
+            &workspace,
+            &configured_roots
+        ));
+    }
+
+    #[test]
+    fn test_configured_runner_workspace_root_rejects_relative_and_root_values() {
+        let workspace = PathBuf::from("/etc/sample-project/sample-project");
+
+        for configured_roots in [
+            vec![PathBuf::from(".")],
+            vec![PathBuf::from("relative/_work")],
+            vec![PathBuf::from("/")],
+            vec![PathBuf::from(""), PathBuf::from("/")],
+        ] {
+            assert!(
+                !is_trusted_system_workspace_with_roots(&workspace, &configured_roots),
+                "Expected {:?} not to trust system workspace {:?}",
+                configured_roots,
+                workspace
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_non_runner_opt_work_directory_requires_configuration() {
+        for workspace in [
+            PathBuf::from("/opt/example-ci/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/notreallyrunner/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/private-heavy-runner-01/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/not-really-runner-malicious/_work/sample-project/sample-project"),
+            PathBuf::from("/etc/actions-runner/_work/sample-project/sample-project"),
+        ] {
+            let target = workspace.join("src/file.rs");
+
+            let result = is_path_contained(&target, &workspace, &[]);
+            assert!(
+                matches!(result, PathContainment::SystemProtected { .. }),
+                "Expected unconfigured {:?} to remain system protected, got {:?}",
+                workspace,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_system_workspace_root_does_not_override_system_protection() {
+        let workspace = system_path_sample();
+        let target = workspace.join("maestro-write-test");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(
+            matches!(result, PathContainment::SystemProtected { .. }),
+            "Expected {:?} rooted at {:?} to remain system protected, got {:?}",
+            target,
+            workspace,
+            result
+        );
     }
 
     #[test]
@@ -645,7 +890,10 @@ mod tests {
         assert!(is_system_path(&sys_path.join("log/messages")));
 
         if let Some(home) = dirs::home_dir() {
-            assert!(!is_system_path(&home.join("file")));
+            // Self-hosted agents may intentionally place their user home under
+            // a protected root such as /opt. A child must inherit the home's
+            // classification instead of assuming every home is unprotected.
+            assert_eq!(is_system_path(&home.join("file")), is_system_path(&home));
         }
         assert!(!is_system_path(&std::env::temp_dir().join("file")));
     }
@@ -673,6 +921,26 @@ mod tests {
             .join("users")
             .join("name");
         assert!(!is_system_path(&not_sys));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_path_logical_prefix_when_symlink_leaves_system_root() {
+        // Platform layouts (notably nix-darwin) may symlink /etc/* into
+        // non-system locations such as /nix/store. The logical path must
+        // still be classified as system-protected.
+        let etc = Path::new("/etc");
+        if !etc.is_dir() {
+            return;
+        }
+        assert!(is_system_path(Path::new("/etc/hosts")));
+        assert!(is_system_path(Path::new("/etc/passwd")));
+
+        let workspace = workspace_root();
+        assert!(matches!(
+            is_path_contained(Path::new("/etc/hosts"), &workspace, &[]),
+            PathContainment::SystemProtected { .. }
+        ));
     }
 
     // ========================================================================
@@ -714,6 +982,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_expands_tilde() {
+        let _guard = crate::config::test_process_env_lock();
         let Some(home) = dirs::home_dir() else {
             return;
         };
@@ -723,6 +992,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_expands_tilde_backslash() {
+        let _guard = crate::config::test_process_env_lock();
         let Some(home) = dirs::home_dir() else {
             return;
         };
@@ -740,10 +1010,8 @@ mod tests {
 
         let target = link_path.join("missing.txt");
         let resolved = resolve_path(&target, workspace.path()).unwrap();
-        let expected = outside
-            .path()
-            .canonicalize()
-            .unwrap_or_else(|_| outside.path().to_path_buf());
+        let expected =
+            dunce::canonicalize(outside.path()).unwrap_or_else(|_| outside.path().to_path_buf());
         assert!(path_starts_with(&resolved, &expected));
     }
 

@@ -1,0 +1,9 @@
+{
+  "provider": "anthropic",
+  "environment": "production",
+  "credential_name": "default",
+  "team_id": null,
+  "credential_data": {
+    "api_key": "sk-test"
+  }
+}

@@ -21,6 +21,7 @@
 //! - Named: $FILE, $TICKET_ID (from KEY=value pairs)
 //! - Escape: $$ produces a literal $
 
+use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
@@ -51,6 +52,7 @@ pub struct PromptDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptSource {
     User,
+    Plugin,
     Project,
 }
 
@@ -59,6 +61,7 @@ impl PromptSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
+            Self::Plugin => "plugin",
             Self::Project => "project",
         }
     }
@@ -209,29 +212,85 @@ fn scan_prompts_directory(dir: &Path, source_type: PromptSource) -> Vec<PromptDe
 }
 
 /// Load all available prompts from user and project directories.
+///
+/// Later paths override earlier ones by name (project maestro wins).
 #[must_use]
 pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let user_prompts_dir = home.join(".composer").join("prompts");
-    let project_prompts_dir = workspace_dir.join(".composer").join("prompts");
+    load_prompts_with_plugin_dirs(workspace_dir, &[])
+}
 
-    let user_prompts = scan_prompts_directory(&user_prompts_dir, PromptSource::User);
-    let project_prompts = scan_prompts_directory(&project_prompts_dir, PromptSource::Project);
+/// Load prompts while including trusted plugin command directories.
+#[must_use]
+pub fn load_prompts_with_plugin_dirs(
+    workspace_dir: &Path,
+    plugin_dirs: &[PathBuf],
+) -> Vec<PromptDefinition> {
+    let mut dirs: Vec<(PathBuf, PromptSource)> = Vec::new();
 
-    // Project prompts override user prompts by name
-    let mut prompt_map: HashMap<String, PromptDefinition> = HashMap::new();
-
-    for prompt in user_prompts {
-        prompt_map.insert(prompt.name.to_lowercase(), prompt);
+    if let Some(home) = legacy_composer_home_dir() {
+        dirs.push((home.join("commands"), PromptSource::User));
+        dirs.push((home.join("prompts"), PromptSource::User));
     }
+    if let Some(home) = maestro_home_dir() {
+        dirs.push((home.join("commands"), PromptSource::User));
+        dirs.push((home.join("prompts"), PromptSource::User));
+    }
+    dirs.extend(
+        plugin_dirs
+            .iter()
+            .cloned()
+            .map(|path| (path, PromptSource::Plugin)),
+    );
 
-    for prompt in project_prompts {
-        prompt_map.insert(prompt.name.to_lowercase(), prompt);
+    dirs.push((
+        workspace_dir.join(".composer").join("commands"),
+        PromptSource::Project,
+    ));
+    dirs.push((
+        workspace_dir.join(".composer").join("prompts"),
+        PromptSource::Project,
+    ));
+    dirs.push((
+        workspace_dir.join(".agents").join("commands"),
+        PromptSource::Project,
+    ));
+    dirs.push((
+        workspace_dir.join(".maestro").join("commands"),
+        PromptSource::Project,
+    ));
+    dirs.push((
+        workspace_dir.join(".maestro").join("prompts"),
+        PromptSource::Project,
+    ));
+
+    let mut prompt_map: HashMap<String, PromptDefinition> = HashMap::new();
+    for (dir, source) in dirs {
+        for prompt in scan_prompts_directory(&dir, source) {
+            prompt_map.insert(prompt.name.to_lowercase(), prompt);
+        }
     }
 
     let mut prompts: Vec<_> = prompt_map.into_values().collect();
     prompts.sort_by(|a, b| a.name.cmp(&b.name));
     prompts
+}
+
+/// Format a prompt/command template for slash invocation.
+pub fn format_prompt_invoke(prompt: &PromptDefinition, raw_args: &str) -> Result<String, String> {
+    let args = parse_args(raw_args);
+    if prompt.has_positional_placeholders || !prompt.named_placeholders.is_empty() {
+        validate_args(prompt, &args)?;
+        return Ok(render_prompt(prompt, &args));
+    }
+    let body = prompt.body.trim();
+    let args_trim = raw_args.trim();
+    if args_trim.is_empty() {
+        Ok(body.to_string())
+    } else if body.is_empty() {
+        Ok(args_trim.to_string())
+    } else {
+        Ok(format!("{body}\n\n---\n\n{args_trim}"))
+    }
 }
 
 /// Find a prompt by name (case-insensitive).
@@ -359,6 +418,7 @@ pub fn render_prompt(prompt: &PromptDefinition, args: &ParsedArgs) -> String {
 pub fn format_prompt_list_item(prompt: &PromptDefinition) -> String {
     let source = match prompt.source_type {
         PromptSource::User => "(user)",
+        PromptSource::Plugin => "(plugin)",
         PromptSource::Project => "(project)",
     };
     let desc = prompt.description.as_deref().unwrap_or("(no description)");
@@ -368,7 +428,7 @@ pub fn format_prompt_list_item(prompt: &PromptDefinition) -> String {
 /// Get usage hint for a prompt.
 #[must_use]
 pub fn get_usage_hint(prompt: &PromptDefinition) -> String {
-    let mut parts = vec![format!("/prompts:{}", prompt.name)];
+    let mut parts = vec![format!("/{}", prompt.name)];
 
     if let Some(hint) = &prompt.argument_hint {
         parts.push(hint.clone());
@@ -389,6 +449,87 @@ pub fn get_usage_hint(prompt: &PromptDefinition) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_load_prompts_prefers_maestro_over_composer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path();
+        let composer = workspace.join(".composer").join("prompts");
+        let maestro = workspace.join(".maestro").join("prompts");
+        let commands = workspace.join(".maestro").join("commands");
+        fs::create_dir_all(&composer).unwrap();
+        fs::create_dir_all(&maestro).unwrap();
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(
+            composer.join("review.md"),
+            "---
+description: composer
+---
+composer body
+",
+        )
+        .unwrap();
+        fs::write(
+            maestro.join("review.md"),
+            "---
+description: maestro
+---
+maestro body
+",
+        )
+        .unwrap();
+        fs::write(
+            commands.join("ship.md"),
+            "---
+description: ship
+---
+Ship $ARGUMENTS
+",
+        )
+        .unwrap();
+        let prompts = load_prompts(workspace);
+        assert_eq!(
+            find_prompt(&prompts, "review").unwrap().body.trim(),
+            "maestro body"
+        );
+        assert!(find_prompt(&prompts, "ship").is_some());
+    }
+
+    #[test]
+    fn loads_markdown_commands_from_plugins() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let commands = temp.path().join("plugin").join("commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(
+            commands.join("plugin-review.md"),
+            "---\ndescription: Review from plugin\n---\nReview $ARGUMENTS",
+        )
+        .unwrap();
+
+        let prompts = load_prompts_with_plugin_dirs(&workspace, &[commands]);
+        let prompt = find_prompt(&prompts, "plugin-review").expect("plugin prompt");
+
+        assert_eq!(prompt.source_type, PromptSource::Plugin);
+        assert_eq!(prompt.description.as_deref(), Some("Review from plugin"));
+    }
+
+    #[test]
+    fn test_format_prompt_invoke_appends_args_without_placeholders() {
+        let prompt = PromptDefinition {
+            name: "commit".to_string(),
+            description: None,
+            argument_hint: None,
+            body: "Create a conventional commit.".to_string(),
+            source_path: PathBuf::new(),
+            source_type: PromptSource::User,
+            named_placeholders: vec![],
+            has_positional_placeholders: false,
+        };
+        let out = format_prompt_invoke(&prompt, "fix typo").unwrap();
+        assert!(out.contains("Create a conventional commit."));
+        assert!(out.contains("fix typo"));
+    }
 
     #[test]
     fn test_parse_args_positional() {

@@ -13,7 +13,7 @@ use crate::key_hints::{self, KeyBinding};
 
 /// Navigation bindings for the pager
 pub mod bindings {
-    use super::{key_hints, KeyBinding, KeyCode};
+    use super::{KeyBinding, KeyCode, key_hints};
 
     pub const UP: KeyBinding = key_hints::plain(KeyCode::Up);
     pub const DOWN: KeyBinding = key_hints::plain(KeyCode::Down);
@@ -110,7 +110,7 @@ impl<'a> Pager<'a> {
                 self.scroll = self.scroll.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max_scroll = content_height.saturating_sub(1).max(0);
+                let max_scroll = content_height.saturating_sub(1);
                 self.scroll = (self.scroll + 1).min(max_scroll);
             }
             KeyCode::PageUp => {

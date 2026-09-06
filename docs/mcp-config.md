@@ -1,6 +1,6 @@
-# MCP configuration refresh (Maestro)
+# MCP configuration refresh (Deixic Code)
 
-This document captures the refreshed MCP configuration approach for Maestro. It is inspired by other agents but re‑implemented from scratch for our stack.
+This document captures the refreshed MCP configuration approach for Deixic Code. It is inspired by other agents but re‑implemented from scratch for our stack.
 
 ## Goals
 - Accept both array and `mcpServers` object formats.

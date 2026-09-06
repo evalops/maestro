@@ -4,8 +4,79 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     rebase-strategy: "auto"
     labels:
       - "dependencies"
       - "ci"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "rust"
+
+  # The npm package is a thin native distribution wrapper: package-lock.json
+  # currently resolves zero dependencies, so this produces no pull requests
+  # today. It is here as a tripwire — if a runtime dependency is ever added to
+  # the wrapper, it is monitored from the first commit rather than whenever
+  # someone next audits the config.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "javascript"
+
+  # Dockerfile uses `rust:bookworm` and `debian:bookworm-slim`. Both are suite
+  # tags rather than digests, so this mostly surfaces Debian suite bumps
+  # (bookworm -> trixie), which need a human decision rather than an automatic
+  # merge. Limit kept low for that reason.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+
+  # .devcontainer/devcontainer.json pins a base image and three features.
+  - package-ecosystem: "devcontainers"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"
+
+  # skills/skill-creator/scripts/requirements.txt is the only Python manifest
+  # in the tree. One dependency today, but it is executable supply chain.
+  - package-ecosystem: "pip"
+    directory: "/skills/skill-creator/scripts"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    rebase-strategy: "auto"
+    labels:
+      - "dependencies"

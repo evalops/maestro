@@ -156,7 +156,10 @@
 //! while let Ok(event) = transport.recv().await {
 //!     match event {
 //!         AgentEvent::ResponseChunk { content, .. } => print!("{}", content),
-//!         AgentEvent::ResponseEnd { .. } => break,
+//!         AgentEvent::ResponseEnd { .. } => { /* model-call boundary */ }
+//!         AgentEvent::TurnCompleted { .. } => break,
+//!         AgentEvent::TurnInterrupted { reason, .. } => return Err(reason.into()),
+//!         AgentEvent::ProviderError { message, .. } => return Err(message.into()),
 //!         _ => {}
 //!     }
 //! }
@@ -195,15 +198,23 @@
 //! For multi-threaded scenarios, wrap transports in `Arc<Mutex<_>>` or use the
 //! async transport from a single task.
 
+use tokio::sync::{Notify, mpsc};
+
 mod async_transport;
+pub(crate) mod controller_binding;
+#[cfg(test)]
+mod controller_binding_test;
 mod framing;
 mod generated_protocol;
-mod messages;
+pub(crate) mod messages;
 mod proto;
 mod remote_transport;
 mod session;
 mod supervisor;
 mod transport;
+pub mod workspace_capabilities;
+#[cfg(test)]
+mod workspace_capabilities_test;
 
 fn local_controller_capabilities() -> messages::ClientCapabilities {
     messages::ClientCapabilities {
@@ -214,16 +225,75 @@ fn local_controller_capabilities() -> messages::ClientCapabilities {
         ]),
         utility_operations: Some(vec![messages::UtilityOperation::CommandExec]),
         raw_agent_events: None,
+        transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
+        governed_code_mode: None,
+    }
+}
+
+/// Build the runtime-owned server capability surface for headless clients.
+///
+/// The native registry is the only source of the tool names and baseline
+/// approval metadata. A client must not recreate this list or infer a
+/// per-call decision from it; the native tool event remains authoritative for
+/// argument-aware approval and action-firewall outcomes.
+pub(crate) fn native_server_capabilities() -> messages::ServerCapabilities {
+    let mut native_tools = crate::tools::ToolRegistry::new()
+        .tools()
+        .map(|definition| {
+            let name = definition.tool.name.clone();
+            messages::NativeToolCapability {
+                requires_approval: definition.requires_approval,
+                version: crate::tools::versions::is_version_managed(&name)
+                    .then(|| "current".to_string()),
+                name,
+            }
+        })
+        .collect::<Vec<_>>();
+    native_tools.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+
+    messages::ServerCapabilities {
+        server_requests: vec![
+            messages::ServerRequestType::Approval,
+            messages::ServerRequestType::ClientTool,
+            messages::ServerRequestType::UserInput,
+            messages::ServerRequestType::ToolRetry,
+        ],
+        utility_operations: vec![
+            messages::UtilityOperation::CommandExec,
+            messages::UtilityOperation::FileSearch,
+            messages::UtilityOperation::FileRead,
+            messages::UtilityOperation::FileWatch,
+        ],
+        raw_agent_events: true,
+        connection_roles: vec![
+            messages::ConnectionRole::Viewer,
+            messages::ConnectionRole::Controller,
+        ],
+        native_tools,
+        workspace_prompt_capability_activation: true,
+        governed_tool_grant_algorithms: crate::headless_server::governed_grant_verifier_algorithms(
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
     }
 }
 
 // Core message types
+pub use maestro_runtime::{
+    DelegationControlAction, DelegationControlProjection, DelegationControlState, DelegationEvent,
+    DelegationEventKind, DelegationLifecycleState, TaggedMessageDecode, TaggedMessageDecodeError,
+    UnknownWireMessage,
+};
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
-    ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType,
-    StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
-    UtilityCommandShellMode, UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
+    ClientToolExecutionOwner, ClientToolResultContent, CodeMode, ConnectionGrantBinding,
+    ConnectionRole, ExternalToolDefinition, FromAgentMessage, GovernedToolGrant,
+    HEADLESS_PROTOCOL_VERSION, HeadlessErrorType, HistoryMessage, HistoryRole, InitConfig,
+    NativeToolCapability, PendingApproval, ServerCapabilities, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
+    decode_from_agent_message,
 };
 pub use proto::maestro::v1 as proto_types;
 
@@ -240,14 +310,33 @@ pub use remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransport
 
 // Session persistence
 pub use session::{
-    delete_session, list_sessions, SessionEntry, SessionMetadata, SessionReader, SessionRecorder,
-    SessionReplay,
+    SessionEntry, SessionMetadata, SessionReader, SessionRecorder, SessionReplay, delete_session,
+    list_sessions,
 };
 
 // Supervisor with reconnection
 pub use supervisor::{
     AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig, SupervisorEvent,
+    agent_event_to_message,
 };
+
+pub(crate) fn send_transport_event<T>(
+    sender: &mpsc::UnboundedSender<T>,
+    notification: &Notify,
+    event: T,
+) -> bool {
+    if sender.send(event).is_ok() {
+        notification.notify_one();
+        true
+    } else {
+        false
+    }
+}
+// Internal-only: a best-effort, off-the-hot-path stderr diagnostic helper
+// shared with `tools::registry::execute` and `agent::native`, not part of
+// this crate's public surface.
+pub(crate) use supervisor::report_diagnostic_nonblocking;
+pub(crate) use supervisor::{ResponseAcknowledgement, response_ack_request_id};
 
 // Message framing
 pub use framing::{

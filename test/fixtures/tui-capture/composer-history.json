@@ -1,0 +1,29 @@
+{
+  "name": "composer-history",
+  "steps": [
+    {
+      "wait": "release-planner"
+    },
+    {
+      "text": "Review the release checklist."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "The README is a good starting point"
+    },
+    {
+      "absent": "Working|Thinking"
+    },
+    {
+      "key": "C-r"
+    },
+    {
+      "text": "release"
+    },
+    {
+      "wait": "History: release"
+    }
+  ]
+}
