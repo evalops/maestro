@@ -1,4 +1,5 @@
 import "./device-marker-auth-cases.mjs";
+import "./source-provenance-link.test.mjs";
 import "./check-release-identity.test.mjs";
 import "./release-propagation.test.mjs";
 import assert from "node:assert/strict";
