@@ -36,11 +36,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The Mono mirror creates public tags only from matching reviewed source.
+      # Current public main may already contain changes after a frozen release.
       - id: release
         uses: ./.github/actions/release-context
         with:
           fallback-to-package-version: "true"
-          create-tag-if-missing: "true"
+          create-tag-if-missing: "${{ github.repository != 'evalops/maestro' }}"
 
       - id: registry-release
         name: Check npm registry release
