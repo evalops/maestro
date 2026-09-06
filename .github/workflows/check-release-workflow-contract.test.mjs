@@ -1,4 +1,6 @@
 import "./device-marker-auth-cases.mjs";
+import "./check-release-identity.test.mjs";
+import "./release-propagation.test.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
