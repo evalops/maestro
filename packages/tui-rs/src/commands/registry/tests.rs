@@ -1223,10 +1223,10 @@ fn memory_and_continue_commands_parse() {
         CommandOutput::Action(CommandAction::ShowMemory) => {}
         other => panic!("expected ShowMemory, got {other:?}"),
     }
-    let err = registry
-        .execute("/memory save foo", "/tmp", None, None)
-        .expect_err("/memory save should not pretend to work");
-    assert!(err.message.contains("deixic-code memory"), "{err}");
+    assert!(
+        matches!(registry.execute("/memory save foo", "/tmp", None, None).unwrap(),
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Apply(id))) if id == "foo")
+    );
     match registry
         .execute("/continue", "/tmp", None, None)
         .expect("/continue")
@@ -1932,4 +1932,49 @@ fn dex_presentation_command_routes_to_ui_preferences() {
             .execute("/dex unknown", "/tmp", None, None)
             .is_err()
     );
+}
+
+#[test]
+fn worker_commands_preserve_target_and_exact_message() {
+    let registry = build_command_registry();
+    let output = registry
+        .execute(
+            "/workers steer subagent:fixture:2 keep the API; fix CLI",
+            ".",
+            None,
+            None,
+        )
+        .unwrap();
+    let CommandOutput::Action(CommandAction::Worker(action)) = output else {
+        panic!("worker action expected")
+    };
+    let (tool, args) = action.tool_call();
+    assert_eq!(tool, "control_subagent");
+    assert_eq!(args["agent_ref"], "subagent:fixture:2");
+    assert_eq!(args["message"], "keep the API; fix CLI");
+    for invalid in [
+        "/workers resume",
+        "/workers resume id",
+        "/workers cancel id another",
+        "/workers list trailing",
+    ] {
+        assert!(
+            registry.execute(invalid, ".", None, None).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn memory_commands_use_the_existing_reviewed_store_actions() {
+    let registry = build_command_registry();
+    assert!(
+        matches!(registry.execute("/memory save proposal-1", ".", None, None).unwrap(),
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Apply(id))) if id == "proposal-1")
+    );
+    assert!(
+        matches!(registry.execute("/memory forget entry-1", ".", None, None).unwrap(),
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Delete(id))) if id == "entry-1")
+    );
+    assert!(registry.execute("/memory save", ".", None, None).is_err());
 }

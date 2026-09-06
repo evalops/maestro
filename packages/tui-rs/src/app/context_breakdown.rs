@@ -95,6 +95,39 @@ impl ContextBreakdown {
         .collect()
     }
 
+    /// One suggestion derived from counted categories, never from guessed content.
+    pub fn advice(&self, context_window: Option<u64>) -> String {
+        let total = self.total();
+        if total == 0 {
+            return "No conversation context yet.".into();
+        }
+        let (category, _, pct) = self
+            .categories()
+            .into_iter()
+            .max_by_key(|(_, tokens, _)| *tokens)
+            .expect("fixed categories");
+        let pressure = context_window
+            .filter(|window| *window > 0)
+            .is_some_and(|window| token_estimation::usage_percentage(total, window) >= 70.0);
+        let action = match category {
+            "Tool schemas" => "Use `/tools` to review the enabled tool surface.",
+            "System prompt" => "Use `/harness list` to review supplemental instructions.",
+            _ if pressure => {
+                "Use `/compact` to shorten older history while retaining recent turns."
+            }
+            _ if context_window.is_none_or(|window| window == 0) => {
+                "Keep future tool output bounded until context capacity is known."
+            }
+            _ => "There is no need to compact now; keep future tool output bounded.",
+        };
+        let unknown = if context_window.is_none_or(|window| window == 0) {
+            " Context capacity is unknown."
+        } else {
+            ""
+        };
+        format!("**Next step:** {category} is the largest category ({pct:.1}%). {action}{unknown}")
+    }
+
     /// Render the breakdown as a chat message with counts, percentages, and a
     /// progress bar against the model's context window (when known).
     #[must_use]
@@ -146,6 +179,8 @@ impl ContextBreakdown {
             }
         }
 
+        lines.push(String::new());
+        lines.push(self.advice(context_window));
         lines.join("\n")
     }
 }
@@ -359,5 +394,26 @@ mod tests {
         assert_eq!(progress_bar(1.0, 10), "[██████████] 100%");
         // Over-100% usage clamps instead of overflowing the bar.
         assert_eq!(progress_bar(1.5, 10), "[██████████] 100%");
+    }
+}
+
+#[cfg(test)]
+mod advice_tests {
+    use super::*;
+    #[test]
+    fn advice_distinguishes_history_pressure_from_fixed_prompt_cost() {
+        let mut counts = ContextBreakdown {
+            tool_results: 800,
+            ..Default::default()
+        };
+        assert!(counts.advice(Some(1000)).contains("`/compact`"));
+        counts.tool_schemas = 1600;
+        assert!(counts.advice(Some(1000)).contains("`/tools`"));
+        assert!(!counts.advice(Some(1000)).contains("`/compact`"));
+        assert!(counts.advice(None).contains("capacity is unknown"));
+        assert_eq!(
+            ContextBreakdown::default().advice(None),
+            "No conversation context yet."
+        );
     }
 }

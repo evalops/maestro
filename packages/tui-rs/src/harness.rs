@@ -336,6 +336,8 @@ impl HarnessStore {
             .with_context(|| format!("unknown harness entry '{id}'"))?;
         let previous = self.clone();
         let before = self.entries[index].clone();
+        // Editing content without new evidence must not erase its source.
+        let evidence = evidence.or_else(|| before.evidence.clone());
         let after = {
             let entry = &mut self.entries[index];
             entry.content = content;

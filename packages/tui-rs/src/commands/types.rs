@@ -307,6 +307,8 @@ pub enum CommandAction {
     InvokeExecCommand { name: String, args: String },
     /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
     MagicTrace(MagicTraceAction),
+    /// Direct user controls for existing workers.
+    Worker(WorkerAction),
     /// Observe output from an existing background task.
     BackgroundMonitor(BackgroundMonitorAction),
     /// Re-run a prompt on an interval (Grok-style `/loop`).
@@ -1356,5 +1358,33 @@ mod tests {
         assert_eq!(cmd.name, "test");
         assert_eq!(cmd.aliases, vec!["t"]);
         assert_eq!(cmd.arguments.len(), 1);
+    }
+}
+
+/// User-selected worker operation; execution remains in the subagent owner.
+#[derive(Debug, Clone)]
+pub enum WorkerAction {
+    List,
+    Inspect(String),
+    Steer { agent_ref: String, message: String },
+    Cancel(String),
+    Resume { id: String, message: String },
+}
+impl WorkerAction {
+    pub(crate) fn tool_call(&self) -> (&'static str, serde_json::Value) {
+        use serde_json::json;
+        match self {
+            Self::List => ("list_subagents", json!({})),
+            Self::Inspect(id) => ("get_subagent", json!({"subagent_id":id})),
+            Self::Steer { agent_ref, message } => (
+                "control_subagent",
+                json!({"agent_ref":agent_ref,"mode":"steer","message":message}),
+            ),
+            Self::Cancel(id) => ("cancel_subagent", json!({"subagent_id":id})),
+            Self::Resume { id, message } => (
+                "resume_subagent",
+                json!({"subagent_id":id,"follow_up":message}),
+            ),
+        }
     }
 }

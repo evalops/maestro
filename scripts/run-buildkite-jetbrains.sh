@@ -36,8 +36,10 @@ cd packages/jetbrains-plugin
 # job (Buildkite 114/351, exit 137) mid-:test. Cold Kotlin/IntelliJ builds
 # exhausted the former 256 MiB metaspace cap (public build 332); allow
 # 512 MiB while retaining the 1 GiB heap and single worker. Keep the 10m timeout so a
-# stuck IntelliJ download still dies cleanly.
+# stuck IntelliJ download still dies cleanly. Detach stdin: timeout puts Gradle
+# in a background process group, where reading the controlling terminal would
+# stop the client with SIGTTIN even after all build tasks finish.
 timeout --signal=TERM --kill-after=30s 10m \
   ./gradlew check buildPlugin --no-daemon \
   -Dorg.gradle.workers.max=1 \
-  -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError"
+  -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError" </dev/null

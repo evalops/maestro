@@ -108,5 +108,5 @@ pub use types::{
     GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction, MagicTraceAction,
     MailboxAction, McpAction, ModalType, OrbAction, PlanReviewAction, PluginsAction, QueueAction,
     QueueModeKind, QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction,
-    TrustAction, UsageAction,
+    TrustAction, UsageAction, WorkerAction,
 };

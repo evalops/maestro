@@ -1742,6 +1742,7 @@ pub struct StatusBarWidget<'a> {
     input_has_text: bool,
     paste_note: Option<&'a str>,
     goal_badge: Option<&'a str>,
+    worker_badge: Option<&'a str>,
     footer_style: crate::commands::FooterStyle,
     /// Pending `/attach` paths for the next prompt.
     attach_count: usize,
@@ -1778,6 +1779,7 @@ impl<'a> StatusBarWidget<'a> {
             input_has_text: false,
             paste_note: None,
             goal_badge: None,
+            worker_badge: None,
             footer_style: crate::commands::FooterStyle::default(),
             attach_count: 0,
         }
@@ -1786,6 +1788,12 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_boost_status(mut self, status: crate::model_dynamics::BoostStatus) -> Self {
         self.boost_status = status;
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_badge(mut self, badge: Option<&'a str>) -> Self {
+        self.worker_badge = badge;
         self
     }
 
@@ -1974,6 +1982,18 @@ impl Widget for StatusBarWidget<'_> {
                 spans.push(Span::styled(
                     goal.to_string(),
                     Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
+
+        if !history_only {
+            if let Some(worker) = self.worker_badge {
+                if !spans.is_empty() {
+                    spans.push(Span::raw("  ·  "));
+                }
+                spans.push(Span::styled(
+                    worker.to_owned(),
+                    Style::default().fg(Color::Cyan),
                 ));
             }
         }
@@ -2274,6 +2294,7 @@ pub struct ChatView<'a> {
     pending_approvals: usize,
     footer_style: crate::commands::FooterStyle,
     goal_badge: Option<&'a str>,
+    worker_badge: Option<&'a str>,
     attach_count: usize,
     dex_state: Option<super::dex_companion::DexCompanionState>,
     dex_frame: u64,
@@ -2296,6 +2317,7 @@ impl<'a> ChatView<'a> {
             pending_approvals: 0,
             footer_style: crate::commands::FooterStyle::default(),
             goal_badge: None,
+            worker_badge: None,
             attach_count: 0,
             dex_state: None,
             dex_frame: 0,
@@ -2405,6 +2427,12 @@ impl<'a> ChatView<'a> {
     #[must_use]
     pub fn with_footer_style(mut self, style: crate::commands::FooterStyle) -> Self {
         self.footer_style = style;
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_badge(mut self, badge: Option<&'a str>) -> Self {
+        self.worker_badge = badge;
         self
     }
 
@@ -2634,6 +2662,7 @@ impl Widget for ChatView<'_> {
             .with_pending_approvals(self.pending_approvals)
             .with_paste_note(paste_note.as_deref())
             .with_goal_badge(self.goal_badge)
+            .with_worker_badge(self.worker_badge)
             .with_footer_style(self.footer_style)
             .with_attach_count(self.attach_count)
             .with_shortcut_hints()
@@ -3971,6 +4000,22 @@ mod dex_notice_layout_tests {
             .position(|line| line.contains("Dex · ready"))
             .unwrap();
         assert_ne!(notice, status);
+    }
+}
+
+#[cfg(test)]
+mod worker_badge_tests {
+    use super::*;
+    #[test]
+    fn worker_activity_is_visible_in_the_footer() {
+        let area = Rect::new(0, 0, 100, 1);
+        let mut buffer = Buffer::empty(area);
+        StatusBarWidget::new(None, None, None, None)
+            .with_worker_badge(Some("↗ 2 running · 1 need input /workers"))
+            .render(area, &mut buffer);
+        let text: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(text.contains("↗ 2 running"), "{text}");
+        assert!(text.contains("/workers"), "{text}");
     }
 }
 
