@@ -122,7 +122,7 @@ rand = "0.9"
 url = "2"
 
 # Shell escaping/unescaping
-shlex = "1"
+shlex = "2"
 
 # Base64 encoding for images
 base64.workspace = true
