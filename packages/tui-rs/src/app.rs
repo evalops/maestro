@@ -4668,9 +4668,7 @@ Slash Commands:
                     // Blank the covered cells first so no older frame content
                     // shows through the wrapped paragraph.
                     frame.render_widget(ratatui::widgets::Clear, error_area);
-                    let error_widget = ratatui::widgets::Paragraph::new(error)
-                        .style(Style::default().fg(Color::Red))
-                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    let error_widget = error_banner(error, crate::themes::current_ui_theme());
                     frame.render_widget(error_widget, error_area);
                 }
 
@@ -4684,6 +4682,7 @@ Slash Commands:
                         command_registry,
                         frame,
                         area,
+                        crate::themes::current_ui_theme(),
                     );
                 }
 
@@ -4865,6 +4864,7 @@ Slash Commands:
         command_registry: &CommandRegistry,
         frame: &mut ratatui::Frame,
         area: Rect,
+        theme: maestro_ui::UiTheme,
     ) {
         use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
@@ -4880,6 +4880,7 @@ Slash Commands:
 
         frame.render_widget(Clear, popup_area);
 
+        let selected = slash_state.list_state_mut().selected();
         let completions = slash_state.completions();
         let content_width = popup_area.width.saturating_sub(4) as usize;
         let command_width = completions
@@ -4891,7 +4892,8 @@ Slash Commands:
             .min(content_width.saturating_sub(3));
         let items: Vec<ListItem> = completions
             .iter()
-            .map(|completion| {
+            .enumerate()
+            .map(|(index, completion)| {
                 let command = format!("{completion:<command_width$}");
                 let description = command_registry
                     .get(completion.trim_start_matches('/'))
@@ -4900,11 +4902,15 @@ Slash Commands:
                     Span::styled(
                         command,
                         Style::default()
-                            .fg(Color::White)
+                            .fg(if selected == Some(index) {
+                                theme.focus
+                            } else {
+                                theme.text
+                            })
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("  ", Style::default()),
-                    Span::styled(description, Style::default().fg(Color::DarkGray)),
+                    Span::styled(description, Style::default().fg(theme.muted)),
                 ]);
                 ListItem::new(crate::field_format::truncate_line_with_ellipsis(
                     line,
@@ -4917,21 +4923,31 @@ Slash Commands:
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(Style::default().fg(theme.border))
                     .title(" Commands ")
                     .title_style(
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme.focus)
                             .add_modifier(Modifier::BOLD),
                     )
-                    .title_bottom(" ↑/↓ select · Enter run · Tab complete ")
-                    .style(Style::default().bg(Color::Black)),
+                    .title_bottom(Line::styled(
+                        " ↑/↓ select · Enter run · Tab complete ",
+                        theme.muted_style(),
+                    ))
+                    .style(theme.text_style()),
             )
             .highlight_symbol("› ")
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan));
+            .style(theme.text_style())
+            .highlight_style(theme.selection_style());
 
         frame.render_stateful_widget(list, popup_area, slash_state.list_state_mut());
     }
+}
+
+fn error_banner(error: &str, theme: maestro_ui::UiTheme) -> ratatui::widgets::Paragraph<'_> {
+    ratatui::widgets::Paragraph::new(error)
+        .style(theme.text_style().fg(theme.error))
+        .wrap(ratatui::widgets::Wrap { trim: false })
 }
 
 impl Default for App {

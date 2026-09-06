@@ -465,6 +465,61 @@ fn project_managed_inference_route(
         "output_token_budget".to_string(),
         output_token_budget.clone(),
     );
+    reconcile_provider_output_limit(request, output_token_budget)?;
+    Ok(())
+}
+
+/// Keep the provider payload's output cap consistent with the authorized
+/// budget.
+///
+/// llm-gateway rejects a request whose typed budget and payload limit
+/// disagree: a `provider_default` budget "cannot include a provider payload
+/// limit or origin_reference", and an explicit or route-policy budget "must
+/// equal the provider payload limit". The body builders set
+/// `max_tokens`/`max_output_tokens` from this client's own model
+/// capabilities, which knows nothing about the authorization, so every
+/// provider-default turn was refused with `output_token_budget_mismatch`.
+/// The authorization is the authority; make the payload agree with it.
+fn reconcile_provider_output_limit(
+    request: &mut serde_json::Map<String, serde_json::Value>,
+    output_token_budget: &serde_json::Value,
+) -> Result<()> {
+    const PAYLOAD_LIMIT_KEYS: [&str; 2] = ["max_tokens", "max_output_tokens"];
+    let budget = output_token_budget
+        .as_object()
+        .context("managed inference authorization output_token_budget must be an object")?;
+    let origin = budget
+        .get("origin")
+        .or_else(|| budget.get("budget_origin"))
+        .or_else(|| budget.get("budgetOrigin"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let value = budget.get("value").and_then(serde_json::Value::as_u64);
+    let provider_default = origin.is_empty()
+        || origin.ends_with("provider_default")
+        || origin.ends_with("providerdefault");
+    if provider_default && value.is_none() {
+        for key in PAYLOAD_LIMIT_KEYS {
+            request.remove(key);
+        }
+        return Ok(());
+    }
+    let Some(value) = value else {
+        anyhow::bail!(
+            "managed inference authorization output_token_budget origin {origin} requires a value"
+        );
+    };
+    // Only rewrite a key the body builder already chose, so the endpoint's own
+    // spelling of the limit is preserved.
+    let present: Vec<&str> = PAYLOAD_LIMIT_KEYS
+        .into_iter()
+        .filter(|key| request.contains_key(*key))
+        .collect();
+    for key in present {
+        request.insert(key.to_string(), serde_json::Value::from(value));
+    }
     Ok(())
 }
 
@@ -2297,6 +2352,8 @@ impl OpenAiClient {
                 let mut message_id = String::new();
                 let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
                 let mut content_started = false;
+                let mut thinking_started = false;
+                let mut content_block_stopped = false;
 
                 loop {
                     let chunk = tokio::select! {
@@ -2320,6 +2377,15 @@ impl OpenAiClient {
                                 }
 
                                 if line == "data: [DONE]" {
+                                    if !content_block_stopped
+                                        && (content_started || thinking_started)
+                                        && current_tool_calls.is_empty()
+                                    {
+                                        let _ = tx.send(StreamEvent::ContentBlockStop {
+                                            index: 0,
+                                            thinking_signature: None,
+                                        });
+                                    }
                                     // Flush any completed tool calls
                                     for (idx, call) in current_tool_calls.iter().enumerate() {
                                         if !call.name.is_empty()
@@ -2360,7 +2426,25 @@ impl OpenAiClient {
                                         }
 
                                         for choice in &chunk.choices {
-                                            if let Some(content) = &choice.delta.content {
+                                            if let Some(thinking) = choice.delta.thinking_text() {
+                                                if !thinking_started {
+                                                    thinking_started = true;
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStart {
+                                                            index: 0,
+                                                            block: ContentBlock::Thinking {
+                                                                thinking: String::new(),
+                                                                signature: None,
+                                                            },
+                                                        });
+                                                }
+                                                let _ = tx.send(StreamEvent::ThinkingDelta {
+                                                    index: 0,
+                                                    thinking: thinking.to_owned(),
+                                                });
+                                            }
+
+                                            if let Some(content) = choice.delta.visible_text() {
                                                 if !content_started {
                                                     content_started = true;
                                                     let _ =
@@ -2373,7 +2457,7 @@ impl OpenAiClient {
                                                 }
                                                 let _ = tx.send(StreamEvent::TextDelta {
                                                     index: 0,
-                                                    text: content.clone(),
+                                                    text: content.to_owned(),
                                                 });
                                             }
 
@@ -2409,8 +2493,11 @@ impl OpenAiClient {
                                             }
 
                                             if choice.finish_reason.is_some() {
-                                                if content_started && current_tool_calls.is_empty()
+                                                if !content_block_stopped
+                                                    && (content_started || thinking_started)
+                                                    && current_tool_calls.is_empty()
                                                 {
+                                                    content_block_stopped = true;
                                                     let _ =
                                                         tx.send(StreamEvent::ContentBlockStop {
                                                             index: 0,
@@ -2671,8 +2758,54 @@ struct OpenAiDelta {
     role: Option<String>,
     #[serde(default)]
     content: Option<String>,
+    /// Vertex OpenAI-compat and LiteLLM put Gemini thought parts here.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    extra_content: Option<OpenAiExtraContent>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiExtraContent {
+    #[serde(default)]
+    google: Option<OpenAiGoogleExtraContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiGoogleExtraContent {
+    #[serde(default)]
+    thought: Option<bool>,
+}
+
+impl OpenAiDelta {
+    fn google_thought(&self) -> bool {
+        self.extra_content
+            .as_ref()
+            .and_then(|extra| extra.google.as_ref())
+            .and_then(|google| google.thought)
+            == Some(true)
+    }
+
+    fn thinking_text(&self) -> Option<&str> {
+        self.reasoning_content
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .or_else(|| {
+                self.google_thought()
+                    .then_some(self.content.as_deref())
+                    .flatten()
+                    .filter(|text| !text.is_empty())
+            })
+    }
+
+    fn visible_text(&self) -> Option<&str> {
+        if self.google_thought() {
+            return None;
+        }
+        self.content.as_deref()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2952,6 +3085,142 @@ mod tests {
             }
         }
         assert!(saw_cost && saw_usage);
+    }
+
+    #[test]
+    fn chat_delta_keeps_gemini_thoughts_out_of_visible_text() {
+        let reasoning: OpenAiDelta = serde_json::from_str(
+            r#"{"role":"assistant","content":null,"reasoning_content":"plan the review"}"#,
+        )
+        .expect("reasoning_content delta");
+        assert_eq!(reasoning.thinking_text(), Some("plan the review"));
+        assert_eq!(reasoning.visible_text(), None);
+
+        let tagged: OpenAiDelta = serde_json::from_str(
+            r#"{"content":"hidden chain of thought","extra_content":{"google":{"thought":true}}}"#,
+        )
+        .expect("google thought delta");
+        assert_eq!(tagged.thinking_text(), Some("hidden chain of thought"));
+        assert_eq!(tagged.visible_text(), None);
+
+        let answer: OpenAiDelta =
+            serde_json::from_str(r#"{"content":"{\"escalate_to\":\"none\"}"}"#)
+                .expect("visible content delta");
+        assert_eq!(answer.thinking_text(), None);
+        assert_eq!(answer.visible_text(), Some("{\"escalate_to\":\"none\"}"));
+    }
+
+    #[tokio::test]
+    async fn vertex_chat_thought_only_stream_emits_thinking_and_usage() {
+        let client = client_with_responses_sse(concat!(
+            r#"data: {"id":"thought-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-pro","choices":[{"index":0,"delta":{"reasoning_content":"weigh the diff"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"thought-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "\n\n",
+            r#"data: {"id":"thought-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-pro","choices":[],"usage":{"prompt_tokens":21853,"completion_tokens":390}}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        ));
+        let mut stream = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "google/gemini-2.5-pro".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut thinking = String::new();
+        let mut saw_text = false;
+        let mut output_tokens = None;
+        while let Some(event) = stream.recv().await {
+            match event {
+                StreamEvent::ThinkingDelta {
+                    thinking: delta, ..
+                } => thinking.push_str(&delta),
+                StreamEvent::TextDelta { .. } => saw_text = true,
+                StreamEvent::Usage {
+                    output_tokens: n, ..
+                } => output_tokens = Some(n),
+                _ => {}
+            }
+        }
+        assert_eq!(thinking, "weigh the diff");
+        assert!(
+            !saw_text,
+            "thought-only Vertex chunks must not become assistant text"
+        );
+        assert_eq!(output_tokens, Some(390));
+    }
+
+    fn budget_authorization(budget: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "claims": {
+                "model": "openai/gpt-5.6-terra",
+                "providerCandidates": [{
+                    "provider": "openai",
+                    "environment": "production",
+                    "credentialName": "default",
+                    "teamId": "",
+                    "model": "openai/gpt-5.6-terra"
+                }],
+                "routing": {"strategy": "ordered"},
+                "output_token_budget": budget
+            }
+        })
+    }
+
+    // llm-gateway refuses a provider-default budget that arrives with a payload
+    // limit ("output_token_budget_mismatch"), which is what broke every Dex
+    // plain_answer turn: the body builder sets max_output_tokens from this
+    // client's model capabilities, which cannot know the authorization.
+    #[test]
+    fn provider_default_budget_drops_the_payload_output_limit() {
+        let authorization = budget_authorization(serde_json::json!({
+            "origin": "provider_default",
+            "origin_reference": ""
+        }));
+        let mut request = serde_json::json!({
+            "model": "client-chosen",
+            "max_output_tokens": 128_000,
+            "max_tokens": 128_000
+        })
+        .as_object()
+        .expect("request object")
+        .clone();
+
+        project_managed_inference_route(&mut request, &authorization)
+            .expect("project authorized route");
+
+        assert!(request.get("max_output_tokens").is_none());
+        assert!(request.get("max_tokens").is_none());
+        assert_eq!(request["output_token_budget"]["origin"], "provider_default");
+    }
+
+    // The other half of the same contract: an explicit budget must equal the
+    // payload limit, so the authorized value wins over the client's own.
+    #[test]
+    fn explicit_budget_rewrites_the_payload_output_limit() {
+        let authorization = budget_authorization(serde_json::json!({
+            "value": 4096,
+            "origin": "explicit",
+            "origin_reference": "turn"
+        }));
+        let mut request = serde_json::json!({
+            "model": "client-chosen",
+            "max_output_tokens": 128_000
+        })
+        .as_object()
+        .expect("request object")
+        .clone();
+
+        project_managed_inference_route(&mut request, &authorization)
+            .expect("project authorized route");
+
+        assert_eq!(request["max_output_tokens"], 4096);
+        // Only the key the body builder chose is rewritten.
+        assert!(request.get("max_tokens").is_none());
     }
 
     fn managed_authorization_fixture(lineage_id: &str) -> String {

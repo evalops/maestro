@@ -451,7 +451,13 @@ fn slash_popup_renders_command_descriptions_and_controls() {
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     terminal
         .draw(|frame| {
-            App::render_slash_completions_static(&mut state, &registry, frame, frame.area());
+            App::render_slash_completions_static(
+                &mut state,
+                &registry,
+                frame,
+                frame.area(),
+                crate::themes::current_ui_theme(),
+            );
         })
         .expect("render slash popup");
     let buffer = terminal.backend().buffer();
@@ -468,6 +474,86 @@ fn slash_popup_renders_command_descriptions_and_controls() {
     assert!(rendered.contains("/help"));
     assert!(rendered.contains(&description));
     assert!(rendered.contains("Enter run"));
+}
+
+#[test]
+fn slash_popup_uses_theme_colors_for_selected_and_unselected_rows() {
+    use ratatui::style::Color;
+    for theme in [
+        maestro_ui::UiTheme {
+            surface: Color::Rgb(24, 24, 24),
+            text: Color::White,
+            muted: Color::Gray,
+            border: Color::Blue,
+            focus: Color::Magenta,
+            selection: Some(Color::Rgb(45, 45, 45)),
+            ..Default::default()
+        },
+        maestro_ui::UiTheme {
+            surface: Color::White,
+            text: Color::Black,
+            muted: Color::DarkGray,
+            border: Color::Gray,
+            focus: Color::Blue,
+            selection: Some(Color::Rgb(225, 225, 225)),
+            ..Default::default()
+        },
+        maestro_ui::UiTheme::default(),
+    ] {
+        let registry = Arc::new(crate::commands::build_command_registry());
+        let matcher = SlashCommandMatcher::new(Arc::clone(&registry));
+        let mut state = SlashCycleState::new();
+        state.set_query("", &matcher);
+        assert!(state.completions().len() > 1);
+        let selected = state.list_state_mut().selected().expect("selected command");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                App::render_slash_completions_static(
+                    &mut state,
+                    &registry,
+                    frame,
+                    frame.area(),
+                    theme,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let popup = App::slash_popup_area(buffer.area, state.completions().len());
+        assert_eq!(buffer[(popup.x, popup.y)].fg, theme.border);
+        assert_eq!(buffer[(popup.x, popup.y)].bg, theme.surface);
+        for row in 0..popup.height - 2 {
+            let y = popup.y + 1 + row;
+            let expected_bg = if usize::from(row) == selected {
+                theme.selection.unwrap_or(theme.surface)
+            } else {
+                theme.surface
+            };
+            let expected_fg = if usize::from(row) == selected {
+                theme.focus
+            } else {
+                theme.text
+            };
+            let command_x = (popup.x + 1..popup.right() - 1)
+                .find(|&x| buffer[(x, y)].symbol() == "/")
+                .expect("command label");
+            assert_eq!(buffer[(command_x, y)].fg, expected_fg);
+            for x in popup.x + 1..popup.right() - 1 {
+                assert_eq!(buffer[(x, y)].bg, expected_bg, "row background");
+            }
+            assert!(
+                (command_x..popup.right() - 1)
+                    .any(|x| buffer[(x, y)].symbol() != " " && buffer[(x, y)].fg == theme.muted),
+                "description retains muted color"
+            );
+        }
+        let footer_y = popup.bottom() - 1;
+        let hint_x = (popup.x..popup.right())
+            .find(|&x| buffer[(x, footer_y)].symbol() == "↑")
+            .expect("keyboard hint");
+        assert_eq!(buffer[(hint_x, footer_y)].fg, theme.muted);
+    }
 }
 
 #[test]
@@ -6001,4 +6087,17 @@ async fn feedback_model_drafts_queue_hide_and_edit_without_sending() {
     ));
     app.handle_bug_report("new Another failure").await.unwrap();
     assert_eq!(bug_report::load_all(&path).unwrap().len(), 2);
+}
+
+#[test]
+fn error_banner_uses_shared_theme() {
+    use ratatui::widgets::Widget;
+    for theme in crate::components::theme_test::palettes() {
+        let area = ratatui::layout::Rect::new(0, 0, 12, 3);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        super::error_banner("Connection failed. Try again.", theme).render(area, &mut buffer);
+        crate::components::theme_test::assert_palette(&buffer, theme);
+        assert_eq!(buffer[(0, 0)].fg, theme.error);
+        assert_eq!(buffer[(0, 1)].fg, theme.error);
+    }
 }

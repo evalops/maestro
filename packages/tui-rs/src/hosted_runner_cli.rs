@@ -565,6 +565,9 @@ where
 {
     let _telemetry = init_hosted_runner_tracing();
     let env = std::env::vars().collect::<HashMap<_, _>>();
+    // Register before startup can expose readiness. Constructing an async
+    // signal waiter alone would defer registration until its first poll.
+    let shutdown_signal = register_shutdown_signal_listener()?;
     let runtime = match start_hosted_runner_cli_runtime(args, &env).await {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -581,7 +584,7 @@ where
             "runtime": "rust-hosted-runner",
         })
     );
-    let signal = wait_for_shutdown_signal().await?;
+    let signal = shutdown_signal.await?;
     let drain = runtime.drain_for_shutdown(signal).await?;
     println!(
         "{}",
@@ -595,7 +598,8 @@ where
     Ok(())
 }
 
-async fn wait_for_shutdown_signal() -> Result<HostedRunnerShutdownSignal> {
+fn register_shutdown_signal_listener()
+-> Result<impl std::future::Future<Output = Result<HostedRunnerShutdownSignal>>> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -604,17 +608,21 @@ async fn wait_for_shutdown_signal() -> Result<HostedRunnerShutdownSignal> {
         let mut hangup = signal(SignalKind::hangup())?;
         let mut quit = signal(SignalKind::quit())?;
         let mut terminate = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = hangup.recv() => Ok(HostedRunnerShutdownSignal::Hangup),
-            _ = interrupt.recv() => Ok(HostedRunnerShutdownSignal::Interrupt),
-            _ = quit.recv() => Ok(HostedRunnerShutdownSignal::Quit),
-            _ = terminate.recv() => Ok(HostedRunnerShutdownSignal::Terminate),
-        }
+        Ok(async move {
+            tokio::select! {
+                _ = hangup.recv() => Ok(HostedRunnerShutdownSignal::Hangup),
+                _ = interrupt.recv() => Ok(HostedRunnerShutdownSignal::Interrupt),
+                _ = quit.recv() => Ok(HostedRunnerShutdownSignal::Quit),
+                _ = terminate.recv() => Ok(HostedRunnerShutdownSignal::Terminate),
+            }
+        })
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await?;
-        Ok(HostedRunnerShutdownSignal::Interrupt)
+        Ok(async {
+            tokio::signal::ctrl_c().await?;
+            Ok(HostedRunnerShutdownSignal::Interrupt)
+        })
     }
 }
 

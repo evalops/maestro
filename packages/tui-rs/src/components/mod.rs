@@ -186,3 +186,6 @@ pub use thinking_indicator::{
     ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
 };
 pub use welcome::{OnboardingFlow, OnboardingStep, SplashScreen, WelcomeScreen};
+
+#[cfg(test)]
+pub(crate) mod theme_test;

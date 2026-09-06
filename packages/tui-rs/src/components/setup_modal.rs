@@ -4,7 +4,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -242,6 +242,10 @@ impl SetupModal {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        self.render_with_theme(frame, area, crate::themes::current_ui_theme());
+    }
+
+    fn render_with_theme(&self, frame: &mut Frame, area: Rect, theme: maestro_ui::UiTheme) {
         if !self.visible {
             return;
         }
@@ -263,29 +267,34 @@ impl SetupModal {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Black));
+            .border_style(Style::default().fg(theme.border))
+            .title_style(
+                Style::default()
+                    .fg(theme.focus)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(theme.text_style());
         let inner = block.inner(modal_area);
         frame.render_widget(block, modal_area);
 
         let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
         let body = match self.page {
-            SetupPage::Mode => self.mode_lines(),
-            SetupPage::Provider => self.provider_lines(),
-            SetupPage::Key => self.key_lines(),
-            SetupPage::WaitingEvalops => self.waiting_lines(),
+            SetupPage::Mode => self.mode_lines(theme),
+            SetupPage::Provider => self.provider_lines(theme),
+            SetupPage::Key => self.key_lines(theme),
+            SetupPage::WaitingEvalops => self.waiting_lines(theme),
         };
         frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), chunks[0]);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 self.footer(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             ))),
             chunks[1],
         );
     }
 
-    fn mode_lines(&self) -> Vec<Line<'static>> {
+    fn mode_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         let mut lines = vec![
             Line::from(Span::raw(
                 "EvalOps Identity is required to use Deixic Code.",
@@ -297,6 +306,7 @@ impl SetupModal {
             self.mode_index,
             "Managed inference",
             "Sign in with EvalOps Identity and use the managed gateway.",
+            theme,
         ));
         lines.push(Line::from(""));
         lines.extend(self.choice(
@@ -304,35 +314,37 @@ impl SetupModal {
             self.mode_index,
             "Use your own key",
             "Sign in with Identity first, then add OpenRouter, Anthropic, OpenAI, or another key.",
+            theme,
         ));
         lines
     }
 
-    fn provider_lines(&self) -> Vec<Line<'static>> {
+    fn provider_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         let mut lines = vec![Line::from(Span::raw("Choose a provider.")), Line::from("")];
         for (index, provider) in Self::providers().iter().enumerate() {
             let selected = index == self.provider_index;
             let marker = if selected { "▸ " } else { "  " };
             let style = if selected {
-                Style::default()
-                    .fg(Color::Cyan)
+                theme
+                    .selection_style()
+                    .fg(theme.focus)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.text)
             };
             lines.push(Line::from(vec![
                 Span::styled(marker.to_owned(), style),
                 Span::styled(provider.label.to_owned(), style),
                 Span::styled(
                     format!("  {}", provider.hint),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.muted),
                 ),
             ]));
         }
         lines
     }
 
-    fn key_lines(&self) -> Vec<Line<'static>> {
+    fn key_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         let provider = self.selected_provider();
         let masked = if self.secret.is_empty() {
             String::new()
@@ -343,18 +355,18 @@ impl SetupModal {
             Line::from(Span::raw(format!("Paste your {} API key.", provider.label))),
             Line::from(Span::styled(
                 "Stored in the OS credential store, not in config.toml.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Key  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Key  ", Style::default().fg(theme.muted)),
                 Span::styled(
                     if masked.is_empty() {
                         " ".to_owned()
                     } else {
                         masked
                     },
-                    Style::default().fg(Color::White),
+                    Style::default().fg(theme.text),
                 ),
             ]),
         ];
@@ -362,27 +374,27 @@ impl SetupModal {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 status.clone(),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.attention),
             )));
         }
         lines
     }
 
-    fn waiting_lines(&self) -> Vec<Line<'static>> {
+    fn waiting_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         vec![
             Line::from(Span::raw(
                 "A browser window opens for the required EvalOps Identity login.",
             )),
             Line::from(Span::styled(
                 "This session stays here until the callback finishes.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 self.status
                     .clone()
                     .unwrap_or_else(|| "Waiting for the browser callback…".to_owned()),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.attention),
             )),
         ]
     }
@@ -393,15 +405,17 @@ impl SetupModal {
         selected: usize,
         title: &str,
         detail: &str,
+        theme: maestro_ui::UiTheme,
     ) -> Vec<Line<'static>> {
         let is_selected = index == selected;
         let marker = if is_selected { "▸ " } else { "  " };
         let title_style = if is_selected {
-            Style::default()
-                .fg(Color::Cyan)
+            theme
+                .selection_style()
+                .fg(theme.focus)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text)
         };
         vec![
             Line::from(vec![
@@ -410,7 +424,7 @@ impl SetupModal {
             ]),
             Line::from(vec![
                 Span::raw("    "),
-                Span::styled(detail.to_owned(), Style::default().fg(Color::DarkGray)),
+                Span::styled(detail.to_owned(), Style::default().fg(theme.muted)),
             ]),
         ]
     }
@@ -437,6 +451,28 @@ pub enum SetupAdvance {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn all_setup_pages_use_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            let mut modal = SetupModal::new();
+            modal.show();
+            for page in [
+                SetupPage::Mode,
+                SetupPage::Provider,
+                SetupPage::Key,
+                SetupPage::WaitingEvalops,
+            ] {
+                modal.page = page;
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+                terminal
+                    .draw(|frame| modal.render_with_theme(frame, frame.area(), theme))
+                    .unwrap();
+                crate::components::theme_test::assert_palette(terminal.backend().buffer(), theme);
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -115,7 +115,9 @@ use super::message_queue::{
 use super::protocol::InlineToolApprovalContext;
 use super::reminders::{ReminderEngine, ToolOutcome as ReminderToolOutcome};
 use super::safety::stable_stringify;
-use super::text_loop::{LoopKind, TextLoopDetector, loop_reminder_message};
+use super::text_loop::{
+    LoopKind, TextLoopDetector, billed_empty_reminder_message, loop_reminder_message,
+};
 use super::turn_budget::{DEFAULT_MAX_TURN_STEPS, TurnOutcome, TurnStepBudget};
 use super::{
     CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent,
@@ -8708,6 +8710,7 @@ impl NativeAgentRunner {
         // output cap, which the user pays for in full.
         let mut text_loop_detector = TextLoopDetector::new();
         let mut steered_after_text_loop = false;
+        let mut steered_after_billed_empty = false;
         'turn: loop {
             text_loop_detector.reset();
             step_budget.record_step();
@@ -9151,12 +9154,45 @@ impl NativeAgentRunner {
                     model = %self.config.model,
                     normalized_blocks = assistant_content.len(),
                     saw_usage,
+                    output_tokens = usage.output_tokens,
                 );
                 report_diagnostic_nonblocking(format!(
-                    "[agent] provider returned no assistant text or tool calls (provider={provider}, model={}, normalized_blocks={}, saw_usage={saw_usage})",
+                    "[agent] provider returned no assistant text or tool calls (provider={provider}, model={}, normalized_blocks={}, saw_usage={saw_usage}, output_tokens={})",
                     self.config.model,
                     assistant_content.len(),
+                    usage.output_tokens,
                 ));
+                // A billed empty completion is thinking-only or a stripped
+                // thought turn, not a dropped connection. Retrying the same
+                // request reproduces it; one continuation is the recovery.
+                if saw_usage && usage.output_tokens > 0 && !steered_after_billed_empty {
+                    self.output_tokens_spent =
+                        self.output_tokens_spent.saturating_add(usage.output_tokens);
+                    if !assistant_content.is_empty() {
+                        self.messages_mut().push(Message {
+                            role: Role::Assistant,
+                            content: MessageContent::Blocks(assistant_content),
+                        });
+                    }
+                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                        response_id: response_id.clone(),
+                        usage: Some(usage),
+                    });
+                    steered_after_billed_empty = true;
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: "Model billed tokens with no assistant text; steering once and retrying."
+                            .to_string(),
+                    });
+                    self.messages_mut().push(Message {
+                        role: Role::User,
+                        content: MessageContent::text(billed_empty_reminder_message()),
+                    });
+                    if self.drain_pending_commands() {
+                        self.repair_orphaned_tool_calls();
+                        return Err(anyhow::anyhow!("Request cancelled"));
+                    }
+                    continue 'turn;
+                }
                 self.set_tool_batch_active(false);
                 return Err(anyhow::Error::new(EmptyAssistantResponse));
             }
