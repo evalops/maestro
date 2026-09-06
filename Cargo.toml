@@ -38,7 +38,7 @@ aws-sdk-bedrockruntime = { version = "1.139.0", default-features = false, featur
 ] }
 aws-smithy-types = "1.6.1"
 aws-types = "1.5.0"
-base64 = "0.22"
+base64 = "0.23"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 ctor = "1.0.11"

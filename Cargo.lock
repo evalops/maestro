@@ -3536,7 +3536,7 @@ dependencies = [
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
  "aws-types",
- "base64 0.22.1",
+ "base64 0.23.1",
  "eventsource-stream",
  "futures",
  "maestro-runtime",
@@ -3610,7 +3610,7 @@ name = "maestro-runtime-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dunce",
  "fs2",
@@ -3672,7 +3672,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "criterion",
