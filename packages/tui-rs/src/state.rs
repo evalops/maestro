@@ -1146,7 +1146,12 @@ impl AppState {
                 self.status = Some(message);
             }
 
-            FromAgent::Compaction { .. } => {}
+            // Content-free observations are consumed by TurnTracker; they do not
+            // create messages or change the interactive execution state.
+            FromAgent::Compaction { .. }
+            | FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
 
             // Session info updated
             FromAgent::SessionInfo {

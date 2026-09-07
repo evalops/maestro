@@ -53,13 +53,11 @@
 
 mod bash_analyzer;
 mod dangerous_patterns;
-mod denial_memory;
 mod firewall;
 pub mod guardian;
 mod path_containment;
 mod policy;
 mod safe_mode;
-mod workflow_state;
 
 #[cfg(test)]
 mod integration_tests;
@@ -74,8 +72,12 @@ pub use dangerous_patterns::{
     DangerousPattern, PatternMatch, Severity, check_dangerous_patterns, has_high_severity_pattern,
     most_severe_match,
 };
-pub use denial_memory::{DenialMemory, MAX_DENIAL_TARGET_CHARS};
 pub use firewall::{ActionFirewall, FirewallContext, FirewallVerdict};
+pub use maestro_runtime::agent::denial_memory::{DenialMemory, MAX_DENIAL_TARGET_CHARS};
+pub use maestro_runtime::agent::workflow_state::{
+    ToolEgress, ToolTag, WorkflowStateSnapshot, WorkflowStateTracker, apply_workflow_state_hooks,
+    has_tool_tags, is_human_facing_tool, is_workflow_tracked_tool, looks_like_egress,
+};
 pub use path_containment::{
     PathContainment, has_path_traversal, is_path_contained, is_system_path,
 };
@@ -92,8 +94,4 @@ pub(crate) use safe_mode::PlanModeOverride;
 pub use safe_mode::{
     ValidatorResult, is_plan_mode, is_safe_mode_enabled, require_plan, run_validators,
     run_validators_with_diagnostics, set_plan_mode, set_plan_satisfied,
-};
-pub use workflow_state::{
-    ToolEgress, ToolTag, WorkflowStateSnapshot, WorkflowStateTracker, apply_workflow_state_hooks,
-    has_tool_tags, is_human_facing_tool, is_workflow_tracked_tool, looks_like_egress,
 };

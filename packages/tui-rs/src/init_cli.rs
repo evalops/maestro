@@ -46,7 +46,7 @@ fn open_browser_disabled() -> bool {
     )
 }
 const REQUIRED_LOGIN_SCOPES: &str =
-    "llm_gateway:invoke sessions:read sessions:write product_issues:write";
+    "llm_gateway:invoke sessions:read sessions:write product_issues:write console:read";
 const DEFAULT_API_KEY_SCOPES: &[&str] = &[
     "agent:register",
     "agent:heartbeat",
@@ -2965,6 +2965,7 @@ mod tests {
 
     struct IdentityStub {
         challenge: Option<String>,
+        requested_scopes: String,
         mismatch_state: bool,
     }
 
@@ -2975,6 +2976,7 @@ mod tests {
         let addr = listener.local_addr().expect("identity addr");
         let stub = std::sync::Arc::new(std::sync::Mutex::new(IdentityStub {
             challenge: None,
+            requested_scopes: String::new(),
             mismatch_state,
         }));
         let handle = tokio::spawn(async move {
@@ -3010,6 +3012,7 @@ mod tests {
                         let redirect = query.get("redirect_uri").cloned().unwrap_or_default();
                         if let Ok(mut stub) = stub.lock() {
                             stub.challenge = challenge;
+                            stub.requested_scopes = query.get("scope").cloned().unwrap_or_default();
                         }
                         let callback_state = if stub
                             .lock()
@@ -3051,7 +3054,13 @@ mod tests {
                             (
                                 200,
                                 String::new(),
-                                r#"{"access_token":"access-from-stub","expires_in":3600,"refresh_token":"refresh-from-stub","scope":"llm_gateway:invoke","organization_id":"org_from_stub"}"#.to_owned(),
+                                json!({
+                                    "access_token": "access-from-stub",
+                                    "expires_in": 3600,
+                                    "refresh_token": "refresh-from-stub",
+                                    "scope": stub.lock().expect("identity stub").requested_scopes,
+                                    "organization_id": "org_from_stub",
+                                }).to_string(),
                             )
                         }
                     }
@@ -3240,6 +3249,9 @@ mod tests {
                 panic!("PKCE login should succeed against the identity stub: {error:#}");
             }
         };
+        let stored = load_credentials()
+            .expect("load PKCE credentials")
+            .expect("stored PKCE credentials");
         restore_env("MAESTRO_HOME", previous_home);
         restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
         restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
@@ -3249,6 +3261,18 @@ mod tests {
         restore_env("MAESTRO_EVALOPS_ACCESS_TOKEN", previous_token);
         restore_env("MAESTRO_EVALOPS_ORG_ID", previous_org);
 
+        // The issuer fixture grants the scopes captured from the real authorize
+        // request. Exact equality excludes console write/admin and wildcard grants.
+        assert_eq!(
+            stored.metadata.get("scopes"),
+            Some(&json!([
+                "llm_gateway:invoke",
+                "sessions:read",
+                "sessions:write",
+                "product_issues:write",
+                "console:read"
+            ]))
+        );
         assert_eq!(snapshot.access, "access-from-stub");
         assert_eq!(snapshot.refresh, "refresh-from-stub");
         assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));

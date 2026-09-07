@@ -1343,6 +1343,10 @@ fn find_session_jsonl(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn new_test_app() -> App {
+    new_test_app_with_platform_resolution(PlatformSessionResolution::UseNoPlatformSession)
+}
+
+fn new_test_app_with_platform_resolution(resolution: PlatformSessionResolution) -> App {
     let fallback_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -1369,13 +1373,14 @@ fn new_test_app() -> App {
         viewport_top,
         viewport_height,
     };
-    let mut app = App::new_with_terminal_with_history_for_test(
+    let mut app = App::new_with_terminal_with_history_and_platform_session(
         terminal,
         capabilities,
         crate::history::PromptHistory::default(),
         None,
         None,
         false,
+        resolution,
     );
     app.state.steering_mode = QueueMode::default();
     app.state.follow_up_mode = QueueMode::default();
@@ -6551,6 +6556,98 @@ fn tasks_schedule_action_resolves_to_read_only_status() {
 }
 
 #[tokio::test]
+async fn categorical_feedback_command_explains_choices_without_opening_raw_draft() {
+    let mut app = new_test_app();
+    let before = app.state.messages.len();
+    app.handle_command_action(CommandAction::BugReport("rating".into()))
+        .await;
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert!(app.session_manager.current_session_path().is_none());
+    assert_eq!(app.state.messages.len(), before + 1);
+    let message = &app.state.messages.last().unwrap().content;
+    assert!(message.contains("/feedback rating useful"));
+    assert!(message.contains("Only this category is sent"));
+    assert!(message.contains("seven days"));
+}
+
+#[tokio::test]
+async fn categorical_feedback_unknown_answer_never_becomes_a_free_text_report() {
+    let mut app = new_test_app();
+    let private_text = "rating private customer task contents";
+    app.handle_command_action(CommandAction::BugReport(private_text.into()))
+        .await;
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert!(app.session_manager.current_session_path().is_none());
+    assert!(
+        !app.state
+            .messages
+            .iter()
+            .any(|message| message.content.contains("private customer task"))
+    );
+    assert!(
+        app.state
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Only this category is sent")
+    );
+}
+
+#[tokio::test]
+async fn categorical_feedback_results_are_polled_without_waiting_on_collection() {
+    for (result, expected) in [
+        (
+            visibility::FeedbackSubmission::Queued,
+            "queued for the product team",
+        ),
+        (
+            visibility::FeedbackSubmission::Disabled,
+            "telemetry is turned off",
+        ),
+        (
+            visibility::FeedbackSubmission::Unavailable,
+            "workspace changed",
+        ),
+        (
+            visibility::FeedbackSubmission::Failed,
+            "could not be queued",
+        ),
+    ] {
+        let mut app = new_test_app();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.feedback_rating_rx = Some(rx);
+        let count = app.state.messages.len();
+        app.poll_feedback_rating();
+        assert_eq!(app.state.messages.len(), count);
+        assert!(app.feedback_rating_rx.is_some());
+        // An unresolved submission leaves command handling available.
+        app.handle_command_action(CommandAction::BugReport("rating".into()))
+            .await;
+        assert!(
+            app.state
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("Only this category is sent")
+        );
+        tx.send(result).unwrap();
+        app.poll_feedback_rating();
+        assert!(app.feedback_rating_rx.is_none());
+        assert!(
+            app.state
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains(expected)
+        );
+        assert_eq!(app.active_modal, ActiveModal::None);
+    }
+}
+
+#[tokio::test]
 async fn successful_model_retry_clears_late_error_from_earlier_request() {
     let mut app = new_test_app();
     let failed_model = "openai/failed-model".to_owned();
@@ -6692,4 +6789,145 @@ fn shifted_cycle_fallback_accepts_terminal_uppercase_key_events() {
         assert!(!app.matches_binding(binding, KeyCode::Char('P'), modifier));
         assert!(!app.matches_binding(binding, KeyCode::Char('Q'), modifiers));
     }
+}
+
+#[tokio::test]
+async fn configuration_visibility_uses_live_oauth_scope_and_rejects_stale_origins() {
+    let _guard = crate::config::test_process_env_lock_async().await;
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+    let names = [
+        "MAESTRO_HOME",
+        "MAESTRO_OAUTH_STORAGE_MODE",
+        "MAESTRO_HOSTED_RUNNER_MODE",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE",
+        "MAESTRO_EVALOPS_ORG_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        "MAESTRO_IDENTITY_URL",
+        crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV,
+        "MAESTRO_MANAGED_SETUP_URL",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+        "MAESTRO_TELEMETRY",
+    ];
+    let _restore = Restore(
+        names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect(),
+    );
+    for name in names {
+        std::env::remove_var(name);
+    }
+    let home = tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", home.path());
+    std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    std::env::set_var(
+        "MAESTRO_IDENTITY_URL",
+        crate::credential_mode::test_identity_base_url(),
+    );
+    std::env::set_var(crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV, "1");
+    // A real loopback response rejects the managed lookup; no external service
+    // or existing user's configuration participates in this boundary test.
+    std::env::set_var(
+        "MAESTRO_MANAGED_SETUP_URL",
+        crate::credential_mode::test_identity_base_url(),
+    );
+    let oauth = serde_json::to_vec(&serde_json::json!({"evalops": {
+        "type": "oauth", "access": "fixture-token", "refresh": "fixture-refresh",
+        "expires": chrono::Utc::now().timestamp_millis() + 3_600_000,
+        "metadata": {"organizationId": "mutable-local-org", "userId": "user-test",
+            "identityBaseUrl": crate::credential_mode::test_identity_base_url()}
+    }}))
+    .unwrap();
+    std::fs::write(home.path().join("oauth.json"), &oauth).unwrap();
+    let snapshot = crate::init_cli::load_evalops_snapshot().unwrap().unwrap();
+    assert!(snapshot.agent_mcp.is_none());
+    let mut app = new_test_app_with_platform_resolution(PlatformSessionResolution::Detect);
+    let origin = crate::telemetry::TelemetryIdentityScope::new("org-test", Some("workspace-test"));
+    assert_eq!(app.managed_setup_identity_scope, origin);
+    assert_eq!(app.managed_setup.setup().organization_id, "org-test");
+    assert_eq!(app.managed_setup.setup().workspace_id, "workspace-test");
+    assert_eq!(
+        std::fs::read(home.path().join("oauth.json")).unwrap(),
+        oauth
+    );
+    let event = crate::telemetry::VisibilityEvent::configuration(
+        crate::telemetry::ConfigurationReceipt::from_managed_setup(
+            &app.managed_setup,
+            chrono::Utc::now().timestamp(),
+        ),
+    );
+    let session = crate::credential_mode::current_verified_identity_session().unwrap();
+    assert_eq!(
+        crate::telemetry::test_record_visibility_with_session(
+            &event,
+            origin.clone(),
+            session.clone()
+        ),
+        crate::telemetry::OnboardingCollectionStatus::Queued
+    );
+    let outbox = home.path().join("telemetry/outbox");
+    let queued_paths = std::fs::read_dir(&outbox)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(queued_paths.len(), 1);
+    let persisted = std::fs::read_to_string(&queued_paths[0]).unwrap();
+    assert!(persisted.contains("org-test"));
+    assert!(persisted.contains("workspace-test"));
+    assert!(!persisted.contains("fixture-token"));
+    let wrong_origin =
+        crate::telemetry::TelemetryIdentityScope::new("other-org", Some("other-workspace"));
+    assert_eq!(
+        crate::telemetry::test_record_visibility_with_session(&event, wrong_origin, session),
+        crate::telemetry::OnboardingCollectionStatus::Unavailable
+    );
+
+    std::env::set_var("MAESTRO_EVALOPS_ORG_ID", "new-local-org");
+    for token in ["inactive-token", "unscoped-token"] {
+        std::env::set_var("MAESTRO_EVALOPS_ACCESS_TOKEN", token);
+        app.managed_setup_identity_scope = origin.clone();
+        assert!(app.refresh_managed_setup_after_identity_login().is_err());
+        assert!(app.managed_setup_identity_scope.is_none());
+        let denied = new_test_app_with_platform_resolution(PlatformSessionResolution::Detect);
+        assert!(denied.managed_setup_identity_scope.is_none());
+        assert_eq!(
+            *denied.managed_setup.mcp_policy(),
+            crate::managed_setup::McpPolicy::deny_all()
+        );
+    }
+    std::env::set_var("MAESTRO_EVALOPS_ACCESS_TOKEN", "missing-workspace-token");
+    let incomplete = new_test_app_with_platform_resolution(PlatformSessionResolution::Detect);
+    assert!(incomplete.managed_setup_identity_scope.is_none());
+    let session = crate::credential_mode::current_verified_identity_session().unwrap();
+    assert_eq!(
+        crate::telemetry::test_record_visibility_with_session(&event, origin, session),
+        crate::telemetry::OnboardingCollectionStatus::Unavailable
+    );
+    assert_eq!(
+        std::fs::read_dir(outbox)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path
+                .extension()
+                .is_some_and(|extension| extension == "json"))
+            .count(),
+        1
+    );
 }

@@ -69,12 +69,12 @@
 //! discriminator field, making the JSON format compatible with TypeScript and
 //! other languages.
 
-use crate::tools::{
+use crate::{
     BashDetails, GlobDetails, GrepDetails, ImageDetails, ListDetails, ToolDetails, WebFetchDetails,
 };
 use serde::{Deserialize, Serialize};
 
-pub use maestro_runtime::{
+pub use crate::{
     CodeAuthorityDecision, DenialReason, ExecutionPhase, ExecutionReceipt, ExecutionSource,
     ExecutionStatus, MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES, ManagedInferenceAuthorization,
     ManagedPolicyMetadata, ToAgent, TokenUsage, ToolError, ToolOutcome, ToolOutput,
@@ -89,6 +89,17 @@ pub struct ToolExecution {
 }
 
 impl ToolExecution {
+    /// Attach the verified policy identity supplied by the concrete execution
+    /// host.  The runtime protocol cannot load policy state itself because it
+    /// is shared by hosts with different policy owners and tenant scopes.
+    #[must_use]
+    pub fn with_managed_policy(mut self, policy: Option<ManagedPolicyMetadata>) -> Self {
+        if self.receipt.policy.is_none() {
+            self.receipt.policy = policy.map(Box::new);
+        }
+        self
+    }
+
     #[must_use]
     pub fn denied(
         call_id: impl Into<String>,
@@ -105,7 +116,7 @@ impl ToolExecution {
                 source: ExecutionSource::Native,
                 status: outcome.status(),
                 duration_ms: Some(0),
-                policy: crate::safety::managed_policy_metadata().map(Box::new),
+                policy: None,
                 details: ToolReceiptDetails::None,
             },
         }
@@ -170,7 +181,7 @@ impl ToolExecution {
                 source,
                 status: outcome.status(),
                 duration_ms: None,
-                policy: crate::safety::managed_policy_metadata().map(Box::new),
+                policy: None,
                 details,
             },
         }
@@ -199,7 +210,7 @@ impl ToolExecution {
                 source,
                 status: outcome.status(),
                 duration_ms: Some(0),
-                policy: crate::safety::managed_policy_metadata().map(Box::new),
+                policy: None,
                 details: ToolReceiptDetails::None,
             },
         }
@@ -750,8 +761,8 @@ pub enum FromAgent {
 
     /// Task-local boost state, emitted by the native runtime.
     BoostChanged {
-        status: crate::model_dynamics::BoostStatus,
-        thinking: Option<crate::session::ThinkingLevel>,
+        status: super::model_dynamics::BoostStatus,
+        thinking: Option<super::model_dynamics::ThinkingLevel>,
     },
 
     /// Agent failed to switch models because policy rejected it or initialization failed.
@@ -821,9 +832,9 @@ pub enum FromAgent {
     TurnCompleted {
         response_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        coding_completion: Option<maestro_runtime::coding_acceptance::CodingCompletionSubmission>,
+        coding_completion: Option<crate::coding_acceptance::CodingCompletionSubmission>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        coding_child_records: Vec<maestro_runtime::coding_acceptance::CodingAcceptanceChildRecord>,
+        coding_child_records: Vec<crate::coding_acceptance::CodingAcceptanceChildRecord>,
     },
 
     /// The full native agent turn ended by cancellation or interruption.
@@ -948,6 +959,17 @@ pub enum FromAgent {
         #[serde(skip)]
         approval_inline_env: Option<InlineToolApprovalContext>,
     },
+
+    /// Content-free measurement from the native provider stream policy owner.
+    StreamObservation {
+        observation: crate::ai::StreamObservation,
+    },
+
+    /// A request retry actually started after its interruptible backoff.
+    RequestRetryObservation,
+
+    /// Elapsed work for a completed context compaction, including enhancement.
+    CompactionMeasured { duration_ms: u64 },
 
     /// Tool execution started (auto-approved or after approval)
     ///

@@ -2,13 +2,13 @@
 
 use std::collections::HashSet;
 
-use super::super::{DenialReason, ToolExecution, ToolResult};
+use super::super::{DenialReason, ManagedPolicyMetadata, ToolExecution, ToolResult};
+use crate::ToolResponseCoordinator;
 use crate::ai::{ContentBlock, Message, MessageContent, Role};
-use maestro_runtime::ToolResponseCoordinator;
 
-/// Append failure tool results for any assistant `ToolUse` block in `messages`
-/// that has no matching `ToolResult`, so an interrupted turn can never leave
-/// the history with orphaned tool calls.
+/// Append failure tool results for any assistant `ToolUse` block in
+/// `messages` that has no matching `ToolResult`, so an interrupted turn can
+/// never leave the history with orphaned tool calls.
 ///
 /// Repairs are grouped into the user message that already carries results for
 /// the same assistant message when one exists, otherwise inserted immediately
@@ -19,6 +19,7 @@ use maestro_runtime::ToolResponseCoordinator;
 pub(super) fn repair_orphaned_tool_calls(
     messages: &mut Vec<Message>,
     tool_response_coordinator: &mut ToolResponseCoordinator,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) {
     tool_response_coordinator.drain_available();
     let mut answered: HashSet<String> = HashSet::new();
@@ -72,7 +73,8 @@ pub(super) fn repair_orphaned_tool_calls(
                             )
                         } else {
                             ToolExecution::denied(&id, &name, DenialReason::User)
-                        };
+                        }
+                        .with_managed_policy(receipt_policy.clone());
                         (execution.model_content(), execution.is_error())
                     }
                     None => ("Tool execution cancelled by user.".to_string(), true),

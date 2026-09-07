@@ -62,7 +62,7 @@ libc = "0.2"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-rustls"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
-maestro-ai = { path = "packages/ai-rs" }
+maestro-ai = { path = "packages/ai-rs", default-features = false }
 maestro-a2a-ledger = { path = "packages/a2a-ledger-rs" }
 maestro-runtime-gateway = { path = "packages/runtime-gateway-rs" }
 maestro-execpolicy = { path = "packages/execpolicy-rs" }
@@ -103,10 +103,11 @@ similar = "3"
 rayon = "1.10"
 rand = "0.9"
 thiserror = "2"
+zeroize = "1"
 tempfile = "3"
 time = "0.3"
 tokio = { version = "1" }
-tokio-util = { version = "0.7" }
+tokio-util = "0.7"
 tokio-stream = "0.1"
 tokio-rustls = "0.26"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }

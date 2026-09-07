@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```rust
-//! use maestro_tui::agent::credential_store::{CredentialStore, CredentialType};
+//! use maestro_runtime::agent::credential_store::{CredentialStore, CredentialType};
 //!
 //! let mut store = CredentialStore::new();
 //!
@@ -534,7 +534,7 @@ impl CredentialVault {
     ///
     /// The child keeps the current opaque references and their values, but a
     /// later clear or store operation in either vault cannot affect the other.
-    pub(crate) fn fork(&self) -> Self {
+    pub fn fork(&self) -> Self {
         let state = self
             .0
             .lock()
@@ -554,7 +554,7 @@ impl CredentialVault {
     /// generation check is performed while holding the parent lock so a
     /// concurrent clear cannot be followed by a stale child repopulating the
     /// newly reset vault.
-    pub(crate) fn absorb_child_credentials_at_generation(
+    pub fn absorb_child_credentials_at_generation(
         &self,
         child: &Self,
         expected_generation: u64,
@@ -603,7 +603,7 @@ impl CredentialVault {
     }
 
     /// Rewrite canonical credential references using a child-to-parent map.
-    pub(crate) fn translate_references(input: &str, mappings: &HashMap<String, String>) -> String {
+    pub fn translate_references(input: &str, mappings: &HashMap<String, String>) -> String {
         if mappings.is_empty() {
             return input.to_string();
         }
@@ -628,7 +628,7 @@ impl CredentialVault {
     /// This preserves the reference boundary when a parent sends a later
     /// control message to a child whose vault was forked before the referenced
     /// credential existed.
-    pub(crate) fn rekey_references_to(&self, target: &Self, input: &str) -> Result<String, String> {
+    pub fn rekey_references_to(&self, target: &Self, input: &str) -> Result<String, String> {
         if Arc::ptr_eq(&self.0, &target.0) {
             return Ok(input.to_string());
         }
@@ -681,7 +681,7 @@ impl CredentialVault {
 
     /// Capture the current session generation for an execution.
     #[must_use]
-    pub(crate) fn generation(&self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -725,7 +725,7 @@ impl CredentialVault {
     ///
     /// Stale output is redacted rather than stored so a cleared vault cannot be
     /// repopulated by an execution that began under an earlier generation.
-    pub(crate) fn vault_in_text_at_generation(&self, generation: u64, value: &str) -> String {
+    pub fn vault_in_text_at_generation(&self, generation: u64, value: &str) -> String {
         let mut state = self
             .0
             .lock()
@@ -747,7 +747,7 @@ impl CredentialVault {
     }
 
     /// Vault JSON credentials only if the execution generation remains active.
-    pub(crate) fn vault_in_json_at_generation(
+    pub fn vault_in_json_at_generation(
         &self,
         generation: u64,
         value: &serde_json::Value,

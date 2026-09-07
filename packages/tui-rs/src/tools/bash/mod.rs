@@ -3571,11 +3571,16 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let daemon_script = workspace.path().join("double-fork-daemon.sh");
         let daemon_pid_path = workspace.path().join("double-fork-daemon.pid");
+        let daemon_pid_tmp_path = workspace.path().join("double-fork-daemon.pid.tmp");
         let sentinel = workspace.path().join("double-fork-daemon-sentinel");
         std::fs::write(
             &daemon_script,
             format!(
-                "#!/bin/sh\nprintf %s \"$$\" > \"{}\"\nsleep 30\nprintf leaked > \"{}\"\n",
+                // Publish by rename so polling the final path cannot observe
+                // shell redirection's empty-file window.
+                "#!/bin/sh\nprintf %s \"$$\" > \"{}\"\nmv \"{}\" \"{}\"\nsleep 30\nprintf leaked > \"{}\"\n",
+                daemon_pid_tmp_path.display(),
+                daemon_pid_tmp_path.display(),
                 daemon_pid_path.display(),
                 sentinel.display()
             ),

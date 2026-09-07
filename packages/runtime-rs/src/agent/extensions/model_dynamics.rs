@@ -2,7 +2,7 @@
 use super::{AgentExtension, ToolResultContext, ToolResultPayload};
 use crate::{
     agent::FromAgent,
-    model_dynamics::{BoostStatus, DynamicsState},
+    agent::model_dynamics::{BoostStatus, DynamicsState},
 };
 use std::{
     collections::{HashMap, HashSet},

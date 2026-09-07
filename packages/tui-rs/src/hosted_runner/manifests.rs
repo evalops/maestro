@@ -320,6 +320,7 @@ impl SnapshotManifest {
             // erase that checkpoint during restore.
             semantic_conversation: None,
             last_workspace_capability_set: None,
+            last_process_budget: None,
         }
     }
 }

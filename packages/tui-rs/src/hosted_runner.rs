@@ -4635,6 +4635,12 @@ async fn handle_message_inner(
             // transient journal failure cannot make the native transport retry
             // an already-executed approval, input, tool result, or retry.
             idempotency_persisted = false;
+            shared
+                .thread_persistence_retry_pending
+                .store(true, Ordering::Release);
+            // Finalization may be the last activity on this connection. Retry
+            // the retained completion even if no more runtime events arrive.
+            shared.schedule_thread_persistence_recovery();
             eprintln!("failed to persist response idempotency key: {error}");
         }
         if !idempotency_persisted {

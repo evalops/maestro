@@ -91,6 +91,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::process_budget::ProcessBudgetState;
 use crate::fs_atomic::create_dir_all_synced;
 
 use super::messages::{
@@ -217,6 +218,10 @@ pub enum SessionEntry {
         semantic_conversation: Option<SemanticConversationCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_workspace_capability_set: Option<Box<ApplyWorkspaceCapabilitySet>>,
+        /// Latest native process budget observation. This is evidence for
+        /// recovery diagnostics only; it is never restored as authority.
+        #[serde(default)]
+        last_process_budget: Option<ProcessBudgetState>,
     },
 }
 
@@ -279,6 +284,10 @@ struct ReplaySidecar {
     semantic_conversation_attempt: Option<u32>,
     #[serde(default)]
     semantic_processed_queue_ids: Vec<u64>,
+    /// Latest native process budget observation. This is evidence for
+    /// recovery diagnostics only; it is never restored as authority.
+    #[serde(default)]
+    last_process_budget: Option<ProcessBudgetState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -735,6 +744,8 @@ pub struct SessionRecorder {
     semantic_conversation_attempt: Option<u32>,
     /// Explicit prompt queue ids known to be covered by semantic checkpoints.
     semantic_processed_queue_ids: HashSet<u64>,
+    /// Latest native process budget observation, retained as evidence only.
+    last_process_budget: Option<ProcessBudgetState>,
     /// Number of entries written since the last checkpoint.
     entries_since_checkpoint: usize,
 }
@@ -905,6 +916,7 @@ impl SessionRecorder {
             pending_workspace_capability_sets: HashMap::new(),
             semantic_conversation_attempt: None,
             semantic_processed_queue_ids: HashSet::new(),
+            last_process_budget: None,
             entries_since_checkpoint: 0,
         })
     }
@@ -923,10 +935,10 @@ impl SessionRecorder {
         let loaded_sidecar = load_replay_sidecar(&replay_path);
         let semantic_conversation_attempt = loaded_sidecar
             .as_ref()
-            .and_then(|sidecar| sidecar.semantic_conversation_attempt);
+            .and_then(|(sidecar, _)| sidecar.semantic_conversation_attempt);
         let semantic_processed_queue_ids = loaded_sidecar
             .as_ref()
-            .map(|sidecar| {
+            .map(|(sidecar, _)| {
                 sidecar
                     .semantic_processed_queue_ids
                     .iter()
@@ -934,8 +946,13 @@ impl SessionRecorder {
                     .collect()
             })
             .unwrap_or_default();
-        let sidecar_replay =
-            loaded_sidecar.and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
+        // A pre-budget sidecar can point past an older budget receipt. The
+        // sidecar remains authoritative for semantic history; replay_from_
+        // sidecar_tail scans the journal prefix only for the missing evidence
+        // before applying the sidecar tail.
+        let sidecar_replay = loaded_sidecar.and_then(|(sidecar, has_process_budget_field)| {
+            replay_from_sidecar_tail(&path, sidecar, has_process_budget_field).ok()
+        });
         let reader = if sidecar_replay.is_none() || reconstructed {
             SessionReader::load(sessions_dir, id).ok()
         } else {
@@ -967,6 +984,9 @@ impl SessionRecorder {
             last_workspace_capability_set: replay
                 .as_ref()
                 .and_then(|replay| replay.last_workspace_capability_set.clone()),
+            last_process_budget: replay
+                .as_ref()
+                .and_then(|replay| replay.last_process_budget.clone()),
             pending_workspace_capability_sets: HashMap::new(),
             semantic_conversation: replay.and_then(|replay| {
                 replay
@@ -1028,6 +1048,7 @@ impl SessionRecorder {
                 })
                 .map(|checkpoint| checkpoint.messages.clone()),
             last_workspace_capability_set: self.last_workspace_capability_set.clone(),
+            last_process_budget: self.last_process_budget.clone(),
         }
     }
 
@@ -1111,9 +1132,15 @@ impl SessionRecorder {
         if let FromAgentMessage::ConversationSnapshot {
             protocol_version,
             messages,
+            processed_queue_ids,
         } = &portable_message
         {
-            return self.record_conversation_snapshot(protocol_version, messages, None, &[]);
+            return self.record_conversation_snapshot(
+                protocol_version,
+                messages,
+                None,
+                processed_queue_ids,
+            );
         }
         let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
@@ -1127,12 +1154,18 @@ impl SessionRecorder {
             } else {
                 false
             };
+        if let FromAgentMessage::ProcessBudgetCheckpoint { budget } = message {
+            // Keep the native checkpoint as evidence for resume diagnostics;
+            // this never installs it into the live agent or grants authority.
+            self.last_process_budget = Some(budget.clone());
+        }
         let _ = self.replay_state.handle_message(message.clone());
         self.entries_since_checkpoint += 1;
         self.maybe_write_checkpoint(
             matches!(
                 message,
-                FromAgentMessage::ResponseEnd { .. }
+                FromAgentMessage::ProcessBudgetCheckpoint { .. }
+                    | FromAgentMessage::ResponseEnd { .. }
                     | FromAgentMessage::Error { .. }
                     | FromAgentMessage::Compaction { .. }
                     | FromAgentMessage::ConversationSnapshot { .. }
@@ -1217,6 +1250,7 @@ impl SessionRecorder {
             FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
+                ..
             } => self.record_conversation_snapshot(
                 protocol_version,
                 messages,
@@ -1276,6 +1310,7 @@ impl SessionRecorder {
             // embedding it in every append-only checkpoint is quadratic.
             semantic_conversation: None,
             last_workspace_capability_set: self.last_workspace_capability_set.clone().map(Box::new),
+            last_process_budget: self.last_process_budget.clone(),
         };
         self.write_entry(&checkpoint)?;
         self.entries_since_checkpoint = 0;
@@ -1299,6 +1334,7 @@ impl SessionRecorder {
             last_workspace_capability_set: self.last_workspace_capability_set.clone(),
             semantic_conversation_attempt: self.semantic_conversation_attempt,
             semantic_processed_queue_ids,
+            last_process_budget: self.last_process_budget.clone(),
         };
         let json = serde_json::to_string(&sidecar)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -1510,6 +1546,9 @@ pub struct SessionReplay {
     pub semantic_conversation: Option<Vec<maestro_ai::Message>>,
     /// Last workspace capability set proven accepted by a matching receipt.
     pub last_workspace_capability_set: Option<ApplyWorkspaceCapabilitySet>,
+    /// Latest native process budget observation, retained as evidence only.
+    /// Replay never installs it into the active agent or grants authority.
+    pub last_process_budget: Option<ProcessBudgetState>,
 }
 
 fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io::Result<()> {
@@ -1518,15 +1557,23 @@ fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io:
     crate::fs_atomic::write_atomic(path, json)
 }
 
-fn load_replay_sidecar(path: &Path) -> Option<ReplaySidecar> {
+fn load_replay_sidecar(path: &Path) -> Option<(ReplaySidecar, bool)> {
     let json = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&json).ok()
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let has_process_budget_field = value.get("last_process_budget").is_some();
+    let sidecar = serde_json::from_value(value).ok()?;
+    Some((sidecar, has_process_budget_field))
 }
 
-fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Result<SessionReplay> {
+fn replay_from_sidecar_tail(
+    path: &Path,
+    sidecar: ReplaySidecar,
+    has_process_budget_field: bool,
+) -> std::io::Result<SessionReplay> {
     let mut state = sidecar.state.into_state();
     let mut last_init = sidecar.last_init;
     let mut last_workspace_capability_set = sidecar.last_workspace_capability_set;
+    let mut last_process_budget = sidecar.last_process_budget;
     let mut pending_workspace_capability_sets = HashMap::new();
     let mut semantic_conversation = sidecar.semantic_conversation.and_then(|checkpoint| {
         (checkpoint.protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
@@ -1538,14 +1585,23 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
             last_init,
             semantic_conversation,
             last_workspace_capability_set,
+            last_process_budget,
         });
     }
     let mut file = File::open(path)?;
-    if sidecar.tail_offset > file.metadata()?.len() {
+    let journal_len = file.metadata()?.len();
+    if sidecar.tail_offset > journal_len {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "replay sidecar offset exceeds session journal",
         ));
+    }
+    if !has_process_budget_field {
+        // Legacy sidecars may have advanced their tail beyond a budget
+        // receipt. Recover only the omitted evidence from the prefix so the
+        // sidecar's semantic conversation and other restore anchors remain
+        // intact.
+        last_process_budget = recover_process_budget_prefix(path, sidecar.tail_offset)?;
     }
     file.seek(SeekFrom::Start(sidecar.tail_offset))?;
     for line in BufReader::new(file).lines() {
@@ -1557,6 +1613,7 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
                 &mut last_init,
                 &mut semantic_conversation,
                 &mut last_workspace_capability_set,
+                &mut last_process_budget,
                 &mut pending_workspace_capability_sets,
             );
         }
@@ -1566,7 +1623,50 @@ fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Res
         last_init,
         semantic_conversation,
         last_workspace_capability_set,
+        last_process_budget,
     })
+}
+
+fn recover_process_budget_prefix(
+    path: &Path,
+    end_offset: u64,
+) -> std::io::Result<Option<ProcessBudgetState>> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut offset = 0_u64;
+    let mut last_process_budget = None;
+    while offset < end_offset {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            break;
+        }
+        let next_offset = offset.saturating_add(bytes_read as u64);
+        if next_offset > end_offset {
+            break;
+        }
+        if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
+            apply_process_budget_evidence(&entry, &mut last_process_budget);
+        }
+        offset = next_offset;
+    }
+    Ok(last_process_budget)
+}
+
+fn apply_process_budget_evidence(
+    entry: &SessionEntry,
+    last_process_budget: &mut Option<ProcessBudgetState>,
+) {
+    match entry {
+        SessionEntry::Received {
+            message: FromAgentMessage::ProcessBudgetCheckpoint { budget },
+            ..
+        } => *last_process_budget = Some(budget.clone()),
+        SessionEntry::Checkpoint {
+            last_process_budget: Some(budget),
+            ..
+        } => *last_process_budget = Some(budget.clone()),
+        _ => {}
+    }
 }
 
 fn apply_replay_entry(
@@ -1575,8 +1675,10 @@ fn apply_replay_entry(
     last_init: &mut Option<InitConfig>,
     semantic_conversation: &mut Option<Vec<maestro_ai::Message>>,
     last_workspace_capability_set: &mut Option<ApplyWorkspaceCapabilitySet>,
+    last_process_budget: &mut Option<ProcessBudgetState>,
     pending_workspace_capability_sets: &mut HashMap<String, ApplyWorkspaceCapabilitySet>,
 ) {
+    apply_process_budget_evidence(entry, last_process_budget);
     match entry {
         SessionEntry::Sent { message, .. } => {
             state.handle_sent_message(message);
@@ -1596,6 +1698,7 @@ fn apply_replay_entry(
             if let FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
+                ..
             } = message
             {
                 *semantic_conversation = (protocol_version
@@ -1746,18 +1849,20 @@ impl SessionReader {
         self.replay().state
     }
 
-    fn replay_parts(
-        &self,
-    ) -> (
-        AgentState,
-        Option<InitConfig>,
-        Option<Vec<maestro_ai::Message>>,
-        Option<ApplyWorkspaceCapabilitySet>,
-    ) {
+    /// Build a resumable snapshot from the recorded session log.
+    #[must_use]
+    pub fn replay(&self) -> SessionReplay {
         let mut state = AgentState::default();
         let mut last_init = None;
         let mut semantic_conversation = None;
         let mut last_workspace_capability_set = None;
+        // Budget receipts are evidence independent of the state checkpoint.
+        // Scan the complete journal so a legacy checkpoint that omits the
+        // optional field cannot hide an earlier receipt behind start_index.
+        let mut last_process_budget = None;
+        for entry in &self.entries {
+            apply_process_budget_evidence(entry, &mut last_process_budget);
+        }
         let mut pending_workspace_capability_sets = HashMap::new();
         let mut start_index = 0;
 
@@ -1813,6 +1918,7 @@ impl SessionReader {
                     if let FromAgentMessage::ConversationSnapshot {
                         protocol_version,
                         messages,
+                        ..
                     } = message
                     {
                         if protocol_version
@@ -1828,24 +1934,12 @@ impl SessionReader {
                 SessionEntry::Checkpoint { .. } => {}
             }
         }
-        (
-            state,
-            last_init,
-            semantic_conversation,
-            last_workspace_capability_set,
-        )
-    }
-
-    /// Build a resumable snapshot from the recorded session log.
-    #[must_use]
-    pub fn replay(&self) -> SessionReplay {
-        let (state, last_init, semantic_conversation, last_workspace_capability_set) =
-            self.replay_parts();
         SessionReplay {
             state,
             last_init,
             semantic_conversation,
             last_workspace_capability_set,
+            last_process_budget,
         }
     }
 }
@@ -2032,6 +2126,234 @@ mod tests {
         }
     }
 
+    fn process_budget_fixture() -> ProcessBudgetState {
+        let mut budget =
+            ProcessBudgetState::new(crate::agent::process_budget::ProcessBudgetLimits {
+                event_id: "event-session-replay".to_owned(),
+                max_requests: 4,
+                max_total_tokens: 100,
+                max_cost_micros: 1_000,
+                cost_micros_per_token: 2,
+            })
+            .expect("valid process budget limits");
+        budget.admit_request().expect("first request admission");
+        budget
+            .observe_usage(3, 4, Some(41))
+            .expect("provider usage");
+        budget.admit_tools(1).expect("tool admission");
+        budget
+            .charge_tool("execution-session-1", 13)
+            .expect("acknowledged tool cost");
+        budget.admit_request().expect("pending second request");
+        budget
+    }
+
+    fn legacy_sidecar_without_process_budget(path: &std::path::Path) {
+        let json = fs::read_to_string(path).expect("read replay sidecar");
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("parse sidecar");
+        value
+            .as_object_mut()
+            .expect("sidecar object")
+            .remove("last_process_budget");
+        fs::write(
+            path,
+            serde_json::to_string(&value).expect("serialize legacy sidecar"),
+        )
+        .expect("write legacy sidecar");
+    }
+
+    #[test]
+    fn process_budget_evidence_survives_journal_sidecar_periodic_and_resume_paths() {
+        let temp = TempDir::new().expect("session root");
+        let mut recorder =
+            SessionRecorder::with_id(temp.path(), "budget-evidence").expect("session recorder");
+        let expected = process_budget_fixture();
+        recorder
+            .record_received(&FromAgentMessage::ProcessBudgetCheckpoint {
+                budget: expected.clone(),
+            })
+            .expect("record budget checkpoint");
+
+        // Budget observations are evidence only. The active state snapshot is
+        // unchanged, so replay cannot install a grant or reset accounting.
+        assert_eq!(
+            recorder.replay().last_process_budget,
+            Some(expected.clone())
+        );
+        assert_eq!(
+            AgentStateCheckpoint::from_state(recorder.replay_state()),
+            AgentStateCheckpoint::from_state(&AgentState::default())
+        );
+
+        // Cross the ordinary checkpoint interval to exercise the periodic
+        // checkpoint path after the budget receipt's forced sync checkpoint.
+        for index in 0..CHECKPOINT_INTERVAL {
+            recorder
+                .record_received(&FromAgentMessage::Status {
+                    message: format!("tail status {index}"),
+                })
+                .expect("record tail status");
+        }
+        recorder.flush().expect("flush budget journal");
+
+        let journal = fs::read_to_string(recorder.path()).expect("read budget journal");
+        assert!(journal.contains("process_budget_checkpoint"));
+        assert!(journal.contains("\"last_process_budget\""));
+        let sidecar_path = temp.path().join("budget-evidence.replay.json");
+        let sidecar = fs::read_to_string(&sidecar_path).expect("read budget sidecar");
+        assert!(sidecar.contains("\"last_process_budget\""));
+
+        // Full journal replay and sidecar-plus-tail resume must retain exact
+        // pending, spent, and acknowledged cost evidence.
+        let full_replay = SessionReader::load(temp.path(), "budget-evidence")
+            .expect("load full journal")
+            .replay();
+        assert_eq!(full_replay.last_process_budget, Some(expected.clone()));
+        drop(recorder);
+        let resumed = SessionRecorder::resume(temp.path(), "budget-evidence")
+            .expect("resume recorder")
+            .replay();
+        assert_eq!(resumed.last_process_budget, Some(expected));
+    }
+
+    #[test]
+    fn legacy_sidecar_recovers_budget_prefix_without_dropping_semantic_history() {
+        let temp = TempDir::new().expect("session root");
+        let session_id = "legacy-budget-sidecar";
+        let prefix_budget = process_budget_fixture();
+        let mut tail_budget = prefix_budget.clone();
+        tail_budget
+            .observe_usage(5, 6, Some(23))
+            .expect("resolve pending usage");
+        tail_budget.admit_tools(1).expect("tail tool admission");
+        tail_budget
+            .charge_tool("execution-session-2", 17)
+            .expect("second acknowledged tool cost");
+        let semantic_messages = semantic_tool_pair_fixture();
+
+        let mut recorder =
+            SessionRecorder::with_id(temp.path(), session_id).expect("session recorder");
+        recorder
+            .record_semantic_conversation(semantic_messages.clone())
+            .expect("record semantic history");
+        recorder
+            .flush_checkpoint()
+            .expect("persist semantic history");
+        recorder
+            .record_received(&FromAgentMessage::ProcessBudgetCheckpoint {
+                budget: prefix_budget.clone(),
+            })
+            .expect("record prefix budget");
+        recorder
+            .record_received(&FromAgentMessage::Status {
+                message: "tail before crash".to_owned(),
+            })
+            .expect("record tail status");
+        recorder.flush().expect("flush legacy sidecar fixture");
+        let sidecar_path = temp.path().join(format!("{session_id}.replay.json"));
+        let journal_path = temp.path().join(format!("{session_id}.jsonl"));
+        drop(recorder);
+
+        // Model a pre-budget sidecar whose tail already skips the prefix
+        // receipt. Append a later receipt after that anchor so recovery must
+        // combine journal-prefix evidence with sidecar-tail replay.
+        legacy_sidecar_without_process_budget(&sidecar_path);
+        let (legacy_sidecar, has_process_budget_field) =
+            load_replay_sidecar(&sidecar_path).expect("load legacy sidecar");
+        let prefix_replay =
+            replay_from_sidecar_tail(&journal_path, legacy_sidecar, has_process_budget_field)
+                .expect("replay legacy sidecar prefix");
+        assert!(!has_process_budget_field);
+        assert_eq!(prefix_replay.last_process_budget, Some(prefix_budget));
+        assert_eq!(
+            serde_json::to_value(&prefix_replay.semantic_conversation).expect("replayed messages"),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&semantic_messages)))
+                .expect("expected messages")
+        );
+        let tail_entry = SessionEntry::received(FromAgentMessage::ProcessBudgetCheckpoint {
+            budget: tail_budget.clone(),
+        });
+        let mut journal = OpenOptions::new()
+            .append(true)
+            .open(&journal_path)
+            .expect("open journal tail");
+        writeln!(
+            journal,
+            "{}",
+            serde_json::to_string(&tail_entry).expect("serialize tail budget")
+        )
+        .expect("append tail budget");
+        journal.sync_all().expect("sync journal tail");
+
+        let replay = SessionRecorder::resume(temp.path(), session_id)
+            .expect("resume legacy sidecar")
+            .replay();
+        assert_eq!(replay.last_process_budget, Some(tail_budget));
+        assert_eq!(
+            serde_json::to_value(&replay.semantic_conversation).expect("replayed messages"),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&semantic_messages)))
+                .expect("expected messages")
+        );
+    }
+
+    #[test]
+    fn legacy_checkpoint_without_budget_does_not_erase_prior_evidence() {
+        let temp = TempDir::new().expect("session root");
+        let session_id = "legacy-budget-checkpoint";
+        let expected = process_budget_fixture();
+        let received = SessionEntry::received(FromAgentMessage::ProcessBudgetCheckpoint {
+            budget: expected.clone(),
+        });
+        let checkpoint = SessionEntry::Checkpoint {
+            timestamp: 2,
+            state: Box::new(AgentStateCheckpoint::from_state(&AgentState::default())),
+            last_init: None,
+            semantic_conversation: None,
+            last_workspace_capability_set: None,
+            last_process_budget: None,
+        };
+        let mut legacy_checkpoint = serde_json::to_value(checkpoint).expect("serialize checkpoint");
+        legacy_checkpoint
+            .as_object_mut()
+            .expect("checkpoint object")
+            .remove("last_process_budget");
+        let journal = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&received).expect("serialize budget"),
+            serde_json::to_string(&legacy_checkpoint).expect("serialize legacy checkpoint")
+        );
+        fs::write(temp.path().join(format!("{session_id}.jsonl")), journal)
+            .expect("write legacy journal");
+
+        let replay = SessionReader::load(temp.path(), session_id)
+            .expect("load legacy journal")
+            .replay();
+        assert_eq!(replay.last_process_budget, Some(expected));
+        assert_eq!(
+            AgentStateCheckpoint::from_state(&replay.state),
+            AgentStateCheckpoint::from_state(&AgentState::default())
+        );
+    }
+
+    #[test]
+    fn legacy_sidecar_without_budget_does_not_fabricate_a_zero_checkpoint() {
+        let temp = TempDir::new().expect("session root");
+        let session_id = "legacy-empty-budget-sidecar";
+        let mut recorder =
+            SessionRecorder::with_id(temp.path(), session_id).expect("session recorder");
+        recorder
+            .flush_checkpoint()
+            .expect("persist empty checkpoint");
+        let sidecar_path = temp.path().join(format!("{session_id}.replay.json"));
+        drop(recorder);
+        legacy_sidecar_without_process_budget(&sidecar_path);
+
+        let replay = SessionRecorder::resume(temp.path(), session_id)
+            .expect("resume legacy sidecar")
+            .replay();
+        assert!(replay.last_process_budget.is_none());
+    }
+
     #[test]
     fn session_restart_replays_only_the_last_matching_accepted_capability_set() {
         let temp = TempDir::new().expect("session root");
@@ -2212,12 +2534,143 @@ mod tests {
     }
 
     #[test]
+    fn direct_semantic_snapshot_preserves_processed_queue_ids_across_resume() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        for ids in [vec![7, 9], vec![9, 7, 11]] {
+            let message: FromAgentMessage = serde_json::from_value(serde_json::json!({
+                "type": "conversation_snapshot",
+                "protocol_version": crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL,
+                "messages": semantic_tool_pair_fixture(),
+                "processed_queue_ids": ids,
+            }))
+            .unwrap();
+            recorder.record_received(&message).unwrap();
+        }
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let resumed = SessionRecorder::resume(tmp.path(), &id).unwrap();
+        assert_eq!(
+            resumed.semantic_processed_queue_ids(),
+            &HashSet::from([7, 9, 11])
+        );
+        assert!(resumed.replay().semantic_conversation.is_some());
+        assert!(
+            SessionReader::load(tmp.path(), &id)
+                .unwrap()
+                .received_messages()
+                .is_empty()
+        );
+        let sidecar: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(tmp.path().join(format!("{id}.replay.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            sidecar["semantic_processed_queue_ids"],
+            serde_json::json!([7, 9, 11])
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupt_semantic_sidecar_does_not_invent_processed_queue_ids() {
+        for corrupt in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+            let id = recorder.id().to_owned();
+            recorder
+                .record_received(&FromAgentMessage::Status {
+                    message: "journal survives".to_owned(),
+                })
+                .unwrap();
+            let snapshot: FromAgentMessage = serde_json::from_value(serde_json::json!({
+                "type": "conversation_snapshot",
+                "protocol_version": crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL,
+                "messages": semantic_tool_pair_fixture(),
+                "processed_queue_ids": [7, 9],
+            }))
+            .unwrap();
+            recorder.record_received(&snapshot).unwrap();
+            recorder.flush().unwrap();
+            drop(recorder);
+            let sidecar = tmp.path().join(format!("{id}.replay.json"));
+            if corrupt {
+                fs::write(&sidecar, "invalid json").unwrap();
+            } else {
+                fs::remove_file(&sidecar).unwrap();
+            }
+            let resumed = SessionRecorder::resume(tmp.path(), &id).unwrap();
+            // New journals deliberately omit private snapshots; this fallback
+            // cannot recover their provider history or processed-id metadata.
+            assert!(resumed.semantic_processed_queue_ids().is_empty());
+            assert!(resumed.replay().semantic_conversation.is_none());
+            assert_eq!(
+                SessionReader::load(tmp.path(), &id)
+                    .unwrap()
+                    .received_messages()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_semantic_snapshot_without_queue_ids_remains_readable() {
+        let snapshot: FromAgentMessage = serde_json::from_value(serde_json::json!({
+            "type": "conversation_snapshot",
+            "protocol_version": crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL,
+            "messages": semantic_tool_pair_fixture(),
+        }))
+        .unwrap();
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder.record_received(&snapshot).unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+        let resumed = SessionRecorder::resume(tmp.path(), &id).unwrap();
+        assert!(resumed.semantic_processed_queue_ids().is_empty());
+        assert!(resumed.replay().semantic_conversation.is_some());
+    }
+
+    #[test]
+    fn explicit_semantic_snapshot_metadata_preserves_caller_queue_ids() {
+        let snapshot: FromAgentMessage = serde_json::from_value(serde_json::json!({
+            "type": "conversation_snapshot",
+            "protocol_version": crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL,
+            "messages": semantic_tool_pair_fixture(),
+            "processed_queue_ids": [7, 9],
+        }))
+        .unwrap();
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_received_preserving_credential_references_with_snapshot_metadata(
+                &snapshot,
+                Some(3),
+                &[21, 21, 23],
+            )
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+        let resumed = SessionRecorder::resume(tmp.path(), &id).unwrap();
+        assert_eq!(
+            resumed.semantic_processed_queue_ids(),
+            &HashSet::from([21, 23])
+        );
+        assert_eq!(resumed.semantic_conversation_attempt, Some(3));
+    }
+
+    #[test]
     fn received_semantic_snapshot_is_checkpoint_only_and_strips_private_content() {
         let tmp = TempDir::new().unwrap();
         let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
         let id = recorder.id().to_owned();
         recorder
             .record_received(&FromAgentMessage::ConversationSnapshot {
+                processed_queue_ids: vec![7, 9],
                 protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
                     .to_owned(),
                 messages: vec![
@@ -2267,11 +2720,21 @@ mod tests {
         let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
         let id = recorder.id().to_owned();
         recorder
-            .record_semantic_conversation(semantic_tool_pair_fixture())
+            .record_received(&FromAgentMessage::ConversationSnapshot {
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_owned(),
+                messages: semantic_tool_pair_fixture(),
+                processed_queue_ids: vec![7, 9],
+            })
             .unwrap();
+        assert_eq!(
+            recorder.semantic_processed_queue_ids(),
+            &HashSet::from([7, 9])
+        );
         recorder.flush_checkpoint().unwrap();
         recorder
             .record_received(&FromAgentMessage::ConversationSnapshot {
+                processed_queue_ids: vec![7, 9],
                 protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
                 messages: vec![],
             })
@@ -2279,6 +2742,12 @@ mod tests {
         recorder.flush().unwrap();
         drop(recorder);
 
+        assert!(
+            SessionRecorder::resume(tmp.path(), &id)
+                .unwrap()
+                .semantic_processed_queue_ids()
+                .is_empty()
+        );
         assert!(
             SessionReader::load(tmp.path(), &id)
                 .unwrap()

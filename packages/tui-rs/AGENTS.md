@@ -117,8 +117,8 @@ Before making changes, understand these foundational files:
 | `state.rs` | Central `AppState` struct with all mutable state | Adding any new state or modifying state handling |
 | `app.rs` | Main event loop, keyboard handling, modal management | Adding modals, changing input handling |
 | `tools/registry.rs` | Tool definitions, schemas, execution dispatch | Adding or modifying tools |
-| `agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
-| `agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
+| `products/maestro/packages/runtime-rs/src/agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
+| `products/maestro/packages/runtime-rs/src/agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
 | `products/maestro/packages/session-rs/src/session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
 | `products/maestro/packages/session-rs/src/session/entries.rs` | JSONL entry types (`SessionEntry`, `ThinkingLevel`, etc.) | Modifying session format |
 | `components/message.rs` | Chat UI widgets (`ChatView`, `MessageWidget`, etc.) | Changing message rendering |
@@ -145,9 +145,10 @@ All widgets implement ratatui's `Widget` trait.
 - **`matcher.rs`**: Fuzzy matching, scoring, tab completion (`SlashCommandMatcher`, `SlashCycleState`)
 - **`types.rs`**: `Command`, `CommandContext` definitions
 
-### `agent/` - Native Agent Runtime
-- **`native.rs`**: Main agent loop, tool handling, provider orchestration
-- **`protocol.rs`**: Internal message/event types for agent state and streaming
+### `agent/` - Native Runtime Host
+- **`mod.rs`**: Compatibility constructors, client resolution, and turn telemetry
+- **`native_host.rs`**: Local tools, hooks, and policy adapter for maestro-runtime
+- The native actor and provider loop live in `products/maestro/packages/runtime-rs/src/agent/`. Shared events live in maestro-runtime-contracts.
 
 ### `products/maestro/packages/session-rs/src/session/` - Persistence
 - **`manager.rs`**: `SessionManager` lists/loads sessions
@@ -259,7 +260,7 @@ The agent uses a **channel-based actor model** with a lightweight handle and bac
 └─────────────┘                              └────────────────────┘
 ```
 
-**Key Types** (`agent/protocol.rs`):
+**Key Types** (`products/maestro/packages/runtime-rs/src/agent/protocol.rs`):
 - `ToAgent`: `Prompt`, `ToolResponse`, `Cancel`, `SetModel`, `SetThinkingLevel`
 - `FromAgent`: `ResponseChunk`, `ToolCall`, `ResponseEnd`, `Error`, `Ready`
 
@@ -299,7 +300,7 @@ Return ToolResult { success, output, error }
 - Severity levels: Low, Medium, High, Critical
 - Returns `FirewallVerdict`: Block, RequireApproval, Allow
 
-**Doom Loop Detection** (`agent/safety.rs`):
+**Doom Loop Detection** (`products/maestro/packages/runtime-rs/src/agent/safety.rs`):
 - Sliding window of recent tool calls
 - Detects repeated identical calls (same tool + args hash)
 - Blocks if threshold exceeded (default: 3 identical)
@@ -400,8 +401,10 @@ in `products/maestro/packages/sandbox-rs/src`, with separate `linux.rs`, `macos.
 modules. File discovery, indexing, search, Git inspection, and worktree operations
 live in `products/maestro/packages/workspace-rs/src`. Codex transport and thread bindings
 live in `products/maestro/packages/codex-rs/src`; task graph scheduling lives in
-`products/maestro/packages/swarm-rs/src`. Token accounting lives in
-`products/maestro/packages/context-rs/src`. This crate re-exports the historical module paths.
+`products/maestro/packages/swarm-rs/src`. Token accounting and compaction live in
+`products/maestro/packages/context-rs/src`. Session persistence lives in
+`products/maestro/packages/session-rs/src`. The native actor lives in
+`products/maestro/packages/runtime-rs/src`; this crate composes its local execution host. This crate re-exports the historical module paths.
 
 Run their tests with `cargo test -p maestro-ui -p maestro-sandbox -p
 maestro-workspace -p maestro-codex -p maestro-swarm -p maestro-context --locked` from the Maestro workspace. The application-owned

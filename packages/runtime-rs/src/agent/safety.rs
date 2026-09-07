@@ -31,7 +31,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use maestro_tui::agent::safety::{SafetyController, SafetyVerdict};
+//! use maestro_runtime::agent::safety::{SafetyController, SafetyVerdict};
 //!
 //! let mut safety = SafetyController::new();
 //!
@@ -49,6 +49,11 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+pub use super::denial_memory::DenialMemory;
+pub use super::workflow_state::{
+    WorkflowStateSnapshot, WorkflowStateTracker, apply_workflow_state_hooks,
+};
 
 /// Safety verdict for a tool call
 #[derive(Debug, Clone, PartialEq, Eq)]

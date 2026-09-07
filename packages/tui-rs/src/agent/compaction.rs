@@ -148,14 +148,6 @@ impl ContextCompactor {
     pub fn compact_intra(&self, messages: &mut [Message]) -> usize {
         self.inner.compact_intra(messages)
     }
-
-    pub(crate) fn apply_semantic_summary(
-        &self,
-        result: &mut CompactionResult,
-        generated: &str,
-    ) -> bool {
-        self.inner.apply_semantic_summary(result, generated)
-    }
 }
 
 #[cfg(test)]

@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use super::visibility::VisibilityEvent;
+use super::wide_events::TurnMeasurements;
+
 use super::onboarding::{OnboardingCollectionStatus, OnboardingEvent};
 
 use crate::telemetry::{
@@ -214,8 +217,90 @@ struct FirstPartyTurnTelemetryEvent {
     status: TurnStatus,
     error_category: Option<FirstPartyErrorCategory>,
     abort_reason: Option<AbortReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    measurements: Option<FirstPartyTurnMeasurements>,
     sampled: bool,
     sample_reason: SampleReason,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FirstPartyCollection {
+    AllEligible,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FirstPartyTurnMeasurements {
+    collection: FirstPartyCollection,
+    first_output_ms: Option<u64>,
+    compaction_duration_ms: Option<u64>,
+    stream_stall_count: Option<u32>,
+    stream_open_failure_count: Option<u32>,
+    stream_disconnect_count: Option<u32>,
+    stream_retry_count: Option<u32>,
+    stream_recovery_count: Option<u32>,
+    request_retry_count: u32,
+    compaction_count: u32,
+    automatic_compaction_count: u32,
+    compacted_input_tokens: u64,
+    response_count: u32,
+    responses_with_usage: u32,
+    responses_with_cost: u32,
+}
+
+impl FirstPartyTurnMeasurements {
+    fn from_observed(m: &TurnMeasurements) -> Self {
+        Self {
+            collection: FirstPartyCollection::AllEligible,
+            first_output_ms: m.first_output_ms.map(|v| v.min(MAX_DURATION_MS)),
+            compaction_duration_ms: m.compaction_duration_ms.map(|v| v.min(MAX_DURATION_MS)),
+            stream_stall_count: m.stream_stall_count.map(|v| v.min(MAX_COUNT)),
+            stream_open_failure_count: m.stream_open_failure_count.map(|v| v.min(MAX_COUNT)),
+            stream_disconnect_count: m.stream_disconnect_count.map(|v| v.min(MAX_COUNT)),
+            stream_retry_count: m.stream_retry_count.map(|v| v.min(MAX_COUNT)),
+            stream_recovery_count: m.stream_recovery_count.map(|v| v.min(MAX_COUNT)),
+            request_retry_count: m.request_retry_count.min(MAX_COUNT),
+            compaction_count: m.compaction_count.min(MAX_COUNT),
+            automatic_compaction_count: m.automatic_compaction_count.min(MAX_COUNT),
+            response_count: m.response_count.min(MAX_COUNT),
+            responses_with_usage: m.responses_with_usage.min(MAX_COUNT),
+            responses_with_cost: m.responses_with_cost.min(MAX_COUNT),
+            compacted_input_tokens: m.compacted_input_tokens.min(MAX_TOKEN_COUNT),
+        }
+    }
+    fn is_valid(&self) -> bool {
+        self.first_output_ms.is_none_or(|v| v <= MAX_DURATION_MS)
+            && self
+                .compaction_duration_ms
+                .is_none_or(|v| v <= MAX_DURATION_MS)
+            && [
+                self.stream_stall_count,
+                self.stream_open_failure_count,
+                self.stream_disconnect_count,
+                self.stream_retry_count,
+                self.stream_recovery_count,
+            ]
+            .into_iter()
+            .all(|v| v.is_none_or(|n| n <= MAX_COUNT))
+            && self.request_retry_count <= MAX_COUNT
+            && self.compaction_count <= MAX_COUNT
+            && self.automatic_compaction_count <= self.compaction_count
+            && self.compacted_input_tokens <= MAX_TOKEN_COUNT
+            && self.response_count <= MAX_COUNT
+            && self.responses_with_usage <= self.response_count
+            && self.responses_with_cost <= self.response_count
+            && {
+                let counts = [
+                    self.stream_stall_count,
+                    self.stream_open_failure_count,
+                    self.stream_disconnect_count,
+                    self.stream_retry_count,
+                    self.stream_recovery_count,
+                ];
+                counts.iter().all(Option::is_none) || counts.iter().all(Option::is_some)
+            }
+    }
 }
 
 /// Private, durable delivery envelope. The event remains the exact closed
@@ -234,24 +319,32 @@ struct FirstPartyOutboxRecord {
 enum FirstPartyTelemetryEvent {
     Turn(FirstPartyTurnTelemetryEvent),
     Onboarding(OnboardingEvent),
+    Visibility(VisibilityEvent),
 }
 impl FirstPartyTelemetryEvent {
     fn is_server_valid(&self) -> bool {
         match self {
             Self::Turn(event) => event.is_server_valid(),
             Self::Onboarding(event) => event.is_server_valid(),
+            Self::Visibility(event) => event.is_server_valid(),
         }
     }
     fn event_id(&self) -> Uuid {
         match self {
             Self::Turn(event) => event.event_id,
             Self::Onboarding(event) => event.event_id,
+            Self::Visibility(event) => event.event_id,
         }
     }
 }
 impl From<FirstPartyTurnTelemetryEvent> for FirstPartyTelemetryEvent {
     fn from(event: FirstPartyTurnTelemetryEvent) -> Self {
         Self::Turn(event)
+    }
+}
+impl From<VisibilityEvent> for FirstPartyTelemetryEvent {
+    fn from(event: VisibilityEvent) -> Self {
+        Self::Visibility(event)
     }
 }
 impl From<OnboardingEvent> for FirstPartyTelemetryEvent {
@@ -337,6 +430,10 @@ impl FirstPartyTurnTelemetryEvent {
                 .is_none_or(|value| value <= MAX_TOKEN_COUNT)
             && self.cost_usd.is_finite()
             && (0.0..=MAX_COST_USD).contains(&self.cost_usd)
+            && self
+                .measurements
+                .as_ref()
+                .is_none_or(|m| m.is_valid() && matches!(self.sample_reason, SampleReason::Always))
             && self.sampled
             && matches!(
                 (self.status, self.abort_reason),
@@ -406,8 +503,16 @@ fn first_party_event(external: &ExternalTurnEvent) -> Option<FirstPartyTurnTelem
         status: external.status,
         error_category: first_party_error_category(external.error_category.as_deref()),
         abort_reason,
+        measurements: external
+            .measurements
+            .as_ref()
+            .map(FirstPartyTurnMeasurements::from_observed),
         sampled: true,
-        sample_reason: external.sample_reason,
+        sample_reason: if external.measurements.is_some() {
+            SampleReason::Always
+        } else {
+            external.sample_reason
+        },
     })
 }
 
@@ -794,16 +899,16 @@ pub async fn record_onboarding_event(
     event: OnboardingEvent,
     origin: Option<TelemetryIdentityScope>,
 ) -> OnboardingCollectionStatus {
-    record_onboarding_event_with(
-        event,
+    record_first_party_event_with(
+        &event,
         origin,
         first_party_delivery_session,
         schedule_first_party_outbox_drain,
     )
 }
 
-fn record_onboarding_event_with(
-    event: OnboardingEvent,
+fn record_first_party_event_with<E: Clone + Into<FirstPartyTelemetryEvent>>(
+    event: &E,
     origin: Option<TelemetryIdentityScope>,
     verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
     schedule_drain: impl FnOnce(),
@@ -823,11 +928,48 @@ fn record_onboarding_event_with(
     if identity.identity_scope != origin {
         return OnboardingCollectionStatus::Unavailable;
     }
-    if persist_first_party_event(&first_party_outbox_dir(), &origin, &event).is_none() {
+    if persist_first_party_event(&first_party_outbox_dir(), &origin, event).is_none() {
         return OnboardingCollectionStatus::Failed;
     }
     schedule_drain();
     OnboardingCollectionStatus::Queued
+}
+
+/// Queue information-only visibility using the existing Identity-bound outbox.
+pub async fn record_first_party_visibility_event(
+    event: &VisibilityEvent,
+    origin: Option<TelemetryIdentityScope>,
+) -> OnboardingCollectionStatus {
+    record_first_party_event_with(
+        event,
+        origin,
+        first_party_delivery_session,
+        schedule_first_party_outbox_drain,
+    )
+}
+
+// Exercise the real persisted outbox boundary without starting a production
+// drain from a unit test. The session still comes from live fixture Identity.
+#[cfg(test)]
+pub(crate) fn test_record_visibility_with_session(
+    event: &VisibilityEvent,
+    origin: Option<TelemetryIdentityScope>,
+    session: crate::credential_mode::PlatformSession,
+) -> OnboardingCollectionStatus {
+    record_first_party_event_with(
+        event,
+        origin,
+        || {
+            Some(FirstPartyDeliverySession {
+                identity_scope: TelemetryIdentityScope::new(
+                    &session.organization_id,
+                    session.workspace_id.as_deref(),
+                )?,
+                access_token: session.access_token,
+            })
+        },
+        || {},
+    )
 }
 
 /// Capture the selected account before asynchronous work. These coordinates are
@@ -842,13 +984,12 @@ pub fn onboarding_identity_scope() -> Option<TelemetryIdentityScope> {
 
 /// Persist and export the content-free projection of a completed native turn.
 ///
-/// Every sampled, non-opted-out turn keeps the existing local JSONL receipt,
-/// then is queued privately for the fixed first-party endpoint. The Identity
+/// Every eligible, non-opted-out turn is queued for the fixed first-party
+/// endpoint. Sampling still controls local receipts and custom exports. The Identity
 /// bearer is loaded only by a background worker and is never written to the
 /// outbox or sent to a configured custom exporter.
 pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
-    if !event.sampled
-        || true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
+    if true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
         || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
         || telemetry_flag() == Some(false)
     {
@@ -865,14 +1006,6 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
         return;
     };
 
-    // Keep the original local durable receipt even when a first-party or
-    // custom endpoint is configured. `maestro value` consumes this log and
-    // short-lived CLI processes retain their terminal turn at process exit.
-    append_local_telemetry(
-        configured_file.unwrap_or_else(default_telemetry_file),
-        &encoded,
-    );
-
     if let (Some(identity_scope), Some(first_party)) =
         (event.identity_scope.as_ref(), first_party_event(&external))
     {
@@ -882,6 +1015,18 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
             schedule_first_party_outbox_drain();
         }
     }
+
+    // Sampling remains a local/custom-export choice, never a first-party denominator.
+    if !event.sampled {
+        return;
+    }
+    // Keep the original local durable receipt even when a first-party or
+    // custom endpoint is configured. `maestro value` consumes this log and
+    // short-lived CLI processes retain their terminal turn at process exit.
+    append_local_telemetry(
+        configured_file.unwrap_or_else(default_telemetry_file),
+        &encoded,
+    );
 
     if let Some(endpoint) = configured_endpoint {
         schedule_custom_export(endpoint, encoded);

@@ -6,6 +6,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, mpsc};
+use tokio::task::JoinHandle;
 
 use super::plan_parser::validate_plan;
 use super::types::{
@@ -22,6 +23,15 @@ pub struct SwarmExecutor {
     event_rx: Option<mpsc::UnboundedReceiver<SwarmEvent>>,
     /// Cancellation flag
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A task future admitted by [`SwarmExecutor`] and retained until its result
+/// has been observed.  Dropping a `JoinHandle` would detach the callback and
+/// allow a governed effect to continue after the swarm reports a terminal
+/// state, so the executor owns these handles through every terminal path.
+struct SpawnedTask {
+    task_id: String,
+    handle: JoinHandle<()>,
 }
 
 impl SwarmExecutor {
@@ -70,7 +80,10 @@ impl SwarmExecutor {
         self.state.read().await.clone()
     }
 
-    /// Cancel execution
+    /// Request scheduler cancellation.
+    ///
+    /// No new tasks are admitted. Callbacks already admitted to the scheduler
+    /// are awaited before [`Self::run`] returns.
     pub fn cancel(&self) {
         self.cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -95,6 +108,8 @@ impl SwarmExecutor {
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
         let start_time = Instant::now();
+        let mut spawned_tasks = Vec::new();
+        let mut terminal_event = None;
 
         // Initialize
         {
@@ -109,23 +124,26 @@ impl SwarmExecutor {
         }
 
         // Emit started event
-        let state = self.state.read().await;
+        let (plan_title, total_tasks) = {
+            let state = self.state.read().await;
+            (state.plan.title.clone(), state.plan.tasks.len())
+        };
         self.emit(SwarmEvent::Started {
-            plan_title: state.plan.title.clone(),
-            total_tasks: state.plan.tasks.len(),
+            plan_title,
+            total_tasks,
         })
         .await;
-        drop(state);
 
         // Main execution loop
         loop {
+            self.reap_finished_tasks(&mut spawned_tasks).await;
+
             if self.is_cancelled() {
-                self.emit(SwarmEvent::Cancelled {
-                    reason: "User cancelled".to_string(),
-                })
-                .await;
                 let mut state = self.state.write().await;
                 state.status = SwarmStatus::Cancelled;
+                terminal_event = Some(SwarmEvent::Cancelled {
+                    reason: "User cancelled".to_string(),
+                });
                 break;
             }
 
@@ -191,10 +209,9 @@ impl SwarmExecutor {
                 if stuck && !continue_on_failure {
                     state.status = SwarmStatus::Failed;
                     drop(state);
-                    self.emit(SwarmEvent::Failed {
+                    terminal_event = Some(SwarmEvent::Failed {
                         error: "Tasks blocked by failed dependencies".to_string(),
-                    })
-                    .await;
+                    });
                     break;
                 }
 
@@ -237,7 +254,8 @@ impl SwarmExecutor {
                         s.config.task_timeout_ms
                     };
 
-                    tokio::spawn(async move {
+                    let task_id_for_handle = task_id.clone();
+                    let handle = tokio::spawn(async move {
                         let result = if let Some(timeout_ms) = timeout {
                             match tokio::time::timeout(
                                 Duration::from_millis(timeout_ms),
@@ -287,11 +305,24 @@ impl SwarmExecutor {
                             }
                         }
                     });
+                    spawned_tasks.push(SpawnedTask {
+                        task_id: task_id_for_handle,
+                        handle,
+                    });
                 }
             }
 
             // Brief sleep to prevent busy loop
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Cancellation and dependency failure are terminal scheduler states,
+        // but they do not cancel an admitted callback.  Drain every retained
+        // handle before publishing the terminal event or returning state so a
+        // caller cannot release its owner while a child is still settling.
+        self.drain_spawned_tasks(&mut spawned_tasks).await;
+        if let Some(event) = terminal_event {
+            self.emit(event).await;
         }
 
         // Finalize
@@ -336,6 +367,73 @@ impl SwarmExecutor {
         Ok(result)
     }
 
+    /// Reap callbacks that completed since the previous scheduler iteration.
+    /// Normal callbacks update state themselves; a panic before that update
+    /// must still release the running slot and become a failed task instead of
+    /// leaving the scheduler spinning forever.
+    async fn reap_finished_tasks(&self, spawned_tasks: &mut Vec<SpawnedTask>) {
+        let mut index = 0;
+        while index < spawned_tasks.len() {
+            if !spawned_tasks[index].handle.is_finished() {
+                index += 1;
+                continue;
+            }
+
+            let spawned = spawned_tasks.swap_remove(index);
+            if let Err(error) = spawned.handle.await {
+                self.mark_task_failed(
+                    spawned.task_id,
+                    format!("Task worker exited before reporting completion: {error}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Await every admitted callback.  This deliberately does not abort a
+    /// child: a callback may already have submitted a durable effect and must
+    /// be allowed to observe that effect's terminal result before the owner
+    /// run returns.
+    async fn drain_spawned_tasks(&self, spawned_tasks: &mut Vec<SpawnedTask>) {
+        while let Some(spawned) = spawned_tasks.pop() {
+            if let Err(error) = spawned.handle.await {
+                self.mark_task_failed(
+                    spawned.task_id,
+                    format!("Task worker exited before reporting completion: {error}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn mark_task_failed(&self, task_id: String, error: String) {
+        let should_emit = {
+            let mut state = self.state.write().await;
+            if state.running_tasks.remove(&task_id).is_none() {
+                false
+            } else {
+                state.failed_tasks.insert(task_id.clone());
+                if let Some(task) = state.plan.get_task_mut(&task_id) {
+                    task.status = TaskStatus::Failed;
+                    task.result = Some(TaskResult {
+                        success: false,
+                        output: String::new(),
+                        files_modified: Vec::new(),
+                        duration_ms: 0,
+                        error: Some(error.clone()),
+                    });
+                }
+                true
+            }
+        };
+
+        if should_emit {
+            let _ = self
+                .event_tx
+                .send(SwarmEvent::TaskFailed { task_id, error });
+        }
+    }
+
     /// Emit an event
     async fn emit(&self, event: SwarmEvent) {
         let mut state = self.state.write().await;
@@ -348,6 +446,18 @@ impl SwarmExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    fn successful_task_result() -> TaskResult {
+        TaskResult {
+            success: true,
+            output: "ok".to_string(),
+            files_modified: Vec::new(),
+            duration_ms: 0,
+            error: None,
+        }
+    }
 
     #[test]
     fn test_executor_creation() {
@@ -393,7 +503,217 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Note: Full executor integration tests require a proper async runtime
-    // and are complex due to spawned tasks. These are tested via integration
-    // tests or manual verification.
+    #[test]
+    fn cancellation_waits_for_admitted_sibling_before_returning() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let plan = SwarmPlan::new("Cancellation drain")
+                .with_tasks(vec![
+                    SwarmTask::new("quick", "Quick task"),
+                    SwarmTask::new("sibling", "Long sibling"),
+                ])
+                .with_max_concurrency(2);
+            let config = SwarmConfig {
+                max_concurrency: 2,
+                task_timeout_ms: None,
+                ..SwarmConfig::default()
+            };
+
+            let executor = Arc::new(SwarmExecutor::new(plan, config).unwrap());
+            let sibling_started = Arc::new(Notify::new());
+            let release_sibling = Arc::new(Notify::new());
+            let sibling_finished = Arc::new(AtomicBool::new(false));
+
+            let run_executor = Arc::clone(&executor);
+            let run_sibling_started = Arc::clone(&sibling_started);
+            let run_release_sibling = Arc::clone(&release_sibling);
+            let run_sibling_finished = Arc::clone(&sibling_finished);
+            let mut run = tokio::spawn(async move {
+                run_executor
+                    .run(move |task| {
+                        let is_sibling = task.id == "sibling";
+                        let sibling_started = Arc::clone(&run_sibling_started);
+                        let release_sibling = Arc::clone(&run_release_sibling);
+                        let sibling_finished = Arc::clone(&run_sibling_finished);
+                        async move {
+                            if is_sibling {
+                                sibling_started.notify_one();
+                                release_sibling.notified().await;
+                                sibling_finished.store(true, Ordering::SeqCst);
+                            }
+                            Ok(successful_task_result())
+                        }
+                    })
+                    .await
+            });
+
+            sibling_started.notified().await;
+            executor.cancel();
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut run)
+                    .await
+                    .is_err(),
+                "cancellation must wait for the admitted sibling"
+            );
+
+            release_sibling.notify_one();
+            let state = tokio::time::timeout(Duration::from_secs(1), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(state.status, SwarmStatus::Cancelled);
+            assert!(state.running_tasks.is_empty());
+            assert!(sibling_finished.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn failure_waits_for_admitted_sibling_before_returning() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let plan = SwarmPlan::new("Failure drain")
+                .with_tasks(vec![
+                    SwarmTask::new("failing", "Failing task"),
+                    SwarmTask::new("sibling", "Long sibling"),
+                ])
+                .with_max_concurrency(2);
+            let config = SwarmConfig {
+                max_concurrency: 2,
+                task_timeout_ms: None,
+                ..SwarmConfig::default()
+            };
+
+            let executor = Arc::new(SwarmExecutor::new(plan, config).unwrap());
+            let sibling_started = Arc::new(Notify::new());
+            let release_sibling = Arc::new(Notify::new());
+            let sibling_finished = Arc::new(AtomicBool::new(false));
+
+            let run_executor = Arc::clone(&executor);
+            let run_sibling_started = Arc::clone(&sibling_started);
+            let run_release_sibling = Arc::clone(&release_sibling);
+            let run_sibling_finished = Arc::clone(&sibling_finished);
+            let mut run = tokio::spawn(async move {
+                run_executor
+                    .run(move |task| {
+                        let is_failing = task.id == "failing";
+                        let is_sibling = task.id == "sibling";
+                        let sibling_started = Arc::clone(&run_sibling_started);
+                        let release_sibling = Arc::clone(&run_release_sibling);
+                        let sibling_finished = Arc::clone(&run_sibling_finished);
+                        async move {
+                            if is_failing {
+                                return Err(anyhow::anyhow!("expected child failure"));
+                            }
+                            if is_sibling {
+                                sibling_started.notify_one();
+                                release_sibling.notified().await;
+                                sibling_finished.store(true, Ordering::SeqCst);
+                            }
+                            Ok(successful_task_result())
+                        }
+                    })
+                    .await
+            });
+
+            sibling_started.notified().await;
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut run)
+                    .await
+                    .is_err(),
+                "failure must wait for the admitted sibling"
+            );
+
+            release_sibling.notify_one();
+            let state = tokio::time::timeout(Duration::from_secs(1), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(state.status, SwarmStatus::Failed);
+            assert!(state.running_tasks.is_empty());
+            assert!(state.failed_tasks.contains("failing"));
+            assert!(sibling_finished.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn panicking_task_is_terminalized_without_detaching() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let plan = SwarmPlan::new("Panic handling")
+                .with_tasks(vec![SwarmTask::new("panic", "Panicking task")]);
+            let config = SwarmConfig {
+                task_timeout_ms: None,
+                ..SwarmConfig::default()
+            };
+            let executor = SwarmExecutor::new(plan, config).unwrap();
+
+            let state = executor
+                .run(|_task| async {
+                    panic!("expected child panic");
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(state.status, SwarmStatus::Failed);
+            assert!(state.running_tasks.is_empty());
+            assert!(state.failed_tasks.contains("panic"));
+            assert_eq!(
+                state.plan.get_task("panic").map(|task| task.status),
+                Some(TaskStatus::Failed)
+            );
+        });
+    }
+
+    #[test]
+    fn configured_task_timeout_fails_without_detaching() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let plan = SwarmPlan::new("Timeout handling")
+                .with_tasks(vec![SwarmTask::new("timeout", "Timed out task")]);
+            let config = SwarmConfig {
+                task_timeout_ms: Some(10),
+                ..SwarmConfig::default()
+            };
+            let executor = SwarmExecutor::new(plan, config).unwrap();
+
+            let state = executor
+                .run(|_task| async { std::future::pending::<Result<TaskResult>>().await })
+                .await
+                .unwrap();
+
+            assert_eq!(state.status, SwarmStatus::Failed);
+            assert!(state.running_tasks.is_empty());
+            assert!(state.failed_tasks.contains("timeout"));
+            assert_eq!(
+                state
+                    .plan
+                    .get_task("timeout")
+                    .and_then(|task| task.result.as_ref())
+                    .and_then(|result| result.error.as_deref()),
+                Some("Task timed out")
+            );
+        });
+    }
 }

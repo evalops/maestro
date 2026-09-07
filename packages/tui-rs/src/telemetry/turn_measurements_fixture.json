@@ -1,0 +1,17 @@
+{
+  "collection": "all_eligible",
+  "firstOutputMs": 125,
+  "compactionCount": 2,
+  "automaticCompactionCount": 1,
+  "compactedInputTokens": 1500,
+  "compactionDurationMs": 42,
+  "responseCount": 3,
+  "responsesWithUsage": 2,
+  "responsesWithCost": 1,
+  "streamStallCount": 1,
+  "streamDisconnectCount": 0,
+  "streamRetryCount": 1,
+  "streamRecoveryCount": 1,
+  "requestRetryCount": 0,
+  "streamOpenFailureCount": 0
+}

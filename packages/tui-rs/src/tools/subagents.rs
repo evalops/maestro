@@ -6424,10 +6424,11 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
-            ..
+            processed_queue_ids,
         } => Some(FromAgentMessage::ConversationSnapshot {
             protocol_version: protocol_version.clone(),
             messages: messages.clone(),
+            processed_queue_ids: processed_queue_ids.clone(),
         }),
         FromAgent::ManagedGatewayReceipt {
             request_id,

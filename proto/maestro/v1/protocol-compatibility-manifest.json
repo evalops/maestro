@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:8efa2454532caab7f4bd47be2bccf25ccd8606bd4b56544c20221895f87c979e",
+  "compatibilityDigest": "sha256:6db824f166e40d8952b4eea95ef7a43f6971a9f4dc741d335ee4d156ac993357",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -38,7 +38,7 @@
       ],
       "schemaDeclaredVersion": "2026-08-08",
       "schemaContractDigest": "sha256:cf65a6aa422720c6cec243479ba4c3a6c2f3e54f838d6cd1b3e2b788d04229d5",
-      "runtimeContractDigest": "sha256:3002399fbaa357ed66286181526739c6de943e4062328a77ada7562e00e1f1c0",
+      "runtimeContractDigest": "sha256:596ce3fc6b25720fb90421bfd1627695dce0f9db2985492f14d16cebd95dca6d",
       "messages": {
         "toRuntime": [
           "hello",

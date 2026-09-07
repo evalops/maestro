@@ -11,19 +11,18 @@ use anyhow::Result;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use super::super::native_host::{
+    ApprovalMode, NativeExecutionHostHandle, NativeFirewallVerdict, NativeHookEvent,
+    NativeHookResult,
+};
 use super::super::protocol::InlineToolApprovalContext;
+use super::super::safety::DenialMemory;
 use super::super::{
-    CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent, ToolExecution,
-    ToolResult,
+    CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent,
+    ManagedPolicyMetadata, ToolExecution, ToolResult,
 };
 use super::{AgentCommand, prompt_kind_starts_main_request};
 use crate::ai::ContentBlock;
-use crate::hooks::{
-    HookEventType, HookResult, IntegratedHookSystem, render_hook_context, render_hook_context_error,
-};
-use crate::safety::{ActionFirewall, DenialMemory, FirewallContext, FirewallVerdict};
-use crate::state::ApprovalMode;
-use crate::tools::ToolExecutor;
 
 pub(super) fn normalize_post_hook_tool_args(
     tool_name: &str,
@@ -46,37 +45,6 @@ pub(super) fn normalize_post_hook_tool_args(
 
     object.insert("command".to_string(), serde_json::json!("pwd"));
     (args, true)
-}
-
-/// Build the tool executor `NativeAgentRunner` uses for every call it
-/// executes itself: every [`ApprovalMode::Yolo`] call, and every
-/// [`ApprovalMode::Selective`] call the per-tool heuristic doesn't flag for
-/// approval (see [`NativeAgentConfig::sandbox_policy`]'s doc comment for why
-/// this executor -- not a caller's separately-configured one -- is the one
-/// that must carry the sandbox policy).
-pub(super) fn build_runner_tool_executor(
-    cwd: &str,
-    credential_vault: CredentialVault,
-    sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
-    managed_mcp_policy: Option<crate::mcp::ManagedMcpPolicy>,
-    subagent_parent_scope_id: Option<String>,
-    mailbox_identity: Option<String>,
-) -> ToolExecutor {
-    let executor = ToolExecutor::with_credential_vault(cwd, credential_vault)
-        .with_code_authority()
-        .with_managed_mcp_policy(managed_mcp_policy);
-    let executor = match sandbox_policy {
-        Some(policy) => executor.with_sandbox_policy(policy),
-        None => executor,
-    };
-    let executor = match subagent_parent_scope_id {
-        Some(parent_scope_id) => executor.with_subagent_parent_scope(parent_scope_id),
-        None => executor,
-    };
-    match mailbox_identity {
-        Some(identity) => executor.with_mailbox_identity(identity),
-        None => executor,
-    }
 }
 
 /// What the approval gate decided for one tool call.
@@ -142,8 +110,8 @@ pub(super) fn repeat_refusal_message(tool_name: &str) -> String {
 pub(super) fn tool_requires_approval(
     approval_mode: ApprovalMode,
     is_external_tool: bool,
-    firewall_verdict: &FirewallVerdict,
-    tool_executor: &ToolExecutor,
+    firewall_verdict: &NativeFirewallVerdict,
+    tool_executor: &NativeExecutionHostHandle,
     tool_name: &str,
     args: &serde_json::Value,
     denials: &DenialMemory,
@@ -152,7 +120,7 @@ pub(super) fn tool_requires_approval(
         && approval_mode != ApprovalMode::Safe
         && !is_external_tool
         && !tool_executor.requires_sandbox_bypass_approval(tool_name, args)
-        && !matches!(firewall_verdict, FirewallVerdict::Block { .. })
+        && !matches!(firewall_verdict, NativeFirewallVerdict::Block { .. })
     {
         return if denials.was_refused(tool_name, args) {
             ApprovalDecision::RefusedEarlierThisTurn
@@ -170,9 +138,10 @@ pub(super) fn tool_requires_approval(
         ApprovalMode::Safe => true,
         ApprovalMode::Selective => tool_executor.requires_approval(tool_name, args),
     };
-    let firewall_requires_approval =
-        matches!(firewall_verdict, FirewallVerdict::RequireApproval { .. })
-            && approval_mode != ApprovalMode::Yolo;
+    let firewall_requires_approval = matches!(
+        firewall_verdict,
+        NativeFirewallVerdict::RequireApproval { .. }
+    ) && approval_mode != ApprovalMode::Yolo;
     if !(is_external_tool || mode_requires_approval || firewall_requires_approval) {
         return ApprovalDecision::NotRequired;
     }
@@ -232,7 +201,7 @@ pub(super) struct ToolCallContext {
     pub(super) safe_args: serde_json::Value,
     pub(super) extra_context: Option<String>,
     pub(super) pre_hook_args: serde_json::Value,
-    pub(super) initial_firewall_verdict: FirewallVerdict,
+    pub(super) initial_firewall_verdict: NativeFirewallVerdict,
     /// Exact inline command and execution context captured before the approval
     /// event was emitted. Approved calls must still match its environment at
     /// execution time.
@@ -269,25 +238,25 @@ pub(super) fn deferred_tool_call_disposition(
 /// `Err` carries the block reason. Every path that decides whether a tool runs
 /// uses this, so a policy hook cannot be enforced on one transport and skipped
 /// on another.
-pub(super) fn run_pre_tool_use_hook(
-    hooks: &mut IntegratedHookSystem,
+pub(super) async fn run_pre_tool_use_hook(
+    hooks: &NativeExecutionHostHandle,
     tool_name: &str,
     call_id: &str,
     args: &serde_json::Value,
 ) -> Result<(serde_json::Value, Option<String>), String> {
-    match hooks.execute_pre_tool_use(tool_name, call_id, args) {
-        HookResult::Block { reason } => Err(reason),
-        HookResult::ModifyInput { new_input } => Ok((new_input, None)),
-        HookResult::InjectContext { context } => Ok((args.clone(), Some(context))),
-        HookResult::Continue => Ok((args.clone(), None)),
+    match hooks.hook_pre_tool_use(tool_name, call_id, args).await {
+        NativeHookResult::Block { reason } => Err(reason),
+        NativeHookResult::ModifyInput { new_input } => Ok((new_input, None)),
+        NativeHookResult::InjectContext { context } => Ok((args.clone(), Some(context))),
+        NativeHookResult::Continue => Ok((args.clone(), None)),
     }
 }
 
-pub(super) fn rerun_deferred_pre_tool_use(
-    hooks: &mut IntegratedHookSystem,
+pub(super) async fn rerun_deferred_pre_tool_use(
+    hooks: &NativeExecutionHostHandle,
     call: &ToolCallContext,
 ) -> Result<(serde_json::Value, Option<String>), String> {
-    run_pre_tool_use_hook(hooks, &call.tool_name, &call.call_id, &call.pre_hook_args)
+    run_pre_tool_use_hook(hooks, &call.tool_name, &call.call_id, &call.pre_hook_args).await
 }
 
 /// The context a hook asked to add, if it asked for any.
@@ -295,9 +264,9 @@ pub(super) fn rerun_deferred_pre_tool_use(
 /// `PostToolUse` hooks return `hookSpecificOutput.contextToAdd` as
 /// `InjectContext`; the documented effect is that the text reaches the model
 /// with the tool result.
-pub(super) fn hook_injected_context(result: HookResult) -> Option<String> {
+pub(super) fn hook_injected_context(result: NativeHookResult) -> Option<String> {
     match result {
-        HookResult::InjectContext { context } => Some(context),
+        NativeHookResult::InjectContext { context } => Some(context),
         _ => None,
     }
 }
@@ -320,8 +289,8 @@ pub(super) struct PostExecutionHooks {
 ///
 /// A gate's `block` cannot un-run the tool, so it is reported as a failed tool
 /// result rather than pretending the call was prevented.
-pub(super) fn run_post_execution_hooks(
-    hooks: &mut IntegratedHookSystem,
+pub(super) async fn run_post_execution_hooks(
+    hooks: &NativeExecutionHostHandle,
     tool_name: &str,
     call_id: &str,
     args: &serde_json::Value,
@@ -330,19 +299,19 @@ pub(super) fn run_post_execution_hooks(
     duration_ms: u64,
 ) -> PostExecutionHooks {
     let mut outcome = PostExecutionHooks {
-        context: hook_injected_context(hooks.execute_post_tool_use(
-            tool_name,
-            call_id,
-            args,
-            raw_output,
-            is_error,
-            duration_ms,
-        )),
+        context: hook_injected_context(
+            hooks
+                .hook_post_tool_use(tool_name, call_id, args, raw_output, is_error, duration_ms)
+                .await,
+        ),
         rejected: None,
     };
 
-    match hooks.execute_eval_gate(tool_name, call_id, args, raw_output) {
-        HookResult::Block { reason } => outcome.rejected = Some(reason),
+    match hooks
+        .hook_eval_gate(tool_name, call_id, args, raw_output)
+        .await
+    {
+        NativeHookResult::Block { reason } => outcome.rejected = Some(reason),
         gate => {
             if let Some(gate_context) = hook_injected_context(gate) {
                 outcome.context = Some(match outcome.context {
@@ -358,23 +327,23 @@ pub(super) fn run_post_execution_hooks(
 /// Append hook-injected context to a tool result body.
 ///
 /// The context is bounded, escaped, and wrapped in the `<system_reminder>`
-/// delimiter by [`render_hook_context`], so hook text is separated from tool
+/// delimiter by the host hook renderer, so hook text is separated from tool
 /// output and cannot forge the delimiter. Empty or whitespace-only context is
-/// dropped rather than appended as blank lines the model has to read. Context
-/// over [`crate::hooks::MAX_HOOK_CONTEXT_CHARS`] is replaced by a visible note that it was
-/// dropped, so an oversized hook response is not silently invisible.
+/// dropped rather than appended as blank lines the model has to read. The host
+/// preserves its existing context length limit and error rendering.
 pub(super) fn append_hook_context(
+    host: &NativeExecutionHostHandle,
     content: String,
-    event: HookEventType,
+    event: NativeHookEvent,
     context: Option<&str>,
 ) -> String {
     let Some(context) = context else {
         return content;
     };
-    let rendered = match render_hook_context(event, context) {
+    let rendered = match host.render_hook_context(event, context) {
         Ok(rendered) if rendered.is_empty() => return content,
         Ok(rendered) => rendered,
-        Err(error) => render_hook_context_error(&error),
+        Err(error) => error,
     };
     format!("{content}\n\n{rendered}")
 }
@@ -397,15 +366,15 @@ pub(super) fn deferred_tool_call_event(
 }
 
 pub(super) fn deferred_approved_policy_rejection(
-    initial_verdict: &FirewallVerdict,
-    current_verdict: FirewallVerdict,
+    initial_verdict: &NativeFirewallVerdict,
+    current_verdict: NativeFirewallVerdict,
 ) -> Option<String> {
     match current_verdict {
-        FirewallVerdict::Block { reason } => Some(reason),
-        FirewallVerdict::RequireApproval { reason }
+        NativeFirewallVerdict::Block { reason } => Some(reason),
+        NativeFirewallVerdict::RequireApproval { reason }
             if !matches!(
                 initial_verdict,
-                FirewallVerdict::RequireApproval {
+                NativeFirewallVerdict::RequireApproval {
                     reason: initial_reason
                 } if initial_reason == &reason
             ) =>
@@ -414,7 +383,7 @@ pub(super) fn deferred_approved_policy_rejection(
                 "Tool requires fresh approval after earlier tool execution: {reason}"
             ))
         }
-        FirewallVerdict::RequireApproval { .. } | FirewallVerdict::Allow => None,
+        NativeFirewallVerdict::RequireApproval { .. } | NativeFirewallVerdict::Allow => None,
     }
 }
 
@@ -455,6 +424,7 @@ pub(super) fn deferred_hook_block(
     call: &ToolCallContext,
     reason: String,
     emit_tool_call: bool,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) -> (Vec<FromAgent>, ContentBlock) {
     let message = format!("Tool blocked by hook: {reason}");
     let mut events = Vec::with_capacity(4);
@@ -468,7 +438,7 @@ pub(super) fn deferred_hook_block(
             reason,
         },
         deferred_rejection_output_event(call, &message),
-        deferred_safety_rejection_event(call, &message),
+        deferred_safety_rejection_event(call, &message, receipt_policy),
     ]);
     (
         events,
@@ -485,9 +455,14 @@ pub(super) fn emit_deferred_failure(
     call: &ToolCallContext,
     reason: &str,
     tool_results: &mut Vec<ContentBlock>,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) {
     let _ = event_tx.send(deferred_rejection_output_event(call, reason));
-    let _ = event_tx.send(deferred_safety_rejection_event(call, reason));
+    let _ = event_tx.send(deferred_safety_rejection_event(
+        call,
+        reason,
+        receipt_policy,
+    ));
     tool_results.push(ContentBlock::ToolResult {
         tool_use_id: call.call_id.clone(),
         content: reason.to_string(),
@@ -500,9 +475,14 @@ pub(super) fn emit_deferred_policy_failure(
     call: &ToolCallContext,
     reason: &str,
     tool_results: &mut Vec<ContentBlock>,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) {
     let _ = event_tx.send(deferred_rejection_output_event(call, reason));
-    let _ = event_tx.send(deferred_policy_rejection_event(call, reason));
+    let _ = event_tx.send(deferred_policy_rejection_event(
+        call,
+        reason,
+        receipt_policy,
+    ));
     tool_results.push(ContentBlock::ToolResult {
         tool_use_id: call.call_id.clone(),
         content: reason.to_string(),
@@ -511,7 +491,7 @@ pub(super) fn emit_deferred_policy_failure(
 }
 
 pub(super) fn invalidate_cache_after_serial_tool(
-    tool_executor: &ToolExecutor,
+    tool_executor: &NativeExecutionHostHandle,
     tool_name: &str,
     executed: bool,
 ) {
@@ -570,22 +550,17 @@ pub(super) fn tool_is_visible_to_model(
 }
 
 pub(super) fn deferred_firewall_verdict(
-    firewall: &ActionFirewall,
+    host: &NativeExecutionHostHandle,
     tool_name: &str,
     args: &serde_json::Value,
-    workflow_snapshot: &crate::safety::WorkflowStateSnapshot,
-    annotations: Option<&crate::mcp::McpToolAnnotations>,
+    workflow_snapshot: &super::super::safety::WorkflowStateSnapshot,
+    annotations: Option<&super::super::native_host::NativeToolAnnotations>,
     is_external_tool: bool,
-) -> FirewallVerdict {
+) -> NativeFirewallVerdict {
     if is_external_tool {
-        FirewallVerdict::Allow
+        NativeFirewallVerdict::Allow
     } else {
-        firewall.check_tool_with_context(FirewallContext {
-            tool_name,
-            args,
-            workflow_state: Some(workflow_snapshot),
-            annotations,
-        })
+        host.firewall_verdict(tool_name, args, workflow_snapshot, annotations, false)
     }
 }
 
@@ -596,7 +571,11 @@ pub(super) fn deferred_rejection_output_event(call: &ToolCallContext, reason: &s
     }
 }
 
-pub(super) fn deferred_safety_rejection_event(call: &ToolCallContext, reason: &str) -> FromAgent {
+pub(super) fn deferred_safety_rejection_event(
+    call: &ToolCallContext,
+    reason: &str,
+    receipt_policy: Option<ManagedPolicyMetadata>,
+) -> FromAgent {
     let result = ToolResult::failure(reason);
     let receipt = ToolExecution::from_legacy(
         &call.call_id,
@@ -604,6 +583,7 @@ pub(super) fn deferred_safety_rejection_event(call: &ToolCallContext, reason: &s
         ExecutionSource::Native,
         result.clone(),
     )
+    .with_managed_policy(receipt_policy)
     .receipt;
     FromAgent::ToolEnd {
         call_id: call.call_id.clone(),
@@ -613,14 +593,19 @@ pub(super) fn deferred_safety_rejection_event(call: &ToolCallContext, reason: &s
     }
 }
 
-pub(super) fn deferred_policy_rejection_event(call: &ToolCallContext, reason: &str) -> FromAgent {
+pub(super) fn deferred_policy_rejection_event(
+    call: &ToolCallContext,
+    reason: &str,
+    receipt_policy: Option<ManagedPolicyMetadata>,
+) -> FromAgent {
     let execution = ToolExecution::denied(
         &call.call_id,
         &call.tool_name,
         DenialReason::ActionFirewall {
             message: reason.to_string(),
         },
-    );
+    )
+    .with_managed_policy(receipt_policy);
     FromAgent::ToolEnd {
         call_id: call.call_id.clone(),
         success: false,
@@ -632,13 +617,15 @@ pub(super) fn deferred_policy_rejection_event(call: &ToolCallContext, reason: &s
 pub(super) fn cancelled_deferred_tool(
     call: &ToolCallContext,
     reason: &str,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) -> (FromAgent, ContentBlock) {
     let execution = ToolExecution::cancelled(
         &call.call_id,
         &call.tool_name,
         ExecutionSource::Native,
         ExecutionPhase::Queued,
-    );
+    )
+    .with_managed_policy(receipt_policy);
     let result = ToolResult::failure(reason);
     (
         FromAgent::ToolEnd {
@@ -659,6 +646,7 @@ pub(super) fn cancel_deferred_suffix(
     event_tx: &mpsc::UnboundedSender<FromAgent>,
     deferred_calls: impl IntoIterator<Item = DeferredToolCall>,
     tool_results: &mut Vec<ContentBlock>,
+    receipt_policy: Option<ManagedPolicyMetadata>,
 ) -> HashSet<String> {
     let skipped_message = "Skipped after request cancellation.";
     let mut cancelled_ids = HashSet::new();
@@ -675,7 +663,8 @@ pub(super) fn cancel_deferred_suffix(
             call_id: call.call_id.clone(),
             content: skipped_message.to_string(),
         });
-        let (event, result_block) = cancelled_deferred_tool(&call, skipped_message);
+        let (event, result_block) =
+            cancelled_deferred_tool(&call, skipped_message, receipt_policy.clone());
         let _ = event_tx.send(event);
         tool_results.push(result_block);
     }

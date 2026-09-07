@@ -604,6 +604,11 @@ impl App {
                 });
             }
             CommandAction::BugReport(args) => {
+                let (action, value) = args.trim().split_once(char::is_whitespace).unwrap_or((args.trim(), ""));
+                if action == "rating" {
+                    self.handle_feedback_rating(value).await;
+                    return;
+                }
                 if let Err(error) = self.handle_bug_report(&args).await {
                     self.state.add_system_message(format!("Bug report: {error}"));
                 }

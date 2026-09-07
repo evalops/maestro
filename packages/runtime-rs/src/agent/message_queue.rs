@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use maestro_tui::agent::message_queue::MessageQueue;
+//! use maestro_runtime::agent::message_queue::MessageQueue;
 //!
 //! let mut queue = MessageQueue::new();
 //!
