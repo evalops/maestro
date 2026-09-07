@@ -398,28 +398,13 @@ impl SlashCommandMatcher {
         m
     }
 
-    /// Get all commands sorted by favorites and recent usage
+    /// Browse primary commands in the shared registry order.
     fn get_all_sorted(&self) -> Vec<CommandMatch> {
-        let mut matches: Vec<CommandMatch> = self
-            .registry
-            .all()
+        self.registry
+            .primary_commands()
             .into_iter()
-            .map(|cmd| {
-                let mut m = CommandMatch::new(cmd, 0);
-                m = self.apply_bonuses(m, "");
-                m
-            })
-            .collect();
-
-        matches.sort_by(|a, b| {
-            // Sort by score first, then alphabetically
-            match b.score.cmp(&a.score) {
-                std::cmp::Ordering::Equal => a.command.name.cmp(&b.command.name),
-                other => other,
-            }
-        });
-
-        matches
+            .map(|cmd| self.apply_bonuses(CommandMatch::new(cmd, 0), ""))
+            .collect()
     }
 
     /// Get completions for tab cycling.
@@ -817,10 +802,10 @@ mod tests {
         let mut matcher = create_matcher();
         matcher.add_favorite("theme");
 
-        let matches = matcher.get_matches("");
+        let matches = matcher.get_matches("theme");
         let theme_match = matches.iter().find(|m| m.command.name == "theme").unwrap();
 
-        assert!(theme_match.score > 0);
+        assert!(theme_match.score > scores::EXACT_MATCH);
     }
 
     #[test]

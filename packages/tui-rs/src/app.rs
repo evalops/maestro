@@ -726,6 +726,7 @@ pub struct App {
     /// `/setup` modal for mandatory EvalOps Identity and optional local API keys.
     setup_modal: SetupModal,
     setup_login_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    onboarding: onboarding::OnboardingSession,
     pending_agent_spawn: bool,
     /// True when `current_model` was chosen by `/setup` or `/model`, so a
     /// later respawn should not fall back to `resolve_default_model`.
@@ -815,6 +816,7 @@ pub struct App {
 
     /// Current thinking level (for session headers/changes).
     current_thinking_level: ThinkingLevel,
+    pending_assistant_content: Option<(String, Vec<crate::ai::ContentBlock>)>,
 
     /// Last time we refreshed MCP status for runtime badges.
     last_mcp_status_refresh: Option<Instant>,
@@ -887,6 +889,9 @@ pub struct App {
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
 
+    /// Keyboard shortcuts used to cycle configured models.
+    cycle_model_binding: crate::key_hints::KeyBinding,
+    cycle_model_backward_binding: crate::key_hints::KeyBinding,
     /// Keyboard shortcut used to open the command palette.
     command_palette_binding: crate::key_hints::KeyBinding,
 
@@ -1379,6 +1384,12 @@ impl App {
         local_model_discovery.refresh();
 
         let app_config = crate::config::load_config(&workspace_dir, None);
+        let initial_thinking = crate::model_dynamics::configured_thinking(
+            &app_config,
+            &crate::codex_auth::resolve_default_model(),
+            &crate::config::model_dynamics_config(),
+        );
+        state.thinking_level = initial_thinking;
         let tui_settings = app_config.tui.clone();
 
         // Resolve the session's configured native OS sandbox. Managed setup is
@@ -1521,6 +1532,7 @@ impl App {
         };
 
         let ui_prefs = crate::ui_prefs::UiPrefs::load_default();
+        state.set_output_detail(ui_prefs.output_detail());
         let configured_animations = app_config
             .tui
             .as_ref()
@@ -1571,6 +1583,7 @@ impl App {
             theme_selector: ThemeSelector::new(),
             setup_modal: SetupModal::new(),
             setup_login_rx: None,
+            onboarding: onboarding::OnboardingSession::default(),
             pending_agent_spawn: false,
             current_model_user_set: false,
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
@@ -1604,7 +1617,8 @@ impl App {
             session_started_at: SystemTime::now(),
             session_resume_failed: false,
             current_model: String::new(),
-            current_thinking_level: ThinkingLevel::Off,
+            current_thinking_level: initial_thinking,
+            pending_assistant_content: None,
             last_mcp_status_refresh: None,
             last_esc_at: None,
             loop_schedule: None,
@@ -1632,6 +1646,8 @@ impl App {
             rubber_duck_rx: None,
             rubber_duck_running: false,
             current_git_branch: None,
+            cycle_model_binding: keybindings.cycle_model,
+            cycle_model_backward_binding: keybindings.cycle_model_backward,
             command_palette_binding: keybindings.command_palette,
             file_search_binding: keybindings.file_search,
             toggle_tool_outputs_binding: keybindings.toggle_tool_outputs,
@@ -1975,14 +1991,29 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if self.poll_setup_login() {
                 needs_redraw = true;
             }
+            if self.poll_onboarding() {
+                needs_redraw = true;
+            }
             if self.pending_agent_spawn {
                 self.pending_agent_spawn = false;
                 self.spawn_agent().await?;
                 needs_redraw = true;
-                if self.native_agent.is_some() {
+                if self.native_agent.is_some() && self.active_modal != ActiveModal::Setup {
                     if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
                         let _ = self.submit_prompt(prompt).await;
                     }
+                }
+            }
+
+            // A startup prompt held by setup resumes after any exit path, including feedback.
+            if self.initial_prompt.is_some()
+                && self.native_agent.is_some()
+                && self.active_modal == ActiveModal::None
+                && !self.state.busy
+            {
+                if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
+                    let _ = self.submit_prompt(prompt).await;
+                    needs_redraw = true;
                 }
             }
 
@@ -2357,7 +2388,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .unwrap_or(self.configured_animations)
                 && self.ui_prefs.dex_personality()
                     != crate::components::dex_companion::DexPersonality::Quiet;
-            if needs_redraw || self.state.busy || dex_hop_active || self.dex_pet_active() {
+            if needs_redraw
+                || self.state.busy
+                || dex_hop_active
+                || self.dex_pet_active()
+                || self.onboarding_animation_active()
+            {
                 self.render()?;
                 if !self.state.busy {
                     needs_redraw = false;
@@ -2483,6 +2519,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         };
 
         let (history, session_id, thinking_level) = self.agent_context_for_spawn()?;
+        let thinking_level = crate::model_dynamics::normalize_thinking(&model, thinking_level);
+        self.current_thinking_level = thinking_level;
+        self.state.thinking_level = thinking_level;
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();
         let config = NativeAgentConfig {
             model_dynamics: crate::config::model_dynamics_config(),
@@ -2989,17 +3028,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     fn maybe_open_first_run_setup(&mut self) -> bool {
-        if !should_open_first_run_setup(
+        let credentials_missing = should_open_first_run_setup(
             self.native_agent.is_some(),
             default_model_credentials_ready(),
-        ) {
+        );
+        let introductory = !self.ui_prefs.onboarding_seen && self.initial_prompt.is_none();
+        if !credentials_missing && !introductory {
             return false;
         }
         if self.active_modal != ActiveModal::None {
             return false;
         }
-        self.setup_modal.show();
-        self.active_modal = ActiveModal::Setup;
+        self.open_onboarding();
         true
     }
 
@@ -3021,14 +3061,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             .to_string(),
                     );
                 } else {
-                    self.setup_modal.hide();
-                    if self.active_modal == ActiveModal::Setup {
-                        self.active_modal = ActiveModal::None;
-                    }
-                    self.state.add_system_message(
-                        "EvalOps Identity saved. This session can use managed inference or BYOK."
-                            .to_string(),
-                    );
+                    self.setup_modal.set_connection_ready();
+                    self.record_onboarding(crate::telemetry::OnboardingStage::ConnectionSaved);
                     if self.native_agent.is_none() {
                         self.pending_agent_spawn = true;
                     }
@@ -3460,6 +3494,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let labels = keybindings.labels();
         self.state.queued_follow_up_edit_binding_label = labels.edit_last_queued_follow_up.clone();
         self.shortcuts_help.set_binding_labels(labels);
+        self.cycle_model_binding = keybindings.cycle_model;
+        self.cycle_model_backward_binding = keybindings.cycle_model_backward;
         self.command_palette_binding = keybindings.command_palette;
         self.file_search_binding = keybindings.file_search;
         self.toggle_tool_outputs_binding = keybindings.toggle_tool_outputs;
@@ -3663,6 +3699,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 }
             }
         }
+        if let FromAgent::LocalAssistantContent {
+            response_id,
+            content,
+        } = &msg
+        {
+            self.pending_assistant_content = Some((response_id.clone(), content.clone()));
+        }
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
                 Some((response_id.clone(), usage.clone()))
@@ -3830,6 +3873,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
                 if pending_matches {
                     self.pending_model_change = None;
+                    // A failed earlier request can arrive after a newer
+                    // switch was queued. Only the matching success clears the
+                    // shared error banner, so unrelated errors remain visible.
+                    self.state.error = None;
                 }
                 self.record_model_change(model);
             }
@@ -4464,68 +4511,17 @@ was missing; retry to review the exact execution context."
 
     /// Show help message
     fn show_help(&mut self) {
-        let help_text = format!(
-            r"
-Deixic Code TUI - Keyboard Shortcuts
-
-Navigation:
-  Up/Down       Scroll messages / Navigate completions
-  PageUp/Down   Scroll faster
-  g/G           Jump to top/bottom (when input empty)
-  Ctrl+J/K      Scroll down/up
-  Ctrl+L        Clear screen
-
-Input:
-  Enter         Send message (steer while running)
-  Tab           Send message / queue follow-up (while running)
-  Alt+Enter     Queue follow-up (alternate while running)
-  {}     Edit last queued follow-up
-  @             Open file search
-  /             Start slash command
-  Ctrl+S        Stash / restore / swap draft (including attachments)
-  Ctrl+R        Search prompt history (Enter restores, Esc cancels)
-  Ctrl+U        Clear input
-  Esc           Cancel / Close modal
-
-Toggle:
-  Tab           Toggle thinking expansion (when input empty)
-  {}        Toggle tool call expansion
-  Ctrl+E        Open detail view (full output / error / message)
-
-Modals:
-  {}        Open command palette
-  {}        Open file search
-  Ctrl+Alt+R    Open session switcher
-
-Session:
-  Ctrl+C        Interrupt / Quit
-  Ctrl+D        Quit
-
-Clipboard:
-  Ctrl+Y        Paste text
-  /copy         Copy last response
-
-Slash Commands:
-  /help         Show this help
-  /clear        Clear messages
-  /alerts       List recorded alerts
-  /copy         Copy last response
-  /theme        Change theme
-  /setup        Sign in to EvalOps Identity, then optionally add a local API key
-  /queue        Manage queued prompts (list/cancel/modes)
-  /steer        Send a steering message
-  /summarize    Summarize selected turns into a new conversation
-  /sessions     Browse sessions
-  /files        Search files
-  /commands     Open command palette
-  /quit         Exit
-",
-            self.state.queued_follow_up_edit_binding_label,
-            self.toggle_tool_outputs_binding.display(),
+        let mut text = format!(
+            "Deixic Code TUI - Keyboard Shortcuts\n\n{}  Open command palette\n{}  Open file search\n{}  Toggle tool call expansion\n\nCommands\n\n",
             self.command_palette_binding.display(),
-            self.file_search_binding.display()
+            self.file_search_binding.display(),
+            self.toggle_tool_outputs_binding.display(),
         );
-        self.state.add_system_message(help_text.trim().to_string());
+        for command in self.command_registry.primary_commands() {
+            text.push_str(&format!("/{:<12} {}\n", command.name, command.description));
+        }
+        text.push_str("\nSearch with / or the command palette for additional actions and compatibility commands.\nUse /help <command> for usage and aliases.\nOpen /hotkeys for effective keyboard bindings.\n");
+        self.state.add_system_message(text);
     }
 
     /// Render the UI
@@ -4553,6 +4549,7 @@ Slash Commands:
 
         // Extract needed data to avoid borrow conflicts
         let dex_state = self.observed_dex_state();
+        let onboarding_frame = self.onboarding.frame();
         let dex_look = self.dex_look();
         // Explicit settings/recap responses remain visible in quiet mode.
         // Cosmetic notices are admitted by pet_dex; turn start clears old ones.
@@ -4580,7 +4577,7 @@ Slash Commands:
             .map(crate::sandbox::SandboxPolicy::mode_label);
         let model_selector = &mut self.model_selector;
         let theme_selector = &mut self.theme_selector;
-        let setup_modal = &self.setup_modal;
+        let setup_modal = &mut self.setup_modal;
         let shortcuts_help = &self.shortcuts_help;
         let rewind_picker = &mut self.rewind_picker;
         let selective_summary = &mut self.selective_summary;
@@ -4668,9 +4665,7 @@ Slash Commands:
                     // Blank the covered cells first so no older frame content
                     // shows through the wrapped paragraph.
                     frame.render_widget(ratatui::widgets::Clear, error_area);
-                    let error_widget = ratatui::widgets::Paragraph::new(error)
-                        .style(Style::default().fg(Color::Red))
-                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    let error_widget = error_banner(error, crate::themes::current_ui_theme());
                     frame.render_widget(error_widget, error_area);
                 }
 
@@ -4684,6 +4679,7 @@ Slash Commands:
                         command_registry,
                         frame,
                         area,
+                        crate::themes::current_ui_theme(),
                     );
                 }
 
@@ -4729,7 +4725,16 @@ Slash Commands:
                         theme_selector.render(frame, area);
                     }
                     ActiveModal::Setup => {
-                        setup_modal.render(frame, area);
+                        setup_modal.render_with_dex(
+                            frame,
+                            area,
+                            crate::components::SetupPresentation {
+                                animations,
+                                personality: dex_personality,
+                                look: dex_look,
+                                animation_frame: onboarding_frame,
+                            },
+                        );
                     }
                     ActiveModal::ShortcutsHelp => {
                         frame.render_widget(shortcuts_help.clone(), area);
@@ -4865,6 +4870,7 @@ Slash Commands:
         command_registry: &CommandRegistry,
         frame: &mut ratatui::Frame,
         area: Rect,
+        theme: maestro_ui::UiTheme,
     ) {
         use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
@@ -4880,6 +4886,7 @@ Slash Commands:
 
         frame.render_widget(Clear, popup_area);
 
+        let selected = slash_state.list_state_mut().selected();
         let completions = slash_state.completions();
         let content_width = popup_area.width.saturating_sub(4) as usize;
         let command_width = completions
@@ -4891,7 +4898,8 @@ Slash Commands:
             .min(content_width.saturating_sub(3));
         let items: Vec<ListItem> = completions
             .iter()
-            .map(|completion| {
+            .enumerate()
+            .map(|(index, completion)| {
                 let command = format!("{completion:<command_width$}");
                 let description = command_registry
                     .get(completion.trim_start_matches('/'))
@@ -4900,11 +4908,15 @@ Slash Commands:
                     Span::styled(
                         command,
                         Style::default()
-                            .fg(Color::White)
+                            .fg(if selected == Some(index) {
+                                theme.focus
+                            } else {
+                                theme.text
+                            })
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("  ", Style::default()),
-                    Span::styled(description, Style::default().fg(Color::DarkGray)),
+                    Span::styled(description, Style::default().fg(theme.muted)),
                 ]);
                 ListItem::new(crate::field_format::truncate_line_with_ellipsis(
                     line,
@@ -4917,21 +4929,31 @@ Slash Commands:
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(Style::default().fg(theme.border))
                     .title(" Commands ")
                     .title_style(
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme.focus)
                             .add_modifier(Modifier::BOLD),
                     )
-                    .title_bottom(" ↑/↓ select · Enter run · Tab complete ")
-                    .style(Style::default().bg(Color::Black)),
+                    .title_bottom(Line::styled(
+                        " ↑/↓ select · Enter run · Tab complete ",
+                        theme.muted_style(),
+                    ))
+                    .style(theme.text_style()),
             )
             .highlight_symbol("› ")
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan));
+            .style(theme.text_style())
+            .highlight_style(theme.selection_style());
 
         frame.render_stateful_widget(list, popup_area, slash_state.list_state_mut());
     }
+}
+
+fn error_banner(error: &str, theme: maestro_ui::UiTheme) -> ratatui::widgets::Paragraph<'_> {
+    ratatui::widgets::Paragraph::new(error)
+        .style(theme.text_style().fg(theme.error))
+        .wrap(ratatui::widgets::Wrap { trim: false })
 }
 
 impl Default for App {
@@ -5312,6 +5334,8 @@ mod bug_reports;
 mod checkpoints;
 mod command_handlers;
 mod composer_recall;
+mod control_panels;
+mod onboarding;
 mod selective_summary;
 // `pub(crate)` so `agent::compaction` can assert that its token counts and
 // this breakdown's agree; nothing outside the crate uses it.

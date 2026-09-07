@@ -1,7 +1,7 @@
 # Safety and Action Approvals
 
 > **Status:** Current Rust runtime. The controls documented here live under
-> `packages/tui-rs/src/safety/`, `packages/tui-rs/src/sandbox.rs`, and
+> `packages/tui-rs/src/safety/`, `packages/sandbox-rs/src/lib.rs`, and
 > `packages/runtime-gateway-rs/src/auth.rs`.
 
 Audience: operators and contributors configuring approvals and sandboxing.
@@ -172,7 +172,7 @@ interactive UI to inspect the active native policy.
 
 ## Native sandbox
 
-`packages/tui-rs/src/sandbox.rs` defines three policies:
+`packages/sandbox-rs/src/lib.rs` defines three policies:
 
 | Policy | Effect |
 | --- | --- |

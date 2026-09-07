@@ -97,6 +97,7 @@ impl GoogleClient {
 
     /// Build the Gemini API request body
     fn build_request(&self, messages: &[Message], config: &RequestConfig) -> Result<GoogleRequest> {
+        let messages = super::transform::google_messages_for_wire(messages);
         let contents = messages
             .iter()
             .map(|msg| self.message_to_content(msg))
@@ -399,6 +400,60 @@ struct UsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_matches_foreign_tool_results_by_function_name() {
+        let client = GoogleClient::new("test");
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::ToolUse {
+                        id: "call_shared|fc_a".into(),
+                        name: "read".into(),
+                        input: json!({"path":"a"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_shared|fc_b".into(),
+                        name: "search".into(),
+                        input: json!({"query":"b"}),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call_shared|fc_b".into(),
+                        content: "B".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call_shared|fc_a".into(),
+                        content: "A".into(),
+                        is_error: None,
+                    },
+                ]),
+            },
+        ];
+        let before = serde_json::to_value(&messages).unwrap();
+        let body = serde_json::to_value(
+            client
+                .build_request(&messages, &RequestConfig::default())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            body["contents"][1]["parts"][0]["functionResponse"]["name"],
+            "search"
+        );
+        assert_eq!(
+            body["contents"][1]["parts"][1]["functionResponse"]["name"],
+            "read"
+        );
+        assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+    }
+
     use crate::Tool;
 
     // ========================================================================

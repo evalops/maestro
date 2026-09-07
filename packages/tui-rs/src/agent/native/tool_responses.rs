@@ -1,138 +1,10 @@
-//! Tool-approval response buffering and cancellation repair for the native agent.
+//! TUI history repair for caller-owned tool responses.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
-use super::super::{DenialReason, ExecutionSource, ToolExecution, ToolResult};
-use super::{
-    CancelledToolTombstones, PendingToolResponse, ToolResponseConsumption, ToolResponseMessage,
-};
+use super::super::{DenialReason, ToolExecution, ToolResult};
 use crate::ai::{ContentBlock, Message, MessageContent, Role};
-
-pub(super) fn discard_cancelled_tool_responses(
-    cancelled_ids: &HashSet<String>,
-    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
-    pending: &mut HashMap<String, PendingToolResponse>,
-    tombstones: &mut CancelledToolTombstones,
-) {
-    for call_id in cancelled_ids {
-        tombstones.insert(call_id.clone());
-    }
-    let pending_cancelled = pending
-        .keys()
-        .filter(|call_id| cancelled_ids.contains(*call_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    for call_id in pending_cancelled {
-        if let Some((_, _, _, Some(consumed))) = pending.remove(&call_id) {
-            let _ = consumed.send(ToolResponseConsumption::Rejected {
-                reason: "tool response cancelled before native consumption".to_string(),
-            });
-        }
-    }
-    while let Ok((call_id, approved, result, source, consumed)) = rx.try_recv() {
-        if tombstones.contains(&call_id) {
-            if let Some(consumed) = consumed {
-                let _ = consumed.send(ToolResponseConsumption::Rejected {
-                    reason: "tool response cancelled before native consumption".to_string(),
-                });
-            }
-        } else {
-            pending.insert(call_id, (approved, result, source, consumed));
-        }
-    }
-}
-
-pub(super) fn reject_buffered_tool_responses_on_cancel(
-    pending: &mut HashMap<String, PendingToolResponse>,
-) {
-    for (_, _, _, consumed) in pending.drain().map(|(_, value)| value) {
-        if let Some(consumed) = consumed {
-            let _ = consumed.send(ToolResponseConsumption::Rejected {
-                reason: "tool response cancelled before native consumption".to_string(),
-            });
-        }
-    }
-}
-
-pub(super) fn buffer_or_reject_tool_response(
-    response: ToolResponseMessage,
-    pending: &mut HashMap<String, PendingToolResponse>,
-    tombstones: &CancelledToolTombstones,
-) {
-    let (call_id, approved, result, source, consumed) = response;
-    if tombstones.contains(&call_id) {
-        if let Some(consumed) = consumed {
-            let _ = consumed.send(ToolResponseConsumption::Rejected {
-                reason: "tool response cancelled before native consumption".to_string(),
-            });
-        }
-    } else {
-        pending.insert(call_id, (approved, result, source, consumed));
-    }
-}
-
-pub(super) enum ToolResponseWait {
-    Response((bool, Option<ToolResult>, ExecutionSource)),
-    Cancelled,
-    Closed,
-}
-
-pub(super) async fn wait_for_codex_tool_response(
-    call_id: &str,
-    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
-    pending: &mut HashMap<String, PendingToolResponse>,
-    tombstones: &CancelledToolTombstones,
-    cancel: &CancellationToken,
-) -> ToolResponseWait {
-    wait_for_tool_response(call_id, rx, pending, tombstones, cancel).await
-}
-
-pub(super) async fn wait_for_tool_response(
-    call_id: &str,
-    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
-    pending: &mut HashMap<String, PendingToolResponse>,
-    tombstones: &CancelledToolTombstones,
-    cancel: &CancellationToken,
-) -> ToolResponseWait {
-    if cancel.is_cancelled() {
-        return ToolResponseWait::Cancelled;
-    }
-    if let Some((approved, result, source, consumed)) = pending.remove(call_id) {
-        if let Some(consumed) = consumed {
-            let _ = consumed.send(ToolResponseConsumption::Accepted);
-        }
-        return ToolResponseWait::Response((approved, result, source));
-    }
-
-    loop {
-        let response = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return ToolResponseWait::Cancelled,
-            response = rx.recv() => response,
-        };
-        let Some((id, approved, result, source, consumed)) = response else {
-            return ToolResponseWait::Closed;
-        };
-        if tombstones.contains(&id) {
-            if let Some(consumed) = consumed {
-                let _ = consumed.send(ToolResponseConsumption::Rejected {
-                    reason: "tool response cancelled before native consumption".to_string(),
-                });
-            }
-            continue;
-        }
-        if id == call_id {
-            if let Some(consumed) = consumed {
-                let _ = consumed.send(ToolResponseConsumption::Accepted);
-            }
-            return ToolResponseWait::Response((approved, result, source));
-        }
-        pending.insert(id, (approved, result, source, consumed));
-    }
-}
+use maestro_runtime::ToolResponseCoordinator;
 
 /// Append failure tool results for any assistant `ToolUse` block in `messages`
 /// that has no matching `ToolResult`, so an interrupted turn can never leave
@@ -142,12 +14,13 @@ pub(super) async fn wait_for_tool_response(
 /// the same assistant message when one exists, otherwise inserted immediately
 /// after it, keeping the `ToolUse`/`ToolResult` pairing both the OpenAI and
 /// Anthropic serializers require. A real result delivered late (stashed in
-/// `pending_tool_approvals`) is used when available; otherwise a
+/// the shared coordinator) is used when available; otherwise a
 /// "cancelled by user" failure is synthesized.
 pub(super) fn repair_orphaned_tool_calls(
     messages: &mut Vec<Message>,
-    pending_tool_approvals: &mut HashMap<String, PendingToolResponse>,
+    tool_response_coordinator: &mut ToolResponseCoordinator,
 ) {
+    tool_response_coordinator.drain_available();
     let mut answered: HashSet<String> = HashSet::new();
     for message in messages.iter() {
         if let MessageContent::Blocks(blocks) = &message.content {
@@ -185,19 +58,8 @@ pub(super) fn repair_orphaned_tool_calls(
         let repairs: Vec<ContentBlock> = missing
             .into_iter()
             .map(|(id, name)| {
-                let pending = pending_tool_approvals.remove(&id).map(
-                    |(approved, result, source, consumed)| {
-                        if let Some(consumed) = consumed {
-                            let _ = consumed.send(ToolResponseConsumption::Accepted);
-                        }
-                        (approved, result, source)
-                    },
-                );
+                let pending = tool_response_coordinator.take_pending_for_repair(&id);
                 let (content, is_error) = match pending {
-                    Some((true, Some(result), source)) => {
-                        let execution = ToolExecution::from_legacy(&id, &name, source, result);
-                        (execution.model_content(), execution.is_error())
-                    }
                     Some((approved, result, source)) => {
                         let execution = if approved {
                             ToolExecution::from_legacy(
@@ -249,32 +111,5 @@ pub(super) fn repair_orphaned_tool_calls(
             ),
         }
         index += 2;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_responses_buffers_open_call_responses() {
-        let mut pending = HashMap::new();
-        let tombstones = super::super::CancelledToolTombstones::default();
-        buffer_or_reject_tool_response(
-            (
-                "call_1".to_string(),
-                true,
-                None,
-                ExecutionSource::Native,
-                None,
-            ),
-            &mut pending,
-            &tombstones,
-        );
-
-        assert!(matches!(
-            pending.remove("call_1"),
-            Some((true, None, ExecutionSource::Native, None))
-        ));
     }
 }

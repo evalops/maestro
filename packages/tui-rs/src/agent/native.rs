@@ -115,7 +115,9 @@ use super::message_queue::{
 use super::protocol::InlineToolApprovalContext;
 use super::reminders::{ReminderEngine, ToolOutcome as ReminderToolOutcome};
 use super::safety::stable_stringify;
-use super::text_loop::{LoopKind, TextLoopDetector, loop_reminder_message};
+use super::text_loop::{
+    LoopKind, TextLoopDetector, billed_empty_reminder_message, loop_reminder_message,
+};
 use super::turn_budget::{DEFAULT_MAX_TURN_STEPS, TurnOutcome, TurnStepBudget};
 use super::{
     CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent,
@@ -136,7 +138,8 @@ use crate::safety::{
 use crate::state::{ApprovalMode, QueueMode};
 use crate::tools::{ToolExecutionOptions, ToolExecutor, ToolRegistry};
 use maestro_runtime::{
-    approval_span, record_model_usage, record_outcome, terminal_span, tool_span_for_call, turn_span,
+    ToolResponseCoordinator, ToolResponseWait, approval_span, record_model_usage, record_outcome,
+    terminal_span, tool_span_for_call, turn_span,
 };
 use tracing::Instrument;
 
@@ -348,86 +351,15 @@ use self::tool_execution::{
     tool_args_for_execution, tool_is_visible_to_model, tool_requires_approval,
 };
 
-/// Payload of the tool-response channel: `(call_id, approved, result,
-/// source, consumed)`. `source` records the provenance of a caller-supplied `result`:
-/// [`ExecutionSource::Native`] when the caller executed the tool locally on
-/// this process's behalf (the interactive TUI) and
-/// [`ExecutionSource::RemoteClient`] when a remote/headless client executed
-/// it. Preserving that provenance is what lets
-/// `ToolExecution::model_content` wrap client-authored results in the
-/// untrusted-content envelope without wrapping locally executed ones.
-/// Ignored when `result` is `None` (a bare approval/denial). `consumed` lets
-/// headless transports acknowledge a response only after the native runner
-/// has removed it from the channel.
-pub type ToolResponseMessage = (
-    String,
-    bool,
-    Option<ToolResult>,
-    ExecutionSource,
-    Option<tokio::sync::oneshot::Sender<ToolResponseConsumption>>,
-);
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolResponseConsumption {
-    Accepted,
-    Rejected { reason: String },
-}
-type PendingToolResponse = (
-    bool,
-    Option<ToolResult>,
-    ExecutionSource,
-    Option<tokio::sync::oneshot::Sender<ToolResponseConsumption>>,
-);
-const MAX_CANCELLED_TOOL_TOMBSTONES: usize = 4096;
-
-#[derive(Debug, Default)]
-struct CancelledToolTombstones {
-    ids: HashSet<String>,
-    order: VecDeque<String>,
-}
-
-impl CancelledToolTombstones {
-    fn insert(&mut self, call_id: String) {
-        if !self.ids.insert(call_id.clone()) {
-            return;
-        }
-        self.order.push_back(call_id);
-        while self.order.len() > MAX_CANCELLED_TOOL_TOMBSTONES {
-            if let Some(evicted) = self.order.pop_front() {
-                self.ids.remove(&evicted);
-            }
-        }
-    }
-
-    fn remove(&mut self, call_id: &str) {
-        if self.ids.remove(call_id) {
-            self.order.retain(|entry| entry != call_id);
-        }
-    }
-
-    fn contains(&self, call_id: &str) -> bool {
-        self.ids.contains(call_id)
-    }
-
-    fn clear(&mut self) {
-        self.ids.clear();
-        self.order.clear();
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.ids.len()
-    }
-}
+/// Compatibility exports for callers that historically imported these types
+/// from `maestro_tui::agent`.
+pub use maestro_runtime::{ToolResponseConsumption, ToolResponseMessage};
 
 use self::read_only_tools::{
     QueuedReadOnlyToolExecution, execute_native_read_only_tool_wave,
     is_explicit_inline_read_only_tool, is_native_parallel_read_only_tool_call,
 };
-use self::tool_responses::{
-    ToolResponseWait, buffer_or_reject_tool_response, discard_cancelled_tool_responses,
-    reject_buffered_tool_responses_on_cancel, repair_orphaned_tool_calls,
-    wait_for_codex_tool_response, wait_for_tool_response,
-};
+use self::tool_responses::repair_orphaned_tool_calls;
 
 fn provider_id(provider: AiProvider) -> &'static str {
     match provider {
@@ -1440,7 +1372,7 @@ pub struct NativeAgent {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeAuditSnapshot {
-    pub(crate) request_context: Option<super::context_usage::RequestContextUsage>,
+    pub(crate) request_context: Option<super::RequestContextUsage>,
     pub(crate) excluded_context_tools: HashSet<String>,
     pub(crate) prompt_revision: u64,
     pub(crate) system_prompt: Option<String>,
@@ -1518,6 +1450,22 @@ fn prompt_kind_starts_main_request(kind: PromptKind) -> bool {
 
 fn should_defer_prompt_command(kind: PromptKind, cancellation_seen: bool) -> bool {
     kind == PromptKind::Prompt || (cancellation_seen && prompt_kind_starts_main_request(kind))
+}
+
+fn append_completed_thinking_block(
+    assistant_content: &mut Vec<ContentBlock>,
+    current_thinking: &mut String,
+    thinking_signature: Option<String>,
+) {
+    // An omitted thinking block has empty text but still carries the signed
+    // encrypted payload needed when this assistant turn is replayed. Keep it
+    // whenever a signature arrived, even though no thinking delta was emitted.
+    if !current_thinking.is_empty() || thinking_signature.is_some() {
+        assistant_content.push(ContentBlock::Thinking {
+            thinking: std::mem::take(current_thinking),
+            signature: thinking_signature,
+        });
+    }
 }
 
 impl NativeAgent {
@@ -2026,7 +1974,7 @@ impl NativeAgent {
             tool_executor,
             credential_vault,
             event_tx: event_tx.clone(),
-            tool_response_rx,
+            tool_response_coordinator: ToolResponseCoordinator::new(tool_response_rx),
             command_rx,
             busy: false,
             cancel_token: None,
@@ -2056,8 +2004,6 @@ impl NativeAgent {
             active_user_note_texts: Vec::new(),
             current_request_user_message_index: None,
             processed_prompt_queue_ids: HashSet::new(),
-            pending_tool_approvals: HashMap::new(),
-            cancelled_tool_responses: CancelledToolTombstones::default(),
             prompt_context: None,
             output_token_budget: None,
             output_tokens_spent: 0,
@@ -2883,11 +2829,9 @@ struct NativeAgentRunner {
     /// Used to stream response chunks, tool calls, errors, etc. back to the UI.
     event_tx: mpsc::UnboundedSender<FromAgent>,
 
-    /// Channel to receive tool responses from the TUI
-    ///
-    /// When a tool requires approval, the runner waits on this channel for
-    /// the user's decision (approve/deny).
-    tool_response_rx: mpsc::UnboundedReceiver<ToolResponseMessage>,
+    /// Caller-owned tool response state, including the receiver, keyed
+    /// responses, and cancellation tombstones.
+    tool_response_coordinator: ToolResponseCoordinator,
 
     /// Channel to receive commands
     ///
@@ -3000,12 +2944,6 @@ struct NativeAgentRunner {
 
     /// Explicit queue ids represented by the next semantic checkpoint.
     processed_prompt_queue_ids: HashSet<u64>,
-
-    /// Buffered tool approvals that arrived out of order
-    pending_tool_approvals: HashMap<String, PendingToolResponse>,
-
-    /// Recently cancelled call IDs whose late responses must be rejected.
-    cancelled_tool_responses: CancelledToolTombstones,
 
     /// Extra system prompt context for the current request
     ///
@@ -5004,39 +4942,16 @@ impl NativeAgentRunner {
     /// tool-response channel and repair the history before giving up on a
     /// turn and, defensively, before each API call.
     fn repair_orphaned_tool_calls(&mut self) {
-        // Stash late results delivered after we stopped waiting (e.g. the app
-        // still reports the outcome of a tool it cancelled).
-        while let Ok(response) = self.tool_response_rx.try_recv() {
-            buffer_or_reject_tool_response(
-                response,
-                &mut self.pending_tool_approvals,
-                &self.cancelled_tool_responses,
-            );
-        }
         let messages = Arc::make_mut(&mut self.messages);
-        repair_orphaned_tool_calls(messages, &mut self.pending_tool_approvals);
+        repair_orphaned_tool_calls(messages, &mut self.tool_response_coordinator);
     }
 
     fn reset_tool_response_state(&mut self) {
-        for (_, _, _, consumed) in self.pending_tool_approvals.drain().map(|(_, value)| value) {
-            if let Some(consumed) = consumed {
-                let _ = consumed.send(ToolResponseConsumption::Rejected {
-                    reason: "tool response invalidated by session boundary".to_string(),
-                });
-            }
-        }
-        while let Ok((_, _, _, _, consumed)) = self.tool_response_rx.try_recv() {
-            if let Some(consumed) = consumed {
-                let _ = consumed.send(ToolResponseConsumption::Rejected {
-                    reason: "tool response invalidated by session boundary".to_string(),
-                });
-            }
-        }
-        self.cancelled_tool_responses.clear();
+        self.tool_response_coordinator.reset();
     }
 
     fn reject_pending_tool_responses_on_cancel(&mut self) {
-        reject_buffered_tool_responses_on_cancel(&mut self.pending_tool_approvals);
+        self.tool_response_coordinator.reject_buffered_on_cancel();
     }
 
     fn drain_leading_pending_messages(
@@ -6122,14 +6037,30 @@ impl NativeAgentRunner {
                         continue;
                     }
 
-                    // Drop any live Codex thread when the model changes so the
-                    // next openai-codex prompt opens a fresh app-server session.
-                    self.codex_session = None;
-                    self.codex_active_turn_id = None;
-
                     match resolve_native_client(&model, None) {
                         Ok((client, provider, model_route, telemetry_identity_scope)) => {
+                            // Resolve and construct the target transport before dropping the
+                            // current one. A failed provider admission must leave the active
+                            // model and any live Codex thread usable for the next prompt.
+                            self.codex_session = None;
+                            self.codex_active_turn_id = None;
                             self.preserve_explicit_intelligence_choice();
+                            let requested_thinking = crate::model_dynamics::thinking_level(
+                                self.config.thinking_enabled,
+                                self.config.thinking_budget,
+                            );
+                            let requested_thinking = self
+                                .config
+                                .model_dynamics
+                                .effort_for_model(&model)
+                                .unwrap_or(requested_thinking);
+                            let thinking = crate::model_dynamics::normalize_thinking(
+                                &model,
+                                requested_thinking,
+                            );
+                            let (thinking_enabled, thinking_budget) = thinking.to_config();
+                            self.config.thinking_enabled = thinking_enabled;
+                            self.config.thinking_budget = thinking_budget;
                             self.client = client;
                             self.model_route = model_route;
                             *self
@@ -6143,6 +6074,10 @@ impl NativeAgentRunner {
                             let _ = self
                                 .event_tx
                                 .send(FromAgent::ModelChanged { model, provider });
+                            let _ = self.event_tx.send(FromAgent::BoostChanged {
+                                status: crate::model_dynamics::BoostStatus::Idle,
+                                thinking: Some(thinking),
+                            });
                         }
                         Err(e) => {
                             let message = format!("Failed to set model: {e}");
@@ -6631,11 +6566,11 @@ impl NativeAgentRunner {
                 .saturating_add(
                     system
                         .as_deref()
-                        .map_or(0, super::token_estimation::estimate_tokens),
+                        .map_or(0, maestro_context::token_estimation::estimate_tokens),
                 )
-                .saturating_add(super::token_estimation::estimate_tokens_from_json(
-                    tools.as_ref(),
-                ));
+                .saturating_add(
+                    maestro_context::token_estimation::estimate_tokens_from_json(tools.as_ref()),
+                );
             max_tokens = clamp_output_to_remaining_context(
                 max_tokens,
                 context_tokens,
@@ -6668,7 +6603,7 @@ impl NativeAgentRunner {
         self.runtime_audit
             .write()
             .unwrap_or_else(|p| p.into_inner())
-            .request_context = Some(super::context_usage::RequestContextUsage::from_request(
+            .request_context = Some(super::RequestContextUsage::from_request(
             request_messages,
             &config,
             self.compactor.counter(),
@@ -6739,11 +6674,11 @@ impl NativeAgentRunner {
         if model != self.config.model {
             let info = crate::model_catalog::find_model(&model)
                 .context("Summary model context capacity is unknown")?;
-            let input = super::token_counting::count_tokens(
+            let input = maestro_context::token_counting::count_tokens(
                 &serde_json::to_string(messages)?,
                 Some(&model),
             )
-            .saturating_add(super::token_counting::count_tokens(
+            .saturating_add(maestro_context::token_counting::count_tokens(
                 config.system.as_deref().unwrap_or_default(),
                 Some(&model),
             ));
@@ -7911,7 +7846,7 @@ impl NativeAgentRunner {
                         return Ok(());
                     }
                 };
-                self.cancelled_tool_responses.remove(&call_id);
+                self.tool_response_coordinator.remove_cancelled(&call_id);
 
                 // Prefer the original registry key (case-insensitive / sanitized).
                 let registry_name = self
@@ -8040,15 +7975,11 @@ impl NativeAgentRunner {
                     self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
                     let approval_started = Instant::now();
                     let approval = approval_span();
-                    let response = wait_for_codex_tool_response(
-                        &call_id,
-                        &mut self.tool_response_rx,
-                        &mut self.pending_tool_approvals,
-                        &self.cancelled_tool_responses,
-                        &approval_cancel,
-                    )
-                    .instrument(approval.clone())
-                    .await;
+                    let response = self
+                        .tool_response_coordinator
+                        .wait_for_tool_response(&call_id, &approval_cancel)
+                        .instrument(approval.clone())
+                        .await;
                     self.set_active_approval_cancel_token(None);
                     let (approval_outcome, approval_error) = match &response {
                         ToolResponseWait::Response((approved, _, _)) if *approved => {
@@ -8068,12 +7999,8 @@ impl NativeAgentRunner {
                         ToolResponseWait::Response(response) => response,
                         ToolResponseWait::Cancelled => {
                             let cancelled_ids = HashSet::from([call_id.clone()]);
-                            discard_cancelled_tool_responses(
-                                &cancelled_ids,
-                                &mut self.tool_response_rx,
-                                &mut self.pending_tool_approvals,
-                                &mut self.cancelled_tool_responses,
-                            );
+                            self.tool_response_coordinator
+                                .discard_cancelled(&cancelled_ids);
                             let error = "Tool approval cancelled".to_owned();
                             self.record_codex_tool_result(&call_id, error.clone(), true);
                             request.respond(tool_call_error_result(error));
@@ -8089,6 +8016,13 @@ impl NativeAgentRunner {
                     if !approved {
                         self.denial_memory.record(&registry_name, &args);
                         let error = "Tool denied by user".to_owned();
+                        self.record_codex_tool_result(&call_id, error.clone(), true);
+                        request.respond(tool_call_error_result(error));
+                        return Ok(());
+                    }
+                    if is_external_tool && provided_result.is_none() {
+                        let error =
+                            "Caller-owned tool response did not include a result".to_owned();
                         self.record_codex_tool_result(&call_id, error.clone(), true);
                         request.respond(tool_call_error_result(error));
                         return Ok(());
@@ -8311,15 +8245,11 @@ impl NativeAgentRunner {
                 self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
                 let approval_started = Instant::now();
                 let approval = approval_span();
-                let response = wait_for_codex_tool_response(
-                    &policy_call_id,
-                    &mut self.tool_response_rx,
-                    &mut self.pending_tool_approvals,
-                    &self.cancelled_tool_responses,
-                    &approval_cancel,
-                )
-                .instrument(approval.clone())
-                .await;
+                let response = self
+                    .tool_response_coordinator
+                    .wait_for_tool_response(&policy_call_id, &approval_cancel)
+                    .instrument(approval.clone())
+                    .await;
                 self.set_active_approval_cancel_token(None);
                 let (approval_outcome, approval_error) = match &response {
                     ToolResponseWait::Response((approved, _, _)) if *approved => ("approved", None),
@@ -8341,12 +8271,8 @@ impl NativeAgentRunner {
                             &mut self.codex_native_pending_completions,
                         );
                         let cancelled_ids = HashSet::from([policy_call_id.clone()]);
-                        discard_cancelled_tool_responses(
-                            &cancelled_ids,
-                            &mut self.tool_response_rx,
-                            &mut self.pending_tool_approvals,
-                            &mut self.cancelled_tool_responses,
-                        );
+                        self.tool_response_coordinator
+                            .discard_cancelled(&cancelled_ids);
                         let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
                             method: request.method.clone(),
                             decision: "cancelled".to_owned(),
@@ -8708,6 +8634,7 @@ impl NativeAgentRunner {
         // output cap, which the user pays for in full.
         let mut text_loop_detector = TextLoopDetector::new();
         let mut steered_after_text_loop = false;
+        let mut steered_after_billed_empty = false;
         'turn: loop {
             text_loop_detector.reset();
             step_budget.record_step();
@@ -8875,12 +8802,11 @@ impl NativeAgentRunner {
                                 text: std::mem::take(&mut current_text),
                             });
                         }
-                        if !current_thinking.is_empty() {
-                            assistant_content.push(ContentBlock::Thinking {
-                                thinking: std::mem::take(&mut current_thinking),
-                                signature: thinking_signature,
-                            });
-                        }
+                        append_completed_thinking_block(
+                            &mut assistant_content,
+                            &mut current_thinking,
+                            thinking_signature,
+                        );
                         if let Some((active_index, id, name, mut json)) = current_tool.take() {
                             // Merge any buffered deltas that arrived before the block start
                             if let Some(extra) = pending_tool_inputs.remove(&active_index) {
@@ -9151,15 +9077,55 @@ impl NativeAgentRunner {
                     model = %self.config.model,
                     normalized_blocks = assistant_content.len(),
                     saw_usage,
+                    output_tokens = usage.output_tokens,
                 );
                 report_diagnostic_nonblocking(format!(
-                    "[agent] provider returned no assistant text or tool calls (provider={provider}, model={}, normalized_blocks={}, saw_usage={saw_usage})",
+                    "[agent] provider returned no assistant text or tool calls (provider={provider}, model={}, normalized_blocks={}, saw_usage={saw_usage}, output_tokens={})",
                     self.config.model,
                     assistant_content.len(),
+                    usage.output_tokens,
                 ));
+                // A billed empty completion is thinking-only or a stripped
+                // thought turn, not a dropped connection. Retrying the same
+                // request reproduces it; one continuation is the recovery.
+                if saw_usage && usage.output_tokens > 0 && !steered_after_billed_empty {
+                    self.output_tokens_spent =
+                        self.output_tokens_spent.saturating_add(usage.output_tokens);
+                    if !assistant_content.is_empty() {
+                        self.messages_mut().push(Message {
+                            role: Role::Assistant,
+                            content: MessageContent::Blocks(assistant_content),
+                        });
+                    }
+                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                        response_id: response_id.clone(),
+                        usage: Some(usage),
+                    });
+                    steered_after_billed_empty = true;
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: "Model billed tokens with no assistant text; steering once and retrying."
+                            .to_string(),
+                    });
+                    self.messages_mut().push(Message {
+                        role: Role::User,
+                        content: MessageContent::text(billed_empty_reminder_message()),
+                    });
+                    if self.drain_pending_commands() {
+                        self.repair_orphaned_tool_calls();
+                        return Err(anyhow::anyhow!("Request cancelled"));
+                    }
+                    continue 'turn;
+                }
                 self.set_tool_batch_active(false);
                 return Err(anyhow::Error::new(EmptyAssistantResponse));
             }
+
+            // Persist the completed provider blocks before tool execution events.
+            // Display state has neither those calls yet nor thinking signatures.
+            let _ = self.event_tx.send(FromAgent::LocalAssistantContent {
+                response_id: response_id.clone(),
+                content: assistant_content.clone(),
+            });
 
             // Add assistant message to history
             if !assistant_content.is_empty() {
@@ -9293,7 +9259,7 @@ impl NativeAgentRunner {
                 while let Some((call_id, tool_name, args, parse_error)) =
                     pending_tool_calls_iter.next()
                 {
-                    self.cancelled_tool_responses.remove(&call_id);
+                    self.tool_response_coordinator.remove_cancelled(&call_id);
                     if processed_any_tool {
                         if self.drain_pending_commands() {
                             if !tool_results.is_empty() {
@@ -9735,12 +9701,8 @@ impl NativeAgentRunner {
                         deferred_tool_calls_iter.by_ref(),
                         &mut tool_results,
                     );
-                    discard_cancelled_tool_responses(
-                        &cancelled_ids,
-                        &mut self.tool_response_rx,
-                        &mut self.pending_tool_approvals,
-                        &mut self.cancelled_tool_responses,
-                    );
+                    self.tool_response_coordinator
+                        .discard_cancelled(&cancelled_ids);
                 }
                 while let Some(deferred_call) = deferred_tool_calls_iter.next() {
                     match deferred_call {
@@ -9749,15 +9711,11 @@ impl NativeAgentRunner {
                             self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
                             let approval_started = Instant::now();
                             let approval = approval_span();
-                            let response = wait_for_tool_response(
-                                &call.call_id,
-                                &mut self.tool_response_rx,
-                                &mut self.pending_tool_approvals,
-                                &self.cancelled_tool_responses,
-                                &approval_cancel,
-                            )
-                            .instrument(approval.clone())
-                            .await;
+                            let response = self
+                                .tool_response_coordinator
+                                .wait_for_tool_response(&call.call_id, &approval_cancel)
+                                .instrument(approval.clone())
+                                .await;
                             self.set_active_approval_cancel_token(None);
                             let (approval_outcome, approval_error) = match &response {
                                 ToolResponseWait::Response((approved, _, _)) if *approved => {
@@ -9798,12 +9756,8 @@ impl NativeAgentRunner {
                                         deferred_tool_calls_iter.by_ref(),
                                         &mut tool_results,
                                     ));
-                                    discard_cancelled_tool_responses(
-                                        &cancelled_ids,
-                                        &mut self.tool_response_rx,
-                                        &mut self.pending_tool_approvals,
-                                        &mut self.cancelled_tool_responses,
-                                    );
+                                    self.tool_response_coordinator
+                                        .discard_cancelled(&cancelled_ids);
                                     break;
                                 }
                                 ToolResponseWait::Closed => {
@@ -10214,12 +10168,8 @@ impl NativeAgentRunner {
                             deferred_tool_calls_iter.by_ref(),
                             &mut tool_results,
                         );
-                        discard_cancelled_tool_responses(
-                            &cancelled_ids,
-                            &mut self.tool_response_rx,
-                            &mut self.pending_tool_approvals,
-                            &mut self.cancelled_tool_responses,
-                        );
+                        self.tool_response_coordinator
+                            .discard_cancelled(&cancelled_ids);
                         break;
                     }
                 }
@@ -10590,10 +10540,10 @@ impl NativeAgentRunner {
         execution
     }
 
-    /// Shared tail for a decided tool call: execute locally when the
-    /// decision came back approved without a result, run post-execution
-    /// hooks and safety bookkeeping, and build the `ToolResult` block sent
-    /// back to the model.
+    /// Build the model result for a decided tool call. Approved local tools
+    /// without a result execute here; caller-owned tools fail without one.
+    /// Post-execution hooks and bookkeeping only observe supplied results
+    /// or local execution.
     async fn finalize_tool_call_result(
         &mut self,
         call: ToolCallContext,
@@ -10616,6 +10566,40 @@ impl NativeAgentRunner {
             self.denial_memory.record(&tool_name, &args);
         }
         let mut result = result;
+        let caller_owns_execution = approved
+            && result.is_none()
+            && self
+                .external_tools
+                .contains(&tool_name.to_ascii_lowercase());
+        if caller_owns_execution {
+            // A caller-owned approval without a result is a failed handoff.
+            // Surface that failure to the model without treating it as a
+            // locally executed tool: post-execution hooks, workflow updates,
+            // and result extensions must only observe real execution.
+            let result = ToolExecution::from_legacy(
+                &call_id,
+                &tool_name,
+                ExecutionSource::RemoteClient,
+                ToolResult::failure("Tool task did not return a result"),
+            );
+            let spill_dir = model_tool_spill_dir_for_active_tools(
+                &self.active_tool_names,
+                &self.config.cwd,
+                self.hooks.session_id(),
+                self.owns_persistent_tool_spills,
+            );
+            let content = crate::tool_output::clamp_for_model(
+                &result.model_content(),
+                &tool_name,
+                spill_dir.as_deref(),
+            )
+            .into_model_text();
+            return ContentBlock::ToolResult {
+                tool_use_id: call_id,
+                content,
+                is_error: Some(true),
+            };
+        }
         if approved && result.is_none() {
             let resolved_args =
                 tool_args_for_execution(&tool_name, &safe_args, &self.credential_vault);
@@ -10737,12 +10721,8 @@ impl NativeAgentRunner {
             return false;
         }
         let cancelled_ids = cancel_deferred_suffix(&self.event_tx, deferred_calls, tool_results);
-        discard_cancelled_tool_responses(
-            &cancelled_ids,
-            &mut self.tool_response_rx,
-            &mut self.pending_tool_approvals,
-            &mut self.cancelled_tool_responses,
-        );
+        self.tool_response_coordinator
+            .discard_cancelled(&cancelled_ids);
         true
     }
 
@@ -12830,6 +12810,236 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scripted_external_tool_response_uses_coordinator_and_never_falls_back_locally() {
+        let scripted = crate::ai::ScriptedClient::new(
+            "external-coordinator",
+            vec![
+                crate::ai::ScriptedResponse {
+                    blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                        id: "external-call".to_owned(),
+                        name: "bash".to_owned(),
+                        input: serde_json::json!({"command": "printf local-fallback > .caller-owned-local-fallback"}),
+                    }],
+                    stop_reason: crate::ai::StopReason::ToolUse,
+                    error: None,
+                },
+                crate::ai::ScriptedResponse::text("provided result consumed"),
+                crate::ai::ScriptedResponse {
+                    blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                        id: "external-missing".to_owned(),
+                        name: "bash".to_owned(),
+                        input: serde_json::json!({"command": "printf local-fallback > .caller-owned-local-fallback"}),
+                    }],
+                    stop_reason: crate::ai::StopReason::ToolUse,
+                    error: None,
+                },
+                crate::ai::ScriptedResponse::text("missing result rejected"),
+            ],
+        );
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "scripted/external-coordinator".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Selective,
+            ..NativeAgentConfig::default()
+        };
+        let external_tool = ToolDefinition {
+            tool: Tool::new("bash", "A caller-owned test tool").with_schema(serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            })),
+            requires_approval: true,
+        };
+        let (agent, mut events) = NativeAgent::new_with_tools_and_credential_vault_filtered(
+            config,
+            vec![external_tool],
+            CredentialVault::new(),
+            None,
+            Some(ClientOverride::UnverifiedTest(UnifiedClient::Scripted(
+                scripted.clone(),
+            ))),
+            None,
+            None,
+        )
+        .expect("scripted external-tool agent");
+        let tool_responses = agent.tool_response_sender();
+        let provided_result = ToolResult::success("caller-owned output");
+        let mut saw_tool_start = false;
+        let mut last_snapshot = None;
+        let mut model_text = String::new();
+        let hook_log = workspace.path().join("hook-events.log");
+        agent
+            .set_hook_log_file(hook_log.display().to_string())
+            .expect("configure hook log");
+
+        for (prompt, expected_call_id, result) in [
+            (
+                "complete the caller-owned operation",
+                "external-call",
+                Some(provided_result.clone()),
+            ),
+            (
+                "complete the caller-owned operation without a result",
+                "external-missing",
+                None,
+            ),
+        ] {
+            agent
+                .prompt(prompt.to_owned(), vec![])
+                .await
+                .expect("external-tool prompt");
+            let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match events.recv().await {
+                        Some(FromAgent::ToolCall {
+                            call_id,
+                            tool,
+                            requires_approval: true,
+                            ..
+                        }) => {
+                            assert_eq!(call_id, expected_call_id);
+                            assert_eq!(tool, "bash");
+                            tool_responses
+                                .send((
+                                    call_id,
+                                    true,
+                                    result.clone(),
+                                    ExecutionSource::RemoteClient,
+                                    Some(ack_tx),
+                                ))
+                                .expect("caller-owned response");
+                            break;
+                        }
+                        Some(FromAgent::ConversationSnapshot { messages, .. }) => {
+                            last_snapshot = Some(messages);
+                        }
+                        Some(FromAgent::ResponseChunk { content, .. }) => {
+                            model_text.push_str(&content);
+                        }
+                        Some(FromAgent::ToolStart { .. }) => saw_tool_start = true,
+                        Some(FromAgent::TurnCompleted { .. }) => {
+                            panic!("turn completed before the external response")
+                        }
+                        Some(
+                            FromAgent::Error { message, .. }
+                            | FromAgent::ProviderError { message, .. },
+                        ) => {
+                            panic!("external-tool turn failed: {message}")
+                        }
+                        Some(_) => {}
+                        None => panic!("event channel closed before external tool response"),
+                    }
+                }
+            })
+            .await
+            .expect("external-tool response request timeout");
+            assert_eq!(
+                ack_rx.await.expect("coordinator acknowledgement"),
+                ToolResponseConsumption::Accepted
+            );
+
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match events.recv().await {
+                        Some(FromAgent::TurnCompleted { .. }) => break,
+                        Some(FromAgent::ConversationSnapshot { messages, .. }) => {
+                            last_snapshot = Some(messages);
+                        }
+                        Some(FromAgent::ResponseChunk { content, .. }) => {
+                            model_text.push_str(&content);
+                        }
+                        Some(FromAgent::ToolStart { .. }) => saw_tool_start = true,
+                        Some(
+                            FromAgent::Error { message, .. }
+                            | FromAgent::ProviderError { message, .. },
+                        ) => {
+                            panic!("external-tool turn failed: {message}")
+                        }
+                        Some(_) => {}
+                        None => panic!("event channel closed before turn completion"),
+                    }
+                }
+            })
+            .await
+            .expect("external-tool turn completion timeout");
+        }
+
+        agent.shutdown().await;
+        assert!(
+            !saw_tool_start,
+            "caller-owned tools must never use the local executor"
+        );
+        assert!(
+            !workspace
+                .path()
+                .join(".caller-owned-local-fallback")
+                .exists(),
+            "missing caller-owned results must not fall back to the local bash executor"
+        );
+        let hook_log = std::fs::read_to_string(&hook_log).unwrap_or_default();
+        assert_eq!(
+            hook_log.matches(" PostToolUse ").count(),
+            1,
+            "the supplied result may run one post-tool hook"
+        );
+        assert_eq!(
+            hook_log.matches("PostToolUseFailure").count(),
+            0,
+            "a missing caller-owned result must not run post-tool hooks: {hook_log}"
+        );
+        assert_eq!(
+            scripted.remaining(),
+            0,
+            "both scripted turns should complete"
+        );
+        assert!(model_text.contains("provided result consumed"));
+        assert!(model_text.contains("missing result rejected"));
+        let messages =
+            last_snapshot.expect("successful turn should publish a conversation snapshot");
+        let mut tool_uses = HashSet::new();
+        let mut tool_results = HashMap::new();
+        for message in messages {
+            if let MessageContent::Blocks(blocks) = message.content {
+                for block in blocks {
+                    match block {
+                        ContentBlock::ToolUse { id, name, .. } => {
+                            tool_uses.insert((id, name));
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
+                            tool_results.insert(tool_use_id, (content, is_error));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(tool_uses.contains(&("external-call".to_owned(), "bash".to_owned())));
+        assert!(tool_uses.contains(&("external-missing".to_owned(), "bash".to_owned())));
+        assert_eq!(
+            tool_results["external-call"].1,
+            Some(false),
+            "a supplied successful result must remain successful after adapter conversion"
+        );
+        assert_eq!(tool_results["external-missing"].1, Some(true));
+        assert!(
+            tool_results["external-call"]
+                .0
+                .contains("tool result omitted from checkpoint")
+        );
+        assert!(
+            tool_results["external-missing"]
+                .0
+                .contains("tool result omitted from checkpoint")
+        );
+    }
+
+    #[tokio::test]
     async fn context_exclusion_changes_next_request_and_its_schema_report() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -13483,6 +13693,259 @@ mod tests {
         assert!(
             requests[1]["messages"].as_array().unwrap().len()
                 > requests[0]["messages"].as_array().unwrap().len()
+        );
+    }
+
+    #[tokio::test]
+    async fn set_model_normalizes_nonreasoning_target_before_next_request() {
+        let _guard = crate::config::test_process_env_lock_async().await;
+        let _restore = EnvRestore::capture(&[
+            "MAESTRO_HOME",
+            crate::credential_mode::ACCESS_TOKEN_ENV,
+            crate::credential_mode::ACCESS_TOKEN_FILE_ENV,
+            crate::credential_mode::ORG_ID_ENV,
+            crate::credential_mode::WORKSPACE_ID_ENV,
+            "MAESTRO_IDENTITY_URL",
+            crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV,
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_BASE_URL",
+            "MAESTRO_CONNECTION",
+        ]);
+        let home = tempfile::tempdir().expect("Maestro home");
+        std::env::set_var("MAESTRO_HOME", home.path());
+        configure_codex_fixture_identity();
+        std::env::set_var(crate::credential_mode::WORKSPACE_ID_ENV, "workspace-test");
+        std::env::remove_var("MAESTRO_CONNECTION");
+        std::env::set_var("OPENROUTER_API_KEY", "fixture-openrouter-key");
+        let (base_url, requests) = scripted_single_turn_provider().await;
+        std::env::set_var("OPENROUTER_BASE_URL", base_url);
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "openrouter/openai/o1".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            thinking_enabled: true,
+            thinking_budget: 15_000,
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+            "fixture",
+            vec![crate::ai::ScriptedResponse::text("unused")],
+        ));
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, client).expect("fixture agent");
+        agent
+            .set_model("openrouter/openai/gpt-4o")
+            .expect("queue model switch");
+
+        let mut changed = false;
+        let mut normalized = false;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !(changed && normalized) {
+                match events.recv().await.expect("model switch event") {
+                    FromAgent::ModelChanged { model, .. } => {
+                        assert_eq!(model, "openrouter/openai/gpt-4o");
+                        changed = true;
+                    }
+                    FromAgent::BoostChanged {
+                        status: crate::model_dynamics::BoostStatus::Idle,
+                        thinking: Some(crate::session::ThinkingLevel::Off),
+                    } => normalized = true,
+                    FromAgent::ModelChangeFailed { reason, .. } => {
+                        panic!("target model must resolve: {reason}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("model switch timeout");
+
+        agent
+            .prompt("Use the normalized setting.".to_owned(), vec![])
+            .await
+            .expect("prompt after model switch");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events.recv().await.expect("request event") {
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("normalized target request failed: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("target request timeout");
+        agent.shutdown().await;
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].get("reasoning_effort").is_none(),
+            "nonreasoning target must not inherit reasoning_effort: {}",
+            requests[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_codex_model_switch_preserves_the_live_app_server_session() {
+        let _guard = crate::config::test_process_env_lock_async().await;
+        let _restore = EnvRestore::capture(&[
+            "MAESTRO_HOME",
+            "CODEX_HOME",
+            "OPENAI_CODEX_TOKEN",
+            "MAESTRO_CODEX_APP_SERVER_COMMAND",
+            "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+            crate::credential_mode::ACCESS_TOKEN_ENV,
+            crate::credential_mode::ACCESS_TOKEN_FILE_ENV,
+            crate::credential_mode::ORG_ID_ENV,
+            crate::credential_mode::WORKSPACE_ID_ENV,
+            "MAESTRO_IDENTITY_URL",
+            crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV,
+        ]);
+        let root = tempfile::tempdir().expect("fixture root");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("fixture workspace");
+        std::env::set_var("MAESTRO_HOME", root.path().join("maestro-home"));
+        std::env::set_var("CODEX_HOME", root.path().join("codex-home"));
+        std::env::set_var("OPENAI_CODEX_TOKEN", "fixture-codex-token");
+        configure_codex_fixture_identity();
+        std::env::set_var(crate::credential_mode::WORKSPACE_ID_ENV, "workspace-test");
+        std::env::remove_var("MAESTRO_CONNECTION");
+
+        let log_path = root.path().join("app-server.log");
+        let script_path = root.path().join("app-server.js");
+        let log_literal =
+            serde_json::to_string(&log_path.display().to_string()).expect("log path literal");
+        let script = r"const readline = require('readline');
+const fs = require('fs');
+const log = __LOG__;
+let turn = 0;
+function send(value) {
+  fs.appendFileSync(log, `OUT ${JSON.stringify(value)}\n`);
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+const rl = readline.createInterface({input: process.stdin});
+rl.on('line', line => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(log, `IN ${message.method || ''}\n`);
+  if (message.method === 'initialize') {
+    send({id: message.id, result: {protocolVersion: '2025-01-01', capabilities: {
+      methods: ['thread/start', 'turn/start', 'turn/interrupt'],
+      notifications: ['item/tool/call', 'item/agentMessage/delta', 'turn/completed']
+    }}});
+  } else if (message.method === 'model/list') {
+    send({id: message.id, result: {data: [{id: 'gpt-5.5', model: 'gpt-5.5',
+      defaultReasoningEffort: 'medium', supportedReasoningEfforts: [
+        {reasoningEffort: 'low'}, {reasoningEffort: 'medium'},
+        {reasoningEffort: 'high'}, {reasoningEffort: 'xhigh'}
+      ]}], nextCursor: null}});
+  } else if (message.method === 'thread/start') {
+    send({id: message.id, result: {thread: {id: 'thread-stable'}}});
+  } else if (message.method === 'turn/start') {
+    const turnId = `turn-${++turn}`;
+    send({id: message.id, result: {turn: {id: turnId}}});
+    setTimeout(() => {
+      send({method: 'item/agentMessage/delta', params: {turnId, delta: 'turn complete'}});
+      send({method: 'turn/completed', params: {turnId}});
+    }, 5);
+  }
+});
+"
+        .replace("__LOG__", &log_literal);
+        std::fs::write(&script_path, script).expect("app-server script");
+        std::env::set_var("MAESTRO_CODEX_APP_SERVER_COMMAND", "node");
+        std::env::set_var(
+            "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+            serde_json::to_string(&vec![script_path.display().to_string()]).expect("script args"),
+        );
+
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let (agent, mut events) = NativeAgent::new(config).expect("Codex fixture agent");
+        agent
+            .prompt("Start the preserved session.".to_owned(), vec![])
+            .await
+            .expect("first prompt");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events.recv().await.expect("first turn event") {
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("first Codex turn failed: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("first turn timeout");
+
+        agent
+            .set_model("openrouter/openai/model-that-is-not-configured")
+            .expect("queue invalid model switch");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events.recv().await.expect("model switch event") {
+                    FromAgent::ModelChangeFailed { model, .. } => {
+                        assert_eq!(model, "openrouter/openai/model-that-is-not-configured");
+                        break;
+                    }
+                    FromAgent::ModelChanged { model, .. } => {
+                        panic!("invalid model unexpectedly activated: {model}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("model switch timeout");
+
+        agent
+            .prompt("Continue on the original session.".to_owned(), vec![])
+            .await
+            .expect("second prompt");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events.recv().await.expect("second turn event") {
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("preserved Codex turn failed: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("second turn timeout");
+        agent.shutdown().await;
+
+        let log = std::fs::read_to_string(log_path).expect("app-server log");
+        let count = |method: &str| {
+            log.lines()
+                .filter(|line| line.strip_prefix("IN ").is_some_and(|name| name == method))
+                .count()
+        };
+        assert_eq!(
+            count("initialize"),
+            1,
+            "failed switch restarted Codex: {log}"
+        );
+        assert_eq!(
+            count("thread/start"),
+            1,
+            "failed switch replaced thread: {log}"
+        );
+        assert_eq!(
+            count("turn/start"),
+            2,
+            "both prompts must use one thread: {log}"
         );
     }
 
@@ -14189,6 +14652,122 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_external_tool_response_uses_shared_coordinator() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let events_path = root.path().join("events.json");
+        let script_log = root.path().join("app-server.log");
+        let script = root.path().join("app-server.js");
+        let script_log_literal =
+            serde_json::to_string(&script_log.display().to_string()).expect("script log literal");
+        let script_source = r"const rl=require('readline').createInterface({input:process.stdin});
+const fs=require('fs'); const log=__SCRIPT_LOG__;
+function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}
+function toolCall(id, callId){return {id,method:'item/tool/call',params:{tool:'bash',callId,arguments:{command:'printf local-fallback > .codex-external-local-fallback'}}}}
+rl.on('line',line=>{fs.appendFileSync(log,'IN '+line+'\n'); const x=JSON.parse(line);
+if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{methods:['thread/start','turn/start','turn/interrupt'],notifications:['item/tool/call','item/agentMessage/delta','turn/completed']}}})}
+else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
+else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread-external'}}})}
+else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-external'}}});setTimeout(()=>send(toolCall('external-1','codex-external-call')),10)}
+else if(x.id==='external-1' && (x.result||x.error)){fs.appendFileSync(log,'FIRST_RESPONSE '+JSON.stringify(x)+'\n');setTimeout(()=>send(toolCall('external-2','codex-external-missing')),10)}
+else if(x.id==='external-2' && (x.result||x.error)){fs.appendFileSync(log,'SECOND_RESPONSE '+JSON.stringify(x)+'\n');setTimeout(()=>{send({method:'item/agentMessage/delta',params:{turnId:'turn-external',delta:'fixture complete'}});send({method:'turn/completed',params:{turnId:'turn-external'}})},10)}
+else if(x.method==='turn/interrupt'){send({id:x.id,result:{}})}
+});
+".replace("__SCRIPT_LOG__", &script_log_literal);
+        std::fs::write(&script, script_source).expect("app-server script");
+
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("agent::native::tests::codex_external_tool_response_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_EXTERNAL_EVENTS", &events_path)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", &workspace)
+                .env("MAESTRO_HOME", root.path().join("maestro-home"))
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env(
+                    "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                    serde_json::to_string(&vec![script.display().to_string()])
+                        .expect("script args"),
+                )
+                .output()
+                .expect("spawn fixture child");
+        assert!(
+            output.status.success(),
+            "external-tool fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            std::fs::read_to_string(&script_log).unwrap_or_default(),
+        );
+        let events: Vec<Value> = serde_json::from_slice(
+            &std::fs::read(&events_path).expect("external-tool events file"),
+        )
+        .expect("external-tool events json");
+        let calls: Vec<_> = events
+            .iter()
+            .filter(|event| event["type"] == "tool_call")
+            .collect();
+        assert_eq!(
+            calls.len(),
+            2,
+            "both Codex calls must reach the native loop"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|event| event["call_id"] == "codex-external-call")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|event| event["call_id"] == "codex-external-missing")
+        );
+        assert!(
+            !events.iter().any(|event| event["type"] == "tool_start"),
+            "caller-owned Codex tools must not invoke the local executor: {events:?}"
+        );
+        let log = std::fs::read_to_string(&script_log).expect("app-server log");
+        let response_from_log = |label: &str| {
+            let line = log
+                .lines()
+                .find_map(|line| line.strip_prefix(label))
+                .unwrap_or_else(|| panic!("missing {label} in app-server log: {log}"));
+            serde_json::from_str::<Value>(line).expect("logged JSON-RPC response")
+        };
+        let first_response = response_from_log("FIRST_RESPONSE ");
+        assert_eq!(first_response["id"], "external-1");
+        assert_eq!(first_response["result"]["success"], true);
+        assert_eq!(
+            first_response["result"]["contentItems"][0]["text"],
+            "codex caller output"
+        );
+        let second_response = response_from_log("SECOND_RESPONSE ");
+        assert_eq!(second_response["id"], "external-2");
+        assert_eq!(second_response["result"]["success"], false);
+        assert_eq!(
+            second_response["result"]["contentItems"][0]["text"],
+            "Caller-owned tool response did not include a result"
+        );
+        assert!(
+            log.contains("codex caller output"),
+            "the supplied result must be forwarded to Codex: {log}"
+        );
+        assert!(
+            log.contains("Caller-owned tool response did not include a result"),
+            "the missing result must be rejected explicitly: {log}"
+        );
+        assert!(
+            !workspace.join(".codex-external-local-fallback").exists(),
+            "Codex missing results must not fall back to local execution"
+        );
+    }
+
     #[tokio::test]
     async fn codex_process_continuation_fixture() {
         let Ok(role) = std::env::var("MAESTRO_CODEX_FIXTURE_ROLE") else {
@@ -14267,6 +14846,101 @@ mod tests {
             )
             .expect("persist runtime checkpoint");
         }
+        agent.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn codex_external_tool_response_fixture() {
+        let Ok(output_path) = std::env::var("MAESTRO_CODEX_EXTERNAL_EVENTS") else {
+            return;
+        };
+        configure_codex_fixture_identity();
+        let workspace = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_WORKSPACE").expect("fixture workspace"),
+        );
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Selective,
+            ..NativeAgentConfig::default()
+        };
+        let external_tool = ToolDefinition {
+            tool: Tool::new("bash", "A caller-owned test tool").with_schema(serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            })),
+            requires_approval: true,
+        };
+        let (agent, mut events) = NativeAgent::new_with_tools_and_credential_vault_filtered(
+            config,
+            vec![external_tool],
+            CredentialVault::new(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Codex external-tool fixture agent");
+        let tool_responses = agent.tool_response_sender();
+        agent
+            .prompt("complete the caller-owned operation".to_owned(), vec![])
+            .await
+            .expect("fixture prompt");
+
+        let mut captured = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                let event = events.recv().await.expect("fixture event");
+                let done = matches!(event, FromAgent::TurnCompleted { .. });
+                match &event {
+                    FromAgent::ToolCall {
+                        call_id,
+                        tool,
+                        requires_approval: true,
+                        ..
+                    } => {
+                        assert_eq!(tool, "bash");
+                        let result = match call_id.as_str() {
+                            "codex-external-call" => {
+                                Some(ToolResult::success("codex caller output"))
+                            }
+                            "codex-external-missing" => None,
+                            other => panic!("unexpected external call: {other}"),
+                        };
+                        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+                        tool_responses
+                            .send((
+                                call_id.clone(),
+                                true,
+                                result,
+                                ExecutionSource::RemoteClient,
+                                Some(ack_tx),
+                            ))
+                            .expect("caller-owned response");
+                        assert_eq!(
+                            ack_rx.await.expect("coordinator acknowledgement"),
+                            ToolResponseConsumption::Accepted
+                        );
+                    }
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("Codex external-tool turn failed: {message}")
+                    }
+                    _ => {}
+                }
+                captured.push(serde_json::to_value(&event).expect("event json"));
+                if done {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("Codex external-tool fixture timeout");
+        std::fs::write(
+            &output_path,
+            serde_json::to_vec(&captured).expect("captured event json"),
+        )
+        .expect("write external-tool fixture events");
         agent.shutdown().await;
     }
 
@@ -15723,7 +16397,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         );
         assert!(
             snapshot_bytes.len() as u64
-                <= token_budget * crate::agent::token_estimation::BYTES_PER_TOKEN as u64,
+                <= token_budget * maestro_context::token_estimation::BYTES_PER_TOKEN as u64,
             "serialized semantic snapshot exceeded the configured byte-derived bound"
         );
         assert!(
@@ -15777,7 +16451,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let restored_items_bytes = std::fs::read(&observed_items).expect("restored provider items");
         assert!(
             restored_items_bytes.len() as u64
-                <= token_budget * crate::agent::token_estimation::BYTES_PER_TOKEN as u64,
+                <= token_budget * maestro_context::token_estimation::BYTES_PER_TOKEN as u64,
             "reinjected provider items exceeded the configured byte-derived bound"
         );
         let restored_items: Vec<serde_json::Value> =
@@ -19145,355 +19819,6 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         assert!(Arc::ptr_eq(&history, &resolved));
     }
 
-    #[tokio::test]
-    async fn test_wait_for_tool_response_buffers_out_of_order() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::new();
-        let tombstones = CancelledToolTombstones::default();
-        let cancel = CancellationToken::new();
-        let (consumed_tx, mut consumed_rx) = tokio::sync::oneshot::channel();
-        let (buffered_consumed_tx, mut buffered_consumed_rx) = tokio::sync::oneshot::channel();
-
-        tx.send((
-            "id-2".to_string(),
-            true,
-            None,
-            ExecutionSource::Native,
-            Some(buffered_consumed_tx),
-        ))
-        .unwrap();
-        tx.send((
-            "id-1".to_string(),
-            false,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(consumed_tx),
-        ))
-        .unwrap();
-
-        let result =
-            wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
-        assert!(matches!(
-            result,
-            ToolResponseWait::Response((false, None, ExecutionSource::RemoteClient))
-        ));
-        assert!(
-            consumed_rx.try_recv().is_ok(),
-            "the receipt must fire only when the native wait consumes the response"
-        );
-        assert!(pending.contains_key("id-2"));
-        assert!(
-            matches!(
-                buffered_consumed_rx.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ),
-            "buffering an out-of-order response must not acknowledge consumption"
-        );
-
-        let result =
-            wait_for_tool_response("id-2", &mut rx, &mut pending, &tombstones, &cancel).await;
-        assert!(matches!(
-            result,
-            ToolResponseWait::Response((true, None, ExecutionSource::Native))
-        ));
-        assert!(buffered_consumed_rx.try_recv().is_ok());
-        assert!(pending.is_empty());
-    }
-
-    #[tokio::test]
-    async fn codex_concurrent_approvals_buffer_second_response_delivered_first() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::new();
-        let tombstones = CancelledToolTombstones::default();
-        let cancel = CancellationToken::new();
-        let (second_consumed_tx, mut second_consumed_rx) = tokio::sync::oneshot::channel();
-        let (first_consumed_tx, mut first_consumed_rx) = tokio::sync::oneshot::channel();
-        tx.send((
-            "codex-call-b".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(second_consumed_tx),
-        ))
-        .unwrap();
-        tx.send((
-            "codex-call-a".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(first_consumed_tx),
-        ))
-        .unwrap();
-
-        let first = wait_for_codex_tool_response(
-            "codex-call-a",
-            &mut rx,
-            &mut pending,
-            &tombstones,
-            &cancel,
-        )
-        .await;
-        assert!(matches!(
-            first,
-            ToolResponseWait::Response((true, None, ExecutionSource::RemoteClient))
-        ));
-        assert!(first_consumed_rx.try_recv().is_ok());
-        assert!(matches!(
-            second_consumed_rx.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-
-        let second = wait_for_codex_tool_response(
-            "codex-call-b",
-            &mut rx,
-            &mut pending,
-            &tombstones,
-            &cancel,
-        )
-        .await;
-        assert!(matches!(
-            second,
-            ToolResponseWait::Response((true, None, ExecutionSource::RemoteClient))
-        ));
-        assert!(second_consumed_rx.try_recv().is_ok());
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn deferred_cancellation_completes_receipt_with_correlated_rejection() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (buffered_tx, buffered_rx) = tokio::sync::oneshot::channel();
-        let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
-        let mut pending = HashMap::from([(
-            "cancelled-buffered".to_string(),
-            (true, None, ExecutionSource::RemoteClient, Some(buffered_tx)),
-        )]);
-        tx.send((
-            "cancelled-queued".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(queued_tx),
-        ))
-        .unwrap();
-        let cancelled = HashSet::from([
-            "cancelled-buffered".to_string(),
-            "cancelled-queued".to_string(),
-        ]);
-        let mut tombstones = CancelledToolTombstones::default();
-
-        discard_cancelled_tool_responses(&cancelled, &mut rx, &mut pending, &mut tombstones);
-
-        for outcome in [buffered_rx.blocking_recv(), queued_rx.blocking_recv()] {
-            assert!(matches!(
-                outcome,
-                Ok(ToolResponseConsumption::Rejected { ref reason })
-                    if reason.contains("cancelled before native consumption")
-            ));
-        }
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn cancellation_rejects_all_buffered_response_receipts() {
-        let (consumed_tx, consumed_rx) = tokio::sync::oneshot::channel();
-        let mut pending = HashMap::from([
-            (
-                "buffered-with-receipt".to_string(),
-                (true, None, ExecutionSource::RemoteClient, Some(consumed_tx)),
-            ),
-            (
-                "buffered-without-receipt".to_string(),
-                (false, None, ExecutionSource::RemoteClient, None),
-            ),
-        ]);
-
-        reject_buffered_tool_responses_on_cancel(&mut pending);
-
-        assert!(matches!(
-            consumed_rx.blocking_recv(),
-            Ok(ToolResponseConsumption::Rejected { ref reason })
-                if reason.contains("cancelled before native consumption")
-        ));
-        assert!(pending.is_empty());
-    }
-
-    #[tokio::test]
-    async fn standard_cancel_first_response_later_rejects_tombstoned_call() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::new();
-        let mut tombstones = CancelledToolTombstones::default();
-        tombstones.insert("cancelled-standard".to_string());
-        let (late_tx, mut late_rx) = tokio::sync::oneshot::channel();
-        tx.send((
-            "cancelled-standard".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(late_tx),
-        ))
-        .unwrap();
-        tx.send((
-            "active-standard".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            None,
-        ))
-        .unwrap();
-
-        let result = wait_for_tool_response(
-            "active-standard",
-            &mut rx,
-            &mut pending,
-            &tombstones,
-            &CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(
-            result,
-            ToolResponseWait::Response((true, None, _))
-        ));
-        assert!(matches!(
-            late_rx.try_recv(),
-            Ok(ToolResponseConsumption::Rejected { ref reason })
-                if reason.contains("cancelled before native consumption")
-        ));
-        assert!(!pending.contains_key("cancelled-standard"));
-    }
-
-    #[tokio::test]
-    async fn codex_cancel_first_response_later_rejects_tombstoned_call() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::new();
-        let mut tombstones = CancelledToolTombstones::default();
-        tombstones.insert("cancelled-codex".to_string());
-        let (late_tx, mut late_rx) = tokio::sync::oneshot::channel();
-        tx.send((
-            "cancelled-codex".to_string(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(late_tx),
-        ))
-        .unwrap();
-        tx.send((
-            "active-codex".to_string(),
-            false,
-            None,
-            ExecutionSource::RemoteClient,
-            None,
-        ))
-        .unwrap();
-
-        let result = wait_for_codex_tool_response(
-            "active-codex",
-            &mut rx,
-            &mut pending,
-            &tombstones,
-            &CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(
-            result,
-            ToolResponseWait::Response((false, None, _))
-        ));
-        assert!(matches!(
-            late_rx.try_recv(),
-            Ok(ToolResponseConsumption::Rejected { ref reason })
-                if reason.contains("cancelled before native consumption")
-        ));
-        assert!(!pending.contains_key("cancelled-codex"));
-    }
-
-    #[tokio::test]
-    async fn cancelled_tombstones_are_bounded_and_allow_legitimate_id_reuse() {
-        let mut tombstones = CancelledToolTombstones::default();
-        for index in 0..(MAX_CANCELLED_TOOL_TOMBSTONES + 10) {
-            tombstones.insert(format!("cancelled-{index}"));
-        }
-        assert_eq!(tombstones.len(), MAX_CANCELLED_TOOL_TOMBSTONES);
-        assert!(!tombstones.contains("cancelled-0"));
-        let reused = format!("cancelled-{}", MAX_CANCELLED_TOOL_TOMBSTONES + 9);
-        assert!(tombstones.contains(&reused));
-        tombstones.remove(&reused);
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (consumed_tx, mut consumed_rx) = tokio::sync::oneshot::channel();
-        tx.send((
-            reused.clone(),
-            true,
-            None,
-            ExecutionSource::RemoteClient,
-            Some(consumed_tx),
-        ))
-        .unwrap();
-        let mut pending = HashMap::new();
-        let result = wait_for_tool_response(
-            &reused,
-            &mut rx,
-            &mut pending,
-            &tombstones,
-            &CancellationToken::new(),
-        )
-        .await;
-        assert!(matches!(
-            result,
-            ToolResponseWait::Response((true, None, _))
-        ));
-        assert_eq!(
-            consumed_rx.try_recv(),
-            Ok(ToolResponseConsumption::Accepted)
-        );
-        tombstones.clear();
-        assert_eq!(tombstones.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn approval_wait_honors_cancellation_before_buffered_decisions() {
-        let (_tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::from([(
-            "id-1".to_string(),
-            (true, None, ExecutionSource::Native, None),
-        )]);
-        let cancel = CancellationToken::new();
-        let tombstones = CancelledToolTombstones::default();
-        cancel.cancel();
-
-        let result =
-            wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
-
-        assert!(matches!(result, ToolResponseWait::Cancelled));
-        assert!(pending.contains_key("id-1"));
-    }
-
-    #[tokio::test]
-    async fn shutdown_preempts_pending_tool_response_wait() {
-        let (_tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::new();
-        let shutdown_token = CancellationToken::new();
-        let cancel = shutdown_token.child_token();
-        let tombstones = CancelledToolTombstones::default();
-
-        let waiting = tokio::spawn(async move {
-            let result =
-                wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
-            (result, pending)
-        });
-        tokio::task::yield_now().await;
-        shutdown_token.cancel();
-
-        let (result, pending) =
-            tokio::time::timeout(std::time::Duration::from_millis(100), waiting)
-                .await
-                .expect("shutdown should preempt an approval wait")
-                .expect("approval wait task should not panic");
-        assert!(matches!(result, ToolResponseWait::Cancelled));
-        assert!(pending.is_empty());
-    }
-
     #[test]
     fn later_auto_approved_calls_defer_behind_an_approval_boundary() {
         assert_eq!(
@@ -20083,7 +20408,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "call-cancelled-buffered".to_string(),
             "call-cancelled-queued".to_string(),
         ]);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         tx.send((
             "call-cancelled-queued".to_string(),
             true,
@@ -20100,35 +20425,45 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             None,
         ))
         .expect("queue unrelated approval");
-        let mut pending = HashMap::from([
-            (
-                "call-cancelled-buffered".to_string(),
-                (true, None, ExecutionSource::Native, None),
-            ),
-            (
-                "call-existing".to_string(),
-                (false, None, ExecutionSource::Native, None),
-            ),
-        ]);
+        let mut coordinator = ToolResponseCoordinator::new(rx);
+        tx.send((
+            "call-cancelled-buffered".to_string(),
+            true,
+            None,
+            ExecutionSource::Native,
+            None,
+        ))
+        .expect("queue buffered cancelled approval");
+        tx.send((
+            "call-existing".to_string(),
+            false,
+            None,
+            ExecutionSource::Native,
+            None,
+        ))
+        .expect("queue existing approval");
+        coordinator.drain_available();
 
-        let mut tombstones = CancelledToolTombstones::default();
-        discard_cancelled_tool_responses(&cancelled_ids, &mut rx, &mut pending, &mut tombstones);
+        coordinator.discard_cancelled(&cancelled_ids);
 
-        assert!(!pending.contains_key("call-cancelled-buffered"));
-        assert!(!pending.contains_key("call-cancelled-queued"));
-        assert_eq!(
-            pending
-                .get("call-existing")
-                .map(|(approved, _, _, _)| *approved),
-            Some(false)
+        assert!(
+            coordinator
+                .take_pending_for_repair("call-cancelled-buffered")
+                .is_none()
         );
-        assert_eq!(
-            pending
-                .get("call-unrelated")
-                .map(|(approved, _, _, _)| *approved),
-            Some(false)
+        assert!(
+            coordinator
+                .take_pending_for_repair("call-cancelled-queued")
+                .is_none()
         );
-        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            coordinator.take_pending_for_repair("call-existing"),
+            Some((false, None, ExecutionSource::Native))
+        ));
+        assert!(matches!(
+            coordinator.take_pending_for_repair("call-unrelated"),
+            Some((false, None, ExecutionSource::Native))
+        ));
     }
 
     #[tokio::test]
@@ -20210,8 +20545,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     /// (`requires_approval == true`, which after the fix now also holds in
     /// Safe mode -- see `safe_mode_requires_approval_even_for_a_selective_safe_command`),
     /// a `(call_id, false, None)` denial -- exactly what `handle_tool_approval`
-    /// sends on Deny -- must resolve `wait_for_tool_response` (covered by
-    /// `test_wait_for_tool_response_buffers_out_of_order` above) into a
+    /// sends on Deny -- must resolve the runtime coordinator's keyed wait into a
     /// denied `ToolExecution` that reads as an error to the model, and must
     /// never reach `execute_tool`. `run_loop` only calls `execute_tool` when
     /// `approved` is true (see the `if approved && result.is_none()` branch);
@@ -20311,9 +20645,10 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             },
             assistant_tool_use_message(&[("call_1", "bash"), ("call_2", "read")]),
         ];
-        let mut pending = HashMap::new();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let mut coordinator = ToolResponseCoordinator::new(receiver);
 
-        repair_orphaned_tool_calls(&mut messages, &mut pending);
+        repair_orphaned_tool_calls(&mut messages, &mut coordinator);
 
         assert_eq!(messages.len(), 3);
         let repairs = tool_result_blocks(&messages[2]);
@@ -20352,18 +20687,19 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         // The app still delivers the cancelled tool's real outcome on the
         // tool-response channel; use it instead of a synthesized message.
         let mut messages = vec![assistant_tool_use_message(&[("call_1", "bash")])];
-        let mut pending = HashMap::new();
-        pending.insert(
-            "call_1".to_string(),
-            (
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send((
+                "call_1".to_string(),
                 true,
                 Some(ToolResult::failure("Command cancelled")),
                 ExecutionSource::Native,
                 None,
-            ),
-        );
+            ))
+            .expect("queue late tool result");
+        let mut coordinator = ToolResponseCoordinator::new(receiver);
 
-        repair_orphaned_tool_calls(&mut messages, &mut pending);
+        repair_orphaned_tool_calls(&mut messages, &mut coordinator);
 
         assert_eq!(messages.len(), 2);
         let repairs = tool_result_blocks(&messages[1]);
@@ -20371,20 +20707,26 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         assert_eq!(repairs[0].0, "call_1");
         assert!(repairs[0].1.contains("Command cancelled"));
         assert_eq!(repairs[0].2, Some(true));
-        assert!(pending.is_empty());
+        assert!(coordinator.take_pending_for_repair("call_1").is_none());
         assert_tool_call_pairing(&messages);
     }
 
     #[test]
     fn test_repair_orphaned_tool_calls_records_denials() {
         let mut messages = vec![assistant_tool_use_message(&[("call_1", "write")])];
-        let mut pending = HashMap::new();
-        pending.insert(
-            "call_1".to_string(),
-            (false, None, ExecutionSource::Native, None),
-        );
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send((
+                "call_1".to_string(),
+                false,
+                None,
+                ExecutionSource::Native,
+                None,
+            ))
+            .expect("queue denial");
+        let mut coordinator = ToolResponseCoordinator::new(receiver);
 
-        repair_orphaned_tool_calls(&mut messages, &mut pending);
+        repair_orphaned_tool_calls(&mut messages, &mut coordinator);
 
         let repairs = tool_result_blocks(&messages[1]);
         assert_eq!(repairs.len(), 1);
@@ -20407,9 +20749,10 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 }]),
             },
         ];
-        let mut pending = HashMap::new();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let mut coordinator = ToolResponseCoordinator::new(receiver);
 
-        repair_orphaned_tool_calls(&mut messages, &mut pending);
+        repair_orphaned_tool_calls(&mut messages, &mut coordinator);
 
         assert_eq!(messages.len(), 2);
         let results = tool_result_blocks(&messages[1]);
@@ -20439,9 +20782,10 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             },
         ];
         let original = messages.clone();
-        let mut pending = HashMap::new();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let mut coordinator = ToolResponseCoordinator::new(receiver);
 
-        repair_orphaned_tool_calls(&mut messages, &mut pending);
+        repair_orphaned_tool_calls(&mut messages, &mut coordinator);
 
         assert_eq!(messages.len(), original.len());
         assert_tool_call_pairing(&messages);
@@ -20532,5 +20876,33 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let message = repeat_refusal_message("bash");
         assert!(message.contains("bash"), "{message}");
         assert!(message.contains("earlier in this turn"), "{message}");
+    }
+
+    #[test]
+    fn content_block_stop_retains_empty_signed_thinking_block() {
+        let mut assistant_content = Vec::new();
+        let mut current_thinking = String::new();
+
+        append_completed_thinking_block(
+            &mut assistant_content,
+            &mut current_thinking,
+            Some("claude-signature".to_string()),
+        );
+
+        assert!(matches!(
+            assistant_content.as_slice(),
+            [ContentBlock::Thinking { thinking, signature }]
+                if thinking.is_empty() && signature.as_deref() == Some("claude-signature")
+        ));
+    }
+
+    #[test]
+    fn content_block_stop_omits_empty_unsigned_thinking_block() {
+        let mut assistant_content = Vec::new();
+        let mut current_thinking = String::new();
+
+        append_completed_thinking_block(&mut assistant_content, &mut current_thinking, None);
+
+        assert!(assistant_content.is_empty());
     }
 }

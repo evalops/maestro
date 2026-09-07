@@ -4,7 +4,6 @@
 //! - Require a plan before mutating operations (write/edit/bash/background tasks)
 //! - Run configured validators after file mutations
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,13 +14,7 @@ use std::cell::Cell;
 use crate::lsp::{self, LspDiagnostic};
 use crate::tools::resolve_shell_config;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidatorResult {
-    pub command: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-}
+pub use maestro_runtime::ValidatorResult;
 
 #[derive(Debug, Clone)]
 struct SafeModeConfig {

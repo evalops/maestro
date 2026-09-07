@@ -419,6 +419,41 @@ impl App {
             });
         }
 
+        if self
+            .pending_assistant_content
+            .as_ref()
+            .is_some_and(|(id, _)| id == response_id)
+        {
+            let (_, content) = self
+                .pending_assistant_content
+                .take()
+                .expect("matching response");
+            blocks = content
+                .into_iter()
+                .filter_map(|block| match block {
+                    crate::ai::ContentBlock::Text { text } => {
+                        Some(SessionContentBlock::Text { text })
+                    }
+                    crate::ai::ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    } => Some(SessionContentBlock::Thinking {
+                        text: thinking,
+                        signature,
+                    }),
+                    crate::ai::ContentBlock::ToolUse { id, name, input } => {
+                        Some(SessionContentBlock::ToolCall {
+                            contract: crate::tools::tool_call_contract::stamp(&id, &name),
+                            id,
+                            name,
+                            args: input,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+
         let usage = usage
             .as_ref()
             .map(to_session_usage)

@@ -38,11 +38,16 @@
 //! );
 //! ```
 
+mod onboarding;
 mod staged_rollout;
 mod tracker;
 mod wide_events;
 
-pub use staged_rollout::{record_canonical_turn_event, record_staged_rollout_surface_usage};
+pub use onboarding::*;
+pub use staged_rollout::{
+    onboarding_identity_scope, record_canonical_turn_event, record_onboarding_event,
+    record_staged_rollout_surface_usage,
+};
 pub use tracker::{TurnTracker, TurnTrackerConfig, TurnTrackerContext};
 pub use wide_events::{
     AbortReason, ApprovalMode, CanonicalTurnEvent, ErrorDetails, ExternalTurnEvent, FeatureFlags,

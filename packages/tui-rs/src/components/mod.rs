@@ -177,7 +177,7 @@ pub use rate_limit::{
 pub use rewind_picker::RewindPicker;
 pub use scroll::render_scrollbar;
 pub use session_switcher::SessionSwitcher;
-pub use setup_modal::{SetupAdvance, SetupModal, SetupPage, SetupProvider};
+pub use setup_modal::{SetupAdvance, SetupModal, SetupPage, SetupPresentation, SetupProvider};
 pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
 pub use status_indicator::{StatusIndicator, StatusIndicatorBuilder};
 pub use text::{StyledTextWidget, TextWidget};
@@ -186,3 +186,6 @@ pub use thinking_indicator::{
     ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
 };
 pub use welcome::{OnboardingFlow, OnboardingStep, SplashScreen, WelcomeScreen};
+
+#[cfg(test)]
+pub(crate) mod theme_test;

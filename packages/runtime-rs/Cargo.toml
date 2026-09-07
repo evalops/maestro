@@ -3,23 +3,14 @@ name = "maestro-runtime"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Transport-neutral native runtime contracts for Deixic Code"
+description = "Native runtime compatibility facade for Deixic Code"
 
 [dependencies]
-anyhow.workspace = true
-http.workspace = true
-opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry_sdk.workspace = true
 maestro-coding-acceptance.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-tracing.workspace = true
-tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
-uuid.workspace = true
+maestro-runtime-contracts.workspace = true
+tokio = { workspace = true, features = ["macros", "sync"] }
+tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 serde_json.workspace = true

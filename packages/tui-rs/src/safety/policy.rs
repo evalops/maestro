@@ -31,6 +31,8 @@ use crate::path_utils::{env_path, legacy_composer_home_dir, maestro_home_dir};
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
 
+pub use maestro_runtime::ManagedPolicyMetadata;
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PolicyList {
     pub allowed: Option<Vec<String>>,
@@ -107,23 +109,6 @@ struct ManagedPolicyPayload<'a> {
     kill_switch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     kill_switch_reason: &'a Option<String>,
-}
-
-/// Safe metadata attached to decisions and exposed by the admin status route.
-///
-/// This intentionally excludes the policy body, public key, and signature.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManagedPolicyMetadata {
-    pub org_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    pub policy_version: u64,
-    pub issued_at: u64,
-    pub expires_at: u64,
-    pub key_id: String,
-    pub policy_hash: String,
-    pub kill_switch: bool,
 }
 
 /// Current managed-policy health, safe to return to an authenticated operator.

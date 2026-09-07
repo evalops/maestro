@@ -69,331 +69,17 @@
 //! discriminator field, making the JSON format compatible with TypeScript and
 //! other languages.
 
-use crate::safety::ManagedPolicyMetadata;
 use crate::tools::{
     BashDetails, GlobDetails, GrepDetails, ImageDetails, ListDetails, ToolDetails, WebFetchDetails,
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) const MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES: usize = 64 * 1024;
-
-/// Opaque signed capability for one managed inference turn.
-///
-/// The transparent serde representation preserves the live protocol value,
-/// while `Debug` is deliberately redacted so command and queue diagnostics
-/// cannot reveal it.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ManagedInferenceAuthorization(String);
-
-impl ManagedInferenceAuthorization {
-    pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if self.0.is_empty() {
-            return Err("managedInferenceAuthorization must not be empty");
-        }
-        if self.0.len() > MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES {
-            return Err("managedInferenceAuthorization exceeds 64 KiB");
-        }
-        if self.0.chars().any(char::is_control) {
-            return Err("managedInferenceAuthorization contains control characters");
-        }
-        Ok(())
-    }
-
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(crate) fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl std::fmt::Debug for ManagedInferenceAuthorization {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ManagedInferenceAuthorization([REDACTED])")
-    }
-}
-
-// ============================================================================
-// Messages from Rust TUI to Agent
-// ============================================================================
-
-/// Messages sent from the TUI to the agent
-///
-/// These messages represent user actions and decisions that drive the agent's
-/// behavior. All variants are serializable for potential use with IPC or logging.
-///
-/// # Enum Variants as Message Types
-///
-/// Each variant represents a distinct command with its own data. Rust enums are
-/// more powerful than TypeScript unions because they can carry associated data:
-///
-/// ```rust,ignore
-/// // TypeScript equivalent would be:
-/// // type ToAgent =
-/// //   | { type: 'prompt'; content: string; attachments: string[] }
-/// //   | { type: 'cancel' }
-/// //   | { type: 'interrupt' }
-///
-/// // In Rust:
-/// pub enum ToAgent {
-///     Prompt { content: String, attachments: Vec<String> },
-///     Cancel,
-///     Interrupt,
-/// }
-/// ```
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// // Send a prompt
-/// let msg = ToAgent::Prompt {
-///     content: "Write a Rust function".to_string(),
-///     attachments: vec![],
-/// };
-///
-/// // Send a cancellation
-/// let msg = ToAgent::Cancel;
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToAgent {
-    /// User submitted a prompt
-    ///
-    /// Triggers a new AI completion request. The agent will add the user message
-    /// to the conversation history and begin streaming a response.
-    Prompt {
-        /// The user's message
-        content: String,
-
-        /// Files to attach (paths).
-        ///
-        /// Images are attached as vision blocks; UTF-8 text files are attached
-        /// as document text blocks.
-        #[serde(default)]
-        attachments: Vec<String>,
-    },
-
-    /// User interrupted the agent (escape/ctrl-c)
-    ///
-    /// Similar to Cancel, but specifically indicates a keyboard interrupt.
-    /// Currently treated the same as Cancel.
-    Interrupt,
-
-    /// Response to a tool call
-    ///
-    /// Sent when the user approves or denies a tool execution request. The agent
-    /// waits for this message before proceeding with restricted tools.
-    ToolResponse {
-        /// ID of the tool call this responds to
-        ///
-        /// Must match the `call_id` from the `FromAgent::ToolCall` event.
-        call_id: String,
-
-        /// Whether the tool was approved
-        ///
-        /// If true, the tool will execute. If false, the agent will be told
-        /// the tool was denied.
-        approved: bool,
-
-        /// Result of the tool (if approved and executed)
-        ///
-        /// For auto-approved tools, the TUI may execute them and send the result
-        /// here. For manually approved tools, this is typically None and the
-        /// agent executes the tool itself.
-        result: Option<ToolResult>,
-    },
-
-    /// Request to cancel current operation
-    ///
-    /// Triggers the cancellation token to stop the active AI request. The agent
-    /// will clean up and send a `ResponseEnd` event.
-    Cancel,
-
-    /// Shutdown the agent gracefully
-    ///
-    /// Requests the agent to terminate. Currently unused (agent shuts down when
-    /// the command channel closes).
-    Shutdown,
-}
-
-/// Model-safe output emitted by a completed tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ToolOutput(String);
-
-impl ToolOutput {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-/// Classified failure returned by a tool invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ToolError {
-    Validation { message: String },
-    Execution { message: String },
-    Transport { message: String },
-}
-
-impl ToolError {
-    #[must_use]
-    pub fn message(&self) -> &str {
-        match self {
-            Self::Validation { message }
-            | Self::Execution { message }
-            | Self::Transport { message } => message,
-        }
-    }
-}
-
-/// Reason a requested tool was not allowed to execute.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DenialReason {
-    IdentityAuthority { message: String },
-    User,
-    SandboxPolicy { message: String },
-    ActionFirewall { message: String },
-}
-
-impl DenialReason {
-    #[must_use]
-    pub fn message(&self) -> &str {
-        match self {
-            Self::User => "Tool call was denied by user",
-            Self::SandboxPolicy { message }
-            | Self::ActionFirewall { message }
-            | Self::IdentityAuthority { message } => message,
-        }
-    }
-}
-
-/// Stage at which a tool invocation was cancelled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionPhase {
-    Queued,
-    Running,
-}
-
-/// The semantic result of a tool invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ToolOutcome {
-    Succeeded {
-        output: ToolOutput,
-    },
-    Failed {
-        error: ToolError,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        partial_output: Option<ToolOutput>,
-    },
-    Denied {
-        reason: DenialReason,
-    },
-    Cancelled {
-        phase: ExecutionPhase,
-    },
-    /// The local executor stopped without learning whether a remote write committed.
-    /// Callers must reconcile the remote operation before retrying.
-    Indeterminate {
-        reason: String,
-    },
-}
-
-/// Lifecycle classification persisted with a receipt without duplicating tool output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ExecutionStatus {
-    Succeeded,
-    Failed,
-    Denied,
-    Cancelled { phase: ExecutionPhase },
-    Indeterminate,
-}
-
-impl ToolOutcome {
-    #[must_use]
-    pub fn status(&self) -> ExecutionStatus {
-        match self {
-            Self::Succeeded { .. } => ExecutionStatus::Succeeded,
-            Self::Failed { .. } => ExecutionStatus::Failed,
-            Self::Denied { .. } => ExecutionStatus::Denied,
-            Self::Cancelled { phase } => ExecutionStatus::Cancelled { phase: *phase },
-            Self::Indeterminate { .. } => ExecutionStatus::Indeterminate,
-        }
-    }
-}
-
-/// Where the result was produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionSource {
-    Native,
-    RemoteClient,
-    Cache,
-}
-
-/// Typed evidence captured for an execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "details", rename_all = "snake_case")]
-pub enum ToolReceiptDetails {
-    BuiltIn(ToolDetails),
-    /// A local feedback proposal, with no send authority or selected evidence.
-    FeedbackDraft {
-        description: String,
-        expected_behavior: String,
-        reproduction_steps: String,
-    },
-    Mcp {
-        server: String,
-        tool: String,
-        is_error: bool,
-    },
-    /// Provenance string for a tool whose output has no dedicated
-    /// [`ToolDetails`] variant (e.g. `gh_issue`, `websearch`) but whose raw
-    /// `details` JSON carried an `origin`/`url`/`query` field. Used only to
-    /// annotate the `origin` attribute of the untrusted-content envelope in
-    /// [`ToolExecution::model_content`]; carries no other semantics.
-    Origin(String),
-    Cached,
-    None,
-}
-
-/// Audit information that must not be sent as provider tool-result content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionReceipt {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code_authority: Option<Box<crate::code_authority::CodeAuthorityDecision>>,
-    pub call_id: String,
-    pub tool_name: String,
-    pub source: ExecutionSource,
-    pub status: ExecutionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<Box<ManagedPolicyMetadata>>,
-    pub details: ToolReceiptDetails,
-}
+pub use maestro_runtime::{
+    CodeAuthorityDecision, DenialReason, ExecutionPhase, ExecutionReceipt, ExecutionSource,
+    ExecutionStatus, MAX_MANAGED_INFERENCE_AUTHORIZATION_BYTES, ManagedInferenceAuthorization,
+    ManagedPolicyMetadata, ToAgent, TokenUsage, ToolError, ToolOutcome, ToolOutput,
+    ToolReceiptDetails, ToolResult,
+};
 
 /// Typed internal result used by native execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,8 +412,8 @@ fn is_untrusted_tool(tool_name: &str, details: &ToolReceiptDetails) -> bool {
 /// `pub(crate)` so downstream text-truncation/elision code (e.g.
 /// `agent::compaction`) can detect and repair a dangling opening tag left by
 /// truncating wrapped content mid-body; see
-/// [`close_dangling_untrusted_content_envelope`].
-pub(crate) const UNTRUSTED_CONTENT_TAG: &str = "untrusted_content";
+/// [`maestro_context::close_dangling_untrusted_content_envelope`].
+pub(crate) use maestro_context::envelope::UNTRUSTED_CONTENT_TAG;
 
 /// Escape the three characters that could let envelope *body* text be
 /// confused with envelope structure. `&` is escaped first so escaping is
@@ -795,80 +481,6 @@ fn wrap_untrusted_content(tool_name: &str, details: &ToolReceiptDetails, content
             tag = UNTRUSTED_CONTENT_TAG
         ),
     }
-}
-
-/// Repair a dangling, unclosed `<untrusted_content ...>` opening tag left by
-/// truncating or eliding already-wrapped content mid-body.
-///
-/// Compaction (`agent::compaction`) truncates old tool results to a fixed
-/// character budget before folding them into a `<context_summary>`. A
-/// head-only truncation of `wrap_untrusted_content`'s output can keep the
-/// opening tag but drop the closing one, leaving the rest of the compacted
-/// text -- including the summary's own closing tags and any trusted
-/// instruction that follows -- structurally "inside" a never-closed
-/// untrusted region. This can only ever make more text look untrusted, never
-/// less (a truncation can drop a close tag, it can never introduce a new
-/// literal `<untrusted_content`/`</untrusted_content>` that wasn't already in
-/// the escaped-safe output), but it still degrades the signal the envelope
-/// exists to provide, so callers that truncate/elide model-facing tool
-/// output should run the result through this repair.
-///
-/// Validates *every* opening-tag occurrence, not just the first: a failed
-/// untrusted tool with partial output renders two envelopes, so truncation can
-/// leave the first envelope complete while cutting inside the second opener.
-/// Any opener whose closing `>` is missing (or is preceded by another `<`,
-/// which a well-formed opener's escaped attributes can never contain) is an
-/// unrecoverable attribute fragment and is replaced with a provenance-free but
-/// structurally complete empty envelope. Then counts literal open
-/// (`<untrusted_content`) vs. close (`</untrusted_content>`) tag occurrences
-/// and appends however many closes are missing. A no-op when tags are already
-/// balanced.
-#[must_use]
-pub(crate) fn close_dangling_untrusted_content_envelope(text: &str) -> String {
-    let open_prefix = format!("<{UNTRUSTED_CONTENT_TAG}");
-    let close_tag = format!("</{UNTRUSTED_CONTENT_TAG}>");
-    let empty_envelope = format!("<{UNTRUSTED_CONTENT_TAG}>\n{close_tag}");
-
-    let mut repaired = String::with_capacity(text.len() + empty_envelope.len());
-    let mut rest = text;
-    while let Some(open_start) = rest.find(&open_prefix) {
-        repaired.push_str(&rest[..open_start]);
-        let after_prefix = &rest[open_start + open_prefix.len()..];
-        let gt = after_prefix.find('>');
-        let lt = after_prefix.find('<');
-        let malformed = match (gt, lt) {
-            (Some(gt), Some(lt)) => lt < gt,
-            (None, _) => true,
-            (Some(_), None) => false,
-        };
-        if malformed {
-            // The quoted attributes cannot be recovered from the truncated
-            // fragment; drop everything up to the next tag start (or end of
-            // text) and emit a complete provenance-free envelope instead.
-            repaired.push_str(&empty_envelope);
-            rest = match lt {
-                Some(lt) => &after_prefix[lt..],
-                None => "",
-            };
-        } else {
-            repaired.push_str(&rest[open_start..open_start + open_prefix.len()]);
-            rest = after_prefix;
-        }
-    }
-    repaired.push_str(rest);
-
-    let opens = repaired.matches(open_prefix.as_str()).count();
-    let closes = repaired.matches(close_tag.as_str()).count();
-    if opens <= closes {
-        return repaired;
-    }
-    let mut out = String::with_capacity(repaired.len() + (opens - closes) * (close_tag.len() + 1));
-    out.push_str(&repaired);
-    for _ in 0..(opens - closes) {
-        out.push('\n');
-        out.push_str(&close_tag);
-    }
-    out
 }
 
 /// Standing system-prompt clause that gives the `<untrusted_content>`
@@ -1002,90 +614,6 @@ fn generic_origin(details: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Legacy wire result of a tool execution.
-///
-/// Contains the outcome of running a tool (bash, read, write, etc.).
-/// Either `success` is true with output, or false with an error message.
-///
-/// # Examples
-///
-/// ```
-/// use maestro_tui::agent::ToolResult;
-///
-/// // Successful execution using helper method
-/// let result = ToolResult::success("Hello, world!");
-/// assert!(result.success);
-///
-/// // Failed execution using helper method
-/// let result = ToolResult::failure("Permission denied");
-/// assert!(!result.success);
-/// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolResult {
-    /// Whether the tool succeeded
-    ///
-    /// If true, the tool executed successfully and `output` contains the result.
-    /// If false, the tool failed and `error` contains the reason.
-    pub success: bool,
-
-    /// Output from the tool
-    ///
-    /// For successful executions, contains stdout or the result data.
-    /// For failures, this may be empty or contain partial output.
-    pub output: String,
-
-    /// Error message if failed
-    ///
-    /// Only set when `success` is false. Contains the error description
-    /// (stderr, exception message, etc.).
-    #[serde(default)]
-    pub error: Option<String>,
-
-    /// Structured details about the tool execution
-    ///
-    /// Contains tool-specific metadata like execution time, exit codes,
-    /// file paths, etc. Use `serde_json::from_value` to deserialize into
-    /// the appropriate detail type (e.g., `BashDetails`, `ReadDetails`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
-}
-
-impl ToolResult {
-    /// Create a successful tool result
-    pub fn success(output: impl Into<String>) -> Self {
-        Self {
-            success: true,
-            output: output.into(),
-            ..Default::default()
-        }
-    }
-
-    /// Create a failed tool result
-    pub fn failure(error: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error: Some(error.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Add details to the result
-    #[must_use]
-    pub fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = Some(details);
-        self
-    }
-
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.details
-            .as_ref()
-            .and_then(|details| details.get("cancelled"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    }
-}
-
 // ============================================================================
 // Messages from Agent to Rust TUI
 // ============================================================================
@@ -1168,6 +696,13 @@ pub struct InlineToolApprovalContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgent {
+    /// In-process content for local transcript persistence, before tool dispatch.
+    /// Never serialize provider thinking/signatures onto a public transport.
+    #[serde(skip)]
+    LocalAssistantContent {
+        response_id: String,
+        content: Vec<maestro_ai::ContentBlock>,
+    },
     /// Private durable checkpoint of the compacted provider conversation.
     ConversationSnapshot {
         protocol_version: String,
@@ -1603,84 +1138,6 @@ pub enum FromAgent {
     },
 }
 
-/// Token usage statistics
-///
-/// Tracks token consumption for a single AI request. Used for monitoring costs,
-/// context usage, and prompt cache efficiency.
-///
-/// # Token Types
-///
-/// - **Input tokens**: Tokens in the prompt (user message + system prompt + history)
-/// - **Output tokens**: Tokens generated by the AI
-/// - **Cache read tokens**: Tokens read from the prompt cache (cheaper than input)
-/// - **Cache write tokens**: Tokens written to the prompt cache (one-time cost)
-///
-/// # Prompt Caching
-///
-/// Anthropic's prompt caching reduces costs by storing common context (like system
-/// prompts and conversation history) for reuse. Cache read tokens are significantly
-/// cheaper than regular input tokens:
-///
-/// - Regular input: $3 per million tokens
-/// - Cache read: $0.30 per million tokens (10x cheaper)
-/// - Cache write: $3.75 per million tokens (25% more than input)
-///
-/// # Examples
-///
-/// ```
-/// use maestro_tui::agent::TokenUsage;
-///
-/// let usage = TokenUsage {
-///     input_tokens: 1000,
-///     output_tokens: 500,
-///     cache_read_tokens: 5000,  // 5K tokens loaded from cache
-///     cache_write_tokens: 0,
-///     cost: Some(0.025),  // Calculated cost in USD
-/// };
-///
-/// println!("Total tokens: {}", usage.input_tokens + usage.output_tokens);
-/// println!("Cache hit ratio: {:.1}%",
-///     usage.cache_read_tokens as f64 / (usage.input_tokens + usage.cache_read_tokens) as f64 * 100.0
-/// );
-/// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TokenUsage {
-    /// Input tokens used
-    ///
-    /// Tokens in the user prompt, system prompt, and conversation history that
-    /// were NOT served from cache. These are billed at the standard input rate.
-    #[serde(default)]
-    pub input_tokens: u64,
-
-    /// Output tokens used
-    ///
-    /// Tokens generated by the AI in the response. Billed at the output rate,
-    /// which is typically higher than input tokens.
-    #[serde(default)]
-    pub output_tokens: u64,
-
-    /// Cache read tokens
-    ///
-    /// Tokens loaded from the prompt cache. These are significantly cheaper than
-    /// regular input tokens (often 10x cheaper).
-    #[serde(default)]
-    pub cache_read_tokens: u64,
-
-    /// Cache write tokens
-    ///
-    /// Tokens written to the prompt cache for future reuse. Slightly more expensive
-    /// than input tokens but provide long-term cost savings.
-    #[serde(default)]
-    pub cache_write_tokens: u64,
-
-    /// Cost in dollars (if available)
-    ///
-    /// Calculated cost based on the provider's pricing. May be None if pricing
-    /// information is unavailable.
-    #[serde(default)]
-    pub cost: Option<f64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1692,9 +1149,17 @@ mod tests {
             content: "Hello".to_string(),
             attachments: vec![],
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("prompt"));
-        assert!(json.contains("Hello"));
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "prompt",
+                "content": "Hello",
+                "attachments": [],
+            })
+        );
+        let decoded: ToAgent = serde_json::from_value(json).unwrap();
+        assert!(matches!(decoded, ToAgent::Prompt { content, .. } if content == "Hello"));
     }
 
     #[test]
@@ -2334,7 +1799,7 @@ mod tests {
 
     #[test]
     fn envelope_overhead_is_a_small_fixed_cost_independent_of_body_size() {
-        use crate::agent::token_estimation::estimate_tokens;
+        use maestro_context::token_estimation::estimate_tokens;
 
         for body_len in [200usize, 2_000, 8_000] {
             let body = "a".repeat(body_len);
@@ -2362,7 +1827,7 @@ mod tests {
 
     #[test]
     fn envelope_escaping_expansion_is_bounded_for_markup_heavy_content() {
-        use crate::agent::token_estimation::estimate_tokens;
+        use maestro_context::token_estimation::estimate_tokens;
 
         // Reserved-character-heavy content (diffs, source, HTML) expands
         // under escaping: each `<`/`>` becomes a 4-byte entity and `&` a

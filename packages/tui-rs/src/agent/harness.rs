@@ -681,6 +681,54 @@ async fn scripted_empty_response_retries_before_terminal_success() {
 }
 
 #[tokio::test]
+async fn scripted_billed_empty_completion_steers_once_then_completes() {
+    let mut harness = AgentHarness::with_scripted(vec![
+        ScriptedResponse {
+            blocks: vec![ScriptedBlock::BilledSilence { output_tokens: 390 }],
+            stop_reason: StopReason::EndTurn,
+            error: None,
+        },
+        ScriptedResponse::text("{\"escalate_to\":\"none\",\"findings\":[]}"),
+    ])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("review this change".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(
+                    event,
+                    FromAgent::Status { message }
+                        if message.contains("billed tokens with no assistant text")
+                )
+            })
+            .await
+            .is_some(),
+        "billed empty completion should steer once instead of retrying identically"
+    );
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(event, FromAgent::ResponseEnd { response_id, .. } if response_id == "done")
+            })
+            .await
+            .is_some(),
+        "the steered follow-up should complete the original turn"
+    );
+    assert!(
+        !harness.hook_log_contains("StopFailure"),
+        "recovered billed-empty completion must not dispatch StopFailure"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
 async fn scripted_tool_side_effect_is_not_repeated_by_later_empty_retry() {
     let mut harness = AgentHarness::with_scripted(vec![
         ScriptedResponse {

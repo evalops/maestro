@@ -30,6 +30,10 @@ maestro-a2a-ledger.workspace = true
 # Terminal handling
 crossterm = { workspace = true, features = ["bracketed-paste", "event-stream"] }
 maestro-ui.workspace = true
+maestro-sandbox.workspace = true
+maestro-workspace.workspace = true
+maestro-codex.workspace = true
+maestro-swarm.workspace = true
 maestro-presentation.workspace = true
 maestro-interaction.workspace = true
 ratatui = { workspace = true, features = [
@@ -51,9 +55,11 @@ futures.workspace = true
 
 # AI provider client layer (packages/ai-rs); re-exported at crate::ai
 maestro-ai.workspace = true
+maestro-context.workspace = true
 maestro-execpolicy.workspace = true
 maestro-runtime.workspace = true
 maestro-session-history.workspace = true
+maestro-session.workspace = true
 
 # HTTP client for AI APIs
 reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls"] }
@@ -96,7 +102,6 @@ dunce.workspace = true
 fd-lock.workspace = true
 toml = "0.8"
 libc.workspace = true
-rayon = "1.10"
 zip.workspace = true
 tempfile.workspace = true
 tree-sitter.workspace = true
@@ -113,10 +118,10 @@ pulldown-cmark = "0.13"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 
 # Diff generation
-similar = "3"
+similar.workspace = true
 
 # Random selection for tooltips
-rand = "0.9"
+rand.workspace = true
 
 # URL parsing for file:// paths
 url = "2"
@@ -152,15 +157,9 @@ wasmtime = { version = "47", optional = true }
 
 # File watching for hot reload
 notify = { version = "8", optional = true }
-tiktoken-rs = { version = "0.12.0", default-features = false }
-
-# Linux sandboxing (Landlock + seccomp)
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4.5"
-seccompiler = "0.5"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -185,6 +184,9 @@ hot-reload = ["notify"]
 hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
+maestro-session = { workspace = true, features = ["test-support"] }
+# Reconstruct real terminal cells in PTY assertions, including cursor-only spaces.
+vt100 = "0.16.2"
 pretty_assertions = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 wat = "1"

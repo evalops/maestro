@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use super::onboarding::{OnboardingCollectionStatus, OnboardingEvent};
+
 use crate::telemetry::{
     AbortReason, ApprovalMode, CanonicalTurnEvent, ExternalTurnEvent, SampleReason, SandboxMode,
     TelemetryIdentityScope, TurnStatus,
@@ -224,7 +226,38 @@ struct FirstPartyTurnTelemetryEvent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FirstPartyOutboxRecord {
     identity_scope: TelemetryIdentityScope,
-    event: FirstPartyTurnTelemetryEvent,
+    event: FirstPartyTelemetryEvent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+enum FirstPartyTelemetryEvent {
+    Turn(FirstPartyTurnTelemetryEvent),
+    Onboarding(OnboardingEvent),
+}
+impl FirstPartyTelemetryEvent {
+    fn is_server_valid(&self) -> bool {
+        match self {
+            Self::Turn(event) => event.is_server_valid(),
+            Self::Onboarding(event) => event.is_server_valid(),
+        }
+    }
+    fn event_id(&self) -> Uuid {
+        match self {
+            Self::Turn(event) => event.event_id,
+            Self::Onboarding(event) => event.event_id,
+        }
+    }
+}
+impl From<FirstPartyTurnTelemetryEvent> for FirstPartyTelemetryEvent {
+    fn from(event: FirstPartyTurnTelemetryEvent) -> Self {
+        Self::Turn(event)
+    }
+}
+impl From<OnboardingEvent> for FirstPartyTelemetryEvent {
+    fn from(event: OnboardingEvent) -> Self {
+        Self::Onboarding(event)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -532,10 +565,10 @@ fn trim_outbox_paths_to_capacity(
     Some(())
 }
 
-fn persist_first_party_event(
+fn persist_first_party_event<E: Clone + Into<FirstPartyTelemetryEvent>>(
     outbox_dir: &Path,
     identity_scope: &TelemetryIdentityScope,
-    event: &FirstPartyTurnTelemetryEvent,
+    event: &E,
 ) -> Option<PathBuf> {
     persist_first_party_event_with_writer(
         outbox_dir,
@@ -545,15 +578,16 @@ fn persist_first_party_event(
     )
 }
 
-fn persist_first_party_event_with_writer<F>(
+fn persist_first_party_event_with_writer<E: Clone + Into<FirstPartyTelemetryEvent>, F>(
     outbox_dir: &Path,
     identity_scope: &TelemetryIdentityScope,
-    event: &FirstPartyTurnTelemetryEvent,
+    event: &E,
     writer: F,
 ) -> Option<PathBuf>
 where
     F: FnOnce(&Path, &[u8]) -> anyhow::Result<()>,
 {
+    let event: FirstPartyTelemetryEvent = event.clone().into();
     if !identity_scope.is_complete() || !event.is_server_valid() {
         return None;
     }
@@ -570,7 +604,7 @@ where
         let path = outbox_dir.join(format!(
             "{:020}_{}.json",
             chrono::Utc::now().timestamp_micros(),
-            event.event_id
+            event.event_id()
         ));
         // Write first. If the filesystem cannot admit the new record, retain
         // every existing durable event instead of evicting one for nothing.
@@ -751,6 +785,59 @@ fn schedule_custom_export(endpoint: String, encoded: String) {
                 .body(encoded)
                 .send();
         });
+}
+
+/// Collect against the currently verified scope. Before login no event is queued;
+/// a later login must never attribute earlier unauthenticated activity to its tenant.
+/// Uses the existing bounded private outbox, retry worker, and telemetry opt-out.
+pub async fn record_onboarding_event(
+    event: OnboardingEvent,
+    origin: Option<TelemetryIdentityScope>,
+) -> OnboardingCollectionStatus {
+    record_onboarding_event_with(
+        event,
+        origin,
+        first_party_delivery_session,
+        schedule_first_party_outbox_drain,
+    )
+}
+
+fn record_onboarding_event_with(
+    event: OnboardingEvent,
+    origin: Option<TelemetryIdentityScope>,
+    verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
+    schedule_drain: impl FnOnce(),
+) -> OnboardingCollectionStatus {
+    if true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
+        || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
+        || telemetry_flag() == Some(false)
+    {
+        return OnboardingCollectionStatus::Disabled;
+    }
+    let Some(origin) = origin else {
+        return OnboardingCollectionStatus::Unavailable;
+    };
+    let Some(identity) = verified_session() else {
+        return OnboardingCollectionStatus::Unavailable;
+    };
+    if identity.identity_scope != origin {
+        return OnboardingCollectionStatus::Unavailable;
+    }
+    if persist_first_party_event(&first_party_outbox_dir(), &origin, &event).is_none() {
+        return OnboardingCollectionStatus::Failed;
+    }
+    schedule_drain();
+    OnboardingCollectionStatus::Queued
+}
+
+/// Capture the selected account before asynchronous work. These coordinates are
+/// only a restriction: collection still requires matching live Identity authority.
+/// An absent origin cannot be filled in by a later login.
+pub fn onboarding_identity_scope() -> Option<TelemetryIdentityScope> {
+    let env = std::env::vars().collect();
+    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
+    let session = crate::credential_mode::platform_session_from(snapshot.as_ref(), &env)?;
+    TelemetryIdentityScope::new(&session.organization_id, session.workspace_id.as_deref())
 }
 
 /// Persist and export the content-free projection of a completed native turn.

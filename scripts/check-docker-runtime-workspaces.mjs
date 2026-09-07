@@ -37,7 +37,9 @@ const required = [
 	[/CMD\s+\["web"\]/, "Rust web command"],
 ];
 
-const runtimeBoundaryCopy = /COPY\s+packages\/runtime-rs\s+\.\/packages\/runtime-rs/;
+const runtimeFacadeCopy = /COPY\s+packages\/runtime-rs\s+\.\/packages\/runtime-rs/;
+const runtimeContractsCopy =
+	/COPY\s+packages\/runtime-contracts-rs\s+\.\/packages\/runtime-contracts-rs/;
 const plannerStage = stageContents("planner");
 const nativeStage = stageContents("native");
 
@@ -47,11 +49,17 @@ const missing = required
 if (!nativeStageHasRustToolchain) {
 	missing.unshift("Rust native build stage");
 }
-if (!runtimeBoundaryCopy.test(plannerStage)) {
-	missing.push("native runtime boundary crate in planner Docker stage");
+if (!runtimeFacadeCopy.test(plannerStage)) {
+	missing.push("native runtime facade crate in planner Docker stage");
 }
-if (!runtimeBoundaryCopy.test(nativeStage)) {
-	missing.push("native runtime boundary crate in native Docker stage");
+if (!runtimeFacadeCopy.test(nativeStage)) {
+	missing.push("native runtime facade crate in native Docker stage");
+}
+if (!runtimeContractsCopy.test(plannerStage)) {
+	missing.push("dependency-light runtime contracts crate in planner Docker stage");
+}
+if (!runtimeContractsCopy.test(nativeStage)) {
+	missing.push("dependency-light runtime contracts crate in native Docker stage");
 }
 if (missing.length > 0) {
 	console.error(`Dockerfile is missing native runtime contracts: ${missing.join(", ")}`);

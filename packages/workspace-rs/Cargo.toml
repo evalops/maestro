@@ -1,0 +1,18 @@
+[package]
+name = "maestro-workspace"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Workspace file discovery, search, and Git worktree operations for Maestro"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+dunce.workspace = true
+libc.workspace = true
+rayon.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

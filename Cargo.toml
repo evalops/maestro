@@ -4,14 +4,21 @@ exclude = ["examples/hooks/wasm-plugin"]
 members = [
     "packages/maestro-rs",
     "packages/runtime-rs",
+    "packages/runtime-contracts-rs",
     "packages/coding-acceptance-rs",
+    "packages/context-rs",
     "packages/scenario-rs",
     "packages/session-history-rs",
+    "packages/session-rs",
     "packages/ai-rs",
     "packages/runtime-gateway-rs",
     "packages/a2a-ledger-rs",
     "packages/execpolicy-rs",
     "packages/tui-rs",
+    "packages/sandbox-rs",
+    "packages/workspace-rs",
+    "packages/codex-rs",
+    "packages/swarm-rs",
     "packages/ui-rs",
     "packages/presentation-rs",
     "packages/ui-preview-rs",
@@ -60,9 +67,16 @@ maestro-a2a-ledger = { path = "packages/a2a-ledger-rs" }
 maestro-runtime-gateway = { path = "packages/runtime-gateway-rs" }
 maestro-execpolicy = { path = "packages/execpolicy-rs" }
 maestro-runtime = { path = "packages/runtime-rs" }
+maestro-runtime-contracts = { path = "packages/runtime-contracts-rs" }
 maestro-coding-acceptance = { path = "packages/coding-acceptance-rs" }
+maestro-context = { path = "packages/context-rs" }
 maestro-session-history = { path = "packages/session-history-rs" }
+maestro-session = { path = "packages/session-rs" }
 maestro-tui = { path = "packages/tui-rs" }
+maestro-sandbox = { path = "packages/sandbox-rs" }
+maestro-workspace = { path = "packages/workspace-rs" }
+maestro-codex = { path = "packages/codex-rs" }
+maestro-swarm = { path = "packages/swarm-rs" }
 maestro-ui = { path = "packages/ui-rs" }
 maestro-presentation = { path = "packages/presentation-rs" }
 unicode-width = "0.2"
@@ -85,10 +99,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+similar = "3"
+rayon = "1.10"
+rand = "0.9"
 thiserror = "2"
 tempfile = "3"
 time = "0.3"
 tokio = { version = "1" }
+tokio-util = { version = "0.7" }
 tokio-stream = "0.1"
 tokio-rustls = "0.26"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
@@ -96,6 +114,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.32"
 wait-timeout = "0.2"
+windows-sys = "0.61"
 x509-parser = "0.18"
 zip = { version = "8", default-features = false, features = ["aes-crypto", "deflate64", "deflate", "lzma", "ppmd", "time", "zstd", "xz"] }
 tree-sitter = "0.25"

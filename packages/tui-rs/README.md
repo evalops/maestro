@@ -19,20 +19,42 @@ The TypeScript TUI has limitations with SSH sessions where content that scrolls 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│  Rust TUI Binary (ratatui + crossterm)          │
-│  - Native AI client (Anthropic, OpenAI)         │
-│  - Tool execution (bash, read, write, etc.)     │
-│  - Native terminal rendering                    │
-│  - Input handling & key events                  │
-│  - Modal system (file search, commands, etc)    │
-│  - Session management                           │
-│  - Theme support                                │
-└─────────────────────────────────────────────────┘
+`maestro-tui` composes the CLI, interactive application, native agent, tools,
+sessions, and hosted entrypoints. Reusable code has independent Cargo boundaries:
+
+| Crate | Responsibility |
+| --- | --- |
+| `maestro-ui` | Terminal widgets, text layout, ANSI parsing, input editing, scrolling, and rendering helpers |
+| `maestro-presentation` | Product-specific appearance and widgets |
+| `maestro-interaction` | Transport-neutral interaction state and typed actions |
+| `maestro-sandbox` | Native child-process and file-write enforcement; separate Linux and macOS implementations |
+| `maestro-workspace` | File discovery, indexing, fuzzy search, Git inspection, and worktree operations |
+| `maestro-codex` | Codex app-server transport and persisted thread bindings |
+| `maestro-swarm` | Task graph parsing, dispatch types, and concurrent execution |
+| `maestro-ai` | Provider clients |
+| `maestro-execpolicy` | Command execution policy parsing and evaluation |
+| `maestro-runtime-contracts` | Runtime identity, protocols, receipts, and telemetry contracts |
+| `maestro-runtime` | Compatibility facade and future native runtime loop owner |
+
+The extracted crates do not depend on `maestro-tui`. Historical imports such as
+`maestro_tui::wrapping`, `maestro_tui::sandbox`, and `maestro_tui::files` remain
+available through re-exports. Their tests run in the owning crate:
+
+```bash
+cargo test -p maestro-ui -p maestro-sandbox -p maestro-workspace -p maestro-codex -p maestro-swarm --locked
 ```
 
-This is a **pure Rust implementation** - no subprocess communication, no Node.js dependency.
+`agent`, `tools`, `session`, `config`, and the application still have mutual
+dependencies. Separating the agent from the application requires moving the
+shared event/state contracts and replacing application callbacks first.
+`sandbox_policy` remains in the application because it resolves product
+configuration; `maestro-sandbox` enforces the resulting policy. Codex login,
+profile selection, and CLI commands stay with application configuration;
+`maestro-codex` owns the protocol client and thread bindings. `maestro-swarm`
+executes task graphs through a caller-provided task function; it does not own
+the native agent lifecycle. `maestro-runtime-contracts` owns the dependency-light
+runtime contracts; `maestro-runtime` retains the historical facade and will own
+the native loop.
 
 ## Features
 

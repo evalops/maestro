@@ -641,7 +641,7 @@ async fn managed_setup_check(
     if crate::managed_setup::platform_base_url().is_none() {
         return check("managed_setup", CheckStatus::Warning,
             "MCP setup has no Deixic address",
-            Some("Set MAESTRO_MANAGED_SETUP_URL to your organization's Deixic address. Model requests can still work; MCP servers require a verified policy.".to_owned()), false);
+            Some("Set MAESTRO_MANAGED_SETUP_URL or MAESTRO_PLATFORM_BASE_URL to your organization's Deixic address. Model requests can still work; MCP servers require a verified policy.".to_owned()), false);
     }
     if !live {
         return check(
@@ -667,7 +667,7 @@ async fn managed_setup_check(
         Ok(client) if client.origin() == crate::managed_setup::ManagedSetupOrigin::Fetched =>
             check("managed_setup", CheckStatus::Pass, "Managed setup verified for your account", None, true),
         _ => check("managed_setup", CheckStatus::Warning, "Managed setup could not be verified",
-            Some("Check MAESTRO_MANAGED_SETUP_URL and your organization's access. MCP access remains governed by the last verified policy, or refused when none is available.".to_owned()), true),
+            Some("Check MAESTRO_MANAGED_SETUP_URL or MAESTRO_PLATFORM_BASE_URL and your organization's access. MCP access remains governed by the last verified policy, or refused when none is available.".to_owned()), true),
     }
 }
 

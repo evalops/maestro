@@ -104,8 +104,7 @@ impl App {
                         self.active_modal = ActiveModal::ThemeSelector;
                     }
                     ModalType::Setup => {
-                        self.setup_modal.show();
-                        self.active_modal = ActiveModal::Setup;
+                        self.open_onboarding();
                     }
                     ModalType::ModelSelector => {
                         self.local_model_discovery
@@ -155,6 +154,44 @@ impl App {
         }
     }
 
+    pub(super) fn cycle_model(&mut self, backward: bool) {
+        if self.state.busy || self.pending_model_change.is_some() || self.pending_agent_spawn {
+            self.state.status = Some("Wait for the current turn or model switch to finish.".into());
+            return;
+        }
+        let config = crate::config::model_dynamics_config();
+        self.model_selector
+            .set_current_model(Some(self.current_model.clone()));
+        let candidates = if config.cycle.is_empty() {
+            self.model_selector.cycle_routes()
+        } else {
+            config
+                .cycle
+                .iter()
+                .map(|choice| choice.model.clone())
+                .collect()
+        };
+        let mut routes: Vec<String> = Vec::new();
+        for route in candidates {
+            if !routes
+                .iter()
+                .any(|old| crate::model_dynamics::same_model_route(old, &route))
+                && (crate::model_dynamics::same_model_route(&route, &self.current_model)
+                    || crate::model_catalog::verify_model_offline(&route).state
+                        == crate::model_catalog::VerificationState::Verified)
+            {
+                routes.push(route);
+            }
+        }
+        if let Some(next) =
+            crate::model_dynamics::next_cycle_route(&routes, &self.current_model, backward)
+        {
+            self.switch_model(next, false);
+        } else {
+            self.state.status = Some("No other configured model is available to cycle to.".into());
+        }
+    }
+
     /// Handle a command action that modifies state
     /// Switch the session model, optionally persisting it as the user
     /// default in `~/.maestro/config.toml` first.
@@ -164,6 +201,7 @@ impl App {
             self.state.error = Some(reason);
             return;
         }
+        self.state.error = None;
         if persist_default {
             match crate::config_cli::persist_user_model_default(model_id) {
                 Ok(path) => {
@@ -172,6 +210,7 @@ impl App {
                 }
                 Err(error) => {
                     self.state.error = Some(format!("Failed to save default model: {error}"));
+                    return;
                 }
             }
         }
@@ -192,6 +231,12 @@ impl App {
             // First-run `/setup` and `/model` both land here before spawn,
             // including after a failed start. Remember the route and retry
             // so a new key or model is actually applied.
+            let requested = crate::config::model_dynamics_config()
+                .effort_for_model(model_id)
+                .unwrap_or(self.current_thinking_level);
+            self.current_thinking_level =
+                crate::model_dynamics::normalize_thinking(model_id, requested);
+            self.state.thinking_level = self.current_thinking_level;
             self.current_model = model_id.to_owned();
             self.current_model_user_set = true;
             self.state.model = Some(model_id.to_owned());
@@ -206,6 +251,8 @@ impl App {
 
     pub(super) async fn handle_command_action(&mut self, action: CommandAction) {
         match action {
+            CommandAction::OpenPanel(panel) => self.show_control_panel(panel),
+            CommandAction::SetOutputDetail(detail) => self.apply_output_detail(detail),
             CommandAction::ClearMessages => {
                 self.start_new_session("New session started.");
             }
@@ -218,13 +265,11 @@ impl App {
                 }
             }
             CommandAction::SetCompactTools(mode) => {
-                let next = mode.unwrap_or(!self.state.compact_tool_outputs);
-                self.state.compact_tool_outputs = next;
-                self.state.expanded_tool_calls.clear();
-                self.state.status = Some(if next {
-                    "Tool outputs will collapse by default.".to_string()
+                let compact = mode.unwrap_or(!self.state.compact_tool_outputs);
+                self.apply_output_detail(if compact {
+                    crate::state::OutputDetail::Compact
                 } else {
-                    "Tool outputs will show full content.".to_string()
+                    crate::state::OutputDetail::Expanded
                 });
             }
             CommandAction::SetApprovalMode(mode) => {
@@ -443,15 +488,17 @@ impl App {
             }
             CommandAction::SetDexPresentation(setting) => self.handle_dex_command(&setting),
             CommandAction::SetFooterStyle(style) => {
-                self.footer_style = style;
                 let mut prefs = crate::ui_prefs::UiPrefs::load_default();
                 prefs.set_footer_style(style);
                 if let Err(e) = prefs.save_default() {
                     self.state.error = Some(format!(
-                        "Footer style set to {} but failed to persist: {e}",
+                        "Footer style unchanged; failed to persist {}: {e}",
                         style.as_str()
                     ));
                 } else {
+                    self.footer_style = style;
+                    self.ui_prefs = prefs;
+                    self.state.error = None;
                     self.state
                         .status
                         .replace(format!("Footer style: {} (saved)", style.as_str()));
@@ -549,11 +596,11 @@ impl App {
                 self.show_prompt_audit(json);
             }
             CommandAction::SetFocus(mode) => {
-                let enabled = self.state.set_focus_view(mode.unwrap_or(!self.state.focus_view));
-                self.state.status = Some(if enabled {
-                    "Focus view enabled. Tool-heavy turns are collapsed.".to_string()
+                let enabled = mode.unwrap_or(!self.state.focus_view);
+                self.apply_output_detail(if enabled {
+                    crate::state::OutputDetail::Summary
                 } else {
-                    "Focus view disabled.".to_string()
+                    crate::state::OutputDetail::Compact
                 });
             }
             CommandAction::BugReport(args) => {
@@ -794,7 +841,7 @@ impl App {
                 basis = "Last prepared request estimate, not provider-reported usage. Wire framing and provider-side context are not included.";
             } else {
                 breakdown.system_prompt = snapshot.system_prompt.as_deref().map_or(0, |prompt| {
-                    crate::agent::token_counting::count_tokens(prompt, model)
+                    maestro_context::token_counting::count_tokens(prompt, model)
                 });
                 tool_rows = snapshot
                     .tools
@@ -802,7 +849,7 @@ impl App {
                     .map(|definition| {
                         (
                             definition.tool.name.clone(),
-                            crate::agent::token_counting::count_tokens(
+                            maestro_context::token_counting::count_tokens(
                                 &serde_json::to_string(&definition.tool).unwrap_or_default(),
                                 model,
                             ),
@@ -1141,53 +1188,7 @@ impl App {
             return;
         }
         match self.session_manager.most_recent_session() {
-            Ok(Some(session)) => {
-                // Resuming a persisted transcript begins a new credential scope.
-                // Historical references intentionally cannot resolve after reload.
-                self.credential_vault.clear();
-                // Drop the previous session's error surface and force a full
-                // repaint so its frames cannot linger beneath the resumed
-                // transcript.
-                self.reset_rendered_viewport();
-                crate::plan_mode::set_active_session_id(None);
-                restore_visible_session_messages(&mut self.state, &session);
-                self.plan_review_comments =
-                    crate::session::reconstruct_plan_review(&session.plan_review_events);
-                let session_id = session.header.id.clone();
-                self.state.session_id = Some(session_id.clone());
-                // Acquire the writer before adopting the session scope. Adopting
-                // first fires SessionEnd/SessionStart and switches the subagent
-                // parent scope even when the transcript is locked; a failure
-                // then leaves hooks and child completion routing on a session
-                // that is not open for append.
-                if let Err(err) = self
-                    .session_manager
-                    .resume_session_by_path(session_id.clone(), session.file_path.as_str())
-                {
-                    self.session_manager.reset_session();
-                    crate::plan_mode::set_active_session_id(None);
-                    self.session_resume_failed = true;
-                    self.state.error = Some(super::format_session_persistence_error(
-                        "resume the session writer",
-                        err,
-                    ));
-                    return;
-                }
-                self.restore_pending_lifecycle_agent_notes(&session);
-                self.adopt_session_context(Some(&session_id), "resume");
-                self.session_resume_failed = false;
-                crate::plan_mode::set_active_session_id(Some(session_id.clone()));
-                self.hydrate_usage_from_session(&session);
-                let agent_messages = crate::session::model_history(&session);
-                if let Some(agent) = &self.native_agent {
-                    agent.replace_history(agent_messages);
-                }
-                self.state.status = Some(format!("Continued session {session_id}"));
-                self.state.add_system_message(format!(
-                    "Resumed most recent session `{session_id}` ({} messages).",
-                    self.state.messages.len()
-                ));
-            }
+            Ok(Some(session)) => self.apply_resumed_session(&session),
             Ok(None) => {
                 self.state
                     .status
@@ -1226,9 +1227,52 @@ impl App {
             self.should_quit = true;
             return;
         }
+        let target_session_id = session.header.id.clone();
+        // Acquire and parse the target while the current writer is still
+        // retained. A locked or unreadable target must leave the active
+        // session usable; the prepared writer is committed only after all
+        // in-memory session replacement has succeeded. Re-selecting the
+        // already-active path is the one safe no-op because opening it again
+        // would collide with our own writer lock.
+        let active_path = self.session_manager.current_session_path();
+        let had_active_session = self.session_manager.current_session_id().is_some();
+        let same_active_session = active_path
+            .as_deref()
+            .is_some_and(|path| path == std::path::Path::new(&session.file_path));
+        let prepared = if same_active_session {
+            None
+        } else {
+            match self
+                .session_manager
+                .prepare_session_adoption(&session.file_path)
+            {
+                Ok(prepared) => Some(prepared),
+                Err(err) => {
+                    if !had_active_session {
+                        self.session_resume_failed = true;
+                    }
+                    self.state.error = Some(super::format_session_persistence_error(
+                        "resume the session writer",
+                        err,
+                    ));
+                    self.state.status = Some(if had_active_session {
+                        format!(
+                            "Session resume failed ({target_session_id}); current session unchanged"
+                        )
+                    } else {
+                        format!("Session resume failed ({target_session_id}); use /new to continue")
+                    });
+                    return;
+                }
+            }
+        };
+
+        let session = prepared
+            .as_ref()
+            .map_or(session, |prepared| prepared.session());
+        let session_id = session.header.id.clone();
         self.dex_terminal = None;
         self.dex_delight = Default::default();
-        let session_id = session.header.id.clone();
         // Resuming a persisted transcript begins a new credential scope.
         // Historical references intentionally cannot resolve after reload.
         self.credential_vault.clear();
@@ -1267,6 +1311,12 @@ impl App {
             }
         }
 
+        if let Some(agent) = &self.native_agent {
+            // The visible transcript and the next provider request must resume
+            // the same history, including any persisted compaction boundary.
+            agent.replace_history(crate::session::model_history(session));
+        }
+
         self.session_started_at = chrono::DateTime::parse_from_rfc3339(&session.header.timestamp)
             .ok()
             .and_then(|dt| {
@@ -1292,32 +1342,16 @@ impl App {
             self.usage_tracker.set_model(self.current_model.clone());
         }
 
-        // Acquire the writer before adopting the session scope. Adopting first
-        // fires SessionEnd/SessionStart and switches the subagent parent scope
-        // even when the transcript is locked; a failure then leaves hooks and
-        // child completion routing on a session that is not open for append.
-        if let Err(err) = self
-            .session_manager
-            .resume_session_by_path(session_id.clone(), session.file_path.as_str())
-        {
-            self.session_manager.reset_session();
-            crate::plan_mode::set_active_session_id(None);
-            self.session_resume_failed = true;
-            self.state.error = Some(super::format_session_persistence_error(
-                "resume the session writer",
-                err,
-            ));
-            self.state.status = Some(format!(
-                "Session resume failed ({session_id}); use /new to continue"
-            ));
-        } else {
-            self.restore_pending_lifecycle_agent_notes(session);
-            // Re-adopt this session's own scope: completions from children it
-            // started earlier are parked, not discarded, and surface from here.
-            self.adopt_session_context(Some(&session_id), "resume");
-            self.session_resume_failed = false;
-            crate::plan_mode::set_active_session_id(Some(session_id.clone()));
+        self.restore_pending_lifecycle_agent_notes(session);
+        if let Some(prepared) = prepared {
+            self.session_manager.adopt_prepared_session(prepared);
         }
+        // Re-adopt this session's own scope: completions from children it
+        // started earlier are parked, not discarded, and surface from here.
+        self.adopt_session_context(Some(&session_id), "resume");
+        self.session_resume_failed = false;
+        self.last_esc_at = None;
+        crate::plan_mode::set_active_session_id(Some(session_id.clone()));
     }
 
     /// Resume a specific session before the event loop starts.
@@ -1364,6 +1398,7 @@ impl App {
             );
             return;
         }
+        self.last_esc_at = None;
         self.credential_vault.clear();
         // A child still running under the previous conversation must not report
         // into this one. The scope rotates now; the session id does not exist
@@ -1606,17 +1641,11 @@ impl App {
                 crate::plan_mode::set_active_session_id(Some(id.to_string()));
             }
             let cwd = self.plan_cwd();
-            let plan_path = crate::plan_mode::ensure_plan_file(&cwd)
+            let _plan_path = crate::plan_mode::ensure_plan_file(&cwd)
                 .unwrap_or_else(|_| crate::plan_mode::plan_file_path(&cwd));
-            self.state.status = Some(format!(
-                "Plan mode on — write only {}. Use /plan approve when ready.",
-                plan_path.display()
-            ));
-            self.state.add_system_message(format!(
-                "Plan mode enabled (Grok-style). Explore freely; mutate only the plan file \
-(`.maestro/plan.md` / `{}`). When the plan is ready: `/view-plan`, then `/plan approve`.",
-                plan_path.display()
-            ));
+            self.state.status =
+                Some("Plan mode on. Use /plan view to review, then /plan approve.".into());
+            self.state.add_system_message("Plan mode enabled. Changes are limited to the plan until you approve it. Use /plan view to review.".into());
             // Nudge the agent with plan-mode instructions when possible.
             if let Some(agent) = &self.native_agent {
                 let prompt = format!(

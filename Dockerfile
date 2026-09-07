@@ -4,7 +4,12 @@ WORKDIR /app
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
+COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/sandbox-rs ./packages/sandbox-rs
+COPY packages/workspace-rs ./packages/workspace-rs
+COPY packages/codex-rs ./packages/codex-rs
+COPY packages/swarm-rs ./packages/swarm-rs
 COPY packages/ui-rs ./packages/ui-rs
 COPY packages/interaction-rs ./packages/interaction-rs
 COPY packages/presentation-rs ./packages/presentation-rs
@@ -13,11 +18,13 @@ COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
+COPY packages/runtime-contracts-rs ./packages/runtime-contracts-rs
 COPY packages/coding-acceptance-rs ./packages/coding-acceptance-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs
 COPY packages/session-history-rs ./packages/session-history-rs
+COPY packages/session-rs ./packages/session-rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS native
@@ -25,7 +32,12 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
+COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/sandbox-rs ./packages/sandbox-rs
+COPY packages/workspace-rs ./packages/workspace-rs
+COPY packages/codex-rs ./packages/codex-rs
+COPY packages/swarm-rs ./packages/swarm-rs
 COPY packages/ui-rs ./packages/ui-rs
 COPY packages/interaction-rs ./packages/interaction-rs
 COPY packages/presentation-rs ./packages/presentation-rs
@@ -34,11 +46,13 @@ COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
+COPY packages/runtime-contracts-rs ./packages/runtime-contracts-rs
 COPY packages/coding-acceptance-rs ./packages/coding-acceptance-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs
 COPY packages/session-history-rs ./packages/session-history-rs
+COPY packages/session-rs ./packages/session-rs
 COPY proto ./proto
 COPY scripts/install.sh ./scripts/install.sh
 COPY test/fixtures/codex/coding-tools-doctor-v1.json ./test/fixtures/codex/coding-tools-doctor-v1.json

@@ -882,7 +882,10 @@ mod tests {
             first[0]
                 .managed_inference_authorization
                 .as_ref()
-                .is_some_and(|authorization| authorization.as_str() == "signed-capability-one")
+                .is_some_and(|authorization| {
+                    serde_json::to_value(authorization).ok()
+                        == Some(serde_json::json!("signed-capability-one"))
+                })
         );
         let second = queue.drain_leading_kind_and_lineage(PromptKind::Steer, usize::MAX);
         assert_eq!(second.len(), 1);
@@ -890,7 +893,10 @@ mod tests {
             second[0]
                 .managed_inference_authorization
                 .as_ref()
-                .is_some_and(|authorization| authorization.as_str() == "signed-capability-two")
+                .is_some_and(|authorization| {
+                    serde_json::to_value(authorization).ok()
+                        == Some(serde_json::json!("signed-capability-two"))
+                })
         );
     }
 

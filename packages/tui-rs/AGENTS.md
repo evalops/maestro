@@ -119,8 +119,8 @@ Before making changes, understand these foundational files:
 | `tools/registry.rs` | Tool definitions, schemas, execution dispatch | Adding or modifying tools |
 | `agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
 | `agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
-| `session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
-| `session/entries.rs` | JSONL entry types (`SessionEntry`, `ThinkingLevel`, etc.) | Modifying session format |
+| `products/maestro/packages/session-rs/src/session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
+| `products/maestro/packages/session-rs/src/session/entries.rs` | JSONL entry types (`SessionEntry`, `ThinkingLevel`, etc.) | Modifying session format |
 | `components/message.rs` | Chat UI widgets (`ChatView`, `MessageWidget`, etc.) | Changing message rendering |
 
 ## Module Guide
@@ -149,7 +149,7 @@ All widgets implement ratatui's `Widget` trait.
 - **`native.rs`**: Main agent loop, tool handling, provider orchestration
 - **`protocol.rs`**: Internal message/event types for agent state and streaming
 
-### `session/` - Persistence
+### `products/maestro/packages/session-rs/src/session/` - Persistence
 - **`manager.rs`**: `SessionManager` lists/loads sessions
 - **`reader.rs`**: Parses JSONL session files
 - **`writer.rs`**: Writes session entries
@@ -342,7 +342,7 @@ pub struct SkillDefinition {
 
 **Activation**: Skills auto-activate via case-insensitive trigger matching on user input. Example: "frontend-design" skill activates on "build a landing page".
 
-### Swarm Mode (`swarm/`)
+### Swarm Mode (`maestro-swarm`)
 
 Multi-agent orchestration for complex tasks:
 
@@ -369,7 +369,7 @@ Precedence (highest to lowest):
 
 Uses `once_cell::sync::Lazy<RwLock<MaestroConfig>>` for thread-safe global state.
 
-### Session Format (`session/entries.rs`)
+### Session Format (`products/maestro/packages/session-rs/src/session/entries.rs`)
 
 Tagged enum with serde discriminator:
 
@@ -389,17 +389,23 @@ pub enum SessionEntry {
 
 **Durability**: Append-only JSONL format. Each line is valid JSON. Crash-safe without transactions.
 
-## Module Scale Reference
+## Extracted Module Owners
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `app.rs` | ~2,700 | Main event loop |
-| `state.rs` | ~1,925 | Centralized state |
-| `sandbox.rs` | ~1,755 | Execution sandbox |
-| `agent/native.rs` | ~1,000 | Agent implementation |
-| `tools/registry.rs` | ~800 | Tool dispatch |
-| `config.rs` | ~1,500 | Configuration |
-| **Total** | ~28,000 | Full codebase |
+Shared agent commands, tool results, and execution receipt values live in
+`products/maestro/packages/runtime-contracts-rs/src`. Live execution and policy enforcement remain
+in their existing host modules; receipt values preserve their serialized formats.
+
+Reusable terminal primitives live in `products/maestro/packages/ui-rs/src`. Native OS enforcement lives
+in `products/maestro/packages/sandbox-rs/src`, with separate `linux.rs`, `macos.rs`, and `tests.rs`
+modules. File discovery, indexing, search, Git inspection, and worktree operations
+live in `products/maestro/packages/workspace-rs/src`. Codex transport and thread bindings
+live in `products/maestro/packages/codex-rs/src`; task graph scheduling lives in
+`products/maestro/packages/swarm-rs/src`. Token accounting lives in
+`products/maestro/packages/context-rs/src`. This crate re-exports the historical module paths.
+
+Run their tests with `cargo test -p maestro-ui -p maestro-sandbox -p
+maestro-workspace -p maestro-codex -p maestro-swarm -p maestro-context --locked` from the Maestro workspace. The application-owned
+`sandbox_policy` module remains here alongside configuration and approval policy.
 
 ## Known Issues / TODOs
 
