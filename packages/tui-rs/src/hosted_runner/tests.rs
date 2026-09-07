@@ -35,7 +35,8 @@ fn append_turn_dispatch_preserves_managed_inference_authorization() {
         ToAgentMessage::Prompt {
             managed_inference_authorization: Some(authorization),
             ..
-        } if authorization.as_str() == "signed-capability-marker"
+        } if serde_json::to_value(&authorization).ok()
+            == Some(serde_json::json!("signed-capability-marker"))
     ));
 }
 
@@ -3183,10 +3184,12 @@ async fn hosted_runner_forwards_resident_binding_to_native_workspace_activation(
     let child_input_log = fixtures.path().join("native-child-input.log");
     let child_output_log = fixtures.path().join("native-child-output.log");
     let current = std::env::current_exe().expect("current test binary");
+    // Record each request before the child can answer it. GNU tee writes stdout
+    // first, so a child receipt alone does not make its input log observable.
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\ntee \"$MAESTRO_HOSTED_WORKSPACE_BINDING_INPUT_LOG\" | \"{}\" hosted_runner::tests::hosted_runner_forwards_resident_binding_to_native_workspace_activation --exact --nocapture --format terse | tee \"$MAESTRO_HOSTED_WORKSPACE_BINDING_OUTPUT_LOG\" | while IFS= read -r line; do case \"$line\" in '{{'*) printf '%s\\n' \"$line\" ;; esac; done\n",
+            "#!/bin/sh\n: > \"$MAESTRO_HOSTED_WORKSPACE_BINDING_INPUT_LOG\" || exit\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$MAESTRO_HOSTED_WORKSPACE_BINDING_INPUT_LOG\" || exit; printf '%s\\n' \"$line\" || exit; done | \"{}\" hosted_runner::tests::hosted_runner_forwards_resident_binding_to_native_workspace_activation --exact --nocapture --format terse | tee \"$MAESTRO_HOSTED_WORKSPACE_BINDING_OUTPUT_LOG\" | while IFS= read -r line; do case \"$line\" in '{{'*) printf '%s\\n' \"$line\" ;; esac; done\n",
             current.display()
         ),
     )

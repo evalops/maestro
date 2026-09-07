@@ -432,7 +432,7 @@ fn control_plane_environment(endpoint: Option<&str>) -> Option<String> {
     let endpoint = endpoint?;
     let parsed = Url::parse(endpoint).ok()?;
     match parsed.host_str() {
-        Some("app.evalops.dev") => Some("production".to_owned()),
+        Some("app.evalops.dev" | "app.deixic.com") => Some("production".to_owned()),
         Some("staging.evalops.dev") => Some("staging".to_owned()),
         Some(host) => Some(host.to_owned()),
         None => Some(endpoint.to_owned()),
@@ -652,6 +652,10 @@ mod tests {
     fn control_plane_environment_maps_known_hosts() {
         assert_eq!(
             control_plane_environment(Some("https://app.evalops.dev/mcp")).as_deref(),
+            Some("production")
+        );
+        assert_eq!(
+            control_plane_environment(Some("https://app.deixic.com/mcp")).as_deref(),
             Some("production")
         );
         assert_eq!(

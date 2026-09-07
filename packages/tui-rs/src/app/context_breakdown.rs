@@ -9,9 +9,9 @@
 //! outputs. UI-only messages (system notices, side questions) never reach the
 //! model and are excluded.
 
-use crate::agent::token_counting::{self, CountConfidence};
-use crate::agent::token_estimation;
 use crate::state::Message;
+use maestro_context::token_counting::{self, CountConfidence};
+use maestro_context::token_estimation;
 
 /// Token breakdown of the current session context, by category.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -220,8 +220,8 @@ fn format_tokens(tokens: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::token_estimation::estimate_tokens;
     use crate::state::{MessageKind, MessageRole, ToolCallState, ToolCallStatus};
+    use maestro_context::token_estimation::estimate_tokens;
     use std::time::SystemTime;
 
     fn message(role: MessageRole, kind: MessageKind, content: &str) -> Message {

@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 use uuid::Uuid;
 
-pub(crate) const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.evalops.dev";
+pub(crate) const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.deixic.com";
 const DEFAULT_IDENTITY_BASE_URL: &str = "https://identity.evalops.dev";
 const TRUSTED_IDENTITY_AUTHORITIES: &[&str] = &["identity.evalops.dev", "api.staging.evalops.dev"];
 pub const TEST_IDENTITY_AUTHORITY_ENV: &str = "MAESTRO_TEST_IDENTITY_AUTHORITY";
@@ -1125,7 +1125,10 @@ fn resolve_identity_base_url(
         .host_str()
         .unwrap_or_default()
         .to_owned();
-    let custom = !matches!(host.as_str(), "app.evalops.dev" | "staging.evalops.dev");
+    let custom = !matches!(
+        host.as_str(),
+        "app.evalops.dev" | "app.deixic.com" | "staging.evalops.dev"
+    );
     if custom {
         if let Some(stored) = stored {
             return Ok(normalize_identity(&stored));
@@ -1137,7 +1140,7 @@ fn resolve_identity_base_url(
 fn identity_from_mcp(endpoint: &str) -> Result<Option<String>> {
     let mut url = Url::parse(endpoint)?;
     let host = url.host_str().unwrap_or_default().to_owned();
-    if host == "app.evalops.dev" {
+    if matches!(host.as_str(), "app.evalops.dev" | "app.deixic.com") {
         return Ok(Some(DEFAULT_IDENTITY_BASE_URL.to_owned()));
     }
     if host == "staging.evalops.dev" {
@@ -1806,7 +1809,7 @@ fn authenticated_as(metadata: &Map<String, Value>) -> Option<String> {
 fn console_url(endpoint: &str) -> Result<String> {
     let mut url = Url::parse(endpoint)?;
     let environment = match url.host_str().unwrap_or_default() {
-        "app.evalops.dev" => "production",
+        "app.evalops.dev" | "app.deixic.com" => "production",
         "staging.evalops.dev" => "staging",
         _ => "local",
     };
@@ -2523,6 +2526,7 @@ mod tests {
             "https://identity.evalops.dev:8443",
             "https://identity.evalops.dev/tenant-controlled",
             "https://app.evalops.dev",
+            "https://identity.deixic.com",
         ] {
             let error = validate_identity_authority(authority, false)
                 .expect_err("caller-selected authority must fail closed");
@@ -2716,6 +2720,65 @@ mod tests {
     }
 
     #[test]
+    fn public_agent_mcp_default_uses_deixic_origin() {
+        assert_eq!(DEFAULT_AGENT_MCP_BASE_URL, "https://app.deixic.com");
+    }
+
+    #[test]
+    fn deixic_agent_mcp_origin_uses_the_canonical_identity_authority() {
+        assert_eq!(
+            identity_from_mcp("https://app.deixic.com/mcp")
+                .unwrap()
+                .as_deref(),
+            Some("https://identity.evalops.dev")
+        );
+        assert_eq!(
+            identity_from_mcp("https://app.evalops.dev/mcp")
+                .unwrap()
+                .as_deref(),
+            Some("https://identity.evalops.dev")
+        );
+    }
+
+    #[test]
+    fn stored_deixic_agent_mcp_keeps_the_canonical_identity_authority() {
+        let _guard = crate::config::test_process_env_lock();
+        let env_names = [
+            "MAESTRO_IDENTITY_URL",
+            "EVALOPS_IDENTITY_URL",
+            "MAESTRO_PLATFORM_BASE_URL",
+            "MAESTRO_EVALOPS_BASE_URL",
+            "EVALOPS_BASE_URL",
+        ];
+        let previous_env = env_names.map(|name| (name, std::env::var(name).ok()));
+        for name in env_names {
+            std::env::remove_var(name);
+        }
+        let endpoint = Endpoint {
+            endpoint: "https://app.deixic.com/mcp".to_owned(),
+            identity_base_url: None,
+            manifest_url: None,
+            prefer_derived_identity: false,
+        };
+        let mut credentials = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: String::new(),
+            access: "access".to_owned(),
+            expires: 1,
+            metadata: Map::new(),
+        };
+        credentials.metadata.insert(
+            "identityBaseUrl".to_owned(),
+            json!("https://identity.attacker.example"),
+        );
+        let resolved = resolve_identity_base_url(&endpoint, &credentials).unwrap();
+        for (name, previous) in previous_env {
+            restore_env(name, previous);
+        }
+        assert_eq!(resolved, "https://identity.evalops.dev");
+    }
+
+    #[test]
     fn normalizes_manifest_and_mcp_urls() {
         assert_eq!(
             normalize_mcp_endpoint("https://app.evalops.dev").unwrap(),
@@ -2724,6 +2787,22 @@ mod tests {
         assert_eq!(
             normalize_manifest_url("https://app.evalops.dev").unwrap(),
             "https://app.evalops.dev/.well-known/evalops/agent-mcp.json"
+        );
+        assert_eq!(
+            normalize_mcp_endpoint("https://app.deixic.com").unwrap(),
+            "https://app.deixic.com/mcp"
+        );
+        assert_eq!(
+            normalize_manifest_url("https://app.deixic.com").unwrap(),
+            "https://app.deixic.com/.well-known/evalops/agent-mcp.json"
+        );
+    }
+
+    #[test]
+    fn deixic_console_url_uses_the_production_environment() {
+        assert_eq!(
+            console_url("https://app.deixic.com/mcp").unwrap(),
+            "https://app.deixic.com/overview?env=production"
         );
     }
 

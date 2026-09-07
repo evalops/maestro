@@ -419,11 +419,22 @@ fn first_party_drain_retries_then_sends_identity_bearer_only_to_its_endpoint() {
 
 #[test]
 fn first_party_outbox_never_replays_an_event_under_a_different_identity_scope() {
+    let event = first_party_event(&canonical_event(TurnStatus::Success).external_projection())
+        .expect("first-party projection");
+    assert_outbox_scope_binding(event.into());
+}
+
+#[test]
+fn onboarding_outbox_retries_without_reattributing_identity_scope() {
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    assert_outbox_scope_binding(event.into());
+}
+
+fn assert_outbox_scope_binding(event: FirstPartyTelemetryEvent) {
     let temp = tempfile::tempdir().expect("telemetry tempdir");
     let origin_scope = test_identity_scope("org-a", "workspace-a");
     let later_scope = test_identity_scope("org-b", "workspace-b");
-    let event = first_party_event(&canonical_event(TurnStatus::Success).external_projection())
-        .expect("first-party projection");
     let path = persist_first_party_event(temp.path(), &origin_scope, &event)
         .expect("persist first-party event");
     let origin_identity = delivery_session("origin-identity-token", origin_scope.clone());
@@ -688,4 +699,220 @@ fn telemetry_opt_out_suppresses_the_default_local_log_and_first_party_outbox() {
 
     assert!(!temp.path().join("telemetry.log").exists());
     assert!(!temp.path().join("telemetry/outbox").exists());
+}
+
+#[test]
+fn onboarding_collection_never_queues_prelogin_and_honors_opt_out() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    std::env::remove_var("MAESTRO_INTERNAL_TELEMETRY_DISABLED");
+    std::env::remove_var("EVALOPS_INTERNAL_TELEMETRY_DISABLED");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    assert_eq!(
+        runtime.block_on(record_onboarding_event(event.clone(), None)),
+        OnboardingCollectionStatus::Unavailable
+    );
+    assert!(!temp.path().join("telemetry/outbox").exists());
+    std::env::set_var("MAESTRO_TELEMETRY", "0");
+    assert_eq!(
+        runtime.block_on(record_onboarding_event(event.clone(), None)),
+        OnboardingCollectionStatus::Disabled
+    );
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    for flag in [
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ] {
+        std::env::set_var(flag, "true");
+        assert_eq!(
+            runtime.block_on(record_onboarding_event(event.clone(), None)),
+            OnboardingCollectionStatus::Disabled
+        );
+        std::env::remove_var(flag);
+    }
+    assert!(!temp.path().join("telemetry/outbox").exists());
+}
+
+#[test]
+fn onboarding_outbox_rejects_tampered_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let scope = test_identity_scope("org-a", "workspace-a");
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    let path = persist_first_party_event(temp.path(), &scope, &event).unwrap();
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["event"]["profile"]["screen"] = json!("private text");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(read_bounded_outbox_record(&path).is_none());
+}
+
+#[test]
+fn onboarding_collection_pins_origin_before_persisting_and_scheduling() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    std::env::remove_var("MAESTRO_INTERNAL_TELEMETRY_DISABLED");
+    std::env::remove_var("EVALOPS_INTERNAL_TELEMETRY_DISABLED");
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    let origin = TelemetryIdentityScope::new("origin-org", Some("origin-workspace")).unwrap();
+    let switched = TelemetryIdentityScope::new("other-org", Some("other-workspace")).unwrap();
+    let scheduled = std::cell::Cell::new(false);
+    for captured in [
+        None,
+        Some(switched),
+        Some(test_identity_scope("origin-org", "other-workspace")),
+        Some(test_identity_scope("other-org", "origin-workspace")),
+    ] {
+        let result = record_onboarding_event_with(
+            event.clone(),
+            captured,
+            || {
+                Some(FirstPartyDeliverySession {
+                    access_token: "fixture-token".into(),
+                    identity_scope: origin.clone(),
+                })
+            },
+            || scheduled.set(true),
+        );
+        assert_eq!(result, OnboardingCollectionStatus::Unavailable);
+        assert!(!scheduled.get());
+        assert!(!first_party_outbox_dir().exists());
+    }
+    assert_eq!(
+        record_onboarding_event_with(
+            event.clone(),
+            Some(origin.clone()),
+            || Some(FirstPartyDeliverySession {
+                access_token: "fixture-token".into(),
+                identity_scope: origin.clone()
+            }),
+            || scheduled.set(true)
+        ),
+        OnboardingCollectionStatus::Queued
+    );
+    assert!(scheduled.get());
+    let paths = outbox_paths(&first_party_outbox_dir());
+    assert_eq!(paths.len(), 1);
+    let record = read_bounded_outbox_record(&paths[0]).unwrap();
+    assert_eq!(record.identity_scope, origin);
+    let encoded = std::fs::read_to_string(&paths[0]).unwrap();
+    assert!(!encoded.contains("fixture-token"));
+}
+
+#[test]
+fn onboarding_collection_opt_out_skips_authority_persistence_and_scheduling() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    std::env::remove_var("MAESTRO_INTERNAL_TELEMETRY_DISABLED");
+    std::env::remove_var("EVALOPS_INTERNAL_TELEMETRY_DISABLED");
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    let origin = test_identity_scope("org-a", "workspace-a");
+    for (flag, value) in [
+        ("MAESTRO_TELEMETRY", "0"),
+        ("MAESTRO_INTERNAL_TELEMETRY_DISABLED", "true"),
+        ("EVALOPS_INTERNAL_TELEMETRY_DISABLED", "true"),
+    ] {
+        std::env::set_var(flag, value);
+        assert_eq!(
+            record_onboarding_event_with(
+                event.clone(),
+                Some(origin.clone()),
+                || panic!("opted-out onboarding must not request Identity authority"),
+                || panic!("opted-out onboarding must not schedule delivery"),
+            ),
+            OnboardingCollectionStatus::Disabled
+        );
+        assert!(!first_party_outbox_dir().exists());
+        std::env::remove_var(flag);
+        std::env::set_var("MAESTRO_TELEMETRY", "1");
+    }
+}
+
+#[test]
+fn onboarding_collection_requires_authority_and_durable_persistence_before_scheduling() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    std::env::set_var("MAESTRO_TELEMETRY", "1");
+    std::env::remove_var("MAESTRO_INTERNAL_TELEMETRY_DISABLED");
+    std::env::remove_var("EVALOPS_INTERNAL_TELEMETRY_DISABLED");
+    let event: OnboardingEvent =
+        serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
+    let origin = test_identity_scope("org-a", "workspace-a");
+    assert_eq!(
+        record_onboarding_event_with(
+            event.clone(),
+            None,
+            || panic!("an absent origin must not acquire a later Identity scope"),
+            || panic!("an absent origin must not schedule delivery"),
+        ),
+        OnboardingCollectionStatus::Unavailable
+    );
+    let verified = std::cell::Cell::new(false);
+    assert_eq!(
+        record_onboarding_event_with(
+            event.clone(),
+            Some(origin.clone()),
+            || {
+                verified.set(true);
+                None
+            },
+            || panic!("unavailable Identity authority must not schedule delivery"),
+        ),
+        OnboardingCollectionStatus::Unavailable
+    );
+    assert!(verified.get());
+    assert!(!first_party_outbox_dir().exists());
+
+    // A regular file blocks the outbox directory on every supported platform,
+    // including privileged test users for whom permission bits do not fail writes.
+    let obstruction = temp.path().join("telemetry");
+    fs::write(&obstruction, b"existing file").unwrap();
+    assert_eq!(
+        record_onboarding_event_with(
+            event,
+            Some(origin.clone()),
+            || Some(delivery_session("fixture-token", origin)),
+            || panic!("failed durable persistence must not schedule delivery"),
+        ),
+        OnboardingCollectionStatus::Failed
+    );
+    assert_eq!(fs::read(&obstruction).unwrap(), b"existing file");
+    assert!(!first_party_outbox_dir().exists());
 }

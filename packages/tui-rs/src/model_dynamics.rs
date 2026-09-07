@@ -46,6 +46,8 @@ pub struct ModelChoice {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelDynamicsConfig {
+    /// Ordered interactive model scope with a preferred effort for each route.
+    pub cycle: Vec<ModelChoice>,
     pub light: Option<ModelChoice>,
     pub medium: Option<ModelChoice>,
     pub heavy: Option<ModelChoice>,
@@ -57,6 +59,13 @@ pub struct ModelDynamicsConfig {
 }
 
 impl ModelDynamicsConfig {
+    pub fn effort_for_model(&self, model: &str) -> Option<ThinkingLevel> {
+        self.cycle
+            .iter()
+            .find(|choice| same_model_route(&choice.model, model))
+            .map(|choice| choice.thinking)
+    }
+
     pub fn choice(&self, difficulty: TaskDifficulty) -> Option<&ModelChoice> {
         match difficulty {
             TaskDifficulty::Light => self.light.as_ref(),
@@ -95,6 +104,55 @@ impl ModelDynamicsConfig {
     }
 }
 
+/// Compare routes without confusing models served by different providers.
+pub(crate) fn same_model_route(left: &str, right: &str) -> bool {
+    let identity = |model: &str| {
+        crate::ai::ProviderRegistry::resolve_descriptor(model)
+            .ok()
+            .map(|provider| format!("{}/{}", provider.id, crate::ai::provider_model_name(model)))
+    };
+    left == right
+        || identity(left)
+            .zip(identity(right))
+            .is_some_and(|(a, b)| a == b)
+}
+
+pub(crate) fn configured_thinking(
+    config: &crate::config::ComposerConfig,
+    model: &str,
+    dynamics: &ModelDynamicsConfig,
+) -> ThinkingLevel {
+    let default = match config.model_reasoning_effort {
+        Some(crate::config::ReasoningEffort::Minimal) => ThinkingLevel::Minimal,
+        Some(crate::config::ReasoningEffort::Low) => ThinkingLevel::Low,
+        Some(crate::config::ReasoningEffort::Medium) => ThinkingLevel::Medium,
+        Some(crate::config::ReasoningEffort::High) => ThinkingLevel::High,
+        None => ThinkingLevel::Off,
+    };
+    let requested = dynamics.effort_for_model(model).unwrap_or(default);
+    normalize_thinking(model, requested)
+}
+
+pub(crate) fn next_cycle_route<'a>(
+    routes: &'a [String],
+    current: &str,
+    backward: bool,
+) -> Option<&'a str> {
+    if routes.is_empty() {
+        return None;
+    }
+    let index = routes
+        .iter()
+        .position(|route| same_model_route(route, current));
+    let next = match index {
+        Some(index) if backward => (index + routes.len() - 1) % routes.len(),
+        Some(index) => (index + 1) % routes.len(),
+        None if backward => routes.len() - 1,
+        None => 0,
+    };
+    (!same_model_route(&routes[next], current)).then_some(routes[next].as_str())
+}
+
 /// Recover the persisted UI level from the existing native budget contract.
 pub fn thinking_level(enabled: bool, budget: u32) -> ThinkingLevel {
     if !enabled {
@@ -112,6 +170,61 @@ pub fn thinking_level(enabled: bool, budget: u32) -> ThinkingLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cycle_scope_preserves_order_direction_and_provider_identity() {
+        let routes = vec![
+            "openai/gpt-5.6".into(),
+            "anthropic/claude-fable-5-1".into(),
+            "openai-codex/gpt-5.6".into(),
+        ];
+        assert_eq!(
+            next_cycle_route(&routes, "gpt-5.6", false),
+            Some(routes[1].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, &routes[0], true),
+            Some(routes[2].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, &routes[2], false),
+            Some(routes[0].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, "unknown", true),
+            Some(routes[2].as_str())
+        );
+        assert_eq!(next_cycle_route(&routes[..1], "gpt-5.6", false), None);
+        assert_eq!(next_cycle_route(&[], "gpt-5.6", false), None);
+    }
+
+    #[test]
+    fn configured_startup_effort_and_scoped_effort_are_normalized() {
+        let mut config = crate::config::ComposerConfig::default();
+        let mut dynamics = ModelDynamicsConfig::default();
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::Off
+        );
+        config.model_reasoning_effort = Some(crate::config::ReasoningEffort::High);
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::High
+        );
+        dynamics.cycle.push(ModelChoice {
+            model: "openai/gpt-5.6".into(),
+            thinking: ThinkingLevel::Low,
+        });
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::Low
+        );
+        assert_eq!(dynamics.effort_for_model("openai-codex/gpt-5.6"), None);
+        assert_eq!(
+            configured_thinking(&config, "claude-fable-5-1", &dynamics),
+            ThinkingLevel::High
+        );
+    }
+
     #[test]
     fn difficulty_changes_effort_without_changing_role_or_model() {
         let config = ModelDynamicsConfig::default();
@@ -253,6 +366,23 @@ pub fn normalize_thinking(model: &str, requested: ThinkingLevel) -> ThinkingLeve
     if !info.capabilities.reasoning {
         return ThinkingLevel::Off;
     }
+    if info.capabilities.protocol == crate::model_catalog::ModelProtocol::Anthropic {
+        let caps = crate::ai::anthropic_request_capabilities(Some(&info.provider), model);
+        if requested == ThinkingLevel::Off {
+            return if caps.thinking == crate::ai::AnthropicThinkingMode::AlwaysOn {
+                ThinkingLevel::High
+            } else {
+                requested
+            };
+        }
+        return match caps.effort_for_budget(requested.to_config().1) {
+            Some("low") => ThinkingLevel::Low,
+            Some("medium") => ThinkingLevel::Medium,
+            Some("high") => ThinkingLevel::High,
+            Some("max") => ThinkingLevel::Max,
+            _ => requested,
+        };
+    }
     if !matches!(
         info.capabilities.protocol,
         crate::model_catalog::ModelProtocol::OpenAiChat
@@ -287,6 +417,7 @@ pub fn next_thinking_level(model: &str, current: ThinkingLevel) -> ThinkingLevel
             levels.push(level);
         }
     }
+    levels.sort_by_key(|level| level.to_config().1);
     let current = normalize_thinking(model, current);
     let index = levels
         .iter()
@@ -298,6 +429,31 @@ pub fn next_thinking_level(model: &str, current: ThinkingLevel) -> ThinkingLevel
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    #[test]
+    fn always_on_claude_effort_matches_the_wire_and_cycles_in_order() {
+        let model = "anthropic/claude-fable-5-1";
+        assert_eq!(
+            normalize_thinking(model, ThinkingLevel::Off),
+            ThinkingLevel::High
+        );
+        assert_eq!(
+            normalize_thinking(model, ThinkingLevel::Minimal),
+            ThinkingLevel::Low
+        );
+        for (current, next) in [
+            (ThinkingLevel::Low, ThinkingLevel::Medium),
+            (ThinkingLevel::Medium, ThinkingLevel::High),
+            (ThinkingLevel::High, ThinkingLevel::Max),
+            (ThinkingLevel::Max, ThinkingLevel::Low),
+        ] {
+            assert_eq!(next_thinking_level(model, current), next);
+        }
+        assert_eq!(
+            normalize_thinking("anthropic/claude-sonnet-4-6", ThinkingLevel::Off),
+            ThinkingLevel::Off
+        );
+    }
+
     #[test]
     fn shift_tab_cycles_distinct_provider_levels() {
         let model = "openai/gpt-4o";

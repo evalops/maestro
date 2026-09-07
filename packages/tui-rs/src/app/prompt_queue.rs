@@ -342,7 +342,15 @@ impl App {
         code: KeyCode,
         modifiers: CrosstermModifiers,
     ) -> bool {
-        binding.key == code && binding.modifiers == modifiers
+        let key_matches = match (binding.key, code) {
+            (KeyCode::Char(expected), KeyCode::Char(actual))
+                if modifiers.contains(CrosstermModifiers::SHIFT) =>
+            {
+                expected.eq_ignore_ascii_case(&actual)
+            }
+            _ => binding.key == code,
+        };
+        key_matches && binding.modifiers == modifiers
     }
 
     pub(super) fn capture_edited_queued_follow_up(&self) -> Option<QueuedPrompt> {

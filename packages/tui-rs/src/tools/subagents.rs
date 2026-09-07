@@ -4538,16 +4538,19 @@ impl SubagentManager {
                 break;
             };
 
-            if let Err(error) = persist_child_event(
+            match persist_child_event(
                 &mut recorder,
                 &event,
                 &record.id,
                 &credential_vault,
                 record.attempt,
             ) {
-                recording_error = Some(format!("persist child event: {error}"));
-                agent.cancel();
-                break;
+                Ok(snapshot_persisted) => semantic_snapshot_seen |= snapshot_persisted,
+                Err(error) => {
+                    recording_error = Some(format!("persist child event: {error}"));
+                    agent.cancel();
+                    break;
+                }
             }
 
             match event {
@@ -4559,12 +4562,6 @@ impl SubagentManager {
                     ..
                 } => {
                     record.thinking = Some(thinking);
-                }
-                // Current runtimes checkpoint before publishing a terminal.
-                // Retain the legacy terminal-first wait so older runtimes can
-                // still deliver their checkpoint after the terminal.
-                FromAgent::ConversationSnapshot { .. } => {
-                    semantic_snapshot_seen = true;
                 }
                 FromAgent::ResponseChunk {
                     content,
@@ -6624,7 +6621,7 @@ fn persist_child_event(
     session_id: &str,
     credential_vault: &CredentialVault,
     snapshot_attempt: u32,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let processed_queue_ids = match event {
         FromAgent::ConversationSnapshot {
             processed_queue_ids,
@@ -6633,7 +6630,7 @@ fn persist_child_event(
         _ => &[],
     };
     let Some(message) = child_event_to_headless(event, session_id) else {
-        return Ok(());
+        return Ok(false);
     };
     let message = vault_headless_message(&message, credential_vault)
         .map_err(|error| format!("vault child event: {error}"))?;
@@ -6643,7 +6640,8 @@ fn persist_child_event(
             Some(snapshot_attempt),
             processed_queue_ids,
         )
-        .map_err(|error| format!("persist child event: {error}"))
+        .map_err(|error| format!("persist child event: {error}"))?;
+    Ok(matches!(event, FromAgent::ConversationSnapshot { .. }))
 }
 
 fn drain_child_events(
@@ -10663,6 +10661,37 @@ mod tests {
                 && lineage_id == "lineage-child"
                 && record_status == "planned"
         ));
+    }
+
+    #[test]
+    fn local_assistant_content_cannot_complete_child_checkpoint() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let vault = CredentialVault::new();
+        let mut recorder = SessionRecorder::with_id(root.path(), &session_id).unwrap();
+        let local = FromAgent::LocalAssistantContent {
+            response_id: "response".to_owned(),
+            content: vec![crate::ai::ContentBlock::Text {
+                text: "partial answer".to_owned(),
+            }],
+        };
+        let mut seen = persist_child_event(&mut recorder, &local, &session_id, &vault, 1).unwrap();
+        assert!(!terminal_checkpoint_ready(true, seen));
+        assert!(recorder.replay().semantic_conversation.is_none());
+        let snapshot = FromAgent::ConversationSnapshot {
+            protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_owned(),
+            messages: vec![crate::ai::Message {
+                role: crate::ai::Role::Assistant,
+                content: crate::ai::MessageContent::text("complete answer"),
+            }],
+            processed_queue_ids: vec![42],
+        };
+        seen |= persist_child_event(&mut recorder, &snapshot, &session_id, &vault, 1).unwrap();
+        assert!(terminal_checkpoint_ready(true, seen));
+        recorder.flush_checkpoint().unwrap();
+        let resumed = SessionRecorder::resume(root.path(), &session_id).unwrap();
+        assert!(resumed.replay().semantic_conversation.is_some());
+        assert!(resumed.semantic_processed_queue_ids().contains(&42));
     }
 
     #[test]

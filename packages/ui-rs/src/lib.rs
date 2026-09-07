@@ -23,6 +23,38 @@
 //! # Ok::<(), std::convert::Infallible>(())
 //! ```
 
+// Terminal rendering, input, and transient widget state.
+pub mod ansi_text;
+pub mod ansi_tracker;
+pub mod ascii_animation;
+pub mod borders;
+pub mod confirm_dialog;
+pub mod diff;
+pub mod elapsed;
+pub mod field_format;
+pub mod focus;
+pub mod key_binding;
+pub mod key_hints;
+pub mod keymap;
+pub mod kill_ring;
+pub mod layout_constraints;
+pub mod live_wrap;
+pub mod loader;
+pub mod notification_queue;
+pub mod pager;
+pub mod paste_burst;
+pub mod render_utils;
+pub mod resize_handler;
+pub mod scroll_state;
+pub mod selection_list;
+pub mod single_line_input;
+pub mod sync_output;
+pub mod text_format;
+pub mod truncated_text;
+pub mod undo_history;
+pub mod viewport;
+pub mod wrapping;
+
 mod action_picker;
 pub use action_picker::{
     ActionPicker, PickerError, PickerHelp, PickerOptions, PickerOutcome, PickerStatus,

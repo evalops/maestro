@@ -1,0 +1,13 @@
+[package]
+name = "maestro-context"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Context accounting and compaction for Deixic Code context construction"
+
+[dependencies]
+maestro-ai.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tiktoken-rs = { version = "0.12.0", default-features = false }

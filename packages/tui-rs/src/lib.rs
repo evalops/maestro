@@ -1,58 +1,17 @@
-//! # Maestro TUI - Native Terminal Interface Library
+//! Deixic Code application composition and compatibility facade.
 //!
-//! This crate provides the primary terminal UI and native agent for Maestro,
-//! including LSP diagnostics, workflow gating, and MCP annotations support.
-//! The Rust binary is the user entry point: it owns terminal rendering, AI
-//! calls, tool execution, and safety enforcement without any Node.js
-//! subprocess.
+//! This crate wires the terminal application, CLI commands, native agent,
+//! tools, sessions, and hosted entrypoints together. Reusable terminal
+//! rendering and input primitives live in `maestro-ui`; product widgets live
+//! in `maestro-presentation`, and transport-neutral interaction state lives
+//! in `maestro-interaction`. Historical `maestro_tui` module and type imports
+//! remain available through re-exports.
 //!
-//! ## Rust Concept: Crate Structure
-//!
-//! In Rust, a "crate" is a compilation unit (like a package). A crate can be:
-//! - A **binary crate** (`main.rs`) - produces an executable
-//! - A **library crate** (`lib.rs`) - produces a library for others to use
-//!
-//! This file (`lib.rs`) is the root of the library crate. It defines:
-//! 1. What modules exist (`mod` declarations)
-//! 2. What's publicly accessible (`pub` visibility)
-//! 3. Re-exports for convenient access (`pub use`)
-//!
-//! ## Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────┐
-//! │  Rust TUI + Native Agent (ratatui + tokio)  │
-//! │  - Main entry point (users run this)        │
-//! │  - Owns terminal + scrollback               │
-//! │  - Native AI clients (Claude, OpenAI, etc.) │
-//! │  - Tool execution + safety + hooks          │
-//! │  - Chat UI, markdown, themes                │
-//! └─────────────────────────────────────────────┘
-//! ```
-//!
-//! Headless JSON IPC is still available via the `headless` module if you want
-//! to drive the agent from another process, but the default path is fully
-//! in-process Rust.
-//!
-//! ## Module Organization
-//!
-//! The crate is organized into core modules (essential functionality) and
-//! feature modules (optional/specific features).
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CORE MODULES
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Rust Concept: Module Declarations
-//
-// `pub mod foo;` does two things:
-// 1. Tells Rust to look for `foo.rs` or `foo/mod.rs`
-// 2. Makes the module publicly accessible (without `pub`, it's private)
-//
-// These are the essential modules that make up the core functionality.
+//! Provider clients, execution policy, and runtime contracts are owned by
+//! `maestro-ai`, `maestro-execpolicy`, and `maestro-runtime-contracts`, respectively.
 
 /// Agent communication and lifecycle management.
-/// Handles spawning, messaging, and coordinating with the AI agent subprocess.
+/// Runs the native agent and exchanges typed commands and events.
 pub mod agent;
 
 pub mod acp_cli;
@@ -65,14 +24,14 @@ pub mod model_dynamics;
 /// unaffected.
 pub use maestro_ai as ai;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
-pub mod checkpoints;
+pub use maestro_session::checkpoints;
 pub mod connections_cli;
 pub mod credential_mode;
 pub mod doctor;
 /// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
 /// for persisted JSON/text state. See module docs for crash-safety vs.
 /// power-loss-safety guarantees.
-pub mod fs_atomic;
+pub use maestro_session::fs_atomic;
 pub mod local_models;
 pub mod managed_setup;
 pub mod model_catalog;
@@ -108,14 +67,14 @@ pub use entrypoint::run_cli;
 
 /// File system operations (search, workspace management).
 /// Handles file listing, fuzzy search, and workspace-relative paths.
-pub mod files;
+pub use maestro_workspace::files;
 pub(crate) mod path_utils;
 
 /// Inline `@file` mention expansion for the composer.
 pub mod file_mentions;
 
 /// Headless mode communication protocol.
-/// JSON-based IPC protocol for communicating with the Node.js agent.
+/// JSON-based IPC protocol for communicating with the native agent.
 pub mod headless;
 pub mod headless_server;
 
@@ -127,12 +86,14 @@ pub mod hosted_runner_conformance;
 pub mod hosted_runner_cli;
 
 /// Message protocol definitions.
-/// Type definitions for messages exchanged between Rust and Node.js.
+/// Type definitions shared by native terminal consumers.
 pub mod protocol;
 
 /// Maestro <-> Conductor bridge status types and helpers.
 pub mod bridge;
 
+/// Live, bounded checks used by guided setup.
+pub mod onboarding_checks;
 pub mod service_connections;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
@@ -184,7 +145,7 @@ pub mod ui_prefs;
 
 /// Diff generation and rendering.
 /// Shows file changes with colored additions/deletions.
-pub mod diff;
+pub use maestro_ui::diff;
 
 /// Execution policy (command approval/blocking).
 /// Security rules for which bash commands are auto-approved or blocked.
@@ -200,11 +161,11 @@ pub mod hooks;
 
 /// Git integration.
 /// Detects git repos, branches, and provides context to the agent.
-pub mod git;
+pub use maestro_workspace::git;
 
 /// Keyboard shortcut hints.
 /// Shows available key bindings in the UI footer.
-pub mod key_hints;
+pub use maestro_ui::key_hints;
 
 /// User-configurable Rust TUI keybinding loading and resolution.
 pub mod keybindings;
@@ -219,7 +180,7 @@ pub mod notifications;
 
 /// Scrollable text pager.
 /// Like `less` - allows scrolling through long content.
-pub mod pager;
+pub use maestro_ui::pager;
 
 /// Terminal color palette management.
 /// Handles different color capability levels (16, 256, true color).
@@ -227,11 +188,11 @@ pub mod palette;
 
 pub mod a2a_cli;
 pub mod cli_commands;
-pub mod codex_app_server;
+pub use maestro_codex::codex_app_server;
 pub mod codex_auth;
 pub mod codex_cli;
 pub mod codex_identity;
-pub mod codex_session;
+pub use maestro_codex::codex_session;
 pub mod config_cli;
 pub mod context_cli;
 pub mod device_identity;
@@ -271,7 +232,7 @@ pub mod value_cli;
 pub mod video;
 
 /// Droid-style session worktrees (`-w` / `--worktree`).
-pub mod worktree;
+pub use maestro_workspace::worktree;
 
 /// Jane Street magic-trace stop indicator + slow-frame hooks.
 /// Linux/Intel PT only; see module docs and `scripts/magic-trace-tui.sh`.
@@ -279,7 +240,7 @@ pub mod magic_trace;
 
 /// Command sandboxing (macOS Seatbelt, Linux Landlock).
 /// Restricts file system access for executed commands.
-pub mod sandbox;
+pub use maestro_sandbox as sandbox;
 
 /// Structured sandbox policy documents and their multi-source merge.
 /// Parses user, repository, and team-admin policies and combines them
@@ -304,7 +265,7 @@ pub mod tooltips;
 
 /// Text wrapping utilities.
 /// Word-wraps text for terminal display, respecting ANSI codes.
-pub mod wrapping;
+pub use maestro_ui::wrapping;
 
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
@@ -339,18 +300,18 @@ pub mod config_watcher;
 
 /// Text formatting utilities (truncation, JSON compacting).
 /// Ported from OpenAI Codex CLI (MIT licensed).
-pub mod text_format;
+pub use maestro_ui::text_format;
 pub mod tool_output;
 pub mod tool_summary;
 pub mod turn_summary;
 
 /// Live/incremental text wrapping for streaming content.
 /// Allows text to be pushed in fragments and wrapped correctly.
-pub mod live_wrap;
+pub use maestro_ui::live_wrap;
 
 /// Rendering utilities for terminal output.
 /// Line manipulation, prefixing, and truncation helpers.
-pub mod render_utils;
+pub use maestro_ui::render_utils;
 
 /// Color utilities (blending, perceptual distance, terminal detection).
 /// Includes xterm 256 color palette and best-match color selection.
@@ -366,15 +327,15 @@ pub mod terminal_info;
 
 /// Paste burst detection for terminals without bracketed paste.
 /// Heuristic-based detection using keystroke timing.
-pub mod paste_burst;
+pub use maestro_ui::paste_burst;
 
 /// Scroll/selection state for list menus.
 /// Wrap-around navigation and scroll window management.
-pub mod scroll_state;
+pub use maestro_ui::scroll_state;
 
 /// Key binding utilities for keyboard shortcuts.
 /// Platform-aware modifier display.
-pub mod key_binding;
+pub use maestro_ui::key_binding;
 
 /// ANSI terminal commands for scroll regions and terminal control.
 /// Essential for proper scrolling over SSH.
@@ -387,11 +348,11 @@ pub mod output_sanitize;
 
 /// Synchronized output for flicker-free terminal updates.
 /// Buffers output for atomic display.
-pub mod sync_output;
+pub use maestro_ui::sync_output;
 
 /// Viewport management for scrollable content.
 /// Includes viewport clipping, scroll offset rendering, and auto-scroll.
-pub mod viewport;
+pub use maestro_ui::viewport;
 
 /// Inline scrolling with scroll regions.
 /// For inline TUI mode with terminal scrollback integration.
@@ -399,23 +360,23 @@ pub mod inline_scroll;
 
 /// Selection list rendering for popups and menus.
 /// Fuzzy match highlighting, aligned descriptions, smart wrapping.
-pub mod selection_list;
+pub use maestro_ui::selection_list;
 
 /// Elapsed time formatting and pausable timer.
 /// Compact duration display and animated spinners.
-pub mod elapsed;
+pub use maestro_ui::elapsed;
 
 /// ANSI escape code handling.
 /// Converts ANSI-escaped strings to ratatui styled text.
-pub mod ansi_text;
+pub use maestro_ui::ansi_text;
 
 /// Box and border drawing utilities.
 /// Unicode box-drawing characters for cards and panels.
-pub mod borders;
+pub use maestro_ui::borders;
 
 /// Field formatting for aligned label-value displays.
 /// Consistent formatting for status displays.
-pub mod field_format;
+pub use maestro_ui::field_format;
 
 /// Shimmer animation effect.
 /// Animated text highlights for loading indicators.
@@ -423,51 +384,51 @@ pub mod shimmer;
 
 /// ANSI code tracker with surgical resets.
 /// Stateful tracking of ANSI SGR codes for preventing visual artifacts.
-pub mod ansi_tracker;
+pub use maestro_ui::ansi_tracker;
 
 /// Single-line input with horizontal viewport scrolling.
 /// Responsive text input for long lines over SSH.
-pub mod single_line_input;
+pub use maestro_ui::single_line_input;
 
 /// Truncated text display with ellipsis.
 /// Smart truncation for text and paths.
-pub mod truncated_text;
+pub use maestro_ui::truncated_text;
 
 /// Undo/redo history with debounced snapshots.
 /// Generic history management for editors.
-pub mod undo_history;
+pub use maestro_ui::undo_history;
 
 /// Focus management and input routing.
 /// Component hierarchy focus handling.
-pub mod focus;
+pub use maestro_ui::focus;
 
 /// Terminal resize handling with cache invalidation.
 /// Smart redraw detection and width-keyed caching.
-pub mod resize_handler;
+pub use maestro_ui::resize_handler;
 
 /// Animated loading indicator with spinners and progress bars.
 /// Multiple styles with low-unicode/low-color fallbacks.
-pub mod loader;
+pub use maestro_ui::loader;
 
 /// Keymap and chord detection system.
 /// Multi-key sequences, vim-style modes, timeout-based chords.
-pub mod keymap;
+pub use maestro_ui::keymap;
 
 /// Notification queue for TUI feedback.
 /// Priority-based notifications with batching and auto-dismiss.
-pub mod notification_queue;
+pub use maestro_ui::notification_queue;
 
 /// Layout constraints and responsive sizing.
 /// Flex distribution, breakpoints, and priority-based degradation.
-pub mod layout_constraints;
+pub use maestro_ui::layout_constraints;
 
 /// Kill ring and word movement for text editing.
 /// Emacs-style kill/yank buffer with word boundary detection.
-pub mod kill_ring;
+pub use maestro_ui::kill_ring;
 
 /// Confirmation dialog widget.
 /// Simple yes/no dialogs with keyboard navigation.
-pub mod confirm_dialog;
+pub use maestro_ui::confirm_dialog;
 
 /// OSC-8 terminal hyperlinks.
 /// Clickable links in modern terminals.
@@ -475,7 +436,7 @@ pub mod hyperlink;
 
 /// ASCII animation system.
 /// Frame-based animations with built-in presets.
-pub mod ascii_animation;
+pub use maestro_ui::ascii_animation;
 
 /// Skills system for dynamically activating specialized behaviors.
 /// Skills can modify system prompts, provide tools, and change how the agent approaches tasks.
@@ -486,7 +447,7 @@ pub mod plugins;
 
 /// Swarm mode for multi-agent task orchestration.
 /// Execute complex tasks across multiple agents in parallel with dependency management.
-pub mod swarm;
+pub use maestro_swarm as swarm;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES

@@ -25,6 +25,146 @@ pub struct OpenAiRequestCapabilities {
     pub output_tokens: Option<u32>,
 }
 
+/// Thinking wire mode supported by a direct Anthropic model family.
+///
+/// This is deliberately a transport classification. It does not describe how
+/// the model is displayed in the picker or how a user's thinking preference is
+/// labelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnthropicThinkingMode {
+    /// Legacy extended thinking uses `type: enabled` and a token budget.
+    Extended,
+    /// Current Claude models use `type: adaptive` without a budget field.
+    Adaptive,
+    /// The model always thinks; omit the `thinking` request object entirely.
+    AlwaysOn,
+}
+
+/// Provider-scoped request capabilities for direct Anthropic routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicRequestCapabilities {
+    pub thinking: AnthropicThinkingMode,
+    pub temperature: bool,
+}
+
+impl AnthropicRequestCapabilities {
+    /// Map the existing token-budget control to a supported modern effort
+    /// level. Anthropic's adaptive and always-on models accept `low`,
+    /// `medium`, `high`, and `max`; legacy extended-thinking models retain
+    /// their `budget_tokens` contract.
+    #[must_use]
+    pub fn effort_for_budget(&self, budget_tokens: u32) -> Option<&'static str> {
+        if !matches!(
+            self.thinking,
+            AnthropicThinkingMode::Adaptive | AnthropicThinkingMode::AlwaysOn
+        ) {
+            return None;
+        }
+
+        Some(if budget_tokens > 20_000 {
+            "max"
+        } else if budget_tokens > 10_000 {
+            "high"
+        } else if budget_tokens > 4_096 {
+            "medium"
+        } else {
+            "low"
+        })
+    }
+}
+
+/// Resolve the Anthropic wire contract from the provider route and model id.
+///
+/// Model family matching is kept here so callers use the same typed
+/// capabilities when inspecting a model and when constructing its request.
+/// Non-Anthropic routes intentionally receive the conservative legacy mode;
+/// this helper must not infer provider behaviour from a display name routed by
+/// another provider.
+#[must_use]
+pub fn anthropic_request_capabilities(
+    provider: Option<&str>,
+    model: &str,
+) -> AnthropicRequestCapabilities {
+    let model_id = anthropic_model_id(provider, model);
+    let normalized = model_id.as_deref().unwrap_or_default();
+
+    let thinking = if is_model_family(normalized, "claude-fable-5")
+        || is_model_family(normalized, "claude-mythos-5")
+        || is_model_family(normalized, "claude-mythos-preview")
+    {
+        AnthropicThinkingMode::AlwaysOn
+    } else if is_model_family(normalized, "claude-opus-5")
+        || is_model_family(normalized, "claude-sonnet-5")
+        || is_model_family(normalized, "claude-opus-4-8")
+        || is_model_family(normalized, "claude-opus-4-7")
+        || is_model_family(normalized, "claude-opus-4-6")
+        || is_model_family(normalized, "claude-sonnet-4-6")
+        || is_model_family(normalized, "claude-opus-latest")
+        || is_model_family(normalized, "claude-sonnet-latest")
+    {
+        AnthropicThinkingMode::Adaptive
+    } else {
+        AnthropicThinkingMode::Extended
+    };
+
+    let temperature = model_id.as_deref().is_none_or(|model| {
+        !is_anthropic_opus_4_family_for_capabilities(model)
+            && !is_model_family(model, "claude-fable-5")
+            && !is_model_family(model, "claude-mythos-5")
+            && !is_model_family(model, "claude-mythos-preview")
+            && !is_model_family(model, "claude-opus-5")
+            && !is_model_family(model, "claude-sonnet-5")
+            && !is_model_family(model, "claude-sonnet-latest")
+    });
+
+    AnthropicRequestCapabilities {
+        thinking,
+        temperature,
+    }
+}
+
+fn anthropic_model_id(provider: Option<&str>, model: &str) -> Option<String> {
+    let stripped = strip_managed_model_prefix(model.trim());
+    let inferred_provider = stripped
+        .split_once('/')
+        .map(|(name, _)| name.trim())
+        .or_else(|| {
+            stripped
+                .get(..7)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("claude-"))
+                .map(|_| "anthropic")
+        });
+    let provider = provider.or(inferred_provider);
+    let is_anthropic = provider.is_some_and(|name| {
+        name.eq_ignore_ascii_case("anthropic") || name.eq_ignore_ascii_case("claude")
+    });
+    if !is_anthropic {
+        return None;
+    }
+
+    let normalized = provider_model_name(stripped).trim().to_ascii_lowercase();
+    let normalized = normalized
+        .strip_prefix("anthropic/")
+        .or_else(|| normalized.strip_prefix("claude/"))
+        .unwrap_or(&normalized);
+    normalized
+        .starts_with("claude-")
+        .then(|| normalized.replace('.', "-"))
+}
+
+fn is_model_family(model: &str, family: &str) -> bool {
+    model == family
+        || model
+            .strip_prefix(family)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
+fn is_anthropic_opus_4_family_for_capabilities(model: &str) -> bool {
+    is_model_family(model, "claude-opus-4") || is_model_family(model, "claude-opus-latest")
+}
+
 /// Resolve the actual route before applying model-specific restrictions.
 #[must_use]
 pub fn openai_request_capabilities(
@@ -243,6 +383,84 @@ mod tests {
         assert_eq!(
             openai_request_capabilities(None, "maestro-managed/openai/gpt-6-astra"),
             openai_request_capabilities(Some("openai"), "gpt-6-astra")
+        );
+    }
+
+    #[test]
+    fn anthropic_thinking_modes_follow_documented_model_families() {
+        for model in [
+            "claude-fable-5",
+            "claude-fable-5-1-20260901",
+            "anthropic/claude-mythos-5.1",
+            "claude-mythos-preview",
+        ] {
+            assert_eq!(
+                anthropic_request_capabilities(Some("anthropic"), model).thinking,
+                AnthropicThinkingMode::AlwaysOn,
+                "{model}"
+            );
+        }
+
+        for model in [
+            "claude-opus-5",
+            "claude-sonnet-5-20260901",
+            "claude-opus-4.8",
+            "claude-opus-4-7-20260520",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+        ] {
+            assert_eq!(
+                anthropic_request_capabilities(Some("anthropic"), model).thinking,
+                AnthropicThinkingMode::Adaptive,
+                "{model}"
+            );
+        }
+
+        for model in [
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-3-opus-20240229",
+        ] {
+            assert_eq!(
+                anthropic_request_capabilities(Some("anthropic"), model).thinking,
+                AnthropicThinkingMode::Extended,
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_capabilities_are_route_scoped() {
+        assert_eq!(
+            anthropic_request_capabilities(None, "anthropic/claude-opus-4.7").thinking,
+            AnthropicThinkingMode::Adaptive
+        );
+        assert_eq!(
+            anthropic_request_capabilities(None, "claude-fable-5-1").thinking,
+            AnthropicThinkingMode::AlwaysOn
+        );
+        assert_eq!(
+            anthropic_request_capabilities(Some("openrouter"), "anthropic/claude-fable-5").thinking,
+            AnthropicThinkingMode::Extended
+        );
+    }
+
+    #[test]
+    fn modern_anthropic_effort_preserves_budget_intent() {
+        let capabilities = anthropic_request_capabilities(Some("anthropic"), "claude-opus-4-7");
+        for (budget, effort) in [
+            (4_096, "low"),
+            (4_097, "medium"),
+            (10_001, "high"),
+            (20_001, "max"),
+        ] {
+            assert_eq!(capabilities.effort_for_budget(budget), Some(effort));
+        }
+        assert_eq!(
+            anthropic_request_capabilities(Some("anthropic"), "claude-opus-4-5")
+                .effort_for_budget(50_000),
+            None
         );
     }
 }

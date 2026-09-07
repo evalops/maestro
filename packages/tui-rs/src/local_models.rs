@@ -218,6 +218,13 @@ pub fn spawn_local_model_discovery() -> (LocalDiscoveryHandle, mpsc::Receiver<Lo
 fn spawn_local_model_discovery_with_endpoints(
     endpoints: Vec<LocalRuntimeEndpoint>,
 ) -> (LocalDiscoveryHandle, mpsc::Receiver<LocalDiscoveryBatch>) {
+    spawn_local_model_discovery_with_client_factory(endpoints, discovery_client)
+}
+
+fn spawn_local_model_discovery_with_client_factory(
+    endpoints: Vec<LocalRuntimeEndpoint>,
+    make_client: impl FnOnce() -> reqwest::blocking::Client + Send + 'static,
+) -> (LocalDiscoveryHandle, mpsc::Receiver<LocalDiscoveryBatch>) {
     let (tx, rx) = mpsc::sync_channel(1);
     let (event_tx, event_rx) = mpsc::sync_channel(2);
     let state = Arc::new(Mutex::new(DiscoveryState::default()));
@@ -225,7 +232,7 @@ fn spawn_local_model_discovery_with_endpoints(
     std::thread::Builder::new()
         .name("maestro-local-model-discovery".to_owned())
         .spawn(move || {
-            let client = discovery_client();
+            let client = make_client();
             let mut generation = 0_u64;
             while rx.recv().is_ok() {
                 let models = discover_endpoints_with_client(&client, &endpoints);
@@ -845,7 +852,12 @@ mod tests {
             display_name: "llama.cpp",
             base_url: first,
         }];
-        let (handle, events) = spawn_local_model_discovery_with_endpoints(endpoints);
+        // This test bounds discovery and coalescing, not platform certificate
+        // loading during HTTP client construction. Production still builds its
+        // client asynchronously inside the actor.
+        let client = discovery_client();
+        let (handle, events) =
+            spawn_local_model_discovery_with_client_factory(endpoints, move || client);
 
         handle.refresh();
         handle.refresh();

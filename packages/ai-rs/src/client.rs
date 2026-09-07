@@ -529,7 +529,11 @@ impl UnifiedClient {
                     .credential
                     .as_deref()
                     .context("provider credential unexpectedly missing")?;
-                Ok(Self::Anthropic(AnthropicClient::new(credential)?))
+                let client = match resolved.base_url.as_deref() {
+                    Some(base_url) => AnthropicClient::with_base_url(credential, base_url)?,
+                    None => AnthropicClient::new(credential)?,
+                };
+                Ok(Self::Anthropic(client))
             }
             ProviderProtocol::Google => {
                 let credential = resolved
@@ -762,7 +766,7 @@ impl UnifiedClient {
         let (idle_timeout, max_retries) = self.stream_idle_policy();
         let model = config.model.trim().to_string();
         let provider_model = telemetry_provider_model(&provider, &model);
-        let model_span = maestro_runtime::model_span(&provider, &provider_model);
+        let model_span = maestro_runtime_contracts::model_span(&provider, &provider_model);
         let started = Instant::now();
         tracing::info!(
             target: "maestro.llm",
@@ -1108,7 +1112,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 cache_creation_tokens,
             } = &event
             {
-                maestro_runtime::record_model_usage(
+                maestro_runtime_contracts::record_model_usage(
                     &model_span,
                     *input_tokens,
                     *output_tokens,
@@ -1186,7 +1190,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 return; // Caller dropped the receiver.
             }
             if terminal {
-                maestro_runtime::record_outcome(
+                maestro_runtime_contracts::record_outcome(
                     &model_span,
                     if terminal_error { "error" } else { "success" },
                     stream_started.elapsed(),
@@ -1291,6 +1295,84 @@ mod tests {
             AiProvider::from_model("anthropic/claude"),
             AiProvider::Anthropic
         );
+    }
+
+    #[tokio::test]
+    async fn anthropic_uses_resolved_base_url_for_messages_stream() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Anthropic API");
+        let address = listener.local_addr().expect("mock Anthropic address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Anthropic request");
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).expect("read Anthropic request");
+            request_tx
+                .send(String::from_utf8_lossy(&request[..bytes_read]).into_owned())
+                .expect("record Anthropic request");
+
+            let body = concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_local\",\"model\":\"claude-opus-4-7\"}}\n\n",
+                "event: content_block_start\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+                "event: content_block_stop\n",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n",
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .expect("write Anthropic stream");
+        });
+
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "test-key".to_string());
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            format!("http://{address}/v1/"),
+        );
+        let client = UnifiedClient::from_model_with_env("anthropic/claude-opus-4-7", &env)
+            .expect("construct Anthropic client from resolved provider");
+        let mut events = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "anthropic/claude-opus-4-7".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("open mock Anthropic stream");
+
+        let mut saw_message_stop = false;
+        while let Some(event) = events.recv().await {
+            if matches!(event, StreamEvent::MessageStop { .. }) {
+                saw_message_stop = true;
+                break;
+            }
+        }
+        assert!(saw_message_stop, "mock Anthropic stream must terminate");
+
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("mock Anthropic request");
+        assert!(
+            request.starts_with("POST /v1/messages HTTP/1.1"),
+            "resolved base URL must be joined with /messages: {request}"
+        );
+        server.join().expect("mock Anthropic server");
     }
 
     #[test]

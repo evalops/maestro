@@ -451,7 +451,13 @@ fn slash_popup_renders_command_descriptions_and_controls() {
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     terminal
         .draw(|frame| {
-            App::render_slash_completions_static(&mut state, &registry, frame, frame.area());
+            App::render_slash_completions_static(
+                &mut state,
+                &registry,
+                frame,
+                frame.area(),
+                crate::themes::current_ui_theme(),
+            );
         })
         .expect("render slash popup");
     let buffer = terminal.backend().buffer();
@@ -468,6 +474,229 @@ fn slash_popup_renders_command_descriptions_and_controls() {
     assert!(rendered.contains("/help"));
     assert!(rendered.contains(&description));
     assert!(rendered.contains("Enter run"));
+}
+
+#[test]
+fn slash_popup_uses_theme_colors_for_selected_and_unselected_rows() {
+    use ratatui::style::Color;
+    for theme in [
+        maestro_ui::UiTheme {
+            surface: Color::Rgb(24, 24, 24),
+            text: Color::White,
+            muted: Color::Gray,
+            border: Color::Blue,
+            focus: Color::Magenta,
+            selection: Some(Color::Rgb(45, 45, 45)),
+            ..Default::default()
+        },
+        maestro_ui::UiTheme {
+            surface: Color::White,
+            text: Color::Black,
+            muted: Color::DarkGray,
+            border: Color::Gray,
+            focus: Color::Blue,
+            selection: Some(Color::Rgb(225, 225, 225)),
+            ..Default::default()
+        },
+        maestro_ui::UiTheme::default(),
+    ] {
+        let registry = Arc::new(crate::commands::build_command_registry());
+        let matcher = SlashCommandMatcher::new(Arc::clone(&registry));
+        let mut state = SlashCycleState::new();
+        state.set_query("", &matcher);
+        assert!(state.completions().len() > 1);
+        let selected = state.list_state_mut().selected().expect("selected command");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                App::render_slash_completions_static(
+                    &mut state,
+                    &registry,
+                    frame,
+                    frame.area(),
+                    theme,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let popup = App::slash_popup_area(buffer.area, state.completions().len());
+        assert_eq!(buffer[(popup.x, popup.y)].fg, theme.border);
+        assert_eq!(buffer[(popup.x, popup.y)].bg, theme.surface);
+        for row in 0..popup.height - 2 {
+            let y = popup.y + 1 + row;
+            let expected_bg = if usize::from(row) == selected {
+                theme.selection.unwrap_or(theme.surface)
+            } else {
+                theme.surface
+            };
+            let expected_fg = if usize::from(row) == selected {
+                theme.focus
+            } else {
+                theme.text
+            };
+            let command_x = (popup.x + 1..popup.right() - 1)
+                .find(|&x| buffer[(x, y)].symbol() == "/")
+                .expect("command label");
+            assert_eq!(buffer[(command_x, y)].fg, expected_fg);
+            for x in popup.x + 1..popup.right() - 1 {
+                assert_eq!(buffer[(x, y)].bg, expected_bg, "row background");
+            }
+            assert!(
+                (command_x..popup.right() - 1)
+                    .any(|x| buffer[(x, y)].symbol() != " " && buffer[(x, y)].fg == theme.muted),
+                "description retains muted color"
+            );
+        }
+        let footer_y = popup.bottom() - 1;
+        let hint_x = (popup.x..popup.right())
+            .find(|&x| buffer[(x, footer_y)].symbol() == "↑")
+            .expect("keyboard hint");
+        assert_eq!(buffer[(hint_x, footer_y)].fg, theme.muted);
+    }
+}
+
+#[test]
+fn failed_model_default_save_preserves_session_choice() {
+    if crate::config::test_reexec_for_process_isolation() {
+        return;
+    }
+    let temp = tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    let mut app = new_test_app();
+    let current = app.current_model.clone();
+    let model = app.state.model.clone();
+    let spawn = app.pending_agent_spawn;
+    let user_set = app.current_model_user_set;
+    std::fs::create_dir(temp.path().join("config.toml")).unwrap();
+    app.switch_model("gpt-5.6", true);
+    assert_eq!(app.current_model, current);
+    assert_eq!(app.state.model, model);
+    assert_eq!(app.pending_agent_spawn, spawn);
+    assert_eq!(app.current_model_user_set, user_set);
+    assert!(app.pending_model_change.is_none());
+    assert!(
+        app.state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Failed to save default model")
+    );
+    assert!(
+        !app.state
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("saved")
+    );
+    std::fs::remove_dir(temp.path().join("config.toml")).unwrap();
+    app.switch_model("gpt-5.6", true);
+    assert!(app.state.error.is_none());
+    assert_eq!(app.current_model, "gpt-5.6");
+    assert!(app.pending_agent_spawn);
+}
+
+#[test]
+fn failed_footer_save_preserves_runtime_choice_and_recovers() {
+    if crate::config::test_reexec_for_process_isolation() {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let temp = tempdir().unwrap();
+        std::env::set_var("MAESTRO_HOME", temp.path());
+        let ui_path = temp.path().join("ui.json");
+        let mut app = new_test_app();
+        let original = app.footer_style;
+        std::fs::create_dir(&ui_path).unwrap();
+
+        app.handle_command_action(CommandAction::SetFooterStyle(FooterStyle::Solo))
+            .await;
+        assert_eq!(app.footer_style, original);
+        assert!(
+            app.state
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("failed to persist"))
+        );
+        assert!(ui_path.is_dir());
+
+        std::fs::remove_dir(&ui_path).unwrap();
+        app.handle_command_action(CommandAction::SetFooterStyle(FooterStyle::Solo))
+            .await;
+        assert_eq!(app.footer_style, FooterStyle::Solo);
+        assert_eq!(app.ui_prefs.footer_style(), FooterStyle::Solo);
+        assert!(app.state.error.is_none());
+        assert_eq!(
+            crate::ui_prefs::UiPrefs::load_default().footer_style(),
+            FooterStyle::Solo
+        );
+    });
+}
+
+#[test]
+fn saved_preference_retries_clear_previous_errors() {
+    if crate::config::test_reexec_for_process_isolation() {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let temp = tempdir().unwrap();
+        std::env::set_var("MAESTRO_HOME", temp.path());
+        let ui_path = temp.path().join("ui.json");
+        let mut app = new_test_app();
+        let original_output = app.state.output_detail();
+
+        std::fs::create_dir(&ui_path).unwrap();
+        app.handle_command_action(CommandAction::SetOutputDetail(
+            crate::state::OutputDetail::Expanded,
+        ))
+        .await;
+        assert_eq!(app.state.output_detail(), original_output);
+        assert!(app.state.error.is_some());
+        std::fs::remove_dir(&ui_path).unwrap();
+        app.handle_command_action(CommandAction::SetOutputDetail(
+            crate::state::OutputDetail::Expanded,
+        ))
+        .await;
+        assert_eq!(
+            app.state.output_detail(),
+            crate::state::OutputDetail::Expanded
+        );
+        assert!(app.state.error.is_none());
+        assert_eq!(
+            crate::ui_prefs::UiPrefs::load_default().output_detail(),
+            crate::state::OutputDetail::Expanded
+        );
+
+        std::fs::remove_file(&ui_path).unwrap();
+        std::fs::create_dir(&ui_path).unwrap();
+        app.handle_command_action(CommandAction::SetFooterStyle(FooterStyle::History))
+            .await;
+        assert!(app.state.error.is_some());
+        std::fs::remove_dir(&ui_path).unwrap();
+        app.handle_command_action(CommandAction::SetFooterStyle(FooterStyle::History))
+            .await;
+        assert_eq!(app.footer_style, FooterStyle::History);
+        assert!(app.state.error.is_none());
+        assert_eq!(
+            crate::ui_prefs::UiPrefs::load_default().footer_style(),
+            FooterStyle::History
+        );
+
+        std::fs::remove_file(&ui_path).unwrap();
+        std::fs::create_dir(&ui_path).unwrap();
+        let original_animation = app.ui_prefs.animations;
+        app.handle_dex_command("motion-on");
+        assert_eq!(app.ui_prefs.animations, original_animation);
+        assert!(app.state.error.is_some());
+        std::fs::remove_dir(&ui_path).unwrap();
+        app.handle_dex_command("motion-on");
+        assert_eq!(app.ui_prefs.animations, Some(true));
+        assert!(app.state.error.is_none());
+        assert_eq!(
+            crate::ui_prefs::UiPrefs::load_default().animations,
+            Some(true)
+        );
+    });
 }
 
 #[test]
@@ -3350,6 +3579,50 @@ async fn slash_ghost_completion_hidden_when_cursor_not_at_end() {
 }
 
 #[tokio::test]
+async fn interrupted_escape_sequence_preserves_edited_draft() {
+    let mut app = new_test_app();
+    for paste in [false, true] {
+        app.state.set_input("draft");
+        app.last_esc_at = Some(Instant::now());
+        if paste {
+            app.handle_paste("x");
+        } else {
+            app.handle_key(KeyCode::Char('x'), CrosstermModifiers::NONE)
+                .await
+                .unwrap();
+        }
+        assert!(app.last_esc_at.is_none());
+        app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.state.input(), "draftx");
+        app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.state.input().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn modal_escape_and_new_session_end_the_previous_escape_sequence() {
+    let mut app = new_test_app();
+    app.state.set_input("draft");
+    app.last_esc_at = Some(Instant::now());
+    app.show_control_panel(crate::commands::ControlPanel::Settings);
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert!(app.last_esc_at.is_none());
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "draft");
+    app.handle_command_action(CommandAction::ClearMessages)
+        .await;
+    assert!(app.last_esc_at.is_none());
+}
+
+#[tokio::test]
 async fn double_esc_clears_input() {
     let mut app = new_test_app();
     app.state.set_input("draft text");
@@ -3963,6 +4236,171 @@ fn locked_session_resume_does_not_restore_lifecycle_notes() {
 
     assert!(app.session_resume_failed);
     assert!(app.pending_agent_tool_notes.is_empty());
+}
+
+#[test]
+fn locked_session_resume_preserves_the_active_session() {
+    assert_locked_resume_preserves_active(false);
+}
+
+#[test]
+fn continue_locked_session_preserves_the_active_session() {
+    assert_locked_resume_preserves_active(true);
+}
+
+fn assert_locked_resume_preserves_active(continue_latest: bool) {
+    use std::io::Write;
+
+    let temp = tempdir().unwrap();
+    let dir = temp.path().join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let write_session = |id: &str, model: &str, message: &str| {
+        let path = dir.join(format!("2024-01-15T10-30-00-000Z_{id}.jsonl"));
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "session",
+                "id": id,
+                "timestamp": "2024-01-15T10:30:00Z",
+                "cwd": "/tmp",
+                "model": model,
+                "thinkingLevel": "medium"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "message",
+                "timestamp": "2024-01-15T10:30:01Z",
+                "message": {
+                    "role": "user",
+                    "content": message,
+                    "timestamp": 0
+                }
+            })
+        )
+        .unwrap();
+        path
+    };
+    let active_path = write_session("active-session", "active-model", "keep active");
+    let locked_path = write_session("locked-target", "locked-model", "do not adopt");
+
+    let mut app = new_test_app();
+    app.session_manager = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+    app.resume_session_at_startup("active-session");
+    let active_messages: Vec<String> = app
+        .state
+        .messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect();
+    let active_model = app.current_model.clone();
+    let active_state_model = app.state.model.clone();
+    let active_session_id = app.state.session_id.clone();
+
+    let mut lock_holder = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+    lock_holder
+        .resume_session_by_path("locked-target", &locked_path)
+        .expect("hold target session writer lock");
+    let locked = app
+        .session_manager
+        .load_session("locked-target")
+        .expect("load locked target transcript");
+
+    if continue_latest {
+        std::fs::File::open(&active_path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+        app.continue_last_session();
+    } else {
+        app.apply_resumed_session(&locked);
+    }
+
+    assert!(!app.session_resume_failed);
+    assert_eq!(app.state.session_id, active_session_id);
+    assert_eq!(app.current_model, active_model);
+    assert_eq!(app.state.model, active_state_model);
+    assert_eq!(
+        app.session_manager.current_session_path().as_deref(),
+        Some(active_path.as_path())
+    );
+    let messages: Vec<String> = app
+        .state
+        .messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect();
+    assert_eq!(messages, active_messages);
+    assert!(crate::session::SessionWriter::open_existing(&active_path).is_err());
+    assert!(
+        app.state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("current session unchanged"))
+    );
+
+    // The retained writer remains usable after the failed switch.
+    app.record_user_message("continue active");
+    let active = crate::session::SessionReader::read_file(&active_path).unwrap();
+    assert!(
+        active
+            .messages
+            .iter()
+            .any(|message| message.text_content() == "continue active")
+    );
+}
+
+#[test]
+fn reselecting_active_session_keeps_writer_and_clears_escape_sequence() {
+    use std::io::Write;
+
+    let temp = tempdir().unwrap();
+    let dir = temp.path().join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("2024-01-15T10-30-00-000Z_active-session.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "type": "session",
+            "id": "active-session",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "cwd": "/tmp",
+            "model": "active-model",
+            "thinkingLevel": "medium"
+        })
+    )
+    .unwrap();
+    drop(file);
+
+    let mut app = new_test_app();
+    app.session_manager = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+    app.resume_session_at_startup("active-session");
+    app.last_esc_at = Some(std::time::Instant::now());
+    let parsed = app
+        .session_manager
+        .load_session("active-session")
+        .expect("load active transcript");
+
+    app.apply_resumed_session(&parsed);
+
+    assert!(!app.session_resume_failed);
+    assert_eq!(
+        app.session_manager.current_session_id(),
+        Some("active-session")
+    );
+    assert_eq!(
+        app.session_manager.current_session_path().as_deref(),
+        Some(path.as_path())
+    );
+    assert!(crate::session::SessionWriter::open_existing(&path).is_err());
+    assert!(app.last_esc_at.is_none());
 }
 
 #[test]
@@ -5918,10 +6356,21 @@ async fn selective_summary_failed_adoption_removes_child_and_keeps_original() {
 
 #[tokio::test]
 async fn selective_summary_continue_restores_exact_provider_history() {
+    assert_session_restore_provider_history(false).await;
+}
+
+#[tokio::test]
+async fn interactive_resume_restores_exact_provider_history() {
+    assert_session_restore_provider_history(true).await;
+}
+
+async fn assert_session_restore_provider_history(interactive: bool) {
     use crate::agent::{NativeAgent, NativeAgentConfig};
     let temp = tempfile::tempdir().unwrap();
     let mut app = new_test_app();
     app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.current_model = "gpt-6-astra".into();
+    app.current_thinking_level = ThinkingLevel::Low;
     app.ensure_session_started().unwrap();
     let (_, child_path) = app.session_manager.fork_session_snapshot().unwrap();
     let history: Vec<crate::ai::Message> = serde_json::from_value(serde_json::json!([
@@ -5949,12 +6398,22 @@ async fn selective_summary_continue_restores_exact_provider_history() {
         client,
     )
     .unwrap();
+    let saved = crate::session::SessionReader::read_file(&child_path).unwrap();
+    app.current_model = "gpt-5.6".into();
+    app.current_thinking_level = ThinkingLevel::High;
     app.native_agent = Some(agent);
-    app.continue_last_session();
+    if interactive {
+        let session = crate::session::SessionReader::read_file(&child_path).unwrap();
+        app.apply_resumed_session(&session);
+    } else {
+        app.continue_last_session();
+    }
     assert_eq!(
         app.session_manager.current_session_path().as_ref(),
         Some(&child_path)
     );
+    assert_eq!(app.current_model, saved.header.model);
+    assert_eq!(app.current_thinking_level, saved.header.thinking_level);
     let preview = app
         .native_agent
         .as_ref()
@@ -6001,4 +6460,236 @@ async fn feedback_model_drafts_queue_hide_and_edit_without_sending() {
     ));
     app.handle_bug_report("new Another failure").await.unwrap();
     assert_eq!(bug_report::load_all(&path).unwrap().len(), 2);
+}
+
+#[test]
+fn error_banner_uses_shared_theme() {
+    use ratatui::widgets::Widget;
+    for theme in crate::components::theme_test::palettes() {
+        let area = ratatui::layout::Rect::new(0, 0, 12, 3);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        super::error_banner("Connection failed. Try again.", theme).render(area, &mut buffer);
+        crate::components::theme_test::assert_palette(&buffer, theme);
+        assert_eq!(buffer[(0, 0)].fg, theme.error);
+        assert_eq!(buffer[(0, 1)].fg, theme.error);
+    }
+}
+
+#[test]
+fn opening_control_panels_preserves_approval_and_preferences() {
+    use crate::commands::ControlPanel;
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    let footer = app.footer_style;
+    let output = app.state.output_detail();
+    for panel in [
+        ControlPanel::Settings,
+        ControlPanel::Permissions,
+        ControlPanel::Footer,
+        ControlPanel::Output,
+        ControlPanel::Model,
+        ControlPanel::Effort,
+        ControlPanel::Tasks,
+        ControlPanel::Context,
+        ControlPanel::Review,
+        ControlPanel::Help,
+    ] {
+        app.show_control_panel(panel);
+        assert_eq!(app.state.approval_mode, ApprovalMode::Safe);
+        assert_eq!(app.footer_style, footer);
+        assert_eq!(app.state.output_detail(), output);
+        assert_eq!(app.active_modal, ActiveModal::CommandPalette);
+    }
+}
+
+#[tokio::test]
+async fn control_panel_enter_keeps_child_model_picker_open() {
+    let mut app = new_test_app();
+    app.show_control_panel(crate::commands::ControlPanel::Model);
+    assert_eq!(
+        app.command_palette.selected_resource().unwrap().id,
+        "model select"
+    );
+    app.handle_command_palette_key(crossterm::event::KeyCode::Enter, false)
+        .await
+        .unwrap();
+    assert_eq!(app.active_modal, ActiveModal::ModelSelector);
+}
+
+#[tokio::test]
+async fn permissions_escape_preserves_safe_policy() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.show_control_panel(crate::commands::ControlPanel::Permissions);
+    app.handle_command_palette_key(crossterm::event::KeyCode::Esc, false)
+        .await
+        .unwrap();
+    assert_eq!(app.state.approval_mode, ApprovalMode::Safe);
+    assert_eq!(app.active_modal, ActiveModal::None);
+}
+
+#[test]
+fn tasks_schedule_action_resolves_to_read_only_status() {
+    let mut app = new_test_app();
+    app.show_control_panel(crate::commands::ControlPanel::Tasks);
+    for _ in 0..20 {
+        let resource = app.command_palette.selected_resource().unwrap();
+        if resource.label == "Schedules" {
+            let output = app
+                .command_registry
+                .execute(&format!("/{}", resource.id), "/tmp", None, None)
+                .unwrap();
+            assert!(matches!(
+                output,
+                CommandOutput::Action(CommandAction::Loop(crate::commands::LoopAction::Status))
+            ));
+            return;
+        }
+        app.command_palette.move_down();
+    }
+    panic!("Tasks must expose schedule status");
+}
+
+#[tokio::test]
+async fn successful_model_retry_clears_late_error_from_earlier_request() {
+    let mut app = new_test_app();
+    let failed_model = "openai/failed-model".to_owned();
+    let retried_model = "openai/retried-model".to_owned();
+    app.pending_model_change = Some(PendingModelChange {
+        model: retried_model.clone(),
+    });
+
+    // The first request can report both events after the retry is already
+    // pending. Its error must remain visible until the retry succeeds.
+    app.handle_agent_message(FromAgent::Error {
+        message: "first model failed".to_owned(),
+        fatal: false,
+        terminal: false,
+        retryable: false,
+    })
+    .await
+    .expect("handle failed model error");
+    app.handle_agent_message(FromAgent::ModelChangeFailed {
+        model: failed_model,
+        reason: "first model failed".to_owned(),
+    })
+    .await
+    .expect("handle failed model change");
+    assert_eq!(
+        app.pending_model_change
+            .as_ref()
+            .map(|pending| pending.model.as_str()),
+        Some("openai/retried-model")
+    );
+    assert_eq!(app.state.error.as_deref(), Some("first model failed"));
+
+    app.handle_agent_message(FromAgent::ModelChanged {
+        model: retried_model.clone(),
+        provider: "openai".to_owned(),
+    })
+    .await
+    .expect("handle successful retry");
+
+    assert_eq!(app.current_model, retried_model);
+    assert_eq!(app.state.model.as_deref(), Some("openai/retried-model"));
+    assert_eq!(app.state.provider.as_deref(), Some("openai"));
+    assert!(app.pending_model_change.is_none());
+    assert!(app.state.error.is_none());
+}
+
+#[tokio::test]
+async fn configured_cycle_binding_respects_busy_and_pending_state() {
+    let mut app = new_test_app();
+    app.current_model = "gpt-5.6".into();
+    app.cycle_model_binding = crate::key_hints::alt(KeyCode::Char('m'));
+    app.state.busy = true;
+    app.handle_key(KeyCode::Char('m'), CrosstermModifiers::ALT)
+        .await
+        .unwrap();
+    assert_eq!(app.current_model, "gpt-5.6");
+    assert!(app.state.status.as_deref().unwrap().contains("Wait for"));
+    app.state.busy = false;
+    app.pending_model_change = Some(PendingModelChange {
+        model: "claude-fable-5-1".into(),
+    });
+    app.cycle_model(true);
+    assert_eq!(
+        app.pending_model_change.as_ref().unwrap().model,
+        "claude-fable-5-1"
+    );
+    assert_eq!(app.current_model, "gpt-5.6");
+}
+
+#[tokio::test]
+async fn local_response_content_persists_tool_calls_and_signed_thinking_before_dispatch() {
+    let mut app = new_test_app();
+    let dir = tempfile::tempdir().unwrap();
+    app.session_manager = SessionManager::with_sessions_dir("handoff-test", dir.path());
+    app.current_model = "claude-fable-5-1".into();
+    app.record_user_message("Read both files");
+    let response_id = "tool-response".to_string();
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: response_id.clone(),
+    })
+    .await
+    .unwrap();
+    let blocks = vec![
+        crate::ai::ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: Some("empty-signature".into()),
+        },
+        crate::ai::ContentBlock::Thinking {
+            thinking: "reasoning".into(),
+            signature: Some("visible-signature".into()),
+        },
+        crate::ai::ContentBlock::ToolUse {
+            id: "call|fc_a".into(),
+            name: "read".into(),
+            input: serde_json::json!({"path":"a"}),
+        },
+        crate::ai::ContentBlock::ToolUse {
+            id: "call|fc_b".into(),
+            name: "read".into(),
+            input: serde_json::json!({"path":"b"}),
+        },
+    ];
+    let event = FromAgent::LocalAssistantContent {
+        response_id: response_id.clone(),
+        content: blocks.clone(),
+    };
+    assert!(
+        serde_json::to_value(&event).is_err(),
+        "private content cannot enter a serialized transport"
+    );
+    app.handle_agent_message(event).await.unwrap();
+    app.handle_agent_message(FromAgent::ResponseEnd {
+        response_id,
+        usage: None,
+    })
+    .await
+    .unwrap();
+    let path = app.session_manager.current_session_path().unwrap();
+    let session = crate::session::SessionReader::read_file(path).unwrap();
+    let history = crate::session::model_history(&session);
+    assert_eq!(
+        serde_json::to_value(&history[1].content).unwrap(),
+        serde_json::to_value(crate::ai::MessageContent::Blocks(blocks)).unwrap()
+    );
+    assert!(app.pending_assistant_content.is_none());
+}
+
+#[test]
+fn shifted_cycle_fallback_accepts_terminal_uppercase_key_events() {
+    let app = new_test_app();
+    for modifier in [CrosstermModifiers::CONTROL, CrosstermModifiers::ALT] {
+        let modifiers = modifier | CrosstermModifiers::SHIFT;
+        let binding = crate::key_hints::KeyBinding {
+            key: KeyCode::Char('p'),
+            modifiers,
+        };
+        assert!(app.matches_binding(binding, KeyCode::Char('P'), modifiers));
+        assert!(app.matches_binding(binding, KeyCode::Char('p'), modifiers));
+        assert!(!app.matches_binding(binding, KeyCode::Char('P'), modifier));
+        assert!(!app.matches_binding(binding, KeyCode::Char('Q'), modifiers));
+    }
 }

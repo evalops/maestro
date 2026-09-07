@@ -2605,6 +2605,7 @@ async fn handle_agent_event(
         }
     }
     match msg {
+        FromAgent::LocalAssistantContent { .. } => return Ok(()),
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
@@ -4984,6 +4985,9 @@ mod tests {
             .env_remove("MAESTRO_MODEL")
             .env_remove("OPENAI_API_KEY")
             .env("MAESTRO_DEFAULT_MODEL", "evalops/gpt-5.5")
+            // Parallel tests can install a direct token in the parent process.
+            // This fixture must exercise its explicit token-file credential.
+            .env_remove(crate::credential_mode::ACCESS_TOKEN_ENV)
             .env("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE", &token)
             .env("MAESTRO_EVALOPS_BASE_URL", "https://gateway.example/v1")
             .env("MAESTRO_EVALOPS_ORG_ID", "org_1")

@@ -83,7 +83,9 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider, provider_model_name};
+use super::model_capabilities::{AnthropicThinkingMode, anthropic_request_capabilities};
 use super::op_secret;
+use super::transform::{OutboundTarget, transform_messages_for_target};
 use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 
 /// Parser state for accumulating data across SSE events within a single stream.
@@ -96,19 +98,12 @@ struct SseParserState {
     pending_thinking_signature: Option<String>,
 }
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
+const ANTHROPIC_MESSAGES_PATH: &str = "messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 fn anthropic_model_accepts_temperature(model: &str) -> bool {
-    let normalized = model.to_ascii_lowercase();
-    !(is_anthropic_opus_4_family(&normalized) || normalized == "claude-opus-latest")
-}
-
-fn is_anthropic_opus_4_family(model: &str) -> bool {
-    model == "claude-opus-4"
-        || model
-            .strip_prefix("claude-opus-4")
-            .is_some_and(|suffix| suffix.starts_with(['-', '.']))
+    anthropic_request_capabilities(Some("anthropic"), model).temperature
 }
 
 /// Anthropic API client for Claude models
@@ -127,24 +122,50 @@ pub struct AnthropicClient {
     client: reqwest::Client,
     /// API key for authentication (via x-api-key header)
     api_key: String,
+    /// Base URL for the Anthropic Messages API, without the `/messages` path.
+    base_url: String,
 }
 
 impl AnthropicClient {
     /// Create a new Anthropic client
     pub fn new(api_key: impl Into<String>) -> Result<Self> {
+        Self::with_base_url(api_key, ANTHROPIC_DEFAULT_BASE_URL)
+    }
+
+    /// Create a client using an explicit Anthropic API base URL.
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
         let api_key = api_key.into().trim().to_string();
+        let base_url = base_url.into().trim().trim_end_matches('/').to_string();
+        if base_url.is_empty() {
+            anyhow::bail!("Anthropic base URL cannot be empty");
+        }
+        reqwest::Url::parse(&format!("{base_url}/{ANTHROPIC_MESSAGES_PATH}"))
+            .context("Invalid Anthropic base URL")?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url,
+        })
     }
 
     /// Create a new client from environment variable
     pub fn from_env() -> Result<Self> {
         let api_key = op_secret::env_credential(&["ANTHROPIC_API_KEY"])?;
-        Self::new(api_key)
+        let base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_string());
+        Self::with_base_url(api_key, base_url)
+    }
+
+    fn messages_endpoint(&self) -> String {
+        format!("{}/{ANTHROPIC_MESSAGES_PATH}", self.base_url)
     }
 
     /// Build request headers
@@ -208,7 +229,7 @@ impl AnthropicClient {
         // ─────────────────────────────────────────────────────────────
         let response = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(self.messages_endpoint())
             .headers(self.headers())
             .json(&body)
             .send()
@@ -304,6 +325,8 @@ impl AnthropicClient {
         config: &RequestConfig,
     ) -> Result<serde_json::Value> {
         let model = provider_model_name(&config.model);
+        let capabilities = anthropic_request_capabilities(Some("anthropic"), &model);
+        let messages = transform_messages_for_target(messages, OutboundTarget::Anthropic);
         let mut body = serde_json::json!({
             "model": model,
             "max_tokens": config.max_tokens,
@@ -357,7 +380,38 @@ impl AnthropicClient {
         }
 
         if let Some(thinking) = &config.thinking {
-            body["thinking"] = serde_json::json!(thinking);
+            match capabilities.thinking {
+                AnthropicThinkingMode::Extended => {
+                    body["thinking"] = serde_json::json!(thinking);
+                }
+                AnthropicThinkingMode::Adaptive => {
+                    if thinking.thinking_type.eq_ignore_ascii_case("disabled") {
+                        body["thinking"] = serde_json::json!({ "type": "disabled" });
+                    } else {
+                        body["thinking"] = serde_json::json!({ "type": "adaptive" });
+                        if let Some(effort) = capabilities.effort_for_budget(thinking.budget_tokens)
+                        {
+                            body["output_config"] = serde_json::json!({ "effort": effort });
+                        }
+                    }
+                }
+                AnthropicThinkingMode::AlwaysOn => {
+                    // Always-on models reject both legacy `enabled` and
+                    // `disabled`; effort is the supported depth control.
+                    if !thinking.thinking_type.eq_ignore_ascii_case("disabled") {
+                        if let Some(effort) = capabilities.effort_for_budget(thinking.budget_tokens)
+                        {
+                            body["output_config"] = serde_json::json!({ "effort": effort });
+                        }
+                    }
+                }
+            }
+        } else if capabilities.thinking == AnthropicThinkingMode::Adaptive {
+            // Native `None` is the UI's explicit Off setting. Adaptive models
+            // such as Opus 5 default to thinking on, so omission would change
+            // that user choice at the provider boundary. All supported
+            // adaptive families accept disabled at the default high effort.
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
 
         Ok(body)
@@ -689,7 +743,7 @@ struct ErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
+    use crate::{MessageContent, Role, ThinkingConfig, Tool};
 
     /// Helper to create a fresh parser state for tests
     fn new_state() -> SseParserState {
@@ -734,6 +788,184 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         assert_eq!(body["stream"], true);
         // Without caching, system is a simple string
         assert_eq!(body["system"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_build_request_body_uses_model_thinking_capabilities() {
+        let client = AnthropicClient::new("test-key").unwrap();
+
+        let modern_config = RequestConfig {
+            model: "anthropic/claude-opus-4-7".to_string(),
+            thinking: Some(ThinkingConfig::enabled(16_000)),
+            ..Default::default()
+        };
+        let modern_body = client.build_request_body(&[], &modern_config).unwrap();
+        assert_eq!(modern_body["thinking"]["type"], "adaptive");
+        assert_eq!(modern_body["output_config"]["effort"], "high");
+        assert!(modern_body["thinking"].get("budget_tokens").is_none());
+
+        let always_on_config = RequestConfig {
+            model: "claude-fable-5-1".to_string(),
+            thinking: Some(ThinkingConfig::enabled(16_000)),
+            ..Default::default()
+        };
+        let always_on_body = client.build_request_body(&[], &always_on_config).unwrap();
+        assert!(always_on_body.get("thinking").is_none());
+        assert_eq!(always_on_body["output_config"]["effort"], "high");
+
+        let legacy_config = RequestConfig {
+            model: "claude-opus-4-5".to_string(),
+            thinking: Some(ThinkingConfig::enabled(16_000)),
+            ..Default::default()
+        };
+        let legacy_body = client.build_request_body(&[], &legacy_config).unwrap();
+        assert_eq!(legacy_body["thinking"]["type"], "enabled");
+        assert_eq!(legacy_body["thinking"]["budget_tokens"], 16_000);
+        assert!(legacy_body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_preserves_explicit_off_for_adaptive_models() {
+        let client = AnthropicClient::new("test-key").unwrap();
+
+        let adaptive_body = client
+            .build_request_body(
+                &[],
+                &RequestConfig {
+                    model: "claude-opus-5".to_string(),
+                    thinking: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(adaptive_body["thinking"]["type"], "disabled");
+        assert!(adaptive_body.get("output_config").is_none());
+
+        let always_on_body = client
+            .build_request_body(
+                &[],
+                &RequestConfig {
+                    model: "claude-fable-5-1".to_string(),
+                    thinking: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(always_on_body.get("thinking").is_none());
+
+        let legacy_body = client
+            .build_request_body(
+                &[],
+                &RequestConfig {
+                    model: "claude-opus-4-5".to_string(),
+                    thinking: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(legacy_body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_adapts_only_unsigned_thinking_history() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Thinking {
+                        thinking: "cross-provider reasoning".to_string(),
+                        signature: None,
+                    },
+                    ContentBlock::Thinking {
+                        thinking: String::new(),
+                        signature: Some("claude-signature".to_string()),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "toolu_123".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"path": "README.md"}),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_123".to_string(),
+                    content: "contents".to_string(),
+                    is_error: Some(false),
+                }]),
+            },
+        ];
+        let config = RequestConfig {
+            model: "claude-opus-4-7".to_string(),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&messages, &config).unwrap();
+        let assistant_blocks = body["messages"][0]["content"]
+            .as_array()
+            .expect("assistant content blocks");
+        assert_eq!(assistant_blocks[0]["type"], "text");
+        assert_eq!(assistant_blocks[0]["text"], "cross-provider reasoning");
+        assert_eq!(assistant_blocks[1]["type"], "thinking");
+        assert_eq!(assistant_blocks[1]["thinking"], "");
+        assert_eq!(assistant_blocks[1]["signature"], "claude-signature");
+        assert_eq!(assistant_blocks[2]["id"], "toolu_123");
+        assert_eq!(
+            body["messages"][1]["content"][0]["tool_use_id"],
+            "toolu_123"
+        );
+
+        let MessageContent::Blocks(original_blocks) = &messages[0].content else {
+            panic!("expected block history");
+        };
+        assert!(matches!(
+            &original_blocks[0],
+            ContentBlock::Thinking {
+                signature: None,
+                thinking
+            } if thinking == "cross-provider reasoning"
+        ));
+    }
+
+    #[test]
+    fn modern_claude_requests_omit_unsupported_sampling_when_thinking_is_off() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        for model in [
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-mythos-5",
+            "claude-mythos-5-1",
+            "claude-mythos-preview",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+        ] {
+            let body = client
+                .build_request_body(
+                    &[],
+                    &RequestConfig {
+                        model: model.to_owned(),
+                        temperature: Some(0.7),
+                        thinking: None,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(body.get("temperature").is_none(), "{model}: {body}");
+        }
+    }
+
+    #[test]
+    fn trims_base_url_before_joining_messages_endpoint() {
+        let client =
+            AnthropicClient::with_base_url("test-key", "http://127.0.0.1:1234/v1/").unwrap();
+        assert_eq!(
+            client.messages_endpoint(),
+            "http://127.0.0.1:1234/v1/messages"
+        );
     }
 
     #[test]

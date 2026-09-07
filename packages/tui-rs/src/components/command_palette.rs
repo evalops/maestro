@@ -15,10 +15,10 @@
 //! ## Empty text (browse)
 //!
 //! Groups appear in this order, each with a caption:
-//! 1. `Recent`: resources confirmed earlier in this session (session-local,
+//! 1. `Recent`: non-command resources confirmed earlier in this session (session-local,
 //!    bounded, looked up by stable id so they survive `set_resources`).
-//! 2. `Common commands`: the `COMMON_COMMANDS` that exist in the registry.
-//! 3. One group per resource kind (commands grouped by their registry category, `Files`, `Sessions`,
+//! 2. `Commands`: primary commands in registry browse order.
+//! 3. One group per non-command resource kind (`Files`, `Sessions`,
 //!    `Models`, `Themes`). Without a kind filter each kind shows a short
 //!    preview; with a kind filter (`@`, `#`, `:`, `%`, `>`) the group gets
 //!    the full result budget.
@@ -57,8 +57,6 @@ const RESULT_LIMIT: usize = 30;
 const RECENT_LIMIT: usize = 5;
 /// Rows shown per kind group on an unfiltered browse query.
 const GROUP_PREVIEW_LIMIT: usize = 4;
-/// Commands surfaced first on a browse query, in this order, when registered.
-const COMMON_COMMANDS: [&str; 5] = ["help", "model", "resume", "compact", "theme"];
 /// Kind group order on a browse query.
 const KIND_ORDER: [PaletteResourceKind; 5] = [
     PaletteResourceKind::Command,
@@ -155,6 +153,7 @@ enum PaletteRow {
 /// Provides `render(&mut Frame)` rather than implementing `Widget` so it can
 /// place the terminal cursor inside the input.
 pub struct CommandPalette {
+    panel_title: Option<String>,
     registry: Arc<CommandRegistry>,
     resources: Vec<PaletteResource>,
     /// Current search query
@@ -187,6 +186,7 @@ impl CommandPalette {
             resources,
             query: String::new(),
             searched_query: String::new(),
+            panel_title: None,
             cursor: 0,
             matches: Vec::new(),
             rows: Vec::new(),
@@ -199,9 +199,11 @@ impl CommandPalette {
 
     /// Update the registry
     pub fn update_registry(&mut self, registry: Arc<CommandRegistry>) {
-        self.resources
-            .retain(|resource| resource.kind != PaletteResourceKind::Command);
-        self.resources.extend(command_resources(&registry));
+        if self.panel_title.is_none() {
+            self.resources
+                .retain(|resource| resource.kind != PaletteResourceKind::Command);
+            self.resources.extend(command_resources(&registry));
+        }
         self.registry = registry;
         self.search();
     }
@@ -209,6 +211,7 @@ impl CommandPalette {
     /// Replace the searchable resources. The recent list is kept and re-resolved
     /// against the new resources by stable id.
     pub fn set_resources(&mut self, resources: Vec<PaletteResource>) {
+        self.panel_title = None;
         self.resources = resources;
         self.search();
     }
@@ -224,6 +227,13 @@ impl CommandPalette {
         self.selected = 0;
         self.reset_scroll();
         self.search();
+    }
+
+    /// Browse a bounded set of actions without executing or persisting a choice.
+    pub fn show_panel(&mut self, title: String, resources: Vec<PaletteResource>) {
+        self.resources = resources;
+        self.panel_title = Some(title);
+        self.show();
     }
 
     /// Hide the modal
@@ -326,6 +336,9 @@ impl CommandPalette {
     }
 
     fn remember_recent(&mut self, resource: &PaletteResource) {
+        if resource.kind == PaletteResourceKind::Command {
+            return;
+        }
         let stable_id = resource.stable_id();
         self.recent.retain(|id| *id != stable_id);
         self.recent.insert(0, stable_id);
@@ -339,7 +352,17 @@ impl CommandPalette {
     /// still in range.
     fn search(&mut self) {
         let (filter, text) = parse_filter(&self.query);
-        let (matches, rows) = if text.trim().is_empty() {
+        let (matches, rows) = if self.panel_title.is_some() {
+            let matches: Vec<usize> = self
+                .resources
+                .iter()
+                .enumerate()
+                .filter(|(_, resource)| resource.matches(&self.query))
+                .map(|(index, _)| index)
+                .collect();
+            let rows = (0..matches.len()).map(PaletteRow::Item).collect();
+            (matches, rows)
+        } else if text.trim().is_empty() {
             self.browse_rows(filter)
         } else {
             let matches = self.ranked_matches(filter, text);
@@ -409,24 +432,27 @@ impl CommandPalette {
             .recent
             .iter()
             .filter_map(|stable_id| {
-                self.resources
-                    .iter()
-                    .position(|resource| in_filter(resource) && resource.stable_id() == *stable_id)
+                self.resources.iter().position(|resource| {
+                    in_filter(resource)
+                        && resource.kind != PaletteResourceKind::Command
+                        && resource.stable_id() == *stable_id
+                })
             })
             .collect();
         push_group("Recent", recent, RECENT_LIMIT);
 
-        let common: Vec<usize> = COMMON_COMMANDS
+        let primary = self.registry.primary_commands();
+        let common: Vec<usize> = primary
             .iter()
             .filter_map(|name| {
                 self.resources.iter().position(|resource| {
                     in_filter(resource)
                         && resource.kind == PaletteResourceKind::Command
-                        && resource.id == *name
+                        && resource.id == name.name
                 })
             })
             .collect();
-        push_group("Common commands", common, COMMON_COMMANDS.len());
+        push_group("Commands", common, primary.len());
 
         let group_cap = if filter.is_some() {
             RESULT_LIMIT
@@ -434,44 +460,18 @@ impl CommandPalette {
             GROUP_PREVIEW_LIMIT
         };
         for kind in KIND_ORDER {
-            if filter.is_some_and(|wanted| wanted != kind) {
+            // Advanced and compatibility commands remain reachable by typing.
+            if kind == PaletteResourceKind::Command || filter.is_some_and(|wanted| wanted != kind) {
                 continue;
             }
-            let mut indices: Vec<usize> = self
+            let indices: Vec<usize> = self
                 .resources
                 .iter()
                 .enumerate()
                 .filter(|(_, resource)| resource.kind == kind)
                 .map(|(index, _)| index)
                 .collect();
-            if kind == PaletteResourceKind::Command {
-                let category = |index: usize| {
-                    self.registry
-                        .get(&self.resources[index].id)
-                        .map_or("Other commands", |command| command.category.description())
-                };
-                indices.sort_by_key(|index| category(*index));
-                // Preserve the per-kind browse budget so commands cannot crowd
-                // files and sessions out of the unfiltered view.
-                if filter.is_none() {
-                    indices.retain(|index| {
-                        !COMMON_COMMANDS.contains(&self.resources[*index].id.as_str())
-                    });
-                    indices.truncate(group_cap);
-                }
-                let mut start = 0;
-                while start < indices.len() {
-                    let caption = category(indices[start]);
-                    let count = indices[start..]
-                        .iter()
-                        .take_while(|index| category(**index) == caption)
-                        .count();
-                    push_group(caption, indices[start..start + count].to_vec(), group_cap);
-                    start += count;
-                }
-            } else {
-                push_group(kind_caption(kind), indices, group_cap);
-            }
+            push_group(kind_caption(kind), indices, group_cap);
         }
 
         (matches, rows)
@@ -504,9 +504,12 @@ impl CommandPalette {
         frame
             .buffer_mut()
             .set_style(area, crate::themes::current_theme().canvas_style());
-        let inner = Modal::sized("Search", ModalSize::Wide)
-            .theme(theme)
-            .render(frame, area);
+        let inner = Modal::sized(
+            self.panel_title.as_deref().unwrap_or("Search"),
+            ModalSize::Wide,
+        )
+        .theme(theme)
+        .render(frame, area);
         let area = inner;
         let label_width = self.label_column_width(area.width);
         let items: Vec<ListItem> = self
@@ -519,6 +522,14 @@ impl CommandPalette {
                 ))),
                 PaletteRow::Item(position) => {
                     let resource = &self.resources[self.matches[*position]];
+                    if self.panel_title.is_some() {
+                        return render_panel_resource(
+                            resource,
+                            *position == self.selected,
+                            area.width.saturating_sub(2),
+                            theme,
+                        );
+                    }
                     render_resource(
                         resource,
                         *position == self.selected,
@@ -532,7 +543,11 @@ impl CommandPalette {
 
         Picker::new(
             &self.query,
-            "Search commands, files, sessions…",
+            if self.panel_title.is_some() {
+                "Filter actions…"
+            } else {
+                "Search commands, files, sessions…"
+            },
             items,
             theme,
         )
@@ -542,7 +557,17 @@ impl CommandPalette {
         } else {
             "No matching resources"
         })
-        .help(footer_hint(inner.width, theme))
+        .help(if self.panel_title.is_some() {
+            key_hints(
+                &[
+                    KeyHint::new("Enter", "select / apply"),
+                    KeyHint::new("Esc", "close unchanged"),
+                ],
+                theme,
+            )
+        } else {
+            footer_hint(inner.width, theme)
+        })
         .render(frame, inner, &mut self.list_state);
     }
 
@@ -585,6 +610,36 @@ fn footer_hint(width: u16, theme: UiTheme) -> Line<'static> {
         hints.push(KeyHint::new("↑↓", "navigate"));
     }
     key_hints(&hints, theme)
+}
+
+/// Settings actions use a full-width label so permission choices stay legible.
+fn render_panel_resource(
+    resource: &PaletteResource,
+    selected: bool,
+    width: u16,
+    theme: UiTheme,
+) -> ListItem<'static> {
+    let mut lines = vec![Line::from(Span::styled(
+        palette_ellipsis(&resource.label, usize::from(width)),
+        if selected {
+            Style::default()
+                .fg(theme.focus)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme.text_style()
+        },
+    ))];
+    if let Some(description) = &resource.description {
+        lines.push(Line::from(Span::styled(
+            palette_ellipsis(description, usize::from(width)),
+            theme.muted_style(),
+        )));
+    }
+    ListItem::new(lines).style(if selected {
+        theme.selection_style()
+    } else {
+        Style::default()
+    })
 }
 
 fn render_resource(
@@ -692,6 +747,10 @@ mod tests {
 
     fn file(path: &str) -> PaletteResource {
         PaletteResource::new(PaletteResourceKind::File, path, path)
+    }
+
+    fn panel_action(id: &str, label: &str) -> PaletteResource {
+        PaletteResource::new(PaletteResourceKind::Command, id, label)
     }
 
     fn match_ids(palette: &CommandPalette) -> Vec<&str> {
@@ -811,6 +870,48 @@ mod tests {
     }
 
     #[test]
+    fn registry_refresh_preserves_open_panel_actions_and_selection() {
+        let mut palette = palette();
+        palette.show_panel(
+            "Permissions".to_owned(),
+            vec![
+                panel_action("approvals safe", "Apply: ask for every tool"),
+                panel_action("approvals yolo", "Apply: auto-approve tools"),
+            ],
+        );
+        palette.move_down();
+        palette.update_registry(Arc::new(build_command_registry()));
+        assert_eq!(palette.panel_title.as_deref(), Some("Permissions"));
+        assert_eq!(palette.matches.len(), 2);
+        assert_eq!(palette.selected_resource().unwrap().id, "approvals yolo");
+        palette.move_up();
+        assert_eq!(palette.selected_resource().unwrap().id, "approvals safe");
+    }
+
+    #[test]
+    fn panel_resources_keep_permission_labels_readable_at_wide_widths() {
+        let mut palette = palette();
+        palette.show_panel(
+            "Settings".to_owned(),
+            vec![
+                panel_action("ask", "Apply: ask for every tool"),
+                panel_action("auto", "Apply: auto-approve tools"),
+            ],
+        );
+        let text = rendered_text(&mut palette, 80, 20);
+        assert!(text.contains("Apply: ask for every tool"), "{text}");
+        assert!(text.contains("Apply: auto-approve tools"), "{text}");
+
+        palette.show_panel(
+            "Settings".to_owned(),
+            vec![panel_action("connections", "Connections and capabilities")],
+        );
+        let text = rendered_text(&mut palette, 120, 20);
+        assert!(text.contains("Connections and capabilities"), "{text}");
+        assert!(!text.contains("Connections and capabilit…"), "{text}");
+    }
+
+    #[test]
     fn command_palette_basics() {
         let mut palette = palette();
         palette.set_resources(vec![command("help", "Show help"), file("src/main.rs")]);
@@ -875,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn browse_query_lists_common_registry_commands_first() {
+    fn browse_query_lists_primary_registry_commands_first() {
         let mut palette = palette();
         palette.set_resources(vec![
             command("about", "About"),
@@ -888,14 +989,16 @@ mod tests {
 
         assert_eq!(
             match_ids(&palette),
-            vec!["help", "model", "compact", "about", "src/main.rs"],
-            "common commands come first in COMMON_COMMANDS order; unregistered ones are skipped"
+            vec!["model", "help", "src/main.rs"],
+            "primary commands come first in registry browse order; compatibility commands stay hidden"
         );
-        assert_eq!(
-            captions(&palette),
-            vec!["Common commands", "System diagnostics", "Files"]
-        );
-        assert_eq!(palette.selected_resource().unwrap().id, "help");
+        assert_eq!(captions(&palette), vec!["Commands", "Files"]);
+        assert_eq!(palette.selected_resource().unwrap().id, "model");
+
+        // Compatibility commands are still available through typed search.
+        palette.insert_str("compact");
+        assert_eq!(match_ids(&palette), vec!["compact"]);
+        assert!(captions(&palette).is_empty());
     }
 
     #[test]
@@ -975,14 +1078,38 @@ mod tests {
     #[test]
     fn resource_refresh_with_same_query_keeps_selection() {
         let mut palette = palette();
-        palette.set_resources(vec![command("a", ""), command("b", ""), command("c", "")]);
+        palette.set_resources(vec![
+            command("new", ""),
+            command("model", ""),
+            command("help", ""),
+        ]);
         palette.show();
         palette.move_down();
         assert_eq!(palette.selected, 1);
-        palette.set_resources(vec![command("a", ""), command("b", "")]);
+        palette.set_resources(vec![command("new", ""), command("model", "")]);
         assert_eq!(palette.selected, 1);
-        palette.set_resources(vec![command("a", "")]);
+        palette.set_resources(vec![command("new", "")]);
         assert_eq!(palette.selected, 0, "out-of-range selection snaps to top");
+    }
+
+    #[test]
+    fn panel_actions_do_not_evict_recent_files() {
+        let mut palette = palette();
+        let recent_file = file("src/recent.rs");
+        palette.set_resources(vec![recent_file.clone()]);
+        palette.show();
+        palette.confirm();
+        for index in 0..=RECENT_LIMIT {
+            palette.show_panel(
+                "Settings".to_owned(),
+                vec![panel_action(&format!("action-{index}"), "Apply setting")],
+            );
+            palette.confirm();
+        }
+        palette.set_resources(vec![recent_file]);
+        palette.show();
+        assert_eq!(captions(&palette), vec!["Recent"]);
+        assert_eq!(match_ids(&palette), vec!["src/recent.rs"]);
     }
 
     #[test]
@@ -1000,10 +1127,14 @@ mod tests {
         assert_eq!(confirmed.id, "src/main.rs");
         assert!(!palette.is_visible());
 
-        palette.set_resources(resources);
+        palette.set_resources(resources.clone());
         palette.show();
         assert_eq!(captions(&palette)[0], "Recent");
-        assert_eq!(match_ids(&palette)[0], "src/main.rs");
+        assert_eq!(
+            match_ids(&palette),
+            vec!["src/main.rs", "model", "help"],
+            "resource recents precede commands while primary command order stays fixed"
+        );
         assert_eq!(
             match_ids(&palette)
                 .iter()
@@ -1015,12 +1146,23 @@ mod tests {
 
         // Kind filters apply to the recent group too.
         palette.insert_char('>');
-        assert_eq!(match_ids(&palette), vec!["help", "model"]);
+        assert_eq!(match_ids(&palette), vec!["model", "help"]);
+
+        // Confirming a command does not promote it ahead of the primary order.
+        palette.move_down();
+        assert_eq!(palette.confirm().unwrap().id, "help");
+        palette.set_resources(resources.clone());
+        palette.show();
+        assert_eq!(
+            match_ids(&palette),
+            vec!["src/main.rs", "model", "help"],
+            "command recents do not reorder the Commands group"
+        );
 
         // A recent resource that no longer exists is dropped silently.
         palette.set_resources(vec![command("help", "")]);
         palette.show();
-        assert_eq!(captions(&palette), vec!["Common commands"]);
+        assert_eq!(captions(&palette), vec!["Commands"]);
     }
 
     #[test]
@@ -1058,7 +1200,7 @@ mod tests {
         assert_eq!(
             palette.rows,
             vec![
-                PaletteRow::Caption("Common commands"),
+                PaletteRow::Caption("Commands"),
                 PaletteRow::Item(0),
                 PaletteRow::Caption("Files"),
                 PaletteRow::Item(1),
@@ -1079,7 +1221,7 @@ mod tests {
         assert_eq!(palette.selected, 1, "clamped at the last selectable row");
 
         let text = rendered_text(&mut palette, 60, 14);
-        assert!(text.contains("Common commands"));
+        assert!(text.contains("Commands"));
         assert!(text.contains("Files"));
         assert!(text.contains("› src/main.rs"));
         assert!(text.contains("  /help"));

@@ -24,6 +24,12 @@ impl App {
         code: KeyCode,
         modifiers: CrosstermModifiers,
     ) -> Result<()> {
+        if code != KeyCode::Esc
+            || self.active_modal != ActiveModal::None
+            || self.history_search.is_some()
+        {
+            self.last_esc_at = None;
+        }
         if self.active_modal != ActiveModal::ThemeSelector {
             self.cancel_theme_preview();
         }
@@ -132,6 +138,15 @@ impl App {
                 level.label().to_ascii_lowercase(),
             ))
             .await;
+            return Ok(());
+        }
+
+        if self.matches_binding(self.cycle_model_binding, code, modifiers) {
+            self.cycle_model(false);
+            return Ok(());
+        }
+        if self.matches_binding(self.cycle_model_backward_binding, code, modifiers) {
+            self.cycle_model(true);
             return Ok(());
         }
 
@@ -553,6 +568,7 @@ impl App {
     /// Route a bracketed paste to the open modal's text input, or to the
     /// main input when no modal is open.
     pub(super) fn handle_paste(&mut self, raw: &str) {
+        self.last_esc_at = None;
         if self.active_modal == ActiveModal::None && self.history_search.is_some() {
             self.paste_history_query(raw);
             return;
@@ -947,6 +963,7 @@ impl App {
                 self.active_modal = ActiveModal::None;
             }
             KeyCode::Enter => {
+                self.active_modal = ActiveModal::None;
                 if let Some(resource) = self.command_palette.confirm() {
                     match resource.kind {
                         PaletteResourceKind::Command => {
@@ -986,7 +1003,6 @@ impl App {
                         }
                     }
                 }
-                self.active_modal = ActiveModal::None;
             }
             KeyCode::Up => {
                 self.command_palette.move_up();
@@ -1430,11 +1446,12 @@ impl App {
     }
 
     pub(super) async fn handle_setup_modal_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        use crate::components::SetupPage;
+        use crate::telemetry::OnboardingStage;
+        let before = self.setup_modal.page();
         match code {
             KeyCode::Esc if self.setup_modal.back() => {
-                self.setup_login_rx = None;
-                self.setup_modal.hide();
-                self.active_modal = ActiveModal::None;
+                self.close_onboarding(false);
             }
             KeyCode::Enter => match self.setup_modal.confirm() {
                 Some(SetupAdvance::StartEvalops) => self.start_setup_evalops_login(),
@@ -1442,13 +1459,43 @@ impl App {
                     provider_id,
                     secret,
                 }) => self.finish_setup_api_key(provider_id, &secret),
+                Some(SetupAdvance::ProfileSaved) => {
+                    self.record_onboarding(OnboardingStage::ProfileSaved);
+                }
+                Some(SetupAdvance::StartChecks) => self.start_onboarding_checks(),
+                Some(SetupAdvance::Finish) => {
+                    self.close_onboarding(true);
+                }
                 None => {}
             },
+            KeyCode::Char('d') if ctrl => {
+                self.setup_modal.toggle_share_diagnostics();
+                self.ui_prefs.onboarding_share_diagnostics =
+                    Some(self.setup_modal.share_diagnostics());
+                if self.ui_prefs.save_default().is_err() {
+                    self.setup_modal
+                        .set_status("Could not save the information-sharing preference.");
+                }
+            }
+            KeyCode::Char('f') if !ctrl && before == SetupPage::Results => {
+                self.close_onboarding(false);
+                self.handle_bug_report("").await?;
+            }
+            KeyCode::PageUp => self.setup_modal.scroll_up(),
+            KeyCode::PageDown => self.setup_modal.scroll_down(),
             KeyCode::Up => self.setup_modal.move_up(),
             KeyCode::Down => self.setup_modal.move_down(),
             KeyCode::Char(c) if !ctrl => self.setup_modal.insert_char(c),
             KeyCode::Backspace => self.setup_modal.backspace(),
             _ => {}
+        }
+        if before == SetupPage::Welcome && code == KeyCode::Enter {
+            self.ui_prefs.onboarding_share_diagnostics = Some(self.setup_modal.share_diagnostics());
+            if self.ui_prefs.save_default().is_err() {
+                self.setup_modal
+                    .set_status("Could not save the information-sharing preference.");
+            }
+            self.record_onboarding(OnboardingStage::Started);
         }
         Ok(())
     }
@@ -1487,8 +1534,8 @@ impl App {
                     return;
                 }
                 self.switch_model(&route, false);
-                self.setup_modal.hide();
-                self.active_modal = ActiveModal::None;
+                self.setup_modal.set_connection_ready();
+                self.record_onboarding(crate::telemetry::OnboardingStage::ConnectionSaved);
                 if self.native_agent.is_none() {
                     self.pending_agent_spawn = true;
                 }

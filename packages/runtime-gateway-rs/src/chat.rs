@@ -710,6 +710,7 @@ pub(crate) async fn handle_chat_endpoint(
         let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::LocalAssistantContent { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::BoostChanged { .. }
@@ -1632,6 +1633,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::LocalAssistantContent { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::BoostChanged { .. }

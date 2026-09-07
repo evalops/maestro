@@ -359,6 +359,84 @@ fn no_cache_and_no_network_fails_closed_for_a_platform_bound_session() {
 }
 
 #[test]
+fn shared_platform_base_url_configures_managed_setup() {
+    let _lock = crate::config::test_process_env_lock();
+    let names = [
+        "MAESTRO_MANAGED_SETUP_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+    let _restore = EnvRestore(previous);
+    for name in names {
+        std::env::remove_var(name);
+    }
+
+    std::env::set_var("MAESTRO_EVALOPS_BASE_URL", "https://gateway.example/v1");
+    std::env::set_var("MAESTRO_PLATFORM_BASE_URL", " https://platform.example/ ");
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://platform.example")
+    );
+
+    std::env::set_var("MAESTRO_MANAGED_SETUP_URL", "https://managed.example/");
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://managed.example")
+    );
+}
+
+#[test]
+fn default_platform_base_url_is_used_without_an_override() {
+    let _lock = crate::config::test_process_env_lock();
+    let names = [
+        "MAESTRO_MANAGED_SETUP_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+    let _restore = EnvRestore(previous);
+    for name in names {
+        std::env::remove_var(name);
+    }
+
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://app.deixic.com")
+    );
+}
+
+#[test]
 fn a_session_with_no_platform_binding_is_unmanaged() {
     let client = ManagedSetupClient::resolve_with(None, None, 1_000, DEFAULT_CACHE_TTL, |_| {
         panic!("BYOK sessions must not fetch a managed setup")

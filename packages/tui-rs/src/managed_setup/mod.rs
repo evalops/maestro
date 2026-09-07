@@ -40,9 +40,17 @@ use crate::sandbox_policy::{SandboxPolicyDocument, TeamPolicyProvider, parse_pol
 const GET_MANAGED_SETUP_PATH: &str = "/console.v1.ManagedSetupService/GetManagedSetup";
 
 /// Environment variables that name the Deixic platform base URL, in priority
-/// order. These mirror `operating_plane_client`, so one hosted deployment
-/// configures both surfaces with the same variable.
-const BASE_URL_ENV_VARS: &[&str] = &["MAESTRO_MANAGED_SETUP_URL", "MAESTRO_EVALOPS_BASE_URL"];
+/// order. The managed-setup-specific name wins, followed by the shared
+/// platform name used by the other Platform clients, then the older EvalOps
+/// name kept for compatibility.
+const BASE_URL_ENV_VARS: &[&str] = &[
+    "MAESTRO_MANAGED_SETUP_URL",
+    "MAESTRO_PLATFORM_BASE_URL",
+    "MAESTRO_EVALOPS_BASE_URL",
+];
+
+/// First-party Platform origin used when no deployment-specific override is set.
+const DEFAULT_PLATFORM_BASE_URL: &str = "https://app.deixic.com";
 
 /// Cache file name under the Maestro home directory.
 pub const CACHE_FILE_NAME: &str = "managed-setup.json";
@@ -818,15 +826,18 @@ fn now_unix() -> i64 {
         .unwrap_or_default()
 }
 
-/// The Deixic platform base URL, if one is configured.
+/// The configured Deixic platform base URL, or the first-party default.
 #[must_use]
 pub fn platform_base_url() -> Option<String> {
-    BASE_URL_ENV_VARS.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .map(|value| value.trim().trim_end_matches('/').to_owned())
-            .filter(|value| !value.is_empty())
-    })
+    BASE_URL_ENV_VARS
+        .iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_owned())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| Some(DEFAULT_PLATFORM_BASE_URL.to_owned()))
 }
 
 /// Fetch the document over Connect JSON using the session's hosted bearer

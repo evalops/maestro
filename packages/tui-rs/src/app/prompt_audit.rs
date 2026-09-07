@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::agent::token_counting::{self, CountConfidence};
+use maestro_context::token_counting::{self, CountConfidence};
 
 pub(super) const PROMPT_AUDIT_SCHEMA_VERSION: u32 = 2;
 

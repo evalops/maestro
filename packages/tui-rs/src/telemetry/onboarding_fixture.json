@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "eventId": "018f4d4d-6d79-7c11-bcaf-1690836b3c1b",
+  "type": "onboarding",
+  "timestamp": "2026-09-06T12:00:00Z",
+  "stage": "checks_completed",
+  "profile": {
+    "role": "developer",
+    "useCase": "build",
+    "workflow": "interactive"
+  },
+  "elapsedMs": 12000,
+  "checks": [
+    {
+      "id": "config",
+      "status": "pass"
+    },
+    {
+      "id": "identity",
+      "status": "pass"
+    },
+    {
+      "id": "provider",
+      "status": "pass"
+    },
+    {
+      "id": "model",
+      "status": "pass"
+    },
+    {
+      "id": "managed_setup",
+      "status": "skipped"
+    },
+    {
+      "id": "workspace",
+      "status": "warning"
+    },
+    {
+      "id": "model_probe",
+      "status": "fail"
+    },
+    {
+      "id": "tool_probe",
+      "status": "skipped"
+    }
+  ],
+  "retryCount": 1,
+  "attemptId": "018f4d4d-6d79-7c11-bcaf-1690836b3c1c"
+}

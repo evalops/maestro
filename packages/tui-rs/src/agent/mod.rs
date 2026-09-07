@@ -112,9 +112,14 @@ pub use selective_summary::{
 pub mod process_budget;
 pub mod steer_signal;
 pub mod text_loop;
-pub mod token_counting;
-pub mod token_estimation;
 pub mod turn_budget;
+
+// Compatibility re-exports for callers that historically imported context
+// accounting through `maestro_tui::agent`.
+pub(crate) use maestro_context::RequestContextUsage;
+pub use maestro_context::TokenCounter;
+pub use maestro_context::token_counting;
+pub use maestro_context::token_estimation;
 
 pub use codex_app_server_turns::{
     CodexAppServerTurnResult, CodexAppServerTurnSession, DynamicToolSpec, TurnWaitEvent,
@@ -153,5 +158,3 @@ pub use session_scope::{ParentScopeId, SessionId, parent_scope_for_session};
 pub use steer_signal::SteerSignal;
 pub use text_loop::{LoopKind, TextLoopDetector, loop_reminder_message};
 pub use turn_budget::{DEFAULT_MAX_TURN_STEPS, TurnOutcome, TurnStepBudget};
-
-pub(crate) mod context_usage;

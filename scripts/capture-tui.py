@@ -310,12 +310,13 @@ class Terminal:
         }
         if fixture:
             self.env.update(fixture.environment())
+            self.env["MAESTRO_TELEMETRY"] = "0"
         self.env["MAESTRO_HOME"] = str(root / "maestro-home")
         if fixture:
             preferences = root / "maestro-home" / "ui.json"
             preferences.parent.mkdir()
             preferences.write_text(
-                json.dumps({"animations": False, "timestamps": False})
+                json.dumps({"animations": False, "timestamps": False, "onboardingSeen": True})
             )
         self.model = "gpt-4o" if fixture else "gpt-4.1-mini"
         self.root, self.binary, self.columns, self.rows = root, binary, columns, rows

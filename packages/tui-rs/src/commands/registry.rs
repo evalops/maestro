@@ -76,10 +76,10 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, A2aComputerHandoffSelection, ArgumentValue, AttachAction, BackgroundMonitorAction,
     Command, CommandAction, CommandArgument, CommandCategory, CommandContext, CommandError,
-    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HarnessAction,
-    HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction, ModalType, OrbAction,
-    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection, RlmAction,
-    SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    CommandOutput, CommandResult, ControlPanel, ExportAction, FooterStyle, GoalAction,
+    HarnessAction, HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction, ModalType,
+    OrbAction, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection,
+    RlmAction, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -358,6 +358,14 @@ impl CommandRegistry {
         }
     }
 
+    /// Primary commands in the order shared by slash discovery, search, and help.
+    pub fn primary_commands(&self) -> Vec<Arc<Command>> {
+        let mut commands = self.all();
+        commands.retain(|command| command.browse_order.is_some());
+        commands.sort_by_key(|command| (command.browse_order, command.name.clone()));
+        commands
+    }
+
     /// Get all command names (including aliases)
     #[must_use]
     pub fn all_names(&self) -> Vec<&str> {
@@ -454,6 +462,9 @@ impl CommandRegistry {
                 .with_hint("Type /help to see available commands")
         })?;
 
+        if command.name == "help" && raw_args == "commands" {
+            return Ok(CommandOutput::OpenModal(ModalType::Help));
+        }
         if command.name == "help" && !raw_args.is_empty() {
             return self.help_for_command(&raw_args);
         }
@@ -1246,6 +1257,58 @@ fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
 pub fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 
+    registry.register(Command::new("settings", "Account, permissions, connections, and appearance", CommandCategory::Config,
+        Box::new(|ctx| {
+            let panel = match ctx.raw_args.trim() {
+                "" => ControlPanel::Settings,
+                "account" => ControlPanel::Account,
+                "permissions" => ControlPanel::Permissions,
+                "appearance" => ControlPanel::Appearance,
+                "output" => ControlPanel::Output,
+                "footer" => ControlPanel::Footer,
+                "capabilities" => ControlPanel::Capabilities,
+                "advanced" => ControlPanel::Advanced,
+                "session" => ControlPanel::Session,
+                _ => return Err(CommandError::new("Usage: /settings [account|permissions|appearance|output|footer|capabilities|advanced|session]")),
+            };
+            Ok(CommandOutput::Action(CommandAction::OpenPanel(panel)))
+        })).primary(8));
+    registry.register(
+        Command::new(
+            "tasks",
+            "Work, workers, queues, decisions, and schedules",
+            CommandCategory::Tools,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                    ControlPanel::Tasks,
+                )))
+            }),
+        )
+        .primary(7),
+    );
+    registry.register(
+        Command::new(
+            "output",
+            "Choose summary, compact, or expanded tool output",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                if ctx.raw_args.trim().is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Output,
+                    )));
+                }
+                let detail =
+                    crate::state::OutputDetail::parse(ctx.raw_args.trim()).ok_or_else(|| {
+                        CommandError::new("Usage: /output [summary|compact|expanded]")
+                    })?;
+                Ok(CommandOutput::Action(CommandAction::SetOutputDetail(
+                    detail,
+                )))
+            }),
+        )
+        .usage("/output [summary|compact|expanded]"),
+    );
+
     // Help command
     registry.register(
         Command::new(
@@ -1255,7 +1318,9 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|_| {
                 // `/help [command]` is handled in `CommandRegistry::execute` so
                 // the handler can look up sibling commands.
-                Ok(CommandOutput::OpenModal(ModalType::Help))
+                Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                    ControlPanel::Help,
+                )))
             }),
         )
         .alias("h")
@@ -1264,7 +1329,8 @@ pub fn build_command_registry() -> CommandRegistry {
             "command",
             "Command to get help for",
         ))
-        .usage("/help [command]"),
+        .usage("/help [command]")
+        .primary(10),
     );
 
     // Hotkeys command
@@ -1335,8 +1401,8 @@ pub fn build_command_registry() -> CommandRegistry {
     // Clear / new session (Grok-style: /new and /clear start fresh)
     registry.register(
         Command::new(
-            "clear",
-            "Start a new session (clear transcript)",
+            "new",
+            "Start a new conversation",
             CommandCategory::Session,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::Session(
@@ -1345,7 +1411,8 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .alias("cls")
-        .alias("new"),
+        .alias("clear")
+        .primary(0),
     );
 
     // Fork session
@@ -1360,7 +1427,8 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/fork"),
+        .usage("/fork")
+        .primary(2),
     );
 
     // Rewind turns
@@ -1379,7 +1447,7 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .alias("undo")
-        .usage("/rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints"),
+        .usage("/rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints").primary(3)
     );
 
     registry.register(
@@ -1578,7 +1646,8 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::Quit))),
         )
         .alias("exit")
-        .alias("q"),
+        .alias("q")
+        .primary(11),
     );
 
     // Zen mode command
@@ -1812,7 +1881,12 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|ctx| {
                 let mut parts = ctx.raw_args.split_whitespace();
                 match (parts.next(), parts.next()) {
-                    (None, _) => Ok(CommandOutput::OpenModal(ModalType::ModelSelector)),
+                    (None, _) => Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Model,
+                    ))),
+                    (Some("select"), None) => {
+                        Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
+                    }
                     (Some("default"), Some(model)) => Ok(CommandOutput::Action(
                         CommandAction::SetDefaultModel(model.to_string()),
                     )),
@@ -1827,7 +1901,8 @@ pub fn build_command_registry() -> CommandRegistry {
         )
         .alias("m")
         .arg(CommandArgument::string("name", "Model name"))
-        .usage("/model [name | default <name>]"),
+        .usage("/model [select | name | default <name>]")
+        .primary(4),
     );
 
     // Rubber duck review command
@@ -2099,9 +2174,8 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|ctx| {
                 let mode = ctx.raw_args.trim().to_string();
                 if mode.is_empty() {
-                    // Toggle to next mode
-                    Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                        "next".to_string(),
+                    Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Permissions,
                     )))
                 } else {
                     Ok(CommandOutput::Action(CommandAction::SetApprovalMode(mode)))
@@ -2136,10 +2210,9 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|ctx| {
                 let level = ctx.raw_args.trim().to_string();
                 if level.is_empty() {
-                    Ok(CommandOutput::Message(
-                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max"
-                            .to_string(),
-                    ))
+                    Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Effort,
+                    )))
                 } else {
                     Ok(CommandOutput::Action(CommandAction::SetThinkingLevel(
                         level,
@@ -2175,6 +2248,11 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
                 if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Context,
+                    )));
+                }
+                if raw == "usage" {
                     return Ok(CommandOutput::Action(CommandAction::ShowContext));
                 }
                 let args = raw.split_whitespace().collect::<Vec<_>>();
@@ -2199,7 +2277,8 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
             }),
         )
-        .usage("/context [audit [--json] | exclude TOOL | include TOOL]"),
+        .usage("/context [audit [--json] | exclude TOOL | include TOOL]")
+        .primary(9),
     );
 
     registry.register(
@@ -2335,11 +2414,16 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "review",
-            "Summarize git status and diff stats",
+            "Inspect changes, diffs, or request a second opinion",
             CommandCategory::Diagnostics,
-            Box::new(|ctx| Ok(CommandOutput::Message(build_git_review_message(&ctx.cwd)))),
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                    ControlPanel::Review,
+                )))
+            }),
         )
-        .usage("/review"),
+        .usage("/review")
+        .primary(6),
     );
 
     // Git command (grouped)
@@ -2693,6 +2777,11 @@ pub fn build_command_registry() -> CommandRegistry {
             "Change status-bar footer style (rich|solo|history|clear)",
             CommandCategory::Ui,
             Box::new(|ctx| {
+                if ctx.raw_args.trim().is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Footer,
+                    )));
+                }
                 let raw = ctx
                     .get_string("style")
                     .map(str::to_owned)
@@ -2953,7 +3042,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
             }),
         )
-        .usage("/plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]"),
+        .usage("/plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]").primary(5)
     );
 
     registry.register(
@@ -3023,11 +3112,12 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "resume",
-            "Resume a specific session",
+            "Browse and resume saved conversations",
             CommandCategory::Session,
             Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
         )
-        .alias("r"),
+        .alias("r")
+        .primary(1),
     );
 
     // Cost/usage command
@@ -4005,3 +4095,80 @@ fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, boo
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod menu_contract_tests {
+    use super::*;
+    #[test]
+    fn primary_menu_and_compatibility_commands_share_one_registry() {
+        let registry = build_command_registry();
+        let names: Vec<_> = registry
+            .primary_commands()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "new", "resume", "fork", "rewind", "model", "plan", "review", "tasks", "settings",
+                "context", "help", "quit"
+            ]
+        );
+        assert_eq!(registry.get("clear").unwrap().name, "new");
+        for name in [
+            "always-approve",
+            "auto",
+            "ask",
+            "prompt-audit",
+            "mcp-config",
+            "magic-trace",
+            "view-plan",
+            "stats",
+            "toolhistory",
+            "limits",
+            "harness",
+            "rlm",
+        ] {
+            assert!(registry.get(name).unwrap().browse_order.is_none(), "{name}");
+        }
+    }
+    #[test]
+    fn bare_settings_open_without_mutating() {
+        let registry = build_command_registry();
+        for input in [
+            "/approvals",
+            "/footer",
+            "/thinking",
+            "/model",
+            "/settings",
+            "/context",
+        ] {
+            assert!(
+                matches!(
+                    registry.execute(input, "/tmp", None, None).unwrap(),
+                    CommandOutput::Action(CommandAction::OpenPanel(_))
+                ),
+                "{input}"
+            );
+        }
+        assert!(
+            matches!(registry.execute("/approvals safe", "/tmp", None, None).unwrap(), CommandOutput::Action(CommandAction::SetApprovalMode(mode)) if mode == "safe")
+        );
+        assert!(matches!(
+            registry
+                .execute("/footer solo", "/tmp", None, None)
+                .unwrap(),
+            CommandOutput::Action(CommandAction::SetFooterStyle(FooterStyle::Solo))
+        ));
+        assert!(
+            registry
+                .execute("/settings typo", "/tmp", None, None)
+                .is_err()
+        );
+        assert!(
+            registry
+                .execute("/output typo", "/tmp", None, None)
+                .is_err()
+        );
+    }
+}
