@@ -81,9 +81,9 @@ Rust owns every agent/runtime path:
 
 - `packages/maestro-rs`: compatibility-named executable and canonical command dispatch
 - `packages/runtime-contracts-rs`: dependency-light runtime identity, protocol, telemetry, and receipt contracts
-- `packages/runtime-rs`: compatibility facade and future native runtime loop owner
+- `packages/runtime-rs`: native agent actor, turn loop, and host execution contracts
 - `packages/context-rs`: token accounting, compaction, continuation state, and summary framing
-- `packages/tui-rs`: agent core, providers, tools, TUI, and headless runtime
+- `packages/tui-rs`: terminal and headless host composition, local tools, and hooks
 - `packages/session-rs`: local JSONL session, fork, index, export, and checkpoint persistence
 - `packages/session-history-rs`: remote redacted session-history adapter
 - `packages/runtime-gateway-rs`: HTTP/SSE/WebSocket runtime gateway

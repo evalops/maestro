@@ -279,14 +279,14 @@ fn resolve_managed_context(
         || (env_from_map(env, EVALOPS_ACCESS_TOKEN_ENV_VARS).is_some()
             && (agent_id.is_some() || run_id.is_some()));
     let platform = organization_id.is_some() && workspace_id.is_some() && authenticated;
-    let scope_unavailable = organization_id.is_some() && workspace_id.is_none() && authenticated;
+    let scope_unverified = organization_id.is_some() && workspace_id.is_none() && authenticated;
     let managed = platform && managed_agent_session;
     let mode = if managed {
         "EvalOps managed"
     } else if platform {
         "EvalOps platform"
-    } else if scope_unavailable {
-        "EvalOps unavailable"
+    } else if scope_unverified {
+        "EvalOps scope unverified"
     } else {
         "byok"
     };
@@ -307,6 +307,8 @@ fn resolve_managed_context(
         expires_at: snapshot.map(|value| value.expires),
         inference: if platform {
             "llm-gateway"
+        } else if scope_unverified {
+            "unverified"
         } else {
             "local-provider"
         },
@@ -358,9 +360,9 @@ fn format_managed_status(context: &ManagedContext) -> String {
     if let Some(workspace) = context.workspace_id.as_deref() {
         lines.push(format!("Workspace: {workspace}"));
     }
-    if context.mode == "EvalOps unavailable" {
+    if context.mode == "EvalOps scope unverified" {
         lines.push(
-            "Control plane unavailable: an explicit workspace binding is required.".to_owned(),
+            "Workspace scope is not saved locally. Run `deixic-code doctor --live` to verify your account scope.".to_owned(),
         );
     }
     lines.push(format!(
@@ -521,14 +523,14 @@ mod tests {
             agent_mcp: None,
         };
         let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
-        assert_eq!(context.mode, "EvalOps unavailable");
+        assert_eq!(context.mode, "EvalOps scope unverified");
         assert!(!context.managed);
-        assert_eq!(context.inference, "local-provider");
+        assert_eq!(context.inference, "unverified");
         let output = format_managed_status(&context);
-        assert!(output.contains("Mode: EvalOps unavailable"));
+        assert!(output.contains("Mode: EvalOps scope unverified"));
         assert!(
             output
-                .contains("Control plane unavailable: an explicit workspace binding is required.")
+                .contains("Workspace scope is not saved locally. Run `deixic-code doctor --live` to verify your account scope.")
         );
         assert!(output.contains("Organization: org_123"));
         assert!(output.contains("Authenticated as: user@evalops.dev"));

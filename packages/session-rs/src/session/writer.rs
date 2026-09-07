@@ -23,8 +23,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use fd_lock::RwLock as FileLock;
-
 use super::entries::{SessionEntry, SessionHeader};
 
 /// Default batch size for writes
@@ -264,7 +262,8 @@ fn truncate_torn_tail(path: &Path) -> Result<(), SessionWriteError> {
 /// Advisory lock coordinating cross-process access to one session file.
 ///
 /// Held for the lifetime of the owning [`SessionWriter`]; the lock is
-/// released when this value (and the `File` it wraps) is dropped.
+/// explicitly released when this value is dropped, even if a child process
+/// inherited the underlying file handle.
 ///
 /// The lock is taken on a sidecar `<session-file>.lock` file rather than the
 /// session `.jsonl` itself. Locking the data file directly would work too
@@ -273,10 +272,17 @@ fn truncate_torn_tail(path: &Path) -> Result<(), SessionWriteError> {
 /// or truncated by anything in this module, so there is no chance of the
 /// locking mechanism interacting with the crash-recovery logic it protects.
 pub struct SessionLock {
-    // Never read after construction. Its only purpose is to keep the
-    // underlying `File`'s fd/handle open, which is what actually keeps the
-    // OS-level lock held (see `acquire`'s doc comment on `mem::forget`).
-    _guard: FileLock<File>,
+    file: File,
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // A fork or duplicated handle can retain the open file description.
+        // Closing our handle alone would leave that child's inherited lock held.
+        if let Err(error) = self.file.unlock() {
+            eprintln!("Could not release session lock: {error}");
+        }
+    }
 }
 
 impl SessionLock {
@@ -297,45 +303,13 @@ impl SessionLock {
             .write(true)
             .open(&lock_path)?;
 
-        let mut lock = FileLock::new(file);
-
-        // The guard borrows `lock`, and we need to move `lock` itself into
-        // the `Self` we return, so the guard's borrow must end before that
-        // move -- scoping it to this block (rather than, say, matching
-        // `lock.try_write()` directly at the end of the function) is what
-        // makes that borrow-checker-visible: dropck otherwise requires
-        // `lock` to outlive anything that could still run the guard's
-        // destructor, which without this block would be "until the end of
-        // the function".
-        {
-            let guard = match lock.try_write() {
-                Ok(guard) => guard,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    return Err(SessionWriteError::Locked(session_path.to_path_buf()));
-                }
-                Err(e) => return Err(SessionWriteError::IoError(e)),
-            };
-
-            // `RwLockWriteGuard::drop` only issues the platform unlock call
-            // (`flock(2, LOCK_UN)` on Unix, `UnlockFile` on Windows). Both
-            // primitives scope the lock to the open file description /
-            // handle inside `lock`, not to this guard value, so the lock is
-            // released by the kernel when that `File` is closed -- which
-            // happens when the `SessionLock` returned below (and therefore
-            // `lock`) is dropped.
-            //
-            // We cannot keep the guard itself: `RwLockWriteGuard<'_, File>`
-            // borrows `lock`, and storing both the lock and a guard
-            // borrowing it in the same struct would make `SessionWriter`
-            // self-referential. Forgetting the guard only skips the
-            // *explicit* unlock call above; it does not leak the OS lock
-            // (released on fd/handle close, guaranteed by `SessionLock`'s
-            // own `Drop` via `_guard`'s `File`) or leak any heap memory (the
-            // guard owns none).
-            std::mem::forget(guard);
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err(SessionWriteError::Locked(session_path.to_path_buf()))
+            }
+            Err(std::fs::TryLockError::Error(error)) => Err(SessionWriteError::IoError(error)),
         }
-
-        Ok(Self { _guard: lock })
     }
 
     /// Report whether any live holder — in this process or another one —
@@ -372,20 +346,15 @@ impl SessionLock {
             Err(e) => return Err(SessionWriteError::IoError(e)),
         };
 
-        let lock = FileLock::new(file);
-        // Bound to a local so the guard (and the `Result` temporary holding
-        // it) is dropped at this statement, before `lock` itself goes out of
-        // scope at the end of the function; returning the `match` directly
-        // makes dropck reject the borrow.
-        let held = match lock.try_read() {
-            Ok(guard) => {
-                drop(guard);
-                false
+        match file.try_lock_shared() {
+            Ok(()) => {
+                // Release explicitly even if a concurrent fork retained this fd.
+                file.unlock()?;
+                Ok(false)
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => true,
-            Err(e) => return Err(SessionWriteError::IoError(e)),
-        };
-        Ok(held)
+            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+            Err(std::fs::TryLockError::Error(error)) => Err(SessionWriteError::IoError(error)),
+        }
     }
 }
 
@@ -549,6 +518,56 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn session_lock_contends_with_legacy_fd_lock_writers_and_probes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.jsonl");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path_for(&path))
+            .unwrap();
+        let mut legacy = fd_lock::RwLock::new(file);
+        let legacy_writer = legacy.try_write().unwrap();
+        assert!(SessionLock::is_held(&path).unwrap());
+        assert!(matches!(
+            SessionLock::acquire(&path),
+            Err(SessionWriteError::Locked(_))
+        ));
+        drop(legacy_writer);
+        let current = SessionLock::acquire(&path).unwrap();
+        assert!(
+            matches!(legacy.try_read(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            matches!(legacy.try_write(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        drop(current);
+        drop(legacy.try_write().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_session_lock_does_not_wait_for_inherited_file_description() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.jsonl");
+        let lock = SessionLock::acquire(&path).unwrap();
+        // dup/try_clone models the same open file description retained by fork.
+        let inherited = lock.file.try_clone().unwrap();
+        assert!(matches!(
+            SessionLock::acquire(&path),
+            Err(SessionWriteError::Locked(_))
+        ));
+        drop(lock);
+        assert!(!SessionLock::is_held(&path).unwrap());
+        let next = SessionLock::acquire(&path).unwrap();
+        drop(inherited);
+        assert!(SessionLock::is_held(&path).unwrap());
+        drop(next);
     }
 
     #[test]

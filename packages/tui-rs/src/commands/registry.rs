@@ -3162,7 +3162,7 @@ pub fn build_command_registry() -> CommandRegistry {
             )))),
         )
         .alias("feedback")
-        .usage("/bug [description|queue|draft <text>|expected <text>|repro <steps>|review|send|export|dismiss|diagnostics on|off]"),
+        .usage("/bug [description|queue|draft <text>|expected <text>|repro <steps>|review|send|export|dismiss|diagnostics on|off|rating useful|partly_useful|not_useful]"),
     );
 
     // Export command

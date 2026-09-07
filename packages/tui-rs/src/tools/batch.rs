@@ -95,7 +95,8 @@ impl BatchToolResult {
             tool_name.clone(),
             ExecutionSource::Native,
             phase,
-        );
+        )
+        .with_managed_policy(crate::safety::managed_policy_metadata());
         Self::from_execution(call_id, tool_name, execution)
     }
 }
@@ -483,7 +484,8 @@ impl BatchExecutor {
                                     &tool_name,
                                     ExecutionSource::Native,
                                     ExecutionPhase::Running,
-                                ),
+                                )
+                                .with_managed_policy(crate::safety::managed_policy_metadata()),
                             }
                         }
                     }

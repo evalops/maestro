@@ -47,6 +47,53 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.78] - 2026-09-07
+
+### Added
+
+- Deliver product visibility to BigQuery (#8626). <!-- maestro-release-note:da2cc4e9d959 -->
+- Guide first-run readiness with Dex and setup insights (#8612). <!-- maestro-release-note:bde7ebd1434a -->
+- Add metadata-driven Object Manager and record navigation. <!-- maestro-release-note:7cd87744e891 -->
+- Extend custom metadata and indexed relationship queries. <!-- maestro-release-note:2ffedf74161d -->
+- Consolidate commands and settings (#8600). <!-- maestro-release-note:9f04c37bd86a -->
+- Replace Maestro cutover pins with same-commit releases (#8593). <!-- maestro-release-note:23037394e91d -->
+- Add durable business objects (#8421). <!-- maestro-release-note:5140cb4fe97a -->
+- Make Evals actionable from the inspector and deep-linkable (#8579). <!-- maestro-release-note:ea784bd527b0 -->
+- Launch a local tool-executor sandbox from the Dex e2e harness (#8570). <!-- maestro-release-note:8f63838358c9 -->
+- Governed OpenRouter Dex turn e2e harness (make dex-e2e-local) (#8553). <!-- maestro-release-note:04cf7f63cbfd -->
+- Restore workspace-scoped CRM in Rust (#8528). <!-- maestro-release-note:54743a28a1cd -->
+- Mine Fixes-Regression-Of edges into an exact-head replay corpus with per-lens scoring (#8545). <!-- maestro-release-note:3492a7200318 -->
+
+### Changed
+
+- Fold Objects into Capabilities (#8649). <!-- maestro-release-note:0439a8864110 -->
+- Serialize background log directory environment reads (#8639). <!-- maestro-release-note:275b52fb1dff -->
+- Propose browser device proof and rollout boundary (#8631). <!-- maestro-release-note:f1105eed1fe9 -->
+- Extract native actor behind explicit execution hosts (#8620). <!-- maestro-release-note:9100518b24ac -->
+- Remove redundant startup work (#8624). <!-- maestro-release-note:a3dc78b3dfd9 -->
+- Extract caller tool response coordination (#8623). <!-- maestro-release-note:a9df0fa7262d -->
+- Refresh bundled model catalog (#8619). <!-- maestro-release-note:adfbeeb1ee86 -->
+- Rename Evals to Issues in customer copy (#8617). <!-- maestro-release-note:4527db842cd0 -->
+- Extract local session persistence and checkpoints (#8610). <!-- maestro-release-note:60c845cc7194 -->
+- Share read-only Buildkite API access recipe (#8616). <!-- maestro-release-note:5d7288fbb383 -->
+- Move compaction and continuation state into context (#8609). <!-- maestro-release-note:fbba168010c9 -->
+- Keep Maestro dispatch implementation private. <!-- maestro-release-note:0a6374359605 -->
+
+### Fixed
+
+- Read Maestro exports from owner schemas (#8638). <!-- maestro-release-note:702502238a29 -->
+- Preserve processed queue IDs in headless checkpoints (#8647). <!-- maestro-release-note:3b42e4e755eb -->
+- Retry transient Rust security tool downloads (#8640). <!-- maestro-release-note:8df666cd8fe1 -->
+- Admit tenant-scoped hosted runner credentials (#8636). <!-- maestro-release-note:cb8073087e62 -->
+- Request the required notification inbox read scope (#8635). <!-- maestro-release-note:7e76f196642f -->
+- Serialize shared runner Playwright apt installs (#8637). <!-- maestro-release-note:96d9f921a99a -->
+- Use private Identity trust for hosted admission (#8630). <!-- maestro-release-note:393e48001eb9 -->
+- Retain process budget evidence across session replay (#8628). <!-- maestro-release-note:f50b93f2a491 -->
+- Use organization SSO for device health (#8629). <!-- maestro-release-note:02a99a99b221 -->
+- Report unsaved workspace scope as unverified (#8627). <!-- maestro-release-note:27785cf4eb78 -->
+- Preserve child checkpoints and shifted model shortcuts (#8625). <!-- maestro-release-note:f67f16a026ca -->
+- Preserve provider handoffs and cycle scoped models (#8622). <!-- maestro-release-note:de8345c24d0b -->
+
 ## [0.10.77] - 2026-09-06
 
 ### Changed

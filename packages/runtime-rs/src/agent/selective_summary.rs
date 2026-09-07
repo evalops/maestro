@@ -65,7 +65,7 @@ fn turn_starts(messages: &[Message]) -> Vec<usize> {
         .collect()
 }
 
-pub(crate) fn preview(messages: &[Message]) -> Result<SelectiveSummaryPreview> {
+pub fn preview(messages: &[Message]) -> Result<SelectiveSummaryPreview> {
     let serialized = serde_json::to_vec(messages)?;
     let turns = turn_starts(messages)
         .iter()

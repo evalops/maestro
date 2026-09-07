@@ -272,6 +272,7 @@ pub struct CanonicalTurnEvent {
     pub cost_usd: f64,
     /// Provider-reported cost only when every response supplied a cost.
     pub reported_cost_usd: Option<f64>,
+    pub measurements: Option<TurnMeasurements>,
 
     // ─── Business Context ───────────────────────────────────────────────────
     pub sandbox_mode: SandboxMode,
@@ -295,6 +296,27 @@ pub struct CanonicalTurnEvent {
     // ─── Sampling Metadata ──────────────────────────────────────────────────
     pub sampled: bool,
     pub sample_reason: SampleReason,
+}
+
+/// Observations made by the native event collector. Missing latency means no
+/// nonempty output was observed, not a zero-latency response.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnMeasurements {
+    pub first_output_ms: Option<u64>,
+    pub compaction_duration_ms: Option<u64>,
+    pub stream_stall_count: Option<u32>,
+    pub stream_open_failure_count: Option<u32>,
+    pub stream_disconnect_count: Option<u32>,
+    pub stream_retry_count: Option<u32>,
+    pub stream_recovery_count: Option<u32>,
+    pub request_retry_count: u32,
+    pub compaction_count: u32,
+    pub automatic_compaction_count: u32,
+    pub compacted_input_tokens: u64,
+    pub response_count: u32,
+    pub responses_with_usage: u32,
+    pub responses_with_cost: u32,
 }
 
 /// Closed, content-free projection allowed to cross the external telemetry
@@ -326,6 +348,8 @@ pub struct ExternalTurnEvent {
     /// Provider-reported cost only when every response supplied a cost.
     #[serde(default)]
     pub reported_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurements: Option<TurnMeasurements>,
     pub sandbox_mode: SandboxMode,
     pub approval_mode: ApprovalMode,
     pub mcp_server_count: u32,
@@ -363,6 +387,7 @@ impl CanonicalTurnEvent {
             tokens: self.tokens.clone(),
             cost_usd: self.cost_usd,
             reported_cost_usd: self.reported_cost_usd,
+            measurements: self.measurements.clone(),
             sandbox_mode: self.sandbox_mode,
             approval_mode: self.approval_mode,
             mcp_server_count: self.mcp_server_count,
@@ -453,6 +478,7 @@ pub struct TurnCollector {
     turn_number: u32,
     turn_id: String,
     start_time: Instant,
+    measurements: TurnMeasurements,
     sampling_config: TailSamplingConfig,
 
     // Timing
@@ -491,6 +517,7 @@ impl TurnCollector {
             turn_number,
             turn_id: Uuid::new_v4().to_string(),
             start_time: Instant::now(),
+            measurements: TurnMeasurements::default(),
             sampling_config: config,
             llm_start_time: None,
             accumulated_llm_duration_ms: 0,
@@ -508,6 +535,89 @@ impl TurnCollector {
             output_size_bytes: 0,
             features: FeatureFlags::default(),
         }
+    }
+
+    /// Observe the stream owner without inferring coverage for other transports.
+    pub fn record_stream_observation(&mut self, observation: crate::ai::StreamObservation) {
+        use crate::ai::StreamObservation;
+        let m = &mut self.measurements;
+        match observation {
+            StreamObservation::Observed => {
+                m.stream_stall_count.get_or_insert(0);
+                m.stream_open_failure_count.get_or_insert(0);
+                m.stream_disconnect_count.get_or_insert(0);
+                m.stream_retry_count.get_or_insert(0);
+                m.stream_recovery_count.get_or_insert(0);
+            }
+            StreamObservation::OpenFailed => {
+                m.stream_open_failure_count =
+                    Some(m.stream_open_failure_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::IdleTimeout => {
+                m.stream_stall_count = Some(m.stream_stall_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Disconnect => {
+                m.stream_disconnect_count =
+                    Some(m.stream_disconnect_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Retry => {
+                m.stream_retry_count = Some(m.stream_retry_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Recovery => {
+                m.stream_recovery_count =
+                    Some(m.stream_recovery_count.unwrap_or(0).saturating_add(1));
+            }
+        }
+    }
+
+    pub fn record_request_retry(&mut self) {
+        self.measurements.request_retry_count =
+            self.measurements.request_retry_count.saturating_add(1);
+    }
+
+    pub fn record_compaction_duration(&mut self, duration_ms: u64) {
+        self.measurements.compaction_duration_ms = Some(
+            self.measurements
+                .compaction_duration_ms
+                .unwrap_or(0)
+                .saturating_add(duration_ms),
+        );
+    }
+
+    /// Observe output without retaining its content.
+    pub fn record_output(&mut self) {
+        self.measurements.first_output_ms.get_or_insert_with(|| {
+            self.start_time
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        });
+    }
+
+    /// Observe a completed compaction without retaining the summary.
+    pub fn record_compaction(&mut self, automatic: bool, tokens_before: u64) {
+        self.measurements.compaction_count = self.measurements.compaction_count.saturating_add(1);
+        self.measurements.automatic_compaction_count = self
+            .measurements
+            .automatic_compaction_count
+            .saturating_add(u32::from(automatic));
+        self.measurements.compacted_input_tokens = self
+            .measurements
+            .compacted_input_tokens
+            .saturating_add(tokens_before);
+    }
+
+    /// Track coverage separately from zero-valued provider usage.
+    pub fn record_response_coverage(&mut self, has_usage: bool, has_cost: bool) {
+        self.measurements.response_count = self.measurements.response_count.saturating_add(1);
+        self.measurements.responses_with_usage = self
+            .measurements
+            .responses_with_usage
+            .saturating_add(u32::from(has_usage));
+        self.measurements.responses_with_cost = self
+            .measurements
+            .responses_with_cost
+            .saturating_add(u32::from(has_cost));
     }
 
     // ─── Setters ──────────────────────────────────────────────────────────────
@@ -687,6 +797,7 @@ impl TurnCollector {
             tokens,
             cost_usd,
             reported_cost_usd: None,
+            measurements: Some(self.measurements),
 
             // Business context
             sandbox_mode: self.sandbox_mode,
@@ -748,6 +859,37 @@ impl TurnCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measurement_coverage_counts_actual_responses_and_compaction() {
+        let mut collector = TurnCollector::new("fixture", 1, TailSamplingConfig::default());
+        collector.record_response_coverage(false, false);
+        collector.record_response_coverage(true, false);
+        collector.record_response_coverage(true, true);
+        collector.record_compaction(true, 1200);
+        collector.record_compaction(false, 300);
+        collector.record_compaction_duration(42);
+        let event = collector.complete(TurnStatus::Success, TokenUsage::default(), 0.0, None, None);
+        let m = event.measurements.unwrap();
+        assert_eq!(
+            (
+                m.response_count,
+                m.responses_with_usage,
+                m.responses_with_cost
+            ),
+            (3, 2, 1)
+        );
+        assert_eq!(
+            (
+                m.compaction_count,
+                m.automatic_compaction_count,
+                m.compacted_input_tokens
+            ),
+            (2, 1, 1500)
+        );
+        assert_eq!(m.compaction_duration_ms, Some(42));
+        assert_eq!(m.stream_stall_count, None);
+    }
 
     #[test]
     fn test_turn_collector_basic() {

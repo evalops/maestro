@@ -37,8 +37,10 @@ use super::policy::{
     check_command_policy, check_path_allowed, check_tool_allowed, check_url_allowed,
     managed_policy_gate_error,
 };
-use super::workflow_state::{WorkflowStateSnapshot, has_tool_tags, is_human_facing_tool};
 use crate::mcp::McpToolAnnotations;
+use maestro_runtime::agent::workflow_state::{
+    WorkflowStateSnapshot, has_tool_tags, is_human_facing_tool,
+};
 
 /// Result of a firewall check
 #[derive(Debug, Clone, PartialEq, Eq)]

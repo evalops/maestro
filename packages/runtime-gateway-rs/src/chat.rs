@@ -1186,6 +1186,10 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
+            // Local measurements are consumed by native telemetry, not the chat wire protocol.
+            FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
                 first_kept_entry_index,
@@ -2098,6 +2102,10 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
+            // Local measurements are consumed by native telemetry, not the chat wire protocol.
+            FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
                 first_kept_entry_index,

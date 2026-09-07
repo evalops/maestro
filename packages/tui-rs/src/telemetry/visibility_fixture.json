@@ -1,0 +1,1 @@
+{"schemaVersion":1,"eventId":"0795f651-9b50-4b10-a726-991edb6d3822","type":"visibility","timestamp":"2026-09-07T00:00:00Z","kind":"configuration","configuration":{"revision":12,"origin":"stale_cache","ageSeconds":1800,"fallbackUsed":true,"mcpPolicy":"allowlist","mcpUnavailable":true,"mcpUnavailableReason":"policy"},"feedback":null}

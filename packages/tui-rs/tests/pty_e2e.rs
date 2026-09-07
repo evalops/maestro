@@ -205,13 +205,18 @@ fn start_mock_managed_setup_server() -> String {
                 let Ok(mut stream) = stream else {
                     break;
                 };
-                let _ = read_request_body(&mut stream);
-                let body = r#"{"version":1,"organizationId":"pty-e2e-org","workspaceId":"pty-e2e-workspace","rules":[],"skills":[],"mcp":{"mode":"MCP_POLICY_MODE_ALLOWLIST","servers":[]}}"#;
+                let request = read_request_body(&mut stream).expect("managed setup request");
+                assert_eq!(request.as_bytes(), b"\x0a\x0bpty-e2e-org\x12\x11pty-e2e-workspace");
+                // Canonical console.v1.ManagedSetup tags: version=1, mcp=5,
+                // organization_id=7, workspace_id=8. The real native client
+                // must decode protobuf here, exactly as it does with Platform.
+                let body = b"\x08\x01\x2a\x02\x08\x02\x3a\x0bpty-e2e-org\x42\x11pty-e2e-workspace";
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/proto\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
                 let _ = stream.flush();
             }
         })

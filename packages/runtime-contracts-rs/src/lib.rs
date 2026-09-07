@@ -130,3 +130,6 @@ mod tests {
         );
     }
 }
+
+mod thinking;
+pub use thinking::ThinkingLevel;

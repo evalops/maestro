@@ -3886,6 +3886,7 @@ fn supervisor_hello_capabilities_prefer_attached_agent_state() {
         last_init: None,
         semantic_conversation: None,
         last_workspace_capability_set: None,
+        last_process_budget: None,
     });
     let executor =
         AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(supervisor)));
@@ -10532,6 +10533,210 @@ async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
         "restoring an accepted turn must not execute it twice"
     );
 
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn consumed_response_finalization_recovers_without_runtime_events() {
+    struct JournalFaultExecutor {
+        journal: Mutex<Option<PathBuf>>,
+        calls: AtomicUsize,
+    }
+    impl HostedRunnerHeadlessMessageExecutor for JournalFaultExecutor {
+        fn execute(
+            &self,
+            _context: &HostedRunnerHeadlessMessageContext,
+            _message: ToAgentMessage,
+        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let journal = self.journal.lock().unwrap();
+            let journal = journal.as_ref().expect("journal installed before response");
+            // Pending acceptance already committed. Preserve that document,
+            // then make the finalization rename fail at the real filesystem.
+            std::fs::rename(journal, journal.with_extension("saved")).unwrap();
+            std::fs::create_dir(journal).unwrap();
+            Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                Vec::new(),
+                "response consumed without subsequent events",
+            ))
+        }
+    }
+    let workspace = tempdir().unwrap();
+    let config = test_config(workspace.path().to_path_buf());
+    let executor = Arc::new(JournalFaultExecutor {
+        journal: Mutex::new(None),
+        calls: AtomicUsize::new(0),
+    });
+    let handle = start_hosted_runner_with_message_executor(config.clone(), executor.clone())
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_finalize").await;
+    handle.shared.stop_event_pump().await.unwrap();
+    let journal = std::fs::read_dir(workspace.path().join(".maestro/hosted-runner/threads"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    *executor.journal.lock().unwrap() = Some(journal.clone());
+    let headers = |key: &str| {
+        HashMap::from([
+            (
+                "x-maestro-headless-connection-id".to_owned(),
+                "conn_finalize".to_owned(),
+            ),
+            (
+                "x-maestro-headless-subscriber-id".to_owned(),
+                subscription_id.clone(),
+            ),
+            (
+                "x-maestro-headless-connection-capability".to_owned(),
+                capability.clone(),
+            ),
+            ("x-maestro-idempotency-key".to_owned(), key.to_owned()),
+        ])
+    };
+    let message = ToAgentMessage::ToolResponse {
+        call_id: "finalize-call".to_owned(),
+        tool_execution_id: None,
+        approved: true,
+        result: None,
+    };
+    let ResponseBody::Json { status, body } = handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("finalize-key"),
+        message.clone(),
+    )
+    .await
+    .unwrap() else {
+        panic!("expected JSON")
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["replayed"], false);
+    assert!(body["message"].as_str().unwrap().contains("memory-only"));
+    let pending: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(journal.with_extension("saved")).unwrap()).unwrap();
+    assert!(
+        pending["response_idempotency_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        pending["pending_response_idempotency"]["finalize-key"],
+        serde_json::to_value(&message).unwrap()
+    );
+    assert_eq!(
+        pending["response_request_owners"]["finalize-call"],
+        "finalize-key"
+    );
+
+    let ResponseBody::Json { body, .. } = handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("finalize-key"),
+        message.clone(),
+    )
+    .await
+    .unwrap() else {
+        panic!("expected JSON")
+    };
+    assert_eq!(body["replayed"], true);
+    let changed = ToAgentMessage::ToolResponse {
+        call_id: "finalize-call".to_owned(),
+        tool_execution_id: None,
+        approved: false,
+        result: None,
+    };
+    for (key, payload) in [
+        ("finalize-key", changed.clone()),
+        ("other-key", message.clone()),
+    ] {
+        let error =
+            match handle_message(handle.shared.clone(), "sess_test", headers(key), payload).await {
+                Err(error) => error,
+                Ok(_) => panic!("response digest and ownership must survive failed persistence"),
+            };
+        assert_eq!(error.code, HostedRunnerErrorCode::IdempotencyConflict);
+    }
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+
+    {
+        let _lifecycle = handle.shared.mutation_lifecycle.lock().await;
+        std::fs::remove_dir(&journal).unwrap();
+        std::fs::rename(journal.with_extension("saved"), &journal).unwrap();
+    }
+    // No events, pump ticks, new requests, or shutdown flush may rescue this
+    // boundary: the existing independent persistence supervisor must commit it.
+    let recovered = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            if document["response_idempotency_keys"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("finalize-key"))
+            {
+                break document;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("consumed response finalization must recover without runtime events");
+    assert_eq!(
+        recovered["response_idempotency_digests"]["finalize-key"],
+        response_message_digest(&message)
+    );
+    assert_eq!(
+        recovered["response_request_owners"]["finalize-call"],
+        "finalize-key"
+    );
+    assert!(
+        recovered["pending_response_idempotency"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        recovered["flush_watermark"].as_u64().unwrap()
+            > pending["flush_watermark"].as_u64().unwrap()
+    );
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    handle.shutdown().await;
+
+    let restored_executor = Arc::new(ResponseRecordingExecutor::default());
+    let restored = start_hosted_runner_with_message_executor(config, restored_executor.clone())
+        .await
+        .unwrap();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &restored.base_url(), "conn_finalize_restored").await;
+    let response = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            restored.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_finalize_restored")
+        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header("x-maestro-headless-connection-capability", capability)
+        .header("x-maestro-idempotency-key", "finalize-key")
+        .json(&message)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(response["replayed"], true);
+    assert!(restored_executor.messages.lock().unwrap().is_empty());
     restored.shutdown().await;
 }
 

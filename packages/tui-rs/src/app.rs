@@ -644,6 +644,7 @@ pub struct App {
     /// Which modal (if any) is currently shown.
     active_modal: ActiveModal,
     feedback_ui: bug_reports::FeedbackUi,
+    feedback_rating_rx: Option<tokio::sync::oneshot::Receiver<visibility::FeedbackSubmission>>,
 
     /// File search modal component (like VS Code's Ctrl+P).
     file_search: FileSearchModal,
@@ -844,6 +845,7 @@ pub struct App {
     /// supplies the system-prompt rule block, the MCP server policy installed
     /// on the tool executor, and the team sandbox policy source.
     managed_setup: crate::managed_setup::ManagedSetupClient,
+    managed_setup_identity_scope: Option<crate::telemetry::TelemetryIdentityScope>,
 
     /// When true and the agent is idle, fire one goal continuation prompt.
     /// Armed on create/resume/auto-on, and after a worker turn if the goal is
@@ -1010,6 +1012,66 @@ enum PlatformSessionResolution {
     Detect,
     #[cfg(test)]
     UseNoPlatformSession,
+}
+
+/// Bind configuration and its receipt origin to the same live Identity result.
+/// An unverified local selector can only select a deny-all policy;
+/// it cannot fetch a document or authorize a receipt.
+fn resolve_verified_managed_setup(
+    verified: anyhow::Result<crate::credential_mode::PlatformSession>,
+    unverified: impl FnOnce() -> Option<crate::credential_mode::PlatformSession>,
+) -> (
+    crate::managed_setup::ManagedSetupClient,
+    Option<crate::telemetry::TelemetryIdentityScope>,
+) {
+    match verified {
+        Ok(session) => {
+            let origin = crate::telemetry::TelemetryIdentityScope::new(
+                &session.organization_id,
+                session.workspace_id.as_deref(),
+            );
+            (resolve_session_managed_setup(&session), origin)
+        }
+        Err(_) => (
+            crate::managed_setup::ManagedSetupClient::resolve_with(
+                unverified().as_ref(),
+                None,
+                0,
+                std::time::Duration::ZERO,
+                |_| {
+                    Err(crate::managed_setup::ManagedSetupError::Request(
+                        "Identity session could not be verified".to_owned(),
+                    ))
+                },
+            ),
+            None,
+        ),
+    }
+}
+
+fn resolve_session_managed_setup(
+    session: &crate::credential_mode::PlatformSession,
+) -> crate::managed_setup::ManagedSetupClient {
+    let worker_session = session.clone();
+    // App construction also runs inside Tokio. Keep the blocking HTTP client's
+    // private runtime and its destruction on this worker thread.
+    std::thread::spawn(move || {
+        crate::managed_setup::ManagedSetupClient::resolve(Some(&worker_session))
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        crate::managed_setup::ManagedSetupClient::resolve_with(
+            Some(session),
+            None,
+            0,
+            std::time::Duration::ZERO,
+            |_| {
+                Err(crate::managed_setup::ManagedSetupError::Request(
+                    "managed setup worker failed".to_owned(),
+                ))
+            },
+        )
+    })
 }
 
 impl App {
@@ -1309,26 +1371,6 @@ impl App {
         )
     }
 
-    #[cfg(test)]
-    fn new_with_terminal_with_history_for_test(
-        terminal: terminal::Terminal,
-        capabilities: TerminalCapabilities,
-        prompt_history: crate::history::PromptHistory,
-        initial_prompt: Option<String>,
-        context_window: Option<u64>,
-        terminal_clear_supported: bool,
-    ) -> Self {
-        Self::new_with_terminal_with_history_and_platform_session(
-            terminal,
-            capabilities,
-            prompt_history,
-            initial_prompt,
-            context_window,
-            terminal_clear_supported,
-            PlatformSessionResolution::UseNoPlatformSession,
-        )
-    }
-
     fn new_with_terminal_with_history_and_platform_session(
         terminal: terminal::Terminal,
         capabilities: TerminalCapabilities,
@@ -1426,16 +1468,19 @@ impl App {
         // start, before any MCP server can be dialed. A session bound to a
         // platform workspace with no reachable platform and no cache starts
         // with every MCP server refused; it never starts open.
-        let platform_session = match platform_session_resolution {
-            PlatformSessionResolution::Detect => match crate::credential_mode::detect() {
-                Ok(crate::credential_mode::DetectedMode::Platform(session)) => Some(session),
-                _ => None,
-            },
+        let (managed_setup, managed_setup_identity_scope) = match platform_session_resolution {
+            PlatformSessionResolution::Detect => resolve_verified_managed_setup(
+                crate::credential_mode::current_verified_identity_session(),
+                || match crate::credential_mode::detect() {
+                    Ok(crate::credential_mode::DetectedMode::Platform(session)) => Some(session),
+                    _ => None,
+                },
+            ),
             #[cfg(test)]
-            PlatformSessionResolution::UseNoPlatformSession => None,
+            PlatformSessionResolution::UseNoPlatformSession => {
+                (crate::managed_setup::ManagedSetupClient::unmanaged(), None)
+            }
         };
-        let managed_setup =
-            crate::managed_setup::ManagedSetupClient::resolve(platform_session.as_ref());
         for notice in managed_setup.notices() {
             state.add_system_message(notice.clone());
         }
@@ -1558,6 +1603,7 @@ impl App {
             slash_state: SlashCycleState::new(),
             active_modal: ActiveModal::None,
             feedback_ui: bug_reports::FeedbackUi::default(),
+            feedback_rating_rx: None,
             file_search: FileSearchModal::new(),
             workspace_files: Vec::new(),
             workspace_scan_rx: None,
@@ -1626,6 +1672,7 @@ impl App {
             harness_store,
             rlm_store,
             mailbox_store,
+            managed_setup_identity_scope,
             managed_setup,
             goal_auto_continue_armed: false,
             footer_style: ui_prefs.footer_style(),
@@ -1918,6 +1965,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     async fn run_inner(&mut self) -> Result<i32> {
+        self.record_configuration_visibility();
         // Optional Jane Street magic-trace slow-frame snapshots (Linux/Intel PT).
         if crate::magic_trace::init_from_env() {
             eprintln!(
@@ -3085,22 +3133,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     fn refresh_managed_setup_after_identity_login(&mut self) -> Result<(), String> {
-        let platform_session = match crate::credential_mode::detect() {
-            Ok(crate::credential_mode::DetectedMode::Platform(session)) => session,
-            Ok(_) => {
-                return Err(
-                    "EvalOps Identity was saved but no tenant-bound platform session could be resolved; the agent was not started."
-                        .to_string(),
-                );
-            }
-            Err(error) => {
-                return Err(format!(
-                    "EvalOps Identity was saved but its tenant session could not be loaded: {error}"
-                ));
-            }
-        };
-        let managed_setup =
-            crate::managed_setup::ManagedSetupClient::resolve(Some(&platform_session));
+        // Login may have changed accounts. Never keep the previous account's
+        // receipt origin if verification or policy refresh fails.
+        self.managed_setup_identity_scope = None;
+        let platform_session = crate::credential_mode::current_verified_identity_session()
+            .map_err(|error| {
+                format!("EvalOps Identity could not be verified after login: {error}")
+            })?;
+        let managed_setup = resolve_session_managed_setup(&platform_session);
         for notice in managed_setup.notices() {
             self.state.add_system_message(notice.clone());
         }
@@ -3132,6 +3172,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         });
         self.sandbox_policy = sandbox_policy;
         self.managed_setup = managed_setup;
+        self.managed_setup_identity_scope = crate::telemetry::TelemetryIdentityScope::new(
+            &platform_session.organization_id,
+            platform_session.workspace_id.as_deref(),
+        );
+        self.record_configuration_visibility();
         Ok(())
     }
 
@@ -4535,6 +4580,7 @@ was missing; retry to review the exact execution context."
 
     fn render_inner(&mut self) -> Result<()> {
         self.poll_feedback_send();
+        self.poll_feedback_rating();
         if self.terminal_size.is_none() {
             self.terminal_size = self
                 .terminal
@@ -5337,6 +5383,7 @@ mod composer_recall;
 mod control_panels;
 mod onboarding;
 mod selective_summary;
+mod visibility;
 // `pub(crate)` so `agent::compaction` can assert that its token counts and
 // this breakdown's agree; nothing outside the crate uses it.
 pub(crate) mod context_breakdown;

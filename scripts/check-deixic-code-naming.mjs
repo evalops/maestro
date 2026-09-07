@@ -19,7 +19,7 @@ const REQUIRED_TEXT = new Map([
 	["packages/maestro-rs/Cargo.toml", ["description = \"Canonical native Rust CLI for Deixic Code\""]],
 	["packages/tui-rs/Cargo.toml", ["description = \"Native terminal UI renderer for Deixic Code\""]],
 	["packages/runtime-gateway-rs/Cargo.toml", ["description = \"Native Rust HTTP runtime gateway for Deixic Code\""]],
-	["packages/runtime-rs/Cargo.toml", ["runtime compatibility facade for Deixic Code"]],
+	["packages/runtime-rs/Cargo.toml", ["Native agent runtime for Deixic Code"]],
 	["packages/runtime-contracts-rs/Cargo.toml", ["runtime contracts for Deixic Code"]],
 	["packages/ai-rs/Cargo.toml", ["client layer for Deixic Code"]],
 	["packages/execpolicy-rs/Cargo.toml", ["policy parser for Deixic Code"]],

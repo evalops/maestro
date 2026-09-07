@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::TokenUsage;
+use super::native_host::NativeCodexAuth;
 use crate::codex_app_server::{
     CodexAppServerClient, InitializeOptions, Notification, ServerRequestWaitError,
     ThreadStartParams, TurnInterruptParams,
@@ -23,24 +24,20 @@ const LIMIT: usize = 64 * 1024;
 
 pub(super) async fn run(
     model: &str,
-    workspace: &Path,
+    _workspace: &Path,
     messages: &[Message],
     prompt: &str,
     cancellation: &CancellationToken,
     shutdown: &CancellationToken,
+    auth: &NativeCodexAuth,
 ) -> (Result<String>, Option<TokenUsage>) {
     let mut state = SummaryState::default();
     let result = async {
         let prompt = summary_prompt(messages, prompt)?;
-        let profile =
-            crate::service_connections::selected_delegated_profile_from_env("openai-codex")?;
-        let identity =
-            crate::codex_identity::resolve_codex_identity(profile.as_deref(), workspace)?;
         let (command, args) =
             super::codex_app_server_turns::codex_app_server_spawn_override_from_env()?;
         let client =
-            CodexAppServerClient::spawn_with_env(command, args, None, &identity.child_env())
-                .await?;
+            CodexAppServerClient::spawn_with_env(command, args, None, &auth.child_env).await?;
         drive(&client, model, &prompt, cancellation, shutdown, &mut state).await
     }
     .await;
@@ -566,9 +563,15 @@ mod tests {
                 "The release codename is Moss Lantern. Green theme implementation is complete; contrast tests remain pending.",
             ),
         }];
+        let auth = NativeCodexAuth {
+            profile_name: "live-test".to_owned(),
+            child_env: std::env::vars().collect(),
+            auth_path: Default::default(),
+            state_root: Default::default(),
+        };
         let (result, usage) = run("openai-codex/gpt-5.6-sol", Path::new("."), &messages,
             "Summarize this conversation in one sentence. Preserve the release codename and pending tests. Do not execute tools.",
-            &CancellationToken::new(), &CancellationToken::new()).await;
+            &CancellationToken::new(), &CancellationToken::new(), &auth).await;
         let summary = result.unwrap();
         assert!(summary.contains("Moss Lantern"), "{summary}");
         assert!(summary.to_lowercase().contains("contrast"), "{summary}");

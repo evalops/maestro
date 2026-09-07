@@ -2730,7 +2730,8 @@ impl ToolExecutor {
                     DenialReason::IdentityAuthority {
                         message: format!("Code tool authority denied execution: {error}"),
                     },
-                );
+                )
+                .with_managed_policy(crate::safety::managed_policy_metadata());
                 emit_typed_tool_end(event_tx, call_id, &execution);
                 return execution;
             }
@@ -2739,7 +2740,8 @@ impl ToolExecutor {
         execution_context.code_decision = code_decision.clone();
         if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
             let execution =
-                ToolExecution::denied(call_id, tool_name, DenialReason::SandboxPolicy { message });
+                ToolExecution::denied(call_id, tool_name, DenialReason::SandboxPolicy { message })
+                    .with_managed_policy(crate::safety::managed_policy_metadata());
             emit_typed_tool_end(event_tx, call_id, &execution);
             return execution;
         }
@@ -2750,7 +2752,8 @@ impl ToolExecutor {
                 DenialReason::SandboxPolicy {
                     message: "Inline shell tools are disabled for sandboxed exec runs".to_string(),
                 },
-            );
+            )
+            .with_managed_policy(crate::safety::managed_policy_metadata());
             emit_typed_tool_end(event_tx, call_id, &execution);
             return execution;
         }
@@ -2761,7 +2764,8 @@ impl ToolExecutor {
                 DenialReason::ActionFirewall {
                     message: format!("Blocked by action firewall: {reason}"),
                 },
-            );
+            )
+            .with_managed_policy(crate::safety::managed_policy_metadata());
             emit_typed_tool_end(event_tx, call_id, &execution);
             return execution;
         }
@@ -2800,7 +2804,8 @@ impl ToolExecutor {
             },
             result,
         )
-        .with_duration(started.elapsed().as_millis() as u64);
+        .with_duration(started.elapsed().as_millis() as u64)
+        .with_managed_policy(crate::safety::managed_policy_metadata());
         execution.receipt.code_authority = code_decision.map(Box::new);
         if used_cache {
             execution.receipt.details = crate::agent::ToolReceiptDetails::Cached;

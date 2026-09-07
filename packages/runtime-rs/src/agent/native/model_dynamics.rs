@@ -10,17 +10,17 @@ impl NativeAgentRunner {
         self.boost_original = None;
         let mut state = self.dynamics.lock().expect("model dynamics mutex");
         state.requested = false;
-        state.status = crate::model_dynamics::BoostStatus::Idle;
+        state.status = super::super::model_dynamics::BoostStatus::Idle;
         let _ = self.event_tx.send(FromAgent::BoostChanged {
             status: state.status,
             thinking: None,
         });
     }
 
-    pub(super) fn current_model_choice(&self) -> crate::model_dynamics::ModelChoice {
-        crate::model_dynamics::ModelChoice {
+    pub(super) fn current_model_choice(&self) -> super::super::model_dynamics::ModelChoice {
+        super::super::model_dynamics::ModelChoice {
             model: self.config.model.clone(),
-            thinking: crate::model_dynamics::thinking_level(
+            thinking: super::super::model_dynamics::thinking_level(
                 self.config.thinking_enabled,
                 self.config.thinking_budget,
             ),
@@ -28,9 +28,9 @@ impl NativeAgentRunner {
     }
 
     /// Change only at a request boundary; preserve the complete canonical history.
-    pub(super) fn apply_model_choice(
+    pub(super) async fn apply_model_choice(
         &mut self,
-        choice: &crate::model_dynamics::ModelChoice,
+        choice: &super::super::model_dynamics::ModelChoice,
     ) -> Result<()> {
         if self
             .client
@@ -39,89 +39,92 @@ impl NativeAgentRunner {
         {
             anyhow::bail!("Hosted model choices require Platform authorization");
         }
-        if let Some(reason) = check_model_allowed(&policy_model_id(&choice.model)) {
+        if let Some(reason) = self
+            .tool_executor
+            .model_allowed(&policy_model_id(&choice.model))
+        {
             anyhow::bail!("{reason}");
         }
         if choice.model != self.config.model {
-            let old = crate::model_catalog::find_model(&self.config.model)
-                .context("Current model capabilities are unavailable")?;
-            let new = crate::model_catalog::find_model(&choice.model)
-                .context("Target model capabilities are unavailable")?;
-            anyhow::ensure!(
-                old.capabilities.protocol == new.capabilities.protocol
-                    && new.capabilities.context_tokens >= old.capabilities.context_tokens
-                    && (!old.capabilities.vision || new.capabilities.vision)
-                    && (!old.capabilities.tools || new.capabilities.tools),
-                "This model change needs an explicit context transition; use /model"
-            );
-            anyhow::ensure!(
-                !self.model_route.uses_app_server(),
-                "Use /model to change a Codex session model"
-            );
-            let provider = if policy_model_id(&self.config.model)
+            self.tool_executor
+                .validate_model_transition(&self.config.model, &choice.model)
+                .map_err(anyhow::Error::msg)?;
+            let current_policy_model = policy_model_id(&self.config.model);
+            let target_policy_model = policy_model_id(&choice.model);
+            let current_provider = current_policy_model
                 .split_once('/')
-                .map(|(provider, _)| provider)
-                == policy_model_id(&choice.model)
-                    .split_once('/')
-                    .map(|(provider, _)| provider)
-            {
-                // Retain the already-authorized endpoint and connection profile.
+                .map(|(provider, _)| provider);
+            let target_provider = target_policy_model
+                .split_once('/')
+                .map(|(provider, _)| provider);
+            let provider = if current_provider == target_provider {
+                // Keep the already-authorized endpoint and connection profile
+                // for same-provider model changes. Resolving a new client here
+                // can silently select a different profile or base URL.
                 self.client
                     .as_ref()
                     .context("Direct provider client unavailable")?
                     .provider_name()
                     .to_owned()
             } else {
-                let (client, provider, route, scope) = resolve_native_client(&choice.model, None)?;
+                let resolved = self
+                    .tool_executor
+                    .resolve_model_for_automatic_transition(&choice.model)
+                    .map_err(anyhow::Error::msg)?;
                 anyhow::ensure!(
-                    client.as_ref().is_some_and(|c| !c.is_managed_gateway())
-                        && !route.uses_app_server(),
+                    resolved
+                        .client
+                        .as_ref()
+                        .is_none_or(|client| !client.is_managed_gateway())
+                        && !resolved.model_route.uses_app_server(),
                     "Automatic routing cannot cross inference authority"
                 );
-                anyhow::ensure!(
-                    scope.is_some()
-                        && scope
-                            == *self
-                                .telemetry_identity_scope
-                                .read()
-                                .expect("telemetry identity scope lock"),
-                    "Automatic routing cannot change the active organization or workspace"
-                );
+                let NativeResolvedClient {
+                    client,
+                    provider_name,
+                    model_route,
+                    ..
+                } = resolved;
                 self.client = client;
-                self.model_route = route;
-                *self
-                    .telemetry_identity_scope
-                    .write()
-                    .expect("telemetry identity scope lock") = scope;
-                provider
+                self.model_route = model_route;
+                provider_name
             };
-            refresh_model_budgets(&mut self.config, &mut self.compactor, &choice.model);
+            refresh_model_budgets_with_host(
+                &self.tool_executor,
+                &mut self.config,
+                &mut self.compactor,
+                &choice.model,
+            );
             self.config.model.clone_from(&choice.model);
             self.model_tool_cache = None;
-            self.hooks.set_model(&choice.model);
+            self.hooks.hook_set_model(&choice.model).await;
             let _ = self.event_tx.send(FromAgent::ModelChanged {
                 model: choice.model.clone(),
                 provider,
             });
         }
-        let thinking = crate::model_dynamics::normalize_thinking(&choice.model, choice.thinking);
+        let thinking = self
+            .tool_executor
+            .normalize_thinking(&choice.model, choice.thinking);
         let (enabled, budget) = thinking.to_config();
         self.config.thinking_enabled = enabled;
         self.config.thinking_budget = budget;
         Ok(())
     }
 
-    pub(super) fn apply_requested_boost(&mut self) -> Result<()> {
+    pub(super) async fn apply_requested_boost(&mut self) -> Result<()> {
         let preferences = self.config.model_dynamics.clone();
-        let choice =
-            crate::model_dynamics::boost_choice(&self.current_model_choice(), &preferences);
-        let available = choice
+        let choice = self
+            .tool_executor
+            .boost_choice(&self.current_model_choice(), &preferences);
+        let available = choice.as_ref().is_some_and(|choice| {
+            self.tool_executor
+                .model_allowed(&policy_model_id(&choice.model))
+                .is_none()
+        }) && !self
+            .client
             .as_ref()
-            .is_some_and(|choice| check_model_allowed(&policy_model_id(&choice.model)).is_none())
-            && !self
-                .client
-                .as_ref()
-                .is_some_and(UnifiedClient::is_managed_gateway);
+            .is_some_and(UnifiedClient::is_managed_gateway);
         self.dynamics
             .lock()
             .expect("model dynamics mutex")
@@ -131,7 +134,7 @@ impl NativeAgentRunner {
             let request = !state.used
                 && (state.requested
                     || (preferences.auto_boost
-                        && state.status == crate::model_dynamics::BoostStatus::Suggested));
+                        && state.status == super::super::model_dynamics::BoostStatus::Suggested));
             state.requested = false;
             if request {
                 state.used = true;
@@ -142,35 +145,33 @@ impl NativeAgentRunner {
             return Ok(());
         }
         let original = self.current_model_choice();
-        let result = crate::model_dynamics::boost_choice(&original, &preferences)
+        let result = match self
+            .tool_executor
+            .boost_choice(&original, &preferences)
             .context("No higher supported setting is configured")
-            .and_then(|choice| {
-                if choice.model != original.model {
-                    let old = crate::model_catalog::find_model(&original.model)
-                        .context("Current model capabilities are unavailable")?;
-                    let new = crate::model_catalog::find_model(&choice.model)
-                        .context("Boost model capabilities are unavailable")?;
-                    anyhow::ensure!(
-                        old.capabilities.context_tokens == new.capabilities.context_tokens
-                            && old.capabilities.vision == new.capabilities.vision
-                            && old.capabilities.tools == new.capabilities.tools,
-                        "A temporary boost needs matching context and tool capabilities; use /model"
-                    );
+        {
+            Ok(choice) => match self.apply_model_choice(&choice).await {
+                Ok(()) => {
+                    self.boost_original = Some(original);
+                    Ok(self.current_model_choice().thinking)
                 }
-                self.apply_model_choice(&choice)?;
-                self.boost_original = Some(original);
-                Ok(self.current_model_choice().thinking)
-            });
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
         let (status, thinking) = match result {
             Ok(_) if self.model_route.uses_app_server() => {
-                (crate::model_dynamics::BoostStatus::Pending, None)
+                (super::super::model_dynamics::BoostStatus::Pending, None)
             }
-            Ok(thinking) => (crate::model_dynamics::BoostStatus::Active, Some(thinking)),
+            Ok(thinking) => (
+                super::super::model_dynamics::BoostStatus::Active,
+                Some(thinking),
+            ),
             Err(error) => {
                 let _ = self.event_tx.send(FromAgent::Status {
                     message: format!("Boost unavailable: {error}"),
                 });
-                (crate::model_dynamics::BoostStatus::Idle, None)
+                (super::super::model_dynamics::BoostStatus::Idle, None)
             }
         };
         self.dynamics.lock().expect("model dynamics mutex").status = status;
@@ -185,7 +186,7 @@ impl NativeAgentRunner {
             return;
         };
         if self.dynamics.lock().expect("model dynamics mutex").status
-            != crate::model_dynamics::BoostStatus::Pending
+            != super::super::model_dynamics::BoostStatus::Pending
         {
             return;
         }
@@ -200,7 +201,7 @@ impl NativeAgentRunner {
             .await;
         let (status, thinking) = if matches!(result, Ok(true)) {
             (
-                crate::model_dynamics::BoostStatus::Active,
+                super::super::model_dynamics::BoostStatus::Active,
                 self.current_model_choice().thinking,
             )
         } else {
@@ -216,7 +217,10 @@ impl NativeAgentRunner {
             self.config.thinking_enabled = enabled;
             self.config.thinking_budget = budget;
             self.boost_original = None;
-            (crate::model_dynamics::BoostStatus::Idle, original.thinking)
+            (
+                super::super::model_dynamics::BoostStatus::Idle,
+                original.thinking,
+            )
         };
         self.dynamics.lock().expect("model dynamics mutex").status = status;
         let _ = self.event_tx.send(FromAgent::BoostChanged {
@@ -225,18 +229,20 @@ impl NativeAgentRunner {
         });
     }
 
-    pub(super) fn finish_task_boost(&mut self, cancelled: bool) {
-        let thinking = self.boost_original.clone().map(|original| {
-            if let Err(error) = self.apply_model_choice(&original) {
+    pub(super) async fn finish_task_boost(&mut self, cancelled: bool) {
+        let thinking = if let Some(original) = self.boost_original.clone() {
+            if let Err(error) = self.apply_model_choice(&original).await {
                 // Restoration must not change the inference authority to evade policy.
                 let _ = self.event_tx.send(FromAgent::Status {
                     message: format!("Could not restore the previous model: {error}"),
                 });
-                self.current_model_choice().thinking
+                Some(self.current_model_choice().thinking)
             } else {
-                original.thinking
+                Some(original.thinking)
             }
-        });
+        } else {
+            None
+        };
         self.boost_original = None;
         let status = {
             let mut state = self.dynamics.lock().expect("model dynamics mutex");
@@ -244,7 +250,7 @@ impl NativeAgentRunner {
             *state = Default::default();
             if pending {
                 state.requested = true;
-                state.status = crate::model_dynamics::BoostStatus::Pending;
+                state.status = super::super::model_dynamics::BoostStatus::Pending;
             }
             state.status
         };
@@ -265,7 +271,7 @@ impl NativeAgentRunner {
             .insert(self.config.model.clone());
         let mut remaining = preferences.fallbacks.into_iter();
         loop {
-            self.apply_requested_boost()?;
+            self.apply_requested_boost().await?;
             // Keep the large tool-loop future off the recovery wrapper's stack.
             let result = Box::pin(self.run_loop_inner(step_budget)).await;
             let eligible = result.as_ref().err().is_some_and(|error| {
@@ -306,7 +312,7 @@ impl NativeAgentRunner {
             let Some(choice) = choice else {
                 return result;
             };
-            if let Err(error) = self.apply_model_choice(&choice) {
+            if let Err(error) = self.apply_model_choice(&choice).await {
                 let _ = self.event_tx.send(FromAgent::Status {
                     message: format!("Model fallback unavailable: {error}"),
                 });
@@ -314,9 +320,9 @@ impl NativeAgentRunner {
             }
             self.boost_original = None;
             self.dynamics.lock().expect("model dynamics mutex").status =
-                crate::model_dynamics::BoostStatus::Idle;
+                super::super::model_dynamics::BoostStatus::Idle;
             let _ = self.event_tx.send(FromAgent::BoostChanged {
-                status: crate::model_dynamics::BoostStatus::Idle,
+                status: super::super::model_dynamics::BoostStatus::Idle,
                 thinking: Some(self.current_model_choice().thinking),
             });
             let _ = self.event_tx.send(FromAgent::Status {

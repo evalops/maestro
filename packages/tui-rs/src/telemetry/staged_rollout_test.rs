@@ -784,8 +784,8 @@ fn onboarding_collection_pins_origin_before_persisting_and_scheduling() {
         Some(test_identity_scope("origin-org", "other-workspace")),
         Some(test_identity_scope("other-org", "origin-workspace")),
     ] {
-        let result = record_onboarding_event_with(
-            event.clone(),
+        let result = record_first_party_event_with(
+            &event,
             captured,
             || {
                 Some(FirstPartyDeliverySession {
@@ -800,8 +800,8 @@ fn onboarding_collection_pins_origin_before_persisting_and_scheduling() {
         assert!(!first_party_outbox_dir().exists());
     }
     assert_eq!(
-        record_onboarding_event_with(
-            event.clone(),
+        record_first_party_event_with(
+            &event,
             Some(origin.clone()),
             || Some(FirstPartyDeliverySession {
                 access_token: "fixture-token".into(),
@@ -844,8 +844,8 @@ fn onboarding_collection_opt_out_skips_authority_persistence_and_scheduling() {
     ] {
         std::env::set_var(flag, value);
         assert_eq!(
-            record_onboarding_event_with(
-                event.clone(),
+            record_first_party_event_with(
+                &event,
                 Some(origin.clone()),
                 || panic!("opted-out onboarding must not request Identity authority"),
                 || panic!("opted-out onboarding must not schedule delivery"),
@@ -876,8 +876,8 @@ fn onboarding_collection_requires_authority_and_durable_persistence_before_sched
         serde_json::from_str(include_str!("onboarding_fixture.json")).unwrap();
     let origin = test_identity_scope("org-a", "workspace-a");
     assert_eq!(
-        record_onboarding_event_with(
-            event.clone(),
+        record_first_party_event_with(
+            &event,
             None,
             || panic!("an absent origin must not acquire a later Identity scope"),
             || panic!("an absent origin must not schedule delivery"),
@@ -886,8 +886,8 @@ fn onboarding_collection_requires_authority_and_durable_persistence_before_sched
     );
     let verified = std::cell::Cell::new(false);
     assert_eq!(
-        record_onboarding_event_with(
-            event.clone(),
+        record_first_party_event_with(
+            &event,
             Some(origin.clone()),
             || {
                 verified.set(true);
@@ -905,8 +905,8 @@ fn onboarding_collection_requires_authority_and_durable_persistence_before_sched
     let obstruction = temp.path().join("telemetry");
     fs::write(&obstruction, b"existing file").unwrap();
     assert_eq!(
-        record_onboarding_event_with(
-            event,
+        record_first_party_event_with(
+            &event,
             Some(origin.clone()),
             || Some(delivery_session("fixture-token", origin)),
             || panic!("failed durable persistence must not schedule delivery"),
@@ -915,4 +915,92 @@ fn onboarding_collection_requires_authority_and_durable_persistence_before_sched
     );
     assert_eq!(fs::read(&obstruction).unwrap(), b"existing file");
     assert!(!first_party_outbox_dir().exists());
+}
+
+#[test]
+fn complete_collection_projects_unsampled_turn_and_rejects_forged_coverage() {
+    let mut event = canonical_event(TurnStatus::Success);
+    event.sampled = false;
+    event.sample_reason = SampleReason::Random;
+    let projected = first_party_event(&event.external_projection()).unwrap();
+    assert!(projected.sampled);
+    assert!(matches!(projected.sample_reason, SampleReason::Always));
+    assert!(projected.is_server_valid());
+    let mut encoded = serde_json::to_value(&projected).unwrap();
+    assert_eq!(encoded["measurements"]["collection"], "all_eligible");
+    assert!(encoded["measurements"]["streamStallCount"].is_null());
+    encoded["measurements"]["rawError"] = json!("private");
+    assert!(serde_json::from_value::<FirstPartyTurnTelemetryEvent>(encoded).is_err());
+    let mut inconsistent = projected;
+    inconsistent
+        .measurements
+        .as_mut()
+        .unwrap()
+        .responses_with_usage = 1;
+    assert!(!inconsistent.is_server_valid());
+}
+
+#[test]
+fn unsampled_turn_is_queued_but_not_locally_or_custom_exported() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "PLAYWRIGHT_TELEMETRY",
+        "MAESTRO_TELEMETRY_FILE",
+        "PLAYWRIGHT_TELEMETRY_FILE",
+        "MAESTRO_TELEMETRY_ENDPOINT",
+        "PLAYWRIGHT_TELEMETRY_ENDPOINT",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    clear_telemetry_env();
+    let mut event = canonical_event(TurnStatus::Success);
+    event.sampled = false;
+    record_canonical_turn_event(&event);
+    assert!(!temp.path().join("telemetry.log").exists());
+    let paths = outbox_paths(&temp.path().join("telemetry/outbox"));
+    assert_eq!(paths.len(), 1);
+    let persisted: FirstPartyOutboxRecord =
+        serde_json::from_slice(&fs::read(&paths[0]).unwrap()).unwrap();
+    assert!(persisted.event.is_server_valid());
+    // The same controls apply even when sampling is bypassed for denominators.
+    std::env::set_var("MAESTRO_TELEMETRY", "0");
+    record_canonical_turn_event(&event);
+    assert_eq!(outbox_paths(&temp.path().join("telemetry/outbox")).len(), 1);
+}
+
+#[test]
+fn turn_measurements_shared_fixture_is_closed_and_valid() {
+    let fixture = include_str!("turn_measurements_fixture.json");
+    let parsed: FirstPartyTurnMeasurements = serde_json::from_str(fixture).unwrap();
+    assert!(parsed.is_valid());
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap(),
+        serde_json::from_str::<Value>(fixture).unwrap()
+    );
+}
+
+#[test]
+fn stream_open_failure_requires_complete_nullable_coverage_and_bounds() {
+    let mut measured: FirstPartyTurnMeasurements =
+        serde_json::from_str(include_str!("turn_measurements_fixture.json")).unwrap();
+    measured.stream_open_failure_count = None;
+    assert!(!measured.is_valid());
+    measured.stream_open_failure_count = Some(MAX_COUNT + 1);
+    assert!(!measured.is_valid());
+    measured.stream_open_failure_count = Some(1);
+    assert!(measured.is_valid());
+    for count in [
+        &mut measured.stream_open_failure_count,
+        &mut measured.stream_stall_count,
+        &mut measured.stream_disconnect_count,
+        &mut measured.stream_retry_count,
+        &mut measured.stream_recovery_count,
+    ] {
+        *count = None;
+    }
+    assert!(measured.is_valid());
 }

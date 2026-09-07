@@ -4,7 +4,8 @@
 //! Every process must have a live EvalOps Identity session before it can start
 //! a model turn. Once signed in, it can use managed inference when its session
 //! has workspace scope, or a local provider credential (BYOK). There is no
-//! anonymous provider path.
+//! anonymous provider path. Hosted residents instead use the established
+//! tenant-bound Runner Host service credential exclusively for managed inference.
 
 use std::collections::HashMap;
 
@@ -59,6 +60,28 @@ struct IdentityIntrospection {
     scopes: Vec<String>,
     #[serde(default)]
     scope: String,
+}
+
+/// Admission purpose stays attached until provider selection. A hosted service
+/// credential must never become a human login or unlock local credentials.
+enum VerifiedIdentity {
+    Human(PlatformSession),
+    HostedManaged(PlatformSession),
+}
+
+impl VerifiedIdentity {
+    fn into_telemetry_session(self) -> PlatformSession {
+        match self {
+            Self::Human(session) | Self::HostedManaged(session) => session,
+        }
+    }
+
+    fn require_human(self) -> Result<PlatformSession> {
+        match self {
+            Self::Human(session) => Ok(session),
+            Self::HostedManaged(_) => bail!("{IDENTITY_REQUIRED_MESSAGE}"),
+        }
+    }
 }
 
 /// A minimal live Identity endpoint shared by process-isolated Maestro tests.
@@ -132,6 +155,10 @@ fn test_identity_introspect_response(request: &str) -> (u16, &'static str) {
         Some("inactive-token") => (
             200,
             r#"{"active":false,"subject":"user-test","token_type":"access","organization_id":"org-test","workspace_id":"workspace-test","scopes":["llm_gateway:invoke"]}"#,
+        ),
+        Some("missing-workspace-token") => (
+            200,
+            r#"{"active":true,"subject":"user-test","token_type":"access","organization_id":"org-test","scopes":["llm_gateway:invoke"]}"#,
         ),
         Some("unscoped-token") => (
             200,
@@ -280,40 +307,65 @@ pub fn require_ready(model: &str) -> Result<DetectedMode> {
 /// session to bind a completed turn to its originating tenant rather than
 /// rediscovering whatever account happens to be active during a later retry.
 pub(crate) fn require_ready_with_identity(model: &str) -> Result<(DetectedMode, PlatformSession)> {
-    let (session, mut env) = current_verified_identity_session_with_env()?;
-    crate::service_connections::ConnectionBroker::merge_default_for_model(model, &mut env)?;
-    let mode = ready_mode_from_session(session.clone(), &env, model)?;
-    Ok((mode, session))
+    let (identity, env) = current_verified_identity_session_with_env()?;
+    ready_mode_from_verified_identity(identity, env, model)
 }
 
-/// Return the currently configured Identity session only after live
-/// verification. Best-effort delivery paths use this instead of trusting a
-/// mutable local snapshot, so a durable record is never replayed under a
-/// bearer whose tenant scope has changed.
-#[cfg(not(test))]
+fn ready_mode_from_verified_identity(
+    identity: VerifiedIdentity,
+    mut env: HashMap<String, String>,
+    model: &str,
+) -> Result<(DetectedMode, PlatformSession)> {
+    match identity {
+        VerifiedIdentity::Human(session) => {
+            crate::service_connections::ConnectionBroker::merge_default_for_model(model, &mut env)?;
+            let mode = ready_mode_from_session(session.clone(), &env, model)?;
+            Ok((mode, session))
+        }
+        VerifiedIdentity::HostedManaged(session) => {
+            if !ProviderRegistry::resolve_descriptor(model)
+                .is_ok_and(|descriptor| descriptor.id == "evalops")
+            {
+                bail!("hosted Runner Host credentials require a managed model route");
+            }
+            Ok((DetectedMode::Platform(session.clone()), session))
+        }
+    }
+}
+
+/// Return live verified authority for the content-free first-party telemetry
+/// outbox. That endpoint accepts the same invocation scope for human and hosted
+/// service credentials and independently reauthorizes the exact tenant.
+/// Human-only capture and provider admission use their separate typed guards.
 pub(crate) fn current_verified_identity_session() -> Result<PlatformSession> {
-    current_verified_identity_session_with_env().map(|(session, _env)| session)
+    current_verified_identity_session_with_env()
+        .map(|(identity, _env)| identity.into_telemetry_session())
 }
 
-fn current_verified_identity_session_with_env() -> Result<(PlatformSession, HashMap<String, String>)>
-{
+fn current_verified_identity_session_with_env()
+-> Result<(VerifiedIdentity, HashMap<String, String>)> {
     let mut env = std::env::vars().collect::<HashMap<String, String>>();
+    let hosted = identity_verification_endpoint(None, &env)?.1.is_some();
     // An explicit Identity session is sufficient and avoids touching the
     // platform credential store (which may be an interactive OS keychain).
     // Fall back to the stored OAuth snapshot only when the process did not
     // provide both canonical Identity values.
     let snapshot = if platform_session_from(None, &env).is_some() {
         None
+    } else if hosted {
+        bail!("hosted Runner Host admission requires its explicit tenant credential");
     } else {
         crate::init_cli::load_current_evalops_snapshot()?
     };
-    let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
-        &mut env,
-        crate::codex_auth::read_codex_auth(),
-        false,
-    );
-    let session = verify_live_identity_session(snapshot.as_ref(), &env)?;
-    Ok((session, env))
+    if !hosted {
+        let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
+            &mut env,
+            crate::codex_auth::read_codex_auth(),
+            false,
+        );
+    }
+    let identity = verify_live_runtime_identity(snapshot.as_ref(), &env)?;
+    Ok((identity, env))
 }
 
 /// Load and verify the current human Identity session for a product-owned
@@ -361,6 +413,82 @@ pub(crate) fn refreshed_identity_session_for_capture(
     verify_live_identity_session(Some(&snapshot), &env).map(Some)
 }
 
+// The hosted exchange endpoint is an existing operator-provided coordinate, not
+// discovery authority. Only this established private Identity origin may receive
+// admission tokens; arbitrary URLs and local trust overrides remain rejected.
+const HOSTED_IDENTITY_ORIGIN: &str = "https://identity-service.evalops.svc.cluster.local:8080";
+const HOSTED_IDENTITY_EXCHANGE: &str = "https://identity-service.evalops.svc.cluster.local:8080/internal/v1/kubernetes-workload-certificates/exchange";
+
+fn identity_verification_endpoint(
+    snapshot: Option<&EvalOpsCredentialSnapshot>,
+    env: &HashMap<String, String>,
+) -> Result<(String, Option<std::path::PathBuf>)> {
+    let hosted = env.get("MAESTRO_HOSTED_RUNNER_MODE").is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
+    if let Some(exchange) = env.get("MAESTRO_IDENTITY_EXCHANGE_URL").filter(|_| hosted) {
+        if exchange.trim() != HOSTED_IDENTITY_EXCHANGE {
+            bail!("untrusted hosted EvalOps Identity exchange endpoint");
+        }
+        let ca = env
+            .get("MAESTRO_IDENTITY_TLS_CA_FILE")
+            .map(|value| std::path::PathBuf::from(value.trim()))
+            .filter(|path| path.is_absolute())
+            .context("hosted EvalOps Identity requires an absolute projected CA file")?;
+        return Ok((HOSTED_IDENTITY_ORIGIN.to_owned(), Some(ca)));
+    }
+    Ok((
+        crate::init_cli::evalops_identity_base_url(snapshot, env)?,
+        None,
+    ))
+}
+
+fn identity_verification_client(
+    identity_base_url: &str,
+    ca_file: Option<&std::path::Path>,
+) -> Result<reqwest::blocking::Client> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(IDENTITY_INTROSPECTION_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none());
+    if identity_base_url.starts_with("https://") {
+        builder = builder.https_only(true);
+    }
+    if let Some(path) = ca_file {
+        use std::io::Read;
+        const MAX_CA_BYTES: u64 = 64 * 1024;
+        let file = std::fs::File::open(path).context("open hosted EvalOps Identity CA")?;
+        if !file
+            .metadata()
+            .context("inspect hosted EvalOps Identity CA")?
+            .is_file()
+        {
+            bail!("hosted EvalOps Identity CA must be a regular file");
+        }
+        let mut pem = Vec::new();
+        file.take(MAX_CA_BYTES + 1)
+            .read_to_end(&mut pem)
+            .context("read hosted EvalOps Identity CA")?;
+        if pem.len() as u64 > MAX_CA_BYTES {
+            bail!("hosted EvalOps Identity CA exceeds size limit");
+        }
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+            .context("parse hosted EvalOps Identity CA")?;
+        if certificates.is_empty() {
+            bail!("hosted EvalOps Identity CA contains no certificates");
+        }
+        builder = builder.use_rustls_tls().tls_built_in_root_certs(false);
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    builder
+        .build()
+        .context("build EvalOps Identity verification client")
+}
+
 /// Verify the access token with EvalOps Identity before it authorizes a local
 /// provider or Codex transport. This is intentionally synchronous at the
 /// native-agent construction boundary: it prevents a caller from starting an
@@ -372,22 +500,22 @@ fn verify_live_identity_session(
     snapshot: Option<&EvalOpsCredentialSnapshot>,
     env: &HashMap<String, String>,
 ) -> Result<PlatformSession> {
+    verify_live_runtime_identity(snapshot, env)?.require_human()
+}
+
+fn verify_live_runtime_identity(
+    snapshot: Option<&EvalOpsCredentialSnapshot>,
+    env: &HashMap<String, String>,
+) -> Result<VerifiedIdentity> {
     let Some(unverified) = platform_session_from(snapshot, env) else {
         bail!("{IDENTITY_REQUIRED_MESSAGE}");
     };
-    let identity_base_url = crate::init_cli::evalops_identity_base_url(snapshot, env)
+    let (identity_base_url, ca_file) = identity_verification_endpoint(snapshot, env)
         .with_context(|| IDENTITY_REQUIRED_MESSAGE.to_owned())?;
+    let hosted = ca_file.is_some();
     let token = unverified.access_token.clone();
     let introspection = std::thread::spawn(move || -> Result<IdentityIntrospection> {
-        let mut builder = reqwest::blocking::Client::builder()
-            .timeout(IDENTITY_INTROSPECTION_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none());
-        if identity_base_url.starts_with("https://") {
-            builder = builder.https_only(true);
-        }
-        let response = builder
-            .build()
-            .context("build EvalOps Identity verification client")?
+        let response = identity_verification_client(&identity_base_url, ca_file.as_deref())?
             .post(format!("{identity_base_url}/v1/tokens/introspect"))
             .bearer_auth(token)
             .send()
@@ -410,7 +538,42 @@ fn verify_live_identity_session(
     .join()
     .map_err(|_| anyhow::anyhow!("EvalOps Identity verification thread panicked"))?
     .with_context(|| IDENTITY_REQUIRED_MESSAGE.to_owned())?;
-    verified_platform_session(unverified, introspection)
+    verified_runtime_identity(unverified, introspection, hosted)
+}
+
+fn verified_runtime_identity(
+    session: PlatformSession,
+    introspection: IdentityIntrospection,
+    hosted: bool,
+) -> Result<VerifiedIdentity> {
+    if !hosted {
+        return verified_platform_session(session, introspection).map(VerifiedIdentity::Human);
+    }
+    let organization_id = introspection
+        .organization_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let workspace_id = introspection
+        .workspace_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let scopes = introspection
+        .scopes
+        .iter()
+        .map(String::as_str)
+        .chain(introspection.scope.split_whitespace())
+        .collect::<Vec<_>>();
+    if !introspection.active
+        || introspection.token_type != "service"
+        || introspection.subject != "runner-host"
+        || organization_id != Some(session.organization_id.as_str())
+        || workspace_id.is_none()
+        || workspace_id != session.workspace_id.as_deref()
+        || scopes.as_slice() != [IDENTITY_REQUIRED_SCOPE]
+    {
+        bail!("Identity could not verify the hosted Runner Host tenant credential");
+    }
+    Ok(VerifiedIdentity::HostedManaged(session))
 }
 
 fn verified_platform_session(
@@ -690,6 +853,360 @@ pub fn setup_next_commands(
 mod tests {
     use super::*;
     use crate::init_cli::{EvalOpsAgentMcpSnapshot, EvalOpsCredentialSnapshot};
+
+    fn hosted_service_session() -> PlatformSession {
+        platform_session_from(
+            None,
+            &HashMap::from([
+                (ACCESS_TOKEN_ENV.into(), "scoped-runner-token".into()),
+                (ORG_ID_ENV.into(), "org_expected".into()),
+                (WORKSPACE_ID_ENV.into(), "workspace_expected".into()),
+            ]),
+        )
+        .unwrap()
+    }
+
+    fn hosted_service_introspection() -> serde_json::Value {
+        serde_json::json!({
+            "active": true,
+            "subject": "runner-host",
+            "token_type": "service",
+            "organization_id": "org_expected",
+            "workspace_id": "workspace_expected",
+            "scopes": ["llm_gateway:invoke"]
+        })
+    }
+
+    #[test]
+    fn hosted_service_admission_matches_existing_runner_host_mint() {
+        let identity = verified_runtime_identity(
+            hosted_service_session(),
+            serde_json::from_value(hosted_service_introspection()).unwrap(),
+            true,
+        )
+        .unwrap();
+        let env = HashMap::from([("OPENAI_API_KEY".into(), "local-key".into())]);
+        let (mode, session) =
+            ready_mode_from_verified_identity(identity, env, DEFAULT_MANAGED_MODEL).unwrap();
+        assert!(matches!(mode, DetectedMode::Platform(_)));
+        assert_eq!(session.organization_id, "org_expected");
+        assert_eq!(session.workspace_id.as_deref(), Some("workspace_expected"));
+        assert_eq!(session.user_id, None);
+    }
+
+    #[test]
+    fn hosted_service_admission_rejects_wrong_principal_scope_type_and_tenant() {
+        for (field, value) in [
+            ("active", serde_json::json!(false)),
+            ("subject", serde_json::json!("platform-worker")),
+            ("subject", serde_json::json!("")),
+            ("token_type", serde_json::json!("access")),
+            ("token_type", serde_json::json!("agent")),
+            ("organization_id", serde_json::json!("other-org")),
+            ("organization_id", serde_json::Value::Null),
+            ("organization_id", serde_json::json!("")),
+            ("workspace_id", serde_json::json!("other-workspace")),
+            ("workspace_id", serde_json::Value::Null),
+            ("workspace_id", serde_json::json!("")),
+            ("scopes", serde_json::json!([])),
+            ("scopes", serde_json::json!(["llm_gateway:admin"])),
+            (
+                "scopes",
+                serde_json::json!(["llm_gateway:invoke", "llm_gateway:admin"]),
+            ),
+        ] {
+            let mut projection = hosted_service_introspection();
+            projection[field] = value;
+            assert!(
+                verified_runtime_identity(
+                    hosted_service_session(),
+                    serde_json::from_value(projection).unwrap(),
+                    true
+                )
+                .is_err(),
+                "must reject {field}"
+            );
+        }
+        let mut expected = hosted_service_session();
+        expected.workspace_id = None;
+        assert!(
+            verified_runtime_identity(
+                expected,
+                serde_json::from_value(hosted_service_introspection()).unwrap(),
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hosted_service_telemetry_preserves_verified_tenant_without_human_admission() {
+        let identity = verified_runtime_identity(
+            hosted_service_session(),
+            serde_json::from_value(hosted_service_introspection()).unwrap(),
+            true,
+        )
+        .unwrap();
+        let delivery = identity.into_telemetry_session();
+        assert_eq!(delivery.organization_id, "org_expected");
+        assert_eq!(delivery.workspace_id.as_deref(), Some("workspace_expected"));
+        assert_eq!(delivery.access_token, "scoped-runner-token");
+        assert_eq!(delivery.user_id, None);
+        let identity = verified_runtime_identity(
+            hosted_service_session(),
+            serde_json::from_value(hosted_service_introspection()).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(identity.require_human().is_err());
+    }
+
+    #[test]
+    fn hosted_service_admission_never_unlocks_local_or_codex_credentials() {
+        let identity = verified_runtime_identity(
+            hosted_service_session(),
+            serde_json::from_value(hosted_service_introspection()).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(identity.require_human().is_err());
+        for model in [
+            "openai/gpt-5.5",
+            "openrouter/openai/o4-mini",
+            "openai-codex/gpt-5.5",
+            "codex/gpt-5.5",
+        ] {
+            let identity = verified_runtime_identity(
+                hosted_service_session(),
+                serde_json::from_value(hosted_service_introspection()).unwrap(),
+                true,
+            )
+            .unwrap();
+            let env = HashMap::from([
+                ("OPENAI_API_KEY".into(), "local-key".into()),
+                ("OPENROUTER_API_KEY".into(), "local-key".into()),
+                ("CODEX_ACCESS_TOKEN".into(), "local-key".into()),
+            ]);
+            assert!(
+                ready_mode_from_verified_identity(identity, env, model).is_err(),
+                "must reject {model}"
+            );
+        }
+        assert!(
+            verified_runtime_identity(
+                hosted_service_session(),
+                serde_json::from_value(hosted_service_introspection()).unwrap(),
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hosted_service_admission_requires_trusted_hosted_transport() {
+        for (key, value) in [
+            ("MAESTRO_HOSTED_RUNNER_MODE", "0"),
+            (
+                "MAESTRO_IDENTITY_EXCHANGE_URL",
+                "https://identity.attacker.example/exchange",
+            ),
+            ("MAESTRO_IDENTITY_TLS_CA_FILE", "relative-ca.pem"),
+        ] {
+            let mut env = hosted_identity_env();
+            env.insert(key.into(), value.into());
+            if let Ok((_, ca)) = identity_verification_endpoint(None, &env) {
+                assert!(ca.is_none());
+                assert!(
+                    verified_runtime_identity(
+                        hosted_service_session(),
+                        serde_json::from_value(hosted_service_introspection()).unwrap(),
+                        ca.is_some()
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    fn hosted_identity_env() -> HashMap<String, String> {
+        HashMap::from([
+            ("MAESTRO_HOSTED_RUNNER_MODE".into(), "1".into()),
+            (
+                "MAESTRO_IDENTITY_EXCHANGE_URL".into(),
+                HOSTED_IDENTITY_EXCHANGE.into(),
+            ),
+            (
+                "MAESTRO_IDENTITY_TLS_CA_FILE".into(),
+                "/var/run/secrets/evalops.dev/identity/ca.crt".into(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn hosted_identity_selects_private_authority_and_projected_ca() {
+        let env = hosted_identity_env();
+        let (origin, ca) = identity_verification_endpoint(None, &env).unwrap();
+        assert_eq!(origin, HOSTED_IDENTITY_ORIGIN);
+        assert_eq!(
+            ca.unwrap(),
+            std::path::PathBuf::from(&env["MAESTRO_IDENTITY_TLS_CA_FILE"])
+        );
+    }
+
+    #[test]
+    fn hosted_identity_rejects_other_authorities_and_missing_trust() {
+        for exchange in [
+            "http://identity-service.evalops.svc.cluster.local:8080/internal/v1/kubernetes-workload-certificates/exchange",
+            "https://identity.attacker.example/internal/v1/kubernetes-workload-certificates/exchange",
+            "https://identity-service.evalops.svc.cluster.local:8080/internal/v1/kubernetes-workload-certificates/exchange?redirect=1",
+        ] {
+            let mut env = hosted_identity_env();
+            env.insert("MAESTRO_IDENTITY_EXCHANGE_URL".into(), exchange.into());
+            assert!(identity_verification_endpoint(None, &env).is_err());
+        }
+        for ca in [None, Some(""), Some("relative/ca.crt")] {
+            let mut env = hosted_identity_env();
+            env.remove("MAESTRO_IDENTITY_TLS_CA_FILE");
+            if let Some(ca) = ca {
+                env.insert("MAESTRO_IDENTITY_TLS_CA_FILE".into(), ca.into());
+            }
+            assert!(identity_verification_endpoint(None, &env).is_err());
+        }
+    }
+
+    #[test]
+    fn hosted_identity_preserves_public_and_local_admission() {
+        for mode in ["0", "false", "unknown"] {
+            let mut env = hosted_identity_env();
+            env.insert("MAESTRO_HOSTED_RUNNER_MODE".into(), mode.into());
+            assert_eq!(
+                identity_verification_endpoint(None, &env).unwrap(),
+                ("https://identity.evalops.dev".into(), None)
+            );
+        }
+        let mut env = hosted_identity_env();
+        env.remove("MAESTRO_IDENTITY_EXCHANGE_URL");
+        assert_eq!(
+            identity_verification_endpoint(None, &env).unwrap(),
+            ("https://identity.evalops.dev".into(), None)
+        );
+        env.insert(
+            "MAESTRO_IDENTITY_URL".into(),
+            "http://127.0.0.1:12345".into(),
+        );
+        env.insert(
+            crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV.into(),
+            "1".into(),
+        );
+        assert_eq!(
+            identity_verification_endpoint(None, &env).unwrap(),
+            ("http://127.0.0.1:12345".into(), None)
+        );
+        env.insert(
+            crate::init_cli::TEST_IDENTITY_AUTHORITY_ENV.into(),
+            "0".into(),
+        );
+        assert!(identity_verification_endpoint(None, &env).is_err());
+    }
+
+    #[test]
+    fn hosted_identity_client_fails_closed_on_unreadable_or_invalid_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        assert!(identity_verification_client(HOSTED_IDENTITY_ORIGIN, Some(&path)).is_err());
+        std::fs::write(&path, "invalid certificate").unwrap();
+        assert!(identity_verification_client(HOSTED_IDENTITY_ORIGIN, Some(&path)).is_err());
+    }
+
+    #[test]
+    fn hosted_identity_client_validates_projected_tls_trust() {
+        use std::io::{Read, Write};
+        for (trusted, hostname) in [
+            (true, "localhost"),
+            (false, "localhost"),
+            (true, "other.example"),
+        ] {
+            let cert = rcgen::generate_simple_self_signed(vec![hostname.into()]).unwrap();
+            let other = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ca.pem");
+            std::fs::write(
+                &path,
+                if trusted {
+                    cert.cert.pem()
+                } else {
+                    other.cert.pem()
+                },
+            )
+            .unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der())
+                    .into(),
+            )
+            .unwrap();
+            let server = std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "Identity TLS client did not connect"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("Identity TLS accept: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                let connection =
+                    rustls::ServerConnection::new(std::sync::Arc::new(config)).unwrap();
+                let mut stream = rustls::StreamOwned::new(connection, stream);
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => return,
+                        Ok(count) => request.extend_from_slice(&buffer[..count]),
+                    }
+                    if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .unwrap();
+                stream.flush().unwrap();
+            });
+            let origin = format!("https://localhost:{}", address.port());
+            let response = identity_verification_client(&origin, Some(&path))
+                .unwrap()
+                .post(format!("{origin}/v1/tokens/introspect"))
+                .send();
+            assert_eq!(
+                response.is_ok(),
+                trusted && hostname == "localhost",
+                "{response:?}"
+            );
+            server.join().unwrap();
+        }
+    }
 
     struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
 

@@ -2609,7 +2609,7 @@ async fn handle_agent_event(
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
-            ..
+            processed_queue_ids,
         } => {
             meta.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2617,6 +2617,7 @@ async fn handle_agent_event(
             emit(&FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
+                processed_queue_ids,
             })?;
         }
         FromAgent::ManagedGatewayReceipt {
@@ -5795,6 +5796,47 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         ];
         assert_eq!(coalesce_response_chunks(&mut chunks), "hello world");
         assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_semantic_snapshot_keeps_processed_queue_ids_on_headless_wire() {
+        const FIXTURE: &str = "MAESTRO_HEADLESS_SNAPSHOT_IDS_FIXTURE";
+        if std::env::var_os(FIXTURE).is_some() {
+            let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+            let (tool_tx, _tool_rx) = mpsc::unbounded_channel();
+            handle_agent_event(
+                FromAgent::ConversationSnapshot {
+                    protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                        .to_owned(),
+                    messages: vec![],
+                    processed_queue_ids: vec![7, 9],
+                },
+                &meta,
+                &tool_tx,
+                "test-model",
+                None,
+            )
+            .await
+            .expect("emit snapshot");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("headless_server::tests::native_semantic_snapshot_keeps_processed_queue_ids_on_headless_wire")
+            .args(["--exact", "--nocapture", "--format", "terse"])
+            .env(FIXTURE, "1")
+            .output().expect("run snapshot fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let snapshot = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["type"] == "conversation_snapshot")
+            .expect("private snapshot on headless wire");
+        assert_eq!(snapshot["processed_queue_ids"], serde_json::json!([7, 9]));
     }
 
     #[test]

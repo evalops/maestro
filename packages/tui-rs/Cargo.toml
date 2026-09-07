@@ -50,11 +50,11 @@ async-trait = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }
 tokio-stream.workspace = true
 tokio-rustls.workspace = true
-tokio-util = "0.7"
+tokio-util.workspace = true
 futures.workspace = true
 
 # AI provider client layer (packages/ai-rs); re-exported at crate::ai
-maestro-ai.workspace = true
+maestro-ai = { workspace = true, features = ["bedrock"] }
 maestro-context.workspace = true
 maestro-execpolicy.workspace = true
 maestro-runtime.workspace = true
@@ -108,7 +108,7 @@ tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 pdf-extract.workspace = true
 urlencoding = "2"
-zeroize = "1"
+zeroize.workspace = true
 x509-parser.workspace = true
 
 # Markdown parsing
@@ -184,6 +184,7 @@ hot-reload = ["notify"]
 hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
+maestro-runtime = { workspace = true, features = ["test-support"] }
 maestro-session = { workspace = true, features = ["test-support"] }
 # Reconstruct real terminal cells in PTY assertions, including cursor-only spaces.
 vt100 = "0.16.2"

@@ -130,6 +130,46 @@ impl TurnTracker {
                 }
                 None
             }
+            FromAgent::StreamObservation { observation } => {
+                if let Some(turn) = &mut self.current_turn {
+                    turn.record_stream_observation(*observation);
+                }
+                None
+            }
+            FromAgent::RequestRetryObservation => {
+                if let Some(turn) = &mut self.current_turn {
+                    turn.record_request_retry();
+                }
+                None
+            }
+            FromAgent::CompactionMeasured { duration_ms } => {
+                if let Some(turn) = &mut self.current_turn {
+                    turn.record_compaction_duration(*duration_ms);
+                }
+                None
+            }
+            FromAgent::ResponseChunk {
+                content,
+                is_thinking,
+                ..
+            } => {
+                if !is_thinking && !content.is_empty() {
+                    if let Some(turn) = &mut self.current_turn {
+                        turn.record_output();
+                    }
+                }
+                None
+            }
+            FromAgent::Compaction {
+                auto,
+                tokens_before,
+                ..
+            } => {
+                if let Some(turn) = &mut self.current_turn {
+                    turn.record_compaction(*auto, *tokens_before);
+                }
+                None
+            }
             FromAgent::ToolStart { .. } => {
                 // Skip - ToolCall already records the start with the actual tool name.
                 // ToolStart fires after ToolCall and would overwrite with "unknown".
@@ -157,12 +197,23 @@ impl TurnTracker {
                 }
                 None
             }
-            FromAgent::ResponseEnd { usage, .. } => {
+            FromAgent::ResponseEnd { response_id, usage } => {
+                // Count only the end paired with the active provider response.
+                // Native also emits a UI cleanup ResponseEnd after its final
+                // provider end; it must not invent another unmetered response.
+                if self.current_response_id.as_ref() != Some(response_id) {
+                    return None;
+                }
+                self.current_response_id = None;
                 // A provider response can be followed by tools and another
                 // model call. Record its timing/usage without declaring the
                 // enclosing native turn successful.
                 if let Some(ref mut turn) = self.current_turn {
                     turn.record_llm_end();
+                    turn.record_response_coverage(
+                        usage.is_some(),
+                        usage.as_ref().and_then(|value| value.cost).is_some(),
+                    );
                 }
                 self.cost_complete &= usage.as_ref().and_then(|usage| usage.cost).is_some();
                 if let Some(usage) = usage {
@@ -312,6 +363,132 @@ impl TurnTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_coverage_requires_matching_open_response_and_ignores_cleanup() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "coverage".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "provider".into(),
+        });
+        // An unmatched end must not consume the active provider response.
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "cleanup".into(),
+            usage: None,
+        });
+        let usage = TokenUsage {
+            input_tokens: 12,
+            output_tokens: 4,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost: Some(0.01),
+        };
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "provider".into(),
+            usage: Some(usage.clone()),
+        });
+        // Duplicate provider end and native UI cleanup both carry no new response.
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "provider".into(),
+            usage: Some(usage),
+        });
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "done".into(),
+            usage: None,
+        });
+        let event = tracker.end_turn(TurnStatus::Success, None).unwrap();
+        let m = event.measurements.unwrap();
+        assert_eq!(
+            (
+                m.response_count,
+                m.responses_with_usage,
+                m.responses_with_cost
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(event.tokens.input, 12);
+        assert_eq!(event.reported_cost_usd, Some(0.01));
+
+        // A real matched response with missing usage still counts as unmetered,
+        // even if its arbitrary response ID happens to equal the cleanup label.
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "done".into(),
+        });
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "done".into(),
+            usage: None,
+        });
+        let event = tracker.end_turn(TurnStatus::Success, None).unwrap();
+        let m = event.measurements.unwrap();
+        assert_eq!(
+            (
+                m.response_count,
+                m.responses_with_usage,
+                m.responses_with_cost
+            ),
+            (1, 0, 0)
+        );
+        assert_eq!(event.reported_cost_usd, None);
+    }
+
+    #[test]
+    fn tracker_measurements_preserve_missingness_and_observed_output() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "fixture".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "r".into(),
+        });
+        for (content, is_thinking) in [("", false), ("private reasoning", true)] {
+            tracker.handle_event(&FromAgent::ResponseChunk {
+                response_id: "r".into(),
+                content: content.into(),
+                is_thinking,
+            });
+        }
+        let missing = tracker
+            .end_turn(TurnStatus::Success, None)
+            .unwrap()
+            .measurements
+            .unwrap();
+        assert_eq!(missing.first_output_ms, None);
+        assert_eq!(missing.stream_stall_count, None);
+        assert_eq!(missing.stream_open_failure_count, None);
+        assert_eq!(missing.responses_with_usage, 0);
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "r2".into(),
+        });
+        tracker.handle_event(&FromAgent::ResponseChunk {
+            response_id: "r2".into(),
+            content: "visible output".into(),
+            is_thinking: false,
+        });
+        for observation in [
+            crate::ai::StreamObservation::Observed,
+            crate::ai::StreamObservation::OpenFailed,
+            crate::ai::StreamObservation::IdleTimeout,
+            crate::ai::StreamObservation::Retry,
+            crate::ai::StreamObservation::Recovery,
+        ] {
+            tracker.handle_event(&FromAgent::StreamObservation { observation });
+        }
+        tracker.handle_event(&FromAgent::RequestRetryObservation);
+        let observed = tracker
+            .end_turn(TurnStatus::Success, None)
+            .unwrap()
+            .measurements
+            .unwrap();
+        assert!(observed.first_output_ms.is_some());
+        assert_eq!(observed.stream_stall_count, Some(1));
+        assert_eq!(observed.stream_open_failure_count, Some(1));
+        assert_eq!(observed.stream_disconnect_count, Some(0));
+        assert_eq!(observed.stream_retry_count, Some(1));
+        assert_eq!(observed.stream_recovery_count, Some(1));
+        assert_eq!(observed.request_retry_count, 1);
+    }
 
     #[test]
     fn test_turn_tracking() {
@@ -521,6 +698,9 @@ mod boost_tests {
             thinking: None,
         });
         for cost in [Some(0.01), None] {
+            tracker.handle_event(&FromAgent::ResponseStart {
+                response_id: "one".into(),
+            });
             tracker.handle_event(&FromAgent::ResponseEnd {
                 response_id: "one".into(),
                 usage: Some(TokenUsage {

@@ -30,7 +30,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use prost::Message;
 use serde::{Deserialize, Serialize};
+
+mod wire;
 
 use crate::credential_mode::PlatformSession;
 use crate::path_utils;
@@ -324,6 +327,9 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedSetup {
+    /// Platform issuance time, retained in the local policy cache.
+    #[serde(default, alias = "issued_at")]
+    pub issued_at: Option<ManagedSetupTimestamp>,
     /// Monotonic per tenant. `0` means the tenant has no stored document.
     #[serde(default, deserialize_with = "deserialize_u64_flexible")]
     pub version: u64,
@@ -339,6 +345,13 @@ pub struct ManagedSetup {
     pub mcp: McpPolicy,
     #[serde(default, alias = "sandbox_policy_toml")]
     pub sandbox_policy_toml: String,
+}
+
+/// Exact protobuf timestamp components from the policy owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedSetupTimestamp {
+    pub seconds: i64,
+    pub nanos: i32,
 }
 
 /// Proto3 JSON encodes `uint64` as a string. Accept either form.
@@ -417,6 +430,8 @@ pub struct ManagedSetupClient {
     setup: ManagedSetup,
     origin: ManagedSetupOrigin,
     notices: Vec<String>,
+    fetched_at: Option<i64>,
+    served_from_cache: bool,
 }
 
 impl Default for ManagedSetupClient {
@@ -439,6 +454,8 @@ impl ManagedSetupClient {
             },
             origin: ManagedSetupOrigin::Unmanaged,
             notices: Vec::new(),
+            fetched_at: None,
+            served_from_cache: false,
         }
     }
 
@@ -471,6 +488,8 @@ impl ManagedSetupClient {
                     setup: cached.setup.clone(),
                     origin: ManagedSetupOrigin::Fetched,
                     notices: Vec::new(),
+                    fetched_at: Some(cached.fetched_at),
+                    served_from_cache: true,
                 };
             }
         }
@@ -484,6 +503,8 @@ impl ManagedSetupClient {
                     setup,
                     origin: ManagedSetupOrigin::Fetched,
                     notices: Vec::new(),
+                    fetched_at: Some(now_unix),
+                    served_from_cache: false,
                 }
             }
             Ok(_) | Err(ManagedSetupError::TenantMismatch) => {
@@ -505,6 +526,8 @@ impl ManagedSetupClient {
                          enforcing the cached policy, version {}.",
                     cached.version
                 )],
+                fetched_at: Some(cached.fetched_at),
+                served_from_cache: true,
                 setup: cached.setup,
                 origin: ManagedSetupOrigin::Cache,
             },
@@ -515,6 +538,8 @@ impl ManagedSetupClient {
                     mcp: McpPolicy::deny_all(),
                     ..ManagedSetup::default()
                 },
+                fetched_at: None,
+                served_from_cache: false,
                 origin: ManagedSetupOrigin::FailedClosed,
                 notices: vec![format!(
                     "Deixic managed setup is unavailable ({error}) and no cached policy \
@@ -523,6 +548,17 @@ impl ManagedSetupClient {
                 )],
             },
         }
+    }
+
+    /// Age of the accepted document; absent when no document was available or the clock moved backward.
+    pub fn age_seconds(&self, now_unix: i64) -> Option<u64> {
+        self.fetched_at
+            .and_then(|at| u64::try_from(now_unix.saturating_sub(at)).ok())
+    }
+
+    /// Whether this resolution used the tenant-bound disk cache, including a fresh cache hit.
+    pub fn served_from_cache(&self) -> bool {
+        self.served_from_cache
     }
 
     /// Resolve using the real platform client and the default cache path.
@@ -840,39 +876,61 @@ pub fn platform_base_url() -> Option<String> {
         .or_else(|| Some(DEFAULT_PLATFORM_BASE_URL.to_owned()))
 }
 
-/// Fetch the document over Connect JSON using the session's hosted bearer
+/// Fetch the document over Connect protobuf using the session's hosted bearer
 /// token. The workspace the session is bound to selects the document; an
 /// organization-only session reads the organization document.
 pub fn fetch_managed_setup(session: &PlatformSession) -> Result<ManagedSetup, ManagedSetupError> {
     let base_url = platform_base_url().ok_or(ManagedSetupError::NotConfigured)?;
+    fetch_managed_setup_from(session, &base_url)
+}
+
+fn fetch_managed_setup_from(
+    session: &PlatformSession,
+    base_url: &str,
+) -> Result<ManagedSetup, ManagedSetupError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| ManagedSetupError::Request(error.to_string()))?;
-    let body = serde_json::json!({
-        "organizationId": session.organization_id,
-        "workspaceId": session.workspace_id.clone().unwrap_or_default(),
-    });
-    let response = client
+    let body = wire::GetManagedSetupRequest {
+        organization_id: session.organization_id.clone(),
+        workspace_id: session.workspace_id.clone().unwrap_or_default(),
+    }
+    .encode_to_vec();
+    let request = client
         .post(format!("{base_url}{GET_MANAGED_SETUP_PATH}"))
         .bearer_auth(&session.access_token)
         .header("x-organization-id", &session.organization_id)
         .header("connect-protocol-version", "1")
-        .header("accept", "application/json")
-        .json(&body)
+        .header("accept", "application/proto")
+        .header("content-type", "application/proto")
+        .body(body);
+    let request = match session.workspace_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(workspace_id) => request.header("x-workspace-id", workspace_id),
+        None => request,
+    };
+    let response = request
         .send()
         .map_err(|error| ManagedSetupError::Request(error.to_string()))?;
     let status = response.status();
-    let text = response.text().unwrap_or_default();
+    let bytes = response
+        .bytes()
+        .map_err(|error| ManagedSetupError::Request(error.to_string()))?;
     if !status.is_success() {
         return Err(ManagedSetupError::Request(format!(
             "HTTP {}: {}",
             status.as_u16(),
-            bounded(&text)
+            bounded(&String::from_utf8_lossy(&bytes))
         )));
     }
-    serde_json::from_str::<ManagedSetup>(&text)
-        .map_err(|error| ManagedSetupError::Decode(error.to_string()))
+    let setup = wire::ManagedSetup::decode(bytes.as_ref())
+        .map_err(|error| ManagedSetupError::Decode(error.to_string()))?
+        .try_into_domain()?;
+    if !setup_matches_session(&setup, session) {
+        return Err(ManagedSetupError::TenantMismatch);
+    }
+    Ok(setup)
 }
 
 fn bounded(text: &str) -> String {

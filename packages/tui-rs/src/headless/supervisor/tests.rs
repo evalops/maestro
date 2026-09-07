@@ -882,6 +882,7 @@ fn test_supervisor_builder_restores_session_replay() {
         }),
         semantic_conversation: None,
         last_workspace_capability_set: None,
+        last_process_budget: None,
     };
 
     let supervisor = SupervisorBuilder::new().session_replay(replay).build();
@@ -901,6 +902,7 @@ fn session_replay_does_not_override_explicit_remote_session_id() {
         last_init: None,
         semantic_conversation: None,
         last_workspace_capability_set: None,
+        last_process_budget: None,
     };
 
     let supervisor = SupervisorBuilder::new()
@@ -970,13 +972,21 @@ fn unsupported_live_semantic_snapshot_clears_reconnect_history() {
         role: maestro_ai::Role::User,
         content: maestro_ai::MessageContent::text("first turn"),
     }];
-    supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
-        protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_owned(),
-        messages: supported,
-    });
+    assert!(
+        supervisor
+            .apply_agent_message(FromAgentMessage::ConversationSnapshot {
+                processed_queue_ids: vec![7, 9],
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_owned(),
+                messages: supported,
+            })
+            .is_none(),
+        "private checkpoints must not become supervisor events"
+    );
     assert!(supervisor.semantic_conversation.is_some());
 
     supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
+        processed_queue_ids: vec![7, 9],
         protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
         messages: vec![],
     });
@@ -1001,11 +1011,13 @@ fn replay_without_recorder_clears_history_after_unsupported_live_snapshot() {
             content: maestro_ai::MessageContent::text("stale reconnect history"),
         }]),
         last_workspace_capability_set: None,
+        last_process_budget: None,
     };
     let mut supervisor =
         AgentSupervisor::new(SupervisorConfig::default()).with_session_replay(replay);
 
     supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
+        processed_queue_ids: vec![7, 9],
         protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
         messages: vec![],
     });
@@ -1899,6 +1911,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
         last_init: Some(init.clone()),
         semantic_conversation: None,
         last_workspace_capability_set: None,
+        last_process_budget: None,
     };
 
     let mut supervisor = AgentSupervisor::new(config).with_session_replay(replay);
