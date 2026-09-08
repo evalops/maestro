@@ -17,9 +17,10 @@ const miseRunner = await readFile(new URL(".buildkite/run-with-mise", root), "ut
 const a2aTmuxSmoke = await readFile(new URL("scripts/smoke-maestro-a2a-tmux.sh", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
-  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.doesNotMatch(pipeline + advisory, /hetzner-linux-heavy/, "retired worker pool must not strand validation jobs");
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-linux-large\}"/);
   assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
-  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_JETBRAINS_QUEUE:-linux-medium\}"/);
   assert.match(pipeline, /image: "\$\{MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_INTEGRATION_QUEUE:-linux-medium\}"/);
   assert.match(pipeline, /image: "\$\{MAESTRO_CI_INTEGRATION_IMAGE:-evalops-platform-ci-v6\}"/);
@@ -114,7 +115,7 @@ test("advisory coverage and perf are not in the default pipeline", () => {
     pipeline,
     /BUILDKITE_SOURCE\}" == "schedule" && -f \.buildkite\/advisory\.yml[\s\S]*pipeline upload \.buildkite\/advisory\.yml/,
   );
-  assert.match(advisory, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(advisory, /queue: "\$\{MAESTRO_CI_QUEUE:-linux-large\}"/);
   assert.match(advisory, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.match(advisory, /CARGO_TARGET_DIR: "\.buildkite\/cache\/cargo-target"/);
   assert.match(advisory, /key: "coverage"[\s\S]*priority: 10/);
@@ -166,13 +167,13 @@ test("protocol lock fails the build before heavy jobs start", () => {
   assert.equal((pipeline.match(/depends_on: "protocol-contracts"/g) ?? []).length, 4);
 });
 
-test("protocol lock does not share the rust-tests Hetzner queue", () => {
+test("protocol lock does not share the heavy Rust queue", () => {
   const lock = pipeline.split('key: "protocol-contracts"')[1]?.split('key: "')[0] ?? "";
   const rust = pipeline.split('key: "rust-tests"')[1]?.split('key: "')[0] ?? "";
   assert.match(lock, /queue: "\$\{MAESTRO_CI_PROTOCOL_QUEUE:-linux-medium\}"/);
   assert.match(lock, /image: "\$\{MAESTRO_CI_PROTOCOL_IMAGE:-evalops-platform-ci-v6\}"/);
-  assert.match(rust, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
-  assert.doesNotMatch(lock, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(rust, /queue: "\$\{MAESTRO_CI_QUEUE:-linux-large\}"/);
+  assert.doesNotMatch(lock, /queue: "\$\{MAESTRO_CI_QUEUE:-linux-large\}"/);
 });
 
 test("rust-tests caps compile jobs and retries OOM SIGKILL", () => {
@@ -233,7 +234,7 @@ test("Docker integration and supply-chain checks select their required runtimes"
   const integrationAgents = integration.split("agents:")[1]?.split("cache:")[0] ?? "";
   const supplyChain = pipeline.split('key: "supply-chain"')[1]?.split('key: "')[0] ?? "";
   assert.match(integration, /queue: "\$\{MAESTRO_CI_INTEGRATION_QUEUE:-linux-medium\}"/);
-  assert.doesNotMatch(integration, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.doesNotMatch(integration, /queue: "\$\{MAESTRO_CI_QUEUE:-linux-large\}"/);
   assert.doesNotMatch(integrationAgents, /#/);
   assert.match(integration, /docker pull/);
   assert.match(supplyChain, /queue: "\$\{MAESTRO_CI_SUPPLY_CHAIN_QUEUE:-linux-medium\}"/);
@@ -314,5 +315,29 @@ console.log('gradle stdin reached EOF');
     assert.match(result.stdout, /gradle stdin reached EOF/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test("tool bootstrap rejects an installed but unusable actionlint shim", () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maestro-tool-shim-'));
+  try {
+    const bin = join(directory, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'curl'), '#!/bin/sh\necho bootstrap-download-requested\nexit 77\n', { mode: 0o755 });
+    const bootstrap = tooling.slice(0, tooling.indexOf('if ! shellcheck --version'));
+    assert.ok(bootstrap.includes('if ! actionlint --version'));
+    for (const usable of [false, true]) {
+      writeFileSync(join(bin, 'actionlint'), `#!/bin/sh\n[ "$1" = "--version" ] || exit 90\nexit ${usable ? 0 : 1}\n`, { mode: 0o755 });
+      const result = spawnSync('bash', ['-c', bootstrap], {
+        cwd: directory,
+        env: { ...process.env, BUILDKITE_BUILD_CHECKOUT_PATH: directory, PATH: `${bin}:${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, usable ? 0 : 77, result.stderr);
+      assert.equal(result.stdout.includes('bootstrap-download-requested'), !usable);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

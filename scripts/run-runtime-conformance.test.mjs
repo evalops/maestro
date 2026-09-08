@@ -9,7 +9,7 @@ import {
 } from "./run-runtime-conformance.mjs";
 
 const fixture = JSON.parse(
-	readFileSync("packages/runtime-rs/fixtures/runtime-conformance-v1.json", "utf8"),
+	readFileSync("packages/runtime-contracts-rs/fixtures/runtime-conformance-v1.json", "utf8"),
 );
 
 function receiptWithOutcome(outcome) {

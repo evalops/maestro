@@ -146,6 +146,22 @@ pub struct ManagedGatewayReceipt {
     pub provider_prompt_sha256: Option<String>,
 }
 
+/// Content-free observations from the existing stream policy owner.
+/// `Observed` establishes coverage; absence does not mean zero failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamObservation {
+    Observed,
+    OpenFailed,
+    IdleTimeout,
+    Disconnect,
+    Retry,
+    Recovery,
+}
+
+/// Optional local observer. Implementations must not block the stream task.
+pub type StreamObserver = Arc<dyn Fn(StreamObservation) + Send + Sync>;
+
 /// Streaming event from the AI
 #[derive(Debug, Clone)]
 pub enum StreamEvent {

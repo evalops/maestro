@@ -710,6 +710,7 @@ pub(crate) async fn handle_chat_endpoint(
         let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::LocalAssistantContent { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::BoostChanged { .. }
@@ -1185,6 +1186,10 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
+            // Local measurements are consumed by native telemetry, not the chat wire protocol.
+            FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
                 first_kept_entry_index,
@@ -1632,6 +1637,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::LocalAssistantContent { .. }
             | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::BoostChanged { .. }
@@ -2096,6 +2102,10 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
+            // Local measurements are consumed by native telemetry, not the chat wire protocol.
+            FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
                 first_kept_entry_index,

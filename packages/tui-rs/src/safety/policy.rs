@@ -31,6 +31,8 @@ use crate::path_utils::{env_path, legacy_composer_home_dir, maestro_home_dir};
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
 
+pub use maestro_runtime::ManagedPolicyMetadata;
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PolicyList {
     pub allowed: Option<Vec<String>>,
@@ -107,23 +109,6 @@ struct ManagedPolicyPayload<'a> {
     kill_switch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     kill_switch_reason: &'a Option<String>,
-}
-
-/// Safe metadata attached to decisions and exposed by the admin status route.
-///
-/// This intentionally excludes the policy body, public key, and signature.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManagedPolicyMetadata {
-    pub org_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    pub policy_version: u64,
-    pub issued_at: u64,
-    pub expires_at: u64,
-    pub key_id: String,
-    pub policy_hash: String,
-    pub kill_switch: bool,
 }
 
 /// Current managed-policy health, safe to return to an authenticated operator.
@@ -2160,10 +2145,96 @@ mod tests {
             crate::agent::DenialReason::ActionFirewall {
                 message: "test".to_string(),
             },
-        );
+        )
+        .with_managed_policy(managed_policy_metadata());
         assert_eq!(denied.receipt.policy.unwrap().policy_version, 1);
+        let failed = crate::agent::ToolExecution::from_legacy(
+            "receipt-failed",
+            "bash",
+            crate::agent::ExecutionSource::Native,
+            crate::agent::ToolResult::failure("test"),
+        )
+        .with_managed_policy(managed_policy_metadata());
+        assert_eq!(
+            failed
+                .receipt
+                .policy
+                .as_deref()
+                .map(|policy| policy.policy_version),
+            Some(1)
+        );
+        let cancelled = crate::agent::ToolExecution::cancelled(
+            "receipt-cancelled",
+            "bash",
+            crate::agent::ExecutionSource::Native,
+            crate::agent::ExecutionPhase::Running,
+        )
+        .with_managed_policy(managed_policy_metadata());
+        assert_eq!(
+            cancelled
+                .receipt
+                .policy
+                .as_deref()
+                .map(|policy| policy.policy_version),
+            Some(1)
+        );
 
+        // Exercise the actual composing host and executor, rather than only
+        // attaching metadata manually to a protocol value. The caller and the
+        // streamed ToolEnd must observe the same verified policy identity.
+        let expected_policy = managed_policy_metadata().expect("verified policy identity");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let host = crate::agent::TestTuiNativeExecutionHost::compose(
+            std::sync::Arc::new(crate::tools::ToolExecutor::new(cwd.clone())),
+            crate::hooks::IntegratedHookSystem::new(&cwd),
+            |_, _| Err("policy fixture has no model resolver".to_owned()),
+            |_| maestro_runtime::agent::NativeModelRoute::DirectProvider,
+            None,
+        );
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("policy fixture runtime");
+        let execution = runtime.block_on(host.execute_tool(
+            "bash",
+            &serde_json::json!({"command": "true"}),
+            Some(&event_tx),
+            "composed-policy-call",
+            maestro_runtime::agent::NativeToolExecutionOptions {
+                cancel: tokio_util::sync::CancellationToken::new(),
+                approved_inline_env: None,
+            },
+        ));
+        let mut emitted_receipts = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let crate::agent::FromAgent::ToolEnd {
+                call_id, receipt, ..
+            } = event
+            {
+                emitted_receipts.push((call_id, receipt));
+            }
+        }
         restore_managed_test_env(previous);
+        assert!(matches!(
+            execution.outcome,
+            crate::agent::ToolOutcome::Denied { .. }
+        ));
+        assert_eq!(execution.receipt.call_id, "composed-policy-call");
+        assert_eq!(execution.receipt.policy.as_deref(), Some(&expected_policy));
+        assert_eq!(
+            emitted_receipts.len(),
+            1,
+            "one terminal receipt per refusal"
+        );
+        let (call_id, receipt) = &emitted_receipts[0];
+        assert_eq!(call_id, "composed-policy-call");
+        let receipt = receipt
+            .as_ref()
+            .expect("ToolEnd carries the verified receipt");
+        assert_eq!(receipt.call_id, execution.receipt.call_id);
+        assert_eq!(receipt.status, execution.receipt.status);
+        assert_eq!(receipt.policy.as_deref(), Some(&expected_policy));
     }
 
     #[test]

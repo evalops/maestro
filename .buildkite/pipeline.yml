@@ -1,5 +1,6 @@
+# The former Hetzner fleet is retired; use the established hosted Rust pool.
 agents:
-  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+  queue: "${MAESTRO_CI_QUEUE:-linux-large}"
   image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
@@ -28,7 +29,7 @@ steps:
     key: "protocol-contracts"
     priority: 80
     timeout_in_minutes: 10
-    # Node-only. Hosted linux-medium, not the Hetzner rust-tests
+    # Node-only. Hosted linux-medium, separate from the linux-large rust-tests
     # workers. Those workers were full on #3499/#3501 and left this
     # lock scheduled while GitHub stayed green.
     agents:
@@ -110,7 +111,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+          queue: "${MAESTRO_CI_QUEUE:-linux-large}"
           image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         env:
           CARGO_BUILD_JOBS: "4"
@@ -161,7 +162,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
+          queue: "${MAESTRO_CI_QUEUE:-linux-large}"
           image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
@@ -333,7 +334,7 @@ steps:
         key: "jetbrains-plugin"
         priority: 50
         agents:
-          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy}"
+          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-linux-medium}"
           image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6}"
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45

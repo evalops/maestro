@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::Style,
     text::Line,
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
 pub const PROMPT_WIDTH: u16 = 2;
@@ -61,7 +61,7 @@ impl Composer<'_> {
                 inner
                     .x
                     .saturating_add(PROMPT_WIDTH - 1)
-                    .min(area.right() - 1),
+                    .min(area.right() - 2),
                 editor.y,
             ));
         }
@@ -86,11 +86,20 @@ impl Widget for Composer<'_> {
             return;
         }
         let theme = self.theme.on_panel();
-        Block::default()
-            .borders(Borders::TOP)
+        let mut frame = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if self.busy { theme.muted } else { theme.border }))
-            .style(Style::default().bg(theme.surface))
-            .render(area, buf);
+            .style(Style::default().bg(theme.surface));
+        // Keep runtime context beside the place where input is committed. The
+        // block clips the title inside its corners, including on narrow views.
+        if let Some(footer) = self.footer.filter(|text| !text.is_empty()) {
+            frame = frame.title(
+                Line::styled(format!(" {footer} "), Style::default().fg(theme.muted))
+                    .alignment(Alignment::Right),
+            );
+        }
+        frame.render(area, buf);
         if area.height < 3 || area.width < 3 {
             return;
         }
@@ -140,12 +149,6 @@ impl Widget for Composer<'_> {
                     Style::default().fg(theme.muted),
                 );
             }
-        }
-        if let Some(footer) = self.footer {
-            Paragraph::new(footer)
-                .style(Style::default().fg(theme.muted))
-                .alignment(Alignment::Right)
-                .render(Rect::new(inner.x, area.bottom() - 1, inner.width, 1), buf);
         }
     }
 }

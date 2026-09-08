@@ -10,7 +10,7 @@ use std::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -686,6 +686,10 @@ impl OperationsModal {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.render_with_theme(frame, area, crate::themes::current_ui_theme());
+    }
+
+    fn render_with_theme(&mut self, frame: &mut Frame, area: Rect, theme: maestro_ui::UiTheme) {
         if !self.visible {
             return;
         }
@@ -711,18 +715,19 @@ impl OperationsModal {
         };
         let outer = Block::default()
             .title(title)
-            .title_bottom(Line::from(
-                " v operations/agents  Up/Down select  Left/Right pane  a approve  c cancel  r refresh  Esc close ",
+            .title_bottom(Line::styled(
+                " v operations/agents  Up/Down select  Left/Right pane  a approve  c cancel  r refresh  Esc close ", theme.muted_style(),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
-            .style(Style::default().bg(Color::Black));
+            .border_style(Style::default().fg(theme.border))
+            .title_style(Style::default().fg(theme.focus).add_modifier(Modifier::BOLD))
+            .style(theme.text_style());
         let inner = outer.inner(modal_area);
         frame.render_widget(outer, modal_area);
 
         if let Some(error) = &self.error {
             frame.render_widget(
-                Paragraph::new(error.as_str()).style(Style::default().fg(Color::Red)),
+                Paragraph::new(error.as_str()).style(Style::default().fg(theme.error)),
                 inner,
             );
             return;
@@ -730,30 +735,30 @@ impl OperationsModal {
         if self.loading {
             frame.render_widget(
                 Paragraph::new("Loading persisted tool executions...")
-                    .style(Style::default().fg(Color::Yellow)),
+                    .style(Style::default().fg(theme.attention)),
                 inner,
             );
             return;
         }
         if self.view == OperationsView::Agents {
-            self.render_agents(frame, inner);
+            self.render_agents(frame, inner, theme);
             return;
         }
         if self.rows.is_empty() {
             if self.parse_failures.is_empty() {
                 frame.render_widget(
                     Paragraph::new("No persisted tool executions in recent sessions.")
-                        .style(Style::default().fg(Color::DarkGray)),
+                        .style(Style::default().fg(theme.muted)),
                     inner,
                 );
             } else {
-                self.render_parse_failures(frame, inner, true);
+                self.render_parse_failures(frame, inner, true, theme);
             }
             return;
         }
 
         if modal_area.width < NARROW_WIDTH {
-            self.render_focused(frame, inner);
+            self.render_focused(frame, inner, theme);
         } else {
             let panes = Layout::horizontal([
                 Constraint::Percentage(38),
@@ -761,26 +766,26 @@ impl OperationsModal {
                 Constraint::Percentage(31),
             ])
             .split(inner);
-            self.render_sessions(frame, panes[0], self.focus == FocusedPane::Session);
-            self.render_task(frame, panes[1], self.focus == FocusedPane::Task);
-            self.render_receipt(frame, panes[2], self.focus == FocusedPane::Receipt);
+            self.render_sessions(frame, panes[0], self.focus == FocusedPane::Session, theme);
+            self.render_task(frame, panes[1], self.focus == FocusedPane::Task, theme);
+            self.render_receipt(frame, panes[2], self.focus == FocusedPane::Receipt, theme);
         }
     }
 
-    fn render_agents(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_agents(&mut self, frame: &mut Frame, area: Rect, theme: maestro_ui::UiTheme) {
         if self.agents.is_empty() {
             frame.render_widget(
                 Paragraph::new("No delegated agents have been recorded.")
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(theme.muted)),
                 area,
             );
             return;
         }
         if area.width < NARROW_WIDTH {
             match self.focus {
-                FocusedPane::Session => self.render_agent_list(frame, area, true),
-                FocusedPane::Task => self.render_agent_status(frame, area, true),
-                FocusedPane::Receipt => self.render_agent_coordination(frame, area, true),
+                FocusedPane::Session => self.render_agent_list(frame, area, true, theme),
+                FocusedPane::Task => self.render_agent_status(frame, area, true, theme),
+                FocusedPane::Receipt => self.render_agent_coordination(frame, area, true, theme),
             }
             return;
         }
@@ -790,17 +795,23 @@ impl OperationsModal {
             Constraint::Percentage(31),
         ])
         .split(area);
-        self.render_agent_list(frame, panes[0], self.focus == FocusedPane::Session);
-        self.render_agent_status(frame, panes[1], self.focus == FocusedPane::Task);
-        self.render_agent_coordination(frame, panes[2], self.focus == FocusedPane::Receipt);
+        self.render_agent_list(frame, panes[0], self.focus == FocusedPane::Session, theme);
+        self.render_agent_status(frame, panes[1], self.focus == FocusedPane::Task, theme);
+        self.render_agent_coordination(frame, panes[2], self.focus == FocusedPane::Receipt, theme);
     }
 
-    fn render_agent_list(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_agent_list(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let items = self.agents.iter().map(|agent| {
             let status_color = match agent.status.as_str() {
-                "running" | "queued" => Color::Yellow,
-                "completed" => Color::Green,
-                _ => Color::Red,
+                "running" | "queued" => theme.attention,
+                "completed" => theme.success,
+                _ => theme.error,
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -813,31 +824,38 @@ impl OperationsModal {
                 ),
                 Span::styled(
                     format!(" #{}", agent.attempt),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.muted),
                 ),
             ]))
         });
         let list = List::new(items)
-            .block(Self::pane_block("Agents", focused))
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            .block(Self::pane_block("Agents", focused, theme))
+            .style(theme.text_style())
+            .highlight_style(theme.selection_style());
         frame.render_stateful_widget(list, area, &mut self.agent_list_state);
     }
 
-    fn render_agent_status(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_agent_status(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let agent = &self.agents[self.agent_selected];
         let elapsed_end = agent.finished_at_ms.unwrap_or_else(current_timestamp_ms);
         let elapsed = agent
             .started_at_ms
             .map(|start| elapsed_end.saturating_sub(start));
         let mut lines = vec![
-            labelled_line("Agent", &agent.agent_ref),
-            labelled_line("Role", &agent.role),
-            labelled_line("Status", &agent.status),
-            labelled_line("Attempt", &agent.attempt.to_string()),
-            labelled_line("Created", &format_timestamp(agent.created_at_ms)),
+            labelled_line("Agent", &agent.agent_ref, theme),
+            labelled_line("Role", &agent.role, theme),
+            labelled_line("Status", &agent.status, theme),
+            labelled_line("Attempt", &agent.attempt.to_string(), theme),
+            labelled_line("Created", &format_timestamp(agent.created_at_ms), theme),
         ];
         if let Some(elapsed) = elapsed {
-            lines.push(labelled_line("Elapsed", &format!("{elapsed} ms")));
+            lines.push(labelled_line("Elapsed", &format!("{elapsed} ms"), theme));
         }
         if let Some(error) = &agent.error {
             lines.push(Line::from(""));
@@ -845,17 +863,23 @@ impl OperationsModal {
         }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Self::pane_block("Run", focused))
+                .block(Self::pane_block("Run", focused, theme))
                 .scroll((self.task_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
         );
     }
 
-    fn render_agent_coordination(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_agent_coordination(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let agent = &self.agents[self.agent_selected];
         let mut lines = vec![
-            labelled_line("Parent", &agent.parent_scope_id),
+            labelled_line("Parent", &agent.parent_scope_id, theme),
             labelled_line(
                 "Lifecycle",
                 if agent.lifecycle_published {
@@ -863,58 +887,68 @@ impl OperationsModal {
                 } else {
                     "pending"
                 },
+                theme,
             ),
             labelled_line(
                 "Last control",
                 agent.last_control_id.as_deref().unwrap_or("none"),
+                theme,
             ),
-            labelled_line("Mode", agent.last_control_mode.as_deref().unwrap_or("none")),
+            labelled_line(
+                "Mode",
+                agent.last_control_mode.as_deref().unwrap_or("none"),
+                theme,
+            ),
             labelled_line(
                 "Delivery",
                 agent.last_control_state.as_deref().unwrap_or("none"),
+                theme,
             ),
         ];
         if agent.held_control_id.is_some() {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "Press a to approve the held control.",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.attention),
             ));
         }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Self::pane_block("Coordination", focused))
+                .block(Self::pane_block("Coordination", focused, theme))
                 .scroll((self.receipt_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
         );
     }
 
-    fn render_focused(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_focused(&mut self, frame: &mut Frame, area: Rect, theme: maestro_ui::UiTheme) {
         match self.focus {
-            FocusedPane::Session => self.render_sessions(frame, area, true),
-            FocusedPane::Task => self.render_task(frame, area, true),
-            FocusedPane::Receipt => self.render_receipt(frame, area, true),
+            FocusedPane::Session => self.render_sessions(frame, area, true, theme),
+            FocusedPane::Task => self.render_task(frame, area, true, theme),
+            FocusedPane::Receipt => self.render_receipt(frame, area, true, theme),
         }
     }
 
-    fn pane_block(title: &str, focused: bool) -> Block<'static> {
+    fn pane_block(title: &str, focused: bool, theme: maestro_ui::UiTheme) -> Block<'static> {
         Block::default()
             .title(format!(" {title} "))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused {
-                Color::Cyan
-            } else {
-                Color::DarkGray
-            }))
+            .border_style(Style::default().fg(if focused { theme.focus } else { theme.border }))
+            .style(theme.text_style())
     }
 
-    fn render_sessions(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_sessions(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let items = self.rows.iter().map(|row| {
             let status_color = match row.display_status() {
-                "succeeded" => Color::Green,
-                "pending" => Color::Yellow,
-                _ => Color::Red,
+                "succeeded" => theme.success,
+                "pending" => theme.attention,
+                _ => theme.error,
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -927,29 +961,36 @@ impl OperationsModal {
                 ),
                 Span::styled(
                     format!(" {}", bounded_text(&row.session_id, 10)),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.muted),
                 ),
             ]))
         });
         let list = List::new(items)
-            .block(Self::pane_block("Session", focused))
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            .block(Self::pane_block("Session", focused, theme))
+            .style(theme.text_style())
+            .highlight_style(theme.selection_style());
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_task(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_task(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let row = &self.rows[self.selected];
         let args = row.task_args.as_deref().unwrap_or("Not recorded");
         let mut lines = vec![
-            labelled_line("Tool", &row.tool_name),
-            labelled_line("Call", &row.call_id),
-            labelled_line("Task time", &format_timestamp(row.timestamp_ms)),
+            labelled_line("Tool", &row.tool_name, theme),
+            labelled_line("Call", &row.call_id, theme),
+            labelled_line("Task time", &format_timestamp(row.timestamp_ms), theme),
             Line::from(""),
-            Line::styled("Arguments", Style::default().fg(Color::Cyan)),
+            Line::styled("Arguments", Style::default().fg(theme.focus)),
         ];
         lines.extend(raw_lines(args, None));
         let text = Text::from(lines);
-        let block = Self::pane_block("Task", focused);
+        let block = Self::pane_block("Task", focused, theme);
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -964,43 +1005,53 @@ impl OperationsModal {
         );
     }
 
-    fn render_receipt(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_receipt(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let row = &self.rows[self.selected];
         let mut lines = vec![
-            labelled_line("Session", &row.session_id),
-            labelled_line("Title", &row.session_title),
-            labelled_line("Started", &row.session_timestamp),
-            labelled_line("Cwd", &row.session_cwd),
+            labelled_line("Session", &row.session_id, theme),
+            labelled_line("Title", &row.session_title, theme),
+            labelled_line("Started", &row.session_timestamp, theme),
+            labelled_line("Cwd", &row.session_cwd, theme),
             Line::from(""),
         ];
         if let Some(receipt) = &row.receipt {
             lines.extend([
-                labelled_line("Status", receipt.status),
-                labelled_line("Source", receipt.source),
-                labelled_line("Detail", receipt.detail_kind),
+                labelled_line("Status", receipt.status, theme),
+                labelled_line("Source", receipt.source, theme),
+                labelled_line("Detail", receipt.detail_kind, theme),
             ]);
             if let Some(phase) = receipt.phase {
-                lines.push(labelled_line("Phase", phase));
+                lines.push(labelled_line("Phase", phase, theme));
             }
             if let Some(duration_ms) = receipt.duration_ms {
-                lines.push(labelled_line("Duration", &format!("{duration_ms} ms")));
+                lines.push(labelled_line(
+                    "Duration",
+                    &format!("{duration_ms} ms"),
+                    theme,
+                ));
             }
             if let Some(detail) = &receipt.detail {
                 lines.push(Line::from(""));
                 lines.extend(raw_lines(detail, Some(STRING_LIMIT)));
             }
         } else {
-            lines.push(labelled_line("Status", row.result_status));
+            lines.push(labelled_line("Status", row.result_status, theme));
             lines.push(Line::styled(
                 "No typed receipt persisted.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             ));
         }
         if !self.parse_failures.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "Session load failures",
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme.error),
             ));
             lines.extend(
                 self.parse_failures
@@ -1009,7 +1060,7 @@ impl OperationsModal {
             );
         }
         let text = Text::from(lines);
-        let block = Self::pane_block("Receipt", focused);
+        let block = Self::pane_block("Receipt", focused, theme);
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -1024,14 +1075,20 @@ impl OperationsModal {
         );
     }
 
-    fn render_parse_failures(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    fn render_parse_failures(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        theme: maestro_ui::UiTheme,
+    ) {
         let text = Text::from(
             self.parse_failures
                 .iter()
                 .flat_map(|failure| raw_lines(failure, Some(STRING_LIMIT)))
                 .collect::<Vec<_>>(),
         );
-        let block = Self::pane_block("Session load failures", focused);
+        let block = Self::pane_block("Session load failures", focused, theme);
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -1042,15 +1099,15 @@ impl OperationsModal {
                 .block(block)
                 .scroll((self.receipt_scroll, 0))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::Red)),
+                .style(Style::default().fg(theme.error)),
             area,
         );
     }
 }
 
-fn labelled_line(label: &str, value: &str) -> Line<'static> {
+fn labelled_line(label: &str, value: &str, theme: maestro_ui::UiTheme) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{label}: "), Style::default().fg(theme.focus)),
         Span::raw(bounded_text(value, STRING_LIMIT)),
     ])
 }
@@ -1084,6 +1141,46 @@ fn current_timestamp_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn operations_and_agents_use_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            for width in [80, 120] {
+                let mut modal = OperationsModal::new("/workspace");
+                modal.visible = true;
+                modal.rows = project_session(&session("session-a", call_and_result()));
+                modal.agents = vec![CoordinationSnapshot {
+                    subagent_id: "child-1".to_string(),
+                    agent_ref: "subagent:child-1:2".to_string(),
+                    parent_scope_id: "session:parent".to_string(),
+                    role: "code".to_string(),
+                    status: "running".to_string(),
+                    attempt: 2,
+                    created_at_ms: 1,
+                    started_at_ms: Some(2),
+                    finished_at_ms: None,
+                    lifecycle_published: false,
+                    last_control_id: Some("control-1".to_string()),
+                    last_control_mode: Some("steer".to_string()),
+                    last_control_state: Some("held".to_string()),
+                    held_control_id: Some("control-1".to_string()),
+                    error: None,
+                }];
+                modal.sync_selection();
+                for view in [OperationsView::Operations, OperationsView::Agents] {
+                    modal.view = view;
+                    let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                    terminal
+                        .draw(|frame| modal.render_with_theme(frame, frame.area(), theme))
+                        .unwrap();
+                    crate::components::theme_test::assert_palette(
+                        terminal.backend().buffer(),
+                        theme,
+                    );
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::session::{MessageContent, SessionHeader, SessionStats};
     use ratatui::{Terminal, backend::TestBackend};

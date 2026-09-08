@@ -1,0 +1,17 @@
+{
+  "name": "onboarding-welcome",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/setup"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Let.s get Deixic Code ready"
+    }
+  ]
+}

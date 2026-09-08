@@ -136,6 +136,7 @@ impl RuntimeMeta {
 
 struct HeadlessState {
     model: String,
+    model_capabilities: maestro_runtime::agent::NativeModelCapabilities,
     cwd: String,
     system_prompt: String,
     thinking_enabled: bool,
@@ -187,6 +188,7 @@ impl HeadlessState {
         );
         let session_id = env_session_id();
         Self {
+            model_capabilities: crate::agent::catalog_model_capabilities(&model),
             model,
             cwd,
             system_prompt: system_prompt.clone(),
@@ -293,7 +295,7 @@ impl HeadlessState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .turn_active;
-        let prepared = self
+        let mut prepared = self
             .workspace_capabilities
             .prepare(
                 request,
@@ -302,6 +304,11 @@ impl HeadlessState {
                 &runner_session_id,
             )
             .map_err(anyhow::Error::from)?;
+        prepared.bind_provider_prompt(&crate::agent::provider_system_prompt(
+            prepared.prompt(),
+            &self.model,
+            self.model_capabilities,
+        ));
         if turn_active || prepared.is_idempotent() {
             return Ok(self
                 .workspace_capabilities
@@ -354,8 +361,9 @@ impl HeadlessState {
         if self.agent.is_none() {
             let started = Instant::now();
             let config = NativeAgentConfig {
-                model_dynamics: crate::config::model_dynamics_config(),
+                model_dynamics: headless_model_dynamics(crate::config::model_dynamics_config()),
                 model: self.model.clone(),
+                model_capabilities: Some(self.model_capabilities),
                 max_tokens: crate::model_catalog::default_max_output_tokens(&self.model),
                 max_tokens_source: MaxTokensSource::Catalog,
                 system_prompt: Some(self.system_prompt.clone()),
@@ -1394,13 +1402,25 @@ fn configure_prompt_experiment(
         artifact_id: assignment.artifact_id,
         artifact_version: assignment.artifact_version,
         artifact_sha256: assignment.artifact_sha256,
-        provider_prompt_sha256: sha256_prefixed(
-            &crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .unwrap_or_default(),
-        ),
+        provider_prompt_sha256: sha256_prefixed(&crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        )),
         applied: assignment.arm == PromptExperimentArm::Candidate,
     });
     Ok(())
+}
+
+// Headless prompt receipts bind the launch model for the session lifetime.
+// A receipt may arrive after an agent has already started, so pin automatic
+// transitions from creation rather than waiting until receipt activation.
+fn headless_model_dynamics(
+    mut config: crate::model_dynamics::ModelDynamicsConfig,
+) -> crate::model_dynamics::ModelDynamicsConfig {
+    config.auto_boost = false;
+    config.fallbacks.clear();
+    config
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
@@ -2605,10 +2625,11 @@ async fn handle_agent_event(
         }
     }
     match msg {
+        FromAgent::LocalAssistantContent { .. } => return Ok(()),
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
-            ..
+            processed_queue_ids,
         } => {
             meta.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2616,6 +2637,7 @@ async fn handle_agent_event(
             emit(&FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
+                processed_queue_ids,
             })?;
         }
         FromAgent::ManagedGatewayReceipt {
@@ -4984,6 +5006,9 @@ mod tests {
             .env_remove("MAESTRO_MODEL")
             .env_remove("OPENAI_API_KEY")
             .env("MAESTRO_DEFAULT_MODEL", "evalops/gpt-5.5")
+            // Parallel tests can install a direct token in the parent process.
+            // This fixture must exercise its explicit token-file credential.
+            .env_remove(crate::credential_mode::ACCESS_TOKEN_ENV)
             .env("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE", &token)
             .env("MAESTRO_EVALOPS_BASE_URL", "https://gateway.example/v1")
             .env("MAESTRO_EVALOPS_ORG_ID", "org_1")
@@ -5791,6 +5816,47 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         ];
         assert_eq!(coalesce_response_chunks(&mut chunks), "hello world");
         assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_semantic_snapshot_keeps_processed_queue_ids_on_headless_wire() {
+        const FIXTURE: &str = "MAESTRO_HEADLESS_SNAPSHOT_IDS_FIXTURE";
+        if std::env::var_os(FIXTURE).is_some() {
+            let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+            let (tool_tx, _tool_rx) = mpsc::unbounded_channel();
+            handle_agent_event(
+                FromAgent::ConversationSnapshot {
+                    protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                        .to_owned(),
+                    messages: vec![],
+                    processed_queue_ids: vec![7, 9],
+                },
+                &meta,
+                &tool_tx,
+                "test-model",
+                None,
+            )
+            .await
+            .expect("emit snapshot");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("headless_server::tests::native_semantic_snapshot_keeps_processed_queue_ids_on_headless_wire")
+            .args(["--exact", "--nocapture", "--format", "terse"])
+            .env(FIXTURE, "1")
+            .output().expect("run snapshot fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let snapshot = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["type"] == "conversation_snapshot")
+            .expect("private snapshot on headless wire");
+        assert_eq!(snapshot["processed_queue_ids"], serde_json::json!([7, 9]));
     }
 
     #[test]
@@ -6701,9 +6767,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
             .prompt_experiment
             .clone()
             .expect("exposure prepared");
-        let provider_prompt =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
         assert!(exposure.applied);
         assert_eq!(
             exposure.provider_prompt_sha256,
@@ -6723,9 +6791,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
             None,
             None,
         );
-        let provider_prompt_before =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt_before = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
 
         configure_prompt_experiment(
             &mut state,
@@ -6741,9 +6811,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         )
         .expect("control assignment is valid");
 
-        let provider_prompt_after =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt_after = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
         let exposure = state
             .meta
             .lock()
@@ -7110,4 +7182,25 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         );
         state.agent.take().unwrap().shutdown().await;
     }
+}
+
+#[cfg(test)]
+#[test]
+fn headless_receipt_model_does_not_automatically_boost_or_fallback() {
+    let choice = crate::model_dynamics::ModelChoice {
+        model: "openai/gpt-5".to_owned(),
+        thinking: Default::default(),
+    };
+    let config = headless_model_dynamics(crate::model_dynamics::ModelDynamicsConfig {
+        auto_boost: true,
+        boost: Some(choice.clone()),
+        fallbacks: vec![choice.clone()],
+        light: Some(choice.clone()),
+        summary_model: Some("openai/gpt-5-mini".to_owned()),
+        ..Default::default()
+    });
+    assert!(!config.auto_boost);
+    assert!(config.fallbacks.is_empty());
+    assert_eq!(config.light, Some(choice));
+    assert_eq!(config.summary_model.as_deref(), Some("openai/gpt-5-mini"));
 }

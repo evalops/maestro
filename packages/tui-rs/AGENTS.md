@@ -117,10 +117,10 @@ Before making changes, understand these foundational files:
 | `state.rs` | Central `AppState` struct with all mutable state | Adding any new state or modifying state handling |
 | `app.rs` | Main event loop, keyboard handling, modal management | Adding modals, changing input handling |
 | `tools/registry.rs` | Tool definitions, schemas, execution dispatch | Adding or modifying tools |
-| `agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
-| `agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
-| `session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
-| `session/entries.rs` | JSONL entry types (`SessionEntry`, `ThinkingLevel`, etc.) | Modifying session format |
+| `products/maestro/packages/runtime-rs/src/agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
+| `products/maestro/packages/runtime-rs/src/agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
+| `products/maestro/packages/session-rs/src/session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
+| `products/maestro/packages/session-rs/src/session/entries.rs` | JSONL entry types (`SessionEntry`, `ThinkingLevel`, etc.) | Modifying session format |
 | `components/message.rs` | Chat UI widgets (`ChatView`, `MessageWidget`, etc.) | Changing message rendering |
 
 ## Module Guide
@@ -145,11 +145,12 @@ All widgets implement ratatui's `Widget` trait.
 - **`matcher.rs`**: Fuzzy matching, scoring, tab completion (`SlashCommandMatcher`, `SlashCycleState`)
 - **`types.rs`**: `Command`, `CommandContext` definitions
 
-### `agent/` - Native Agent Runtime
-- **`native.rs`**: Main agent loop, tool handling, provider orchestration
-- **`protocol.rs`**: Internal message/event types for agent state and streaming
+### `agent/` - Native Runtime Host
+- **`mod.rs`**: Compatibility constructors, client resolution, and turn telemetry
+- **`native_host.rs`**: Local tools, hooks, and policy adapter for maestro-runtime
+- The native actor and provider loop live in `products/maestro/packages/runtime-rs/src/agent/`. Shared events live in maestro-runtime-contracts.
 
-### `session/` - Persistence
+### `products/maestro/packages/session-rs/src/session/` - Persistence
 - **`manager.rs`**: `SessionManager` lists/loads sessions
 - **`reader.rs`**: Parses JSONL session files
 - **`writer.rs`**: Writes session entries
@@ -259,7 +260,7 @@ The agent uses a **channel-based actor model** with a lightweight handle and bac
 └─────────────┘                              └────────────────────┘
 ```
 
-**Key Types** (`agent/protocol.rs`):
+**Key Types** (`products/maestro/packages/runtime-rs/src/agent/protocol.rs`):
 - `ToAgent`: `Prompt`, `ToolResponse`, `Cancel`, `SetModel`, `SetThinkingLevel`
 - `FromAgent`: `ResponseChunk`, `ToolCall`, `ResponseEnd`, `Error`, `Ready`
 
@@ -299,7 +300,7 @@ Return ToolResult { success, output, error }
 - Severity levels: Low, Medium, High, Critical
 - Returns `FirewallVerdict`: Block, RequireApproval, Allow
 
-**Doom Loop Detection** (`agent/safety.rs`):
+**Doom Loop Detection** (`products/maestro/packages/runtime-rs/src/agent/safety.rs`):
 - Sliding window of recent tool calls
 - Detects repeated identical calls (same tool + args hash)
 - Blocks if threshold exceeded (default: 3 identical)
@@ -342,7 +343,7 @@ pub struct SkillDefinition {
 
 **Activation**: Skills auto-activate via case-insensitive trigger matching on user input. Example: "frontend-design" skill activates on "build a landing page".
 
-### Swarm Mode (`swarm/`)
+### Swarm Mode (`maestro-swarm`)
 
 Multi-agent orchestration for complex tasks:
 
@@ -369,7 +370,7 @@ Precedence (highest to lowest):
 
 Uses `once_cell::sync::Lazy<RwLock<MaestroConfig>>` for thread-safe global state.
 
-### Session Format (`session/entries.rs`)
+### Session Format (`products/maestro/packages/session-rs/src/session/entries.rs`)
 
 Tagged enum with serde discriminator:
 
@@ -389,17 +390,25 @@ pub enum SessionEntry {
 
 **Durability**: Append-only JSONL format. Each line is valid JSON. Crash-safe without transactions.
 
-## Module Scale Reference
+## Extracted Module Owners
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `app.rs` | ~2,700 | Main event loop |
-| `state.rs` | ~1,925 | Centralized state |
-| `sandbox.rs` | ~1,755 | Execution sandbox |
-| `agent/native.rs` | ~1,000 | Agent implementation |
-| `tools/registry.rs` | ~800 | Tool dispatch |
-| `config.rs` | ~1,500 | Configuration |
-| **Total** | ~28,000 | Full codebase |
+Shared agent commands, tool results, and execution receipt values live in
+`products/maestro/packages/runtime-contracts-rs/src`. Live execution and policy enforcement remain
+in their existing host modules; receipt values preserve their serialized formats.
+
+Reusable terminal primitives live in `products/maestro/packages/ui-rs/src`. Native OS enforcement lives
+in `products/maestro/packages/sandbox-rs/src`, with separate `linux.rs`, `macos.rs`, and `tests.rs`
+modules. File discovery, indexing, search, Git inspection, and worktree operations
+live in `products/maestro/packages/workspace-rs/src`. Codex transport and thread bindings
+live in `products/maestro/packages/codex-rs/src`; task graph scheduling lives in
+`products/maestro/packages/swarm-rs/src`. Token accounting and compaction live in
+`products/maestro/packages/context-rs/src`. Session persistence lives in
+`products/maestro/packages/session-rs/src`. The native actor lives in
+`products/maestro/packages/runtime-rs/src`; this crate composes its local execution host. This crate re-exports the historical module paths.
+
+Run their tests with `cargo test -p maestro-ui -p maestro-sandbox -p
+maestro-workspace -p maestro-codex -p maestro-swarm -p maestro-context --locked` from the Maestro workspace. The application-owned
+`sandbox_policy` module remains here alongside configuration and approval policy.
 
 ## Known Issues / TODOs
 

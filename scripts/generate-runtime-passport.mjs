@@ -9,8 +9,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PASSPORT_VERSION = "evalops.maestro.runtime-passport.v1";
 const PREDICATE_TYPE = "https://evalops.dev/attestations/maestro-runtime-passport/v1";
 const CONFORMANCE_VERSION = "evalops.maestro.runtime-conformance.v1";
-const FIXTURE = resolve(ROOT, "packages/runtime-rs/fixtures/runtime-conformance-v1.json");
-const PASSPORT_CONTRACT = resolve(ROOT, "packages/runtime-rs/fixtures/runtime-passport-contract-v1.json");
+const FIXTURE = resolve(ROOT, "packages/runtime-contracts-rs/fixtures/runtime-conformance-v1.json");
+const PASSPORT_CONTRACT = resolve(ROOT, "packages/runtime-contracts-rs/fixtures/runtime-passport-contract-v1.json");
 const DRIVER = resolve(ROOT, "scripts/run-runtime-conformance.mjs");
 const NATIVE_FIXTURE = resolve(ROOT, "packages/tui-rs/src/hosted_runner_conformance.rs");
 

@@ -78,7 +78,7 @@ modify the host, escalate privileges, or destroy data.
 - `bypass_sandbox` is itself approval-gated when a native sandbox is active.
 - `MAESTRO_NO_EGRESS_SHELL=1` makes shell egress primitives such as `curl`,
   `wget`, `ssh`, `scp`, and `nc` approval-gated.
-- `packages/tui-rs/src/sandbox.rs` provides native child-process enforcement:
+- `packages/sandbox-rs/src/lib.rs` provides native child-process enforcement:
   Seatbelt on macOS and Landlock plus seccomp on Linux. `read-only` and
   `workspace-write` restrict the child; `danger-full-access` deliberately
   does not.

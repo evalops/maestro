@@ -641,7 +641,7 @@ async fn managed_setup_check(
     if crate::managed_setup::platform_base_url().is_none() {
         return check("managed_setup", CheckStatus::Warning,
             "MCP setup has no Deixic address",
-            Some("Set MAESTRO_MANAGED_SETUP_URL to your organization's Deixic address. Model requests can still work; MCP servers require a verified policy.".to_owned()), false);
+            Some("Set MAESTRO_MANAGED_SETUP_URL or MAESTRO_PLATFORM_BASE_URL to your organization's Deixic address. Model requests can still work; MCP servers require a verified policy.".to_owned()), false);
     }
     if !live {
         return check(
@@ -667,7 +667,7 @@ async fn managed_setup_check(
         Ok(client) if client.origin() == crate::managed_setup::ManagedSetupOrigin::Fetched =>
             check("managed_setup", CheckStatus::Pass, "Managed setup verified for your account", None, true),
         _ => check("managed_setup", CheckStatus::Warning, "Managed setup could not be verified",
-            Some("Check MAESTRO_MANAGED_SETUP_URL and your organization's access. MCP access remains governed by the last verified policy, or refused when none is available.".to_owned()), true),
+            Some("Check MAESTRO_MANAGED_SETUP_URL or MAESTRO_PLATFORM_BASE_URL and your organization's access. MCP access remains governed by the last verified policy, or refused when none is available.".to_owned()), true),
     }
 }
 
@@ -941,6 +941,15 @@ mod tests {
         body: &'static str,
         delay: Duration,
     ) -> (String, tokio::task::JoinHandle<String>) {
+        test_server_bytes(status, body.as_bytes().to_vec(), "application/json", delay).await
+    }
+
+    async fn test_server_bytes(
+        status: u16,
+        body: Vec<u8>,
+        content_type: &'static str,
+        delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let address = listener.local_addr().expect("test server address");
         let handle = tokio::task::spawn_blocking(move || {
@@ -950,10 +959,11 @@ mod tests {
             std::thread::sleep(delay);
             let reason = if status == 200 { "OK" } else { "Error" };
             let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&body);
             String::from_utf8_lossy(&buffer[..bytes]).into_owned()
         });
         (format!("http://{address}"), handle)
@@ -1123,21 +1133,42 @@ mod tests {
             ]),
         )
         .expect("session");
-        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
-            for (body, expected) in [
-                (r#"{"version":1,"organizationId":"org-test","workspaceId":"workspace-test","rules":[],"skills":[],"mcp":{"mode":"MCP_POLICY_MODE_ALLOWLIST","servers":[]}}"#, CheckStatus::Pass),
-                (r#"{"version":1,"organizationId":"other-org","workspaceId":"workspace-test","rules":[],"skills":[],"mcp":{"mode":"MCP_POLICY_MODE_ALLOWLIST","servers":[]}}"#, CheckStatus::Warning),
-            ] {
-                let (base, server) = test_server(200, body, Duration::ZERO).await;
-                std::env::set_var("MAESTRO_MANAGED_SETUP_URL", base);
-                let report = managed_setup_check(&Ok(crate::credential_mode::DetectedMode::Platform(session.clone())), true).await;
-                assert_eq!(report.status, expected, "{report:?}");
-                assert!(report.live);
-                let request = server.await.expect("server");
-                assert!(request.contains("/console.v1.ManagedSetupService/GetManagedSetup"));
-                assert!(!serde_json::to_string(&report).expect("report").contains("test-token"));
-            }
-        });
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                // Independently encode the canonical response tags (version=1,
+                // organization_id=7, workspace_id=8, MCP policy=5).
+                for (organization, expected) in [
+                    ("org-test", CheckStatus::Pass),
+                    ("other-org", CheckStatus::Warning),
+                ] {
+                    let mut body = vec![0x08, 1, 0x3a, organization.len() as u8];
+                    body.extend_from_slice(organization.as_bytes());
+                    body.extend_from_slice(b"\x42\x0eworkspace-test");
+                    body.extend_from_slice(&[0x2a, 2, 0x08, 2]);
+                    let (base, server) =
+                        test_server_bytes(200, body, "application/proto", Duration::ZERO).await;
+                    std::env::set_var("MAESTRO_MANAGED_SETUP_URL", base);
+                    let report = managed_setup_check(
+                        &Ok(crate::credential_mode::DetectedMode::Platform(
+                            session.clone(),
+                        )),
+                        true,
+                    )
+                    .await;
+                    assert_eq!(report.status, expected, "{report:?}");
+                    assert!(report.live);
+                    let request = server.await.expect("server");
+                    assert!(request.contains("/console.v1.ManagedSetupService/GetManagedSetup"));
+                    assert!(
+                        !serde_json::to_string(&report)
+                            .expect("report")
+                            .contains("test-token")
+                    );
+                }
+            });
     }
 
     #[test]

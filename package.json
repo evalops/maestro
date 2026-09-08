@@ -1,7 +1,7 @@
 {
   "name": "@evalops/deixic-code",
   "description": "Deixic Code — native Rust coding agent, CLI, TUI, and web runtime gateway",
-  "version": "0.10.75",
+  "version": "0.10.82",
   "private": false,
   "type": "module",
   "bin": {
@@ -27,7 +27,7 @@
     "build": "cargo build --profile fast-validation --locked -p maestro && node scripts/materialize-native-package.mjs --profile fast-validation",
     "build:release": "cargo build --profile release --locked -p maestro && node scripts/materialize-native-package.mjs --profile release",
     "build:all": "npm run build",
-    "check": "npm run check:deixic-code-naming && npm run check:workspace-contract && npm run check:protocol-manifest && npm run check:runtime-passport && npm run check:rust-only-runtime && npm run check:helm-probes && npm run check:hook-dispatch && npm run check:session-transfer && cargo check --workspace --all-targets --locked",
+    "check": "npm run check:deixic-code-naming && npm run check:workspace-contract && npm run check:protocol-manifest && npm run check:runtime-passport && npm run check:native-runtime-boundary && npm run check:rust-only-runtime && npm run check:helm-probes && npm run check:hook-dispatch && npm run check:session-transfer && cargo check --workspace --all-targets --locked",
     "test": "cargo test --workspace --locked",
     "test:internal": "node --test test/internal/*.test.mjs",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
@@ -74,6 +74,7 @@
     "tui-rs:test": "cargo test --locked -p maestro-tui",
     "runtime-gateway-rs:build": "cargo build --release --locked -p maestro-runtime-gateway",
     "maestro-rs:build": "cargo build --release --locked -p maestro",
+    "check:native-runtime-boundary": "node scripts/check-native-runtime-boundary.mjs && node --test scripts/check-native-runtime-boundary.test.mjs",
     "release:verify:published": "node scripts/smoke-registry-install.js",
     "release:verify:published:e2e": "node scripts/smoke-published-replay-e2e.js",
     "release:verify:published:evidence": "node scripts/verify-published-replay-evidence.js",

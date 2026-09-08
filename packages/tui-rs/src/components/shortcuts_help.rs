@@ -73,16 +73,7 @@ impl ShortcutCategory {
     /// Get the color for this category
     #[must_use]
     pub fn color(&self) -> Color {
-        match self {
-            Self::Navigation => Color::Cyan,
-            Self::Input => Color::Green,
-            Self::Modal => Color::Yellow,
-            Self::Commands => Color::Magenta,
-            Self::Session => Color::Blue,
-            Self::Tools => Color::LightRed,
-            Self::View => Color::LightCyan,
-            Self::System => Color::Gray,
-        }
+        crate::themes::current_ui_theme().focus
     }
 
     /// Get all categories in display order
@@ -381,6 +372,17 @@ impl ShortcutsHelp {
             "Open session switcher",
         ));
 
+        self.add(Shortcut::new(
+            ShortcutCategory::Commands,
+            &labels.cycle_model,
+            "Next model",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Commands,
+            &labels.cycle_model_backward,
+            "Previous model",
+        ));
+
         // Tools
         self.add(
             Shortcut::new(ShortcutCategory::Tools, "y / Enter", "Approve tool")
@@ -560,7 +562,7 @@ impl ShortcutsHelp {
     }
 
     /// Render the shortcuts table
-    fn render_table(&self, area: Rect, buf: &mut Buffer) {
+    fn render_table(&self, area: Rect, buf: &mut Buffer, theme: maestro_ui::UiTheme) {
         let groups = self.grouped_shortcuts();
 
         let mut rows: Vec<Row> = Vec::new();
@@ -571,7 +573,7 @@ impl ShortcutsHelp {
             rows.push(
                 Row::new(vec![String::new(), header_text]).style(
                     Style::default()
-                        .fg(category.color())
+                        .fg(theme.focus)
                         .add_modifier(Modifier::BOLD),
                 ),
             );
@@ -609,11 +611,7 @@ impl ShortcutsHelp {
         let table = Table::new(visible_rows, widths)
             .header(
                 Row::new(vec!["Key", "Action"])
-                    .style(
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
                     .bottom_margin(1),
             )
             .column_spacing(2);
@@ -624,6 +622,12 @@ impl ShortcutsHelp {
 
 impl Widget for ShortcutsHelp {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_with_theme(area, buf, crate::themes::current_ui_theme());
+    }
+}
+
+impl ShortcutsHelp {
+    fn render_with_theme(self, area: Rect, buf: &mut Buffer, theme: maestro_ui::UiTheme) {
         if !self.visible {
             return;
         }
@@ -643,21 +647,25 @@ impl Widget for ShortcutsHelp {
         // Draw border
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(theme.border))
+            .style(theme.text_style())
             .title(format!(" {} ", self.title))
             .title_style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.focus)
                     .add_modifier(Modifier::BOLD),
             )
-            .title_bottom(" Press F1 or Esc to close ")
+            .title_bottom(Line::styled(
+                " Press F1 or Esc to close ",
+                theme.muted_style(),
+            ))
             .padding(Padding::horizontal(1));
 
         let inner = block.inner(modal_area);
         block.render(modal_area, buf);
 
         // Render shortcuts table
-        self.render_table(inner, buf);
+        self.render_table(inner, buf, theme);
     }
 }
 
@@ -733,6 +741,18 @@ impl ShortcutsHelpBuilder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcuts_use_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            let mut help = ShortcutsHelp::new();
+            help.show();
+            let area = Rect::new(0, 0, 120, 40);
+            let mut buffer = Buffer::empty(area);
+            help.render_with_theme(area, &mut buffer, theme);
+            crate::components::theme_test::assert_palette(&buffer, theme);
+        }
+    }
+
     use super::*;
     use crate::keybindings::RustTuiKeybindingLabels;
 
@@ -802,6 +822,8 @@ mod tests {
     #[test]
     fn test_shortcuts_help_uses_runtime_binding_labels() {
         let help = ShortcutsHelp::new_with_binding_labels(RustTuiKeybindingLabels {
+            cycle_model: "Alt+P".to_string(),
+            cycle_model_backward: "Ctrl+Shift+P".to_string(),
             command_palette: "Ctrl+O".to_string(),
             file_search: "Ctrl+P".to_string(),
             toggle_tool_outputs: "Shift+Left".to_string(),
@@ -839,6 +861,8 @@ mod tests {
         help.filter = Some("queue".to_string());
         help.selected_category = Some(ShortcutCategory::Input);
         help.set_binding_labels(RustTuiKeybindingLabels {
+            cycle_model: "Alt+P".to_string(),
+            cycle_model_backward: "Ctrl+Shift+P".to_string(),
             command_palette: "Ctrl+O".to_string(),
             file_search: "Ctrl+P".to_string(),
             toggle_tool_outputs: "Shift+Left".to_string(),

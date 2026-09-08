@@ -104,7 +104,7 @@ def appearance_scenes(binary):
         {
             "name": identifier,
             "steps": [
-                {"wait": "(?s)Dex Code.*GPT-4o.*release-planner"},
+                {"wait": "(?s)Dex Code.*GPT-6 Astra.*release-planner"},
                 {"text": "/dex " + identifier},
                 {"key": "Enter"},
                 {"wait": re.escape(label) + ".*saved"},

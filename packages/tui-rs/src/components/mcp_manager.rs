@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -115,6 +115,10 @@ impl McpManager {
     }
 
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+        self.render_with_theme(frame, area, crate::themes::current_ui_theme());
+    }
+
+    fn render_with_theme(&self, frame: &mut Frame<'_>, area: Rect, theme: maestro_ui::UiTheme) {
         let width = area.width.saturating_sub(4).clamp(56, 108);
         let height = area.height.saturating_sub(2).clamp(14, 34);
         let modal = Rect::new(
@@ -126,7 +130,13 @@ impl McpManager {
         frame.render_widget(Clear, modal);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(theme.border))
+            .title_style(
+                Style::default()
+                    .fg(theme.focus)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(theme.text_style())
             .title(" MCP servers ");
         let inner = block.inner(modal);
         frame.render_widget(block, modal);
@@ -154,8 +164,9 @@ impl McpManager {
             let mut state = ListState::default().with_selected(Some(self.selected_catalog));
             frame.render_stateful_widget(
                 List::new(rows)
+                    .style(theme.text_style())
                     .highlight_symbol("› ")
-                    .highlight_style(Style::default().bg(Color::Rgb(40, 50, 60))),
+                    .highlight_style(theme.selection_style()),
                 sections[0],
                 &mut state,
             );
@@ -165,13 +176,17 @@ impl McpManager {
             );
             frame.render_widget(
                 Paragraph::new(detail)
-                    .block(Block::default().borders(Borders::TOP))
+                    .block(
+                        Block::default()
+                            .borders(Borders::TOP)
+                            .border_style(Style::default().fg(theme.border)),
+                    )
                     .wrap(Wrap { trim: true }),
                 sections[1],
             );
             frame.render_widget(
                 Paragraph::new("↑/↓ select  Enter add to user config  Esc back")
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(theme.muted)),
                 sections[2],
             );
             return;
@@ -187,7 +202,7 @@ impl McpManager {
                 .statuses
                 .iter()
                 .map(|status| {
-                    let state_style = state_style(status.state);
+                    let state_style = state_style(status.state, theme);
                     ListItem::new(Line::from(vec![
                         Span::styled(
                             format!("{:<22}", status.name),
@@ -205,11 +220,10 @@ impl McpManager {
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(self.selected));
             frame.render_stateful_widget(
-                List::new(rows).highlight_symbol("› ").highlight_style(
-                    Style::default()
-                        .bg(Color::Rgb(40, 50, 60))
-                        .add_modifier(Modifier::BOLD),
-                ),
+                List::new(rows)
+                    .style(theme.text_style())
+                    .highlight_symbol("› ")
+                    .highlight_style(theme.selection_style()),
                 sections[0],
                 &mut state,
             );
@@ -220,7 +234,10 @@ impl McpManager {
             |status| {
                 let mut lines = Vec::new();
                 if let Some(error) = &status.error {
-                    lines.push(Line::styled(error.clone(), Style::default().fg(Color::Red)));
+                    lines.push(Line::styled(
+                        error.clone(),
+                        Style::default().fg(theme.error),
+                    ));
                 } else if self.show_tools {
                     if status.tools.is_empty() && status.disabled_tools.is_empty() {
                         lines.push(Line::raw("No tools reported."));
@@ -241,7 +258,7 @@ impl McpManager {
                         };
                         lines.push(Line::styled(
                             format!("{marker} ○ {tool} (disabled)"),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(theme.muted),
                         ));
                     }
                 } else {
@@ -257,7 +274,11 @@ impl McpManager {
         );
         frame.render_widget(
             Paragraph::new(detail)
-                .block(Block::default().borders(Borders::TOP))
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(theme.border)),
+                )
                 .wrap(Wrap { trim: true }),
             sections[1],
         );
@@ -265,28 +286,82 @@ impl McpManager {
             Paragraph::new(
                 "↑/↓ select  Enter tools  Space enable/disable  r retry  a add  c catalog  o auth  x clear auth  d remove  p permissions  Esc close",
             )
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(theme.muted))
             .wrap(Wrap { trim: true }),
             sections[2],
         );
     }
 }
 
-fn state_style(state: McpLifecycleState) -> Style {
+fn state_style(state: McpLifecycleState, theme: maestro_ui::UiTheme) -> Style {
     let color = match state {
-        McpLifecycleState::Ready => Color::Green,
-        McpLifecycleState::Connecting => Color::Yellow,
-        McpLifecycleState::Disabled => Color::DarkGray,
-        McpLifecycleState::NeedsAuth | McpLifecycleState::NeedsWorkspaceTrust => Color::Yellow,
+        McpLifecycleState::Ready => theme.success,
+        McpLifecycleState::Connecting => theme.attention,
+        McpLifecycleState::Disabled => theme.muted,
+        McpLifecycleState::NeedsAuth | McpLifecycleState::NeedsWorkspaceTrust => theme.attention,
         McpLifecycleState::Failed
         | McpLifecycleState::BlockedByPolicy
-        | McpLifecycleState::ConfigError => Color::Red,
+        | McpLifecycleState::ConfigError => theme.error,
     };
     Style::default().fg(color)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_states_and_catalog_use_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            for state in [
+                McpLifecycleState::Ready,
+                McpLifecycleState::Connecting,
+                McpLifecycleState::Failed,
+                McpLifecycleState::Disabled,
+            ] {
+                let mut manager = McpManager::new();
+                manager.set_statuses(vec![McpServerStatus {
+                    name: "example".into(),
+                    state,
+                    connected: true,
+                    scope: McpConfigScope::User,
+                    transport: McpTransport::Http,
+                    error: (state == McpLifecycleState::Failed).then(|| "Connection failed".into()),
+                    tools: vec!["run".into()],
+                    disabled_tools: Vec::new(),
+                    resources: Vec::new(),
+                    prompts: Vec::new(),
+                }]);
+                for (catalog, tools) in [(false, false), (false, true), (true, false)] {
+                    manager.catalog_mode = catalog;
+                    manager.show_tools = tools;
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+                            .unwrap();
+                    terminal
+                        .draw(|frame| manager.render_with_theme(frame, frame.area(), theme))
+                        .unwrap();
+                    crate::components::theme_test::assert_palette(
+                        terminal.backend().buffer(),
+                        theme,
+                    );
+                    if !catalog {
+                        let expected = match state {
+                            McpLifecycleState::Ready => theme.success,
+                            McpLifecycleState::Connecting => theme.attention,
+                            McpLifecycleState::Disabled => theme.muted,
+                            _ => theme.error,
+                        };
+                        crate::components::theme_test::assert_label(
+                            terminal.backend().buffer(),
+                            state.label(),
+                            expected,
+                            theme.selection.unwrap(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::mcp::{McpConfigScope, McpTransport};
 

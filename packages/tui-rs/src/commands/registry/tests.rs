@@ -100,8 +100,16 @@ fn model_command_parses_default_subcommand() {
         CommandOutput::Action(CommandAction::SetModel(_))
     ));
 
-    let modal = registry
+    let panel = registry
         .execute("/model", "/tmp", None, None)
+        .expect("parse");
+    assert!(matches!(
+        panel,
+        CommandOutput::Action(CommandAction::OpenPanel(ControlPanel::Model))
+    ));
+
+    let modal = registry
+        .execute("/model select", "/tmp", None, None)
         .expect("parse");
     assert!(matches!(
         modal,
@@ -675,11 +683,18 @@ fn context_command_exists() {
 }
 
 #[test]
-fn context_command_returns_show_context_action() {
+fn context_command_opens_panel_and_usage_returns_show_context_action() {
     let registry = build_command_registry();
     let result = registry.execute("/context", "/tmp", None, None);
     assert!(matches!(
         result,
+        Ok(CommandOutput::Action(CommandAction::OpenPanel(
+            ControlPanel::Context
+        )))
+    ));
+    let usage = registry.execute("/context usage", "/tmp", None, None);
+    assert!(matches!(
+        usage,
         Ok(CommandOutput::Action(CommandAction::ShowContext))
     ));
 }
@@ -1145,9 +1160,7 @@ fn double_slash_command_still_resolves() {
         .execute("//help", "/tmp", None, None)
         .expect("//help should resolve")
     {
-        CommandOutput::Help(_)
-        | CommandOutput::Message(_)
-        | CommandOutput::OpenModal(ModalType::Help | ModalType::ShortcutsHelp) => {}
+        CommandOutput::Action(CommandAction::OpenPanel(ControlPanel::Help)) => {}
         other => panic!("expected help output for //help, got {other:?}"),
     }
     match registry

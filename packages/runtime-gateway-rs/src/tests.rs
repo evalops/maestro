@@ -4677,6 +4677,13 @@ fn capsule_deadline_cannot_leave_an_ambient_validator_process_running() {
             .build()
             .expect("child runtime");
         runtime.block_on(async {
+            // ToolExecutor construction initializes the shared config and
+            // registry state used by the governed call. Warm that state before
+            // starting the intentionally short capsule deadline so fixture
+            // setup is not charged against the 2-second execution budget.
+            let _executor_warmup =
+                maestro_tui::tools::ToolExecutor::new(scope.display().to_string());
+
             let mut request = valid_code_writer_capsule();
             request["capsule"]["deadlineAt"] =
                 Value::String((chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339());

@@ -18,7 +18,255 @@
 
 use super::AiProvider;
 use super::types::{ContentBlock, Message, MessageContent, Role};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+
+/// Provider wire shape used by the adapters that need cross-provider history
+/// normalization.  The transform deliberately stays at the outbound boundary
+/// so the canonical conversation remains unchanged in memory and on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboundTarget {
+    Anthropic,
+    OpenAiChat,
+    OpenAiResponses,
+}
+
+const ANTHROPIC_TOOL_ID_MAX_LEN: usize = 64;
+const OPENAI_CHAT_TOOL_ID_MAX_LEN: usize = 40;
+const OPENAI_RESPONSES_ID_MAX_LEN: usize = 64;
+
+/// Clone and normalize messages for a provider wire adapter.
+///
+/// OpenAI adapters cannot replay provider-native thinking blocks, so thinking
+/// is represented as ordinary text at that boundary. Anthropic keeps signed
+/// thinking blocks (required for Claude replay) and turns unsigned thinking
+/// into ordinary text. Tool-call and tool-result IDs are transformed together
+/// with the same deterministic mapping, without mutating stored history.
+pub(crate) fn transform_messages_for_target(
+    messages: &[Message],
+    target: OutboundTarget,
+) -> Vec<Message> {
+    let transformed = messages
+        .iter()
+        .map(|message| {
+            let content = match &message.content {
+                MessageContent::Text(text) => MessageContent::Text(text.clone()),
+                MessageContent::Blocks(blocks) => MessageContent::Blocks(
+                    blocks
+                        .iter()
+                        .filter_map(|block| transform_block_for_target(block, target))
+                        .collect(),
+                ),
+            };
+            Message {
+                role: message.role,
+                content,
+            }
+        })
+        .filter(|message| !matches!(&message.content, MessageContent::Blocks(blocks) if blocks.is_empty()))
+        .collect();
+    repair_tool_sequence(transformed)
+}
+
+/// Gemini identifies function responses by function name instead of call ID.
+/// Resolve against preceding calls on an outbound clone, including interrupted
+/// sequences. Canonical history retains the original IDs for other providers.
+pub(crate) fn google_messages_for_wire(messages: &[Message]) -> Vec<Message> {
+    let mut messages = repair_tool_sequence(messages.to_vec());
+    let mut names = std::collections::HashMap::new();
+    for message in &mut messages {
+        if let MessageContent::Blocks(blocks) = &mut message.content {
+            for block in blocks {
+                match block {
+                    ContentBlock::ToolUse { id, name, .. } => {
+                        names.insert(id.clone(), name.clone());
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        if let Some(name) = names.get(tool_use_id) {
+                            *tool_use_id = name.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    messages
+}
+
+/// Complete interrupted tool sequences only in the outgoing request. A missing
+/// result is reported as an error, never as successful execution.
+fn repair_tool_sequence(messages: Vec<Message>) -> Vec<Message> {
+    let mut result = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    for mut message in messages {
+        let contains_results = message.role == Role::User
+            && matches!(
+                &message.content, MessageContent::Blocks(blocks)
+                    if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            );
+        if !contains_results {
+            append_missing_results(&mut result, &mut pending);
+        }
+        if let MessageContent::Blocks(blocks) = &mut message.content {
+            for block in blocks {
+                match block {
+                    ContentBlock::ToolUse { id, .. } if message.role == Role::Assistant => {
+                        pending.push(id.clone());
+                    }
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } if message.role == Role::User => {
+                        if let Some(index) = pending.iter().position(|id| id == tool_use_id) {
+                            pending.remove(index);
+                        } else {
+                            *block = ContentBlock::Text {
+                                text: format!("Unmatched tool result ({tool_use_id}): {content}"),
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        result.push(message);
+    }
+    append_missing_results(&mut result, &mut pending);
+    result
+}
+
+fn append_missing_results(messages: &mut Vec<Message>, pending: &mut Vec<String>) {
+    if !pending.is_empty() {
+        messages.push(Message {
+            role: Role::User,
+            content: MessageContent::Blocks(
+                pending
+                    .drain(..)
+                    .map(|id| ContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: "Tool execution was interrupted; no result is available."
+                            .to_owned(),
+                        is_error: Some(true),
+                    })
+                    .collect(),
+            ),
+        });
+    }
+}
+
+fn transform_block_for_target(
+    block: &ContentBlock,
+    target: OutboundTarget,
+) -> Option<ContentBlock> {
+    match block {
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => match target {
+            OutboundTarget::Anthropic => {
+                if signature.is_none() {
+                    if thinking.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ContentBlock::Text {
+                            text: thinking.clone(),
+                        })
+                    }
+                } else {
+                    Some(block.clone())
+                }
+            }
+            OutboundTarget::OpenAiChat | OutboundTarget::OpenAiResponses => {
+                if thinking.trim().is_empty() {
+                    None
+                } else {
+                    Some(ContentBlock::Text {
+                        text: thinking.clone(),
+                    })
+                }
+            }
+        },
+        ContentBlock::ToolUse { id, name, input } => Some(ContentBlock::ToolUse {
+            id: normalize_tool_id(id, target),
+            name: name.clone(),
+            input: input.clone(),
+        }),
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => Some(ContentBlock::ToolResult {
+            tool_use_id: normalize_tool_id(tool_use_id, target),
+            content: content.clone(),
+            is_error: *is_error,
+        }),
+        other => Some(other.clone()),
+    }
+}
+
+/// Normalize an ID for the target protocol while retaining enough source
+/// entropy to avoid collisions after sanitizing or truncating.
+pub(crate) fn normalize_tool_id(id: &str, target: OutboundTarget) -> String {
+    match target {
+        OutboundTarget::Anthropic => normalize_bounded_id(id, ANTHROPIC_TOOL_ID_MAX_LEN),
+        OutboundTarget::OpenAiChat => normalize_bounded_id(id, OPENAI_CHAT_TOOL_ID_MAX_LEN),
+        OutboundTarget::OpenAiResponses => normalize_responses_tool_id(id),
+    }
+}
+
+/// Responses stores the provider call ID and output-item ID separately. Keep
+/// that pair in the internal history ID so two items sharing a call ID remain
+/// distinct across a replay.
+fn normalize_responses_tool_id(id: &str) -> String {
+    let Some((call_id, item_id)) = id.split_once('|') else {
+        return normalize_bounded_id(id, OPENAI_RESPONSES_ID_MAX_LEN);
+    };
+    let call_id = normalize_bounded_id(call_id, OPENAI_RESPONSES_ID_MAX_LEN);
+    let item_id = normalize_responses_item_id(item_id);
+    format!("{call_id}|{item_id}")
+}
+
+fn normalize_responses_item_id(id: &str) -> String {
+    let normalized = normalize_bounded_id(id, OPENAI_RESPONSES_ID_MAX_LEN);
+    if normalized.starts_with("fc_") {
+        normalized
+    } else {
+        normalize_bounded_id(&format!("fc_{normalized}"), OPENAI_RESPONSES_ID_MAX_LEN)
+    }
+}
+
+fn normalize_bounded_id(id: &str, max_len: usize) -> String {
+    let sanitized: String = id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if !id.is_empty() && sanitized == id && sanitized.len() <= max_len {
+        return sanitized;
+    }
+
+    let digest = Sha256::digest(id.as_bytes());
+    let suffix = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let prefix_len = max_len.saturating_sub(suffix.len() + 1);
+    let prefix: String = sanitized.chars().take(prefix_len).collect();
+    if prefix.is_empty() {
+        suffix.chars().take(max_len).collect()
+    } else {
+        format!("{prefix}_{suffix}")
+    }
+}
 
 /// Transform messages for cross-provider compatibility.
 ///
@@ -238,6 +486,117 @@ pub fn transform_messages_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outbound_ids_are_bounded_distinct_and_results_follow_calls() {
+        for target in [
+            OutboundTarget::Anthropic,
+            OutboundTarget::OpenAiChat,
+            OutboundTarget::OpenAiResponses,
+        ] {
+            let ids = [
+                "call/a".to_owned(),
+                "call+a".to_owned(),
+                "call_shared|fc_a".to_owned(),
+                "call_shared|fc_b".to_owned(),
+                "x".repeat(180),
+                String::new(),
+            ];
+            let history = vec![
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Blocks(
+                        ids.iter()
+                            .map(|id| ContentBlock::ToolUse {
+                                id: id.clone(),
+                                name: "read".into(),
+                                input: serde_json::json!({}),
+                            })
+                            .collect(),
+                    ),
+                },
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Blocks(
+                        ids.iter()
+                            .map(|id| ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: "result".into(),
+                                is_error: None,
+                            })
+                            .collect(),
+                    ),
+                },
+            ];
+            let before = serde_json::to_value(&history).unwrap();
+            let transformed = transform_messages_for_target(&history, target);
+            let MessageContent::Blocks(calls) = &transformed[0].content else {
+                panic!("calls")
+            };
+            let MessageContent::Blocks(results) = &transformed[1].content else {
+                panic!("results")
+            };
+            let mut unique = HashSet::new();
+            for (call, result) in calls.iter().zip(results) {
+                let ContentBlock::ToolUse { id, .. } = call else {
+                    panic!("call")
+                };
+                let ContentBlock::ToolResult { tool_use_id, .. } = result else {
+                    panic!("result")
+                };
+                assert_eq!(id, tool_use_id);
+                assert!(unique.insert(id));
+                for part in id.split('|') {
+                    assert!(!part.is_empty() && part.len() <= 64);
+                    assert!(
+                        part.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    );
+                }
+            }
+            assert_eq!(serde_json::to_value(history).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn interrupted_tools_get_error_results_and_unmatched_results_keep_text() {
+        let history = vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "pending".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Continue".into()),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "orphan".into(),
+                    content: "retained evidence".into(),
+                    is_error: None,
+                }]),
+            },
+        ];
+        let transformed = transform_messages_for_target(&history, OutboundTarget::Anthropic);
+        let MessageContent::Blocks(blocks) = &transformed[1].content else {
+            panic!("missing result")
+        };
+        assert!(
+            matches!(&blocks[0], ContentBlock::ToolResult { tool_use_id, is_error: Some(true), .. } if tool_use_id == "pending")
+        );
+        let MessageContent::Blocks(blocks) = &transformed[3].content else {
+            panic!("retained orphan")
+        };
+        assert!(
+            matches!(&blocks[0], ContentBlock::Text { text } if text.contains("retained evidence"))
+        );
+        assert_eq!(history.len(), 3);
+    }
 
     fn create_assistant_message(blocks: Vec<ContentBlock>) -> Message {
         Message {

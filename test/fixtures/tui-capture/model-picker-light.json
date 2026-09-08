@@ -2,7 +2,7 @@
   "name": "model-picker-light",
   "steps": [
     {
-      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
     },
     {
       "text": "/theme"
@@ -32,7 +32,19 @@
       "key": "Enter"
     },
     {
-      "wait": "(?s)Select Model.*GPT-4o.*Enter select.*Esc cancel"
+      "wait": "Model and effort"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Select Model"
+    },
+    {
+      "text": "astra"
+    },
+    {
+      "wait": "(?s)Select Model.*GPT-6 Astra.*Enter select.*Esc cancel"
     }
   ]
 }

@@ -348,6 +348,7 @@ impl App {
         match prefs.save_default() {
             Ok(()) => {
                 self.ui_prefs = prefs;
+                self.state.error = None;
                 self.dex_delight.notice = Some(format!("Dex: {description} (saved)"));
             }
             Err(error) => {

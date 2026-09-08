@@ -96,15 +96,15 @@ mod tests {
             pet_frame: Some(0),
             ..Default::default()
         };
-        assert_eq!(look.eyes(DexCompanionState::Ready, true), "o o");
-        assert_eq!(look.eyes(DexCompanionState::Failed, false), "˙ ˎ");
-        assert_eq!(look.eyes(DexCompanionState::Failed, true), "˙ ˎ");
+        assert_eq!(look.eyes(DexCompanionState::Ready, true), "− −");
+        assert_eq!(look.eyes(DexCompanionState::Failed, false), "⠂ ⠕");
+        assert_eq!(look.eyes(DexCompanionState::Failed, true), "⠂ ⠕");
         assert_eq!(look.eyes(DexCompanionState::NeedsInput, true), "• ?");
         let glasses = DexLook {
             accessory: DexAccessory::Glasses,
             ..look
         };
-        assert_eq!(glasses.eyes(DexCompanionState::Failed, true), "˙ ˎ");
+        assert_eq!(glasses.eyes(DexCompanionState::Failed, true), "⠂ ⠕");
         assert_eq!(
             DexLook {
                 pet_frame: Some(8),
@@ -113,14 +113,14 @@ mod tests {
             .eyes(DexCompanionState::Ready, true),
             "• •"
         );
-        for (frame, expected) in [(0, "o o"), (4, "− −"), (6, "^ −"), (8, "• •")] {
+        for (frame, expected) in [(0, "− −"), (4, "^ ^"), (6, "• •"), (8, "• •")] {
             let reacting = DexLook {
                 pet_frame: Some(frame),
                 ..look
             };
             assert_eq!(reacting.eyes(DexCompanionState::Ready, true), expected);
             assert_eq!(reacting.eyes(DexCompanionState::Ready, false), "• •");
-            assert_eq!(reacting.eyes(DexCompanionState::Failed, true), "˙ ˎ");
+            assert_eq!(reacting.eyes(DexCompanionState::Failed, true), "⠂ ⠕");
             assert_eq!(reacting.eyes(DexCompanionState::NeedsInput, true), "• ?");
         }
         assert_eq!(DexActivity::from_tool("bash"), DexActivity::Running);

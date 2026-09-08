@@ -25,9 +25,9 @@
 //! stable property of a catalog entry, so built-in and system skills remain
 //! protected even when their display names change.
 
-use crate::agent::token_estimation;
 use crate::skills::loader::LoadedSkill;
 use crate::skills::types::SkillSource;
+use maestro_context::token_estimation;
 
 /// Share of the model's context window the skills catalog may occupy.
 const SKILL_CATALOG_CONTEXT_FRACTION: f64 = 0.02;

@@ -21,6 +21,7 @@ fn session_for(organization_id: &str, workspace_id: Option<&str>) -> PlatformSes
 fn allowlist_setup() -> ManagedSetup {
     ManagedSetup {
         version: 7,
+        issued_at: None,
         organization_id: "org-a".to_string(),
         workspace_id: "workspace-a".to_string(),
         rules: vec![ManagedRule {
@@ -359,6 +360,84 @@ fn no_cache_and_no_network_fails_closed_for_a_platform_bound_session() {
 }
 
 #[test]
+fn shared_platform_base_url_configures_managed_setup() {
+    let _lock = crate::config::test_process_env_lock();
+    let names = [
+        "MAESTRO_MANAGED_SETUP_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+    let _restore = EnvRestore(previous);
+    for name in names {
+        std::env::remove_var(name);
+    }
+
+    std::env::set_var("MAESTRO_EVALOPS_BASE_URL", "https://gateway.example/v1");
+    std::env::set_var("MAESTRO_PLATFORM_BASE_URL", " https://platform.example/ ");
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://platform.example")
+    );
+
+    std::env::set_var("MAESTRO_MANAGED_SETUP_URL", "https://managed.example/");
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://managed.example")
+    );
+}
+
+#[test]
+fn default_platform_base_url_is_used_without_an_override() {
+    let _lock = crate::config::test_process_env_lock();
+    let names = [
+        "MAESTRO_MANAGED_SETUP_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+    let _restore = EnvRestore(previous);
+    for name in names {
+        std::env::remove_var(name);
+    }
+
+    assert_eq!(
+        platform_base_url().as_deref(),
+        Some("https://app.deixic.com")
+    );
+}
+
+#[test]
 fn a_session_with_no_platform_binding_is_unmanaged() {
     let client = ManagedSetupClient::resolve_with(None, None, 1_000, DEFAULT_CACHE_TTL, |_| {
         panic!("BYOK sessions must not fetch a managed setup")
@@ -648,4 +727,205 @@ fn managed_sandbox_policy_only_restricts_the_native_baseline() {
         ),
         Some(SandboxPolicy::ReadOnly)
     );
+}
+
+fn protobuf_fixture() -> wire::ManagedSetup {
+    wire::ManagedSetup {
+        version: u64::MAX,
+        issued_at: Some(prost_types::Timestamp {
+            seconds: 1_800_000_000,
+            nanos: 123,
+        }),
+        organization_id: "org-a".into(),
+        workspace_id: "workspace-a".into(),
+        rules: vec![wire::ManagedRule {
+            id: "rule".into(),
+            title: "Review".into(),
+            body_markdown: "Read the runbook.".into(),
+            scope: 2,
+        }],
+        skills: vec![wire::ManagedSkillRef {
+            id: "triage".into(),
+            source: "catalog".into(),
+            version: "3".into(),
+            required: true,
+        }],
+        mcp: Some(wire::McpPolicy {
+            mode: 2,
+            servers: vec![wire::McpServerRef {
+                name: "docs".into(),
+                url_pattern: "https://docs.example.com/*".into(),
+                transport: "http".into(),
+            }],
+        }),
+        sandbox_policy_toml: "[network]\ndefault = \"deny\"\n".into(),
+    }
+}
+
+fn protobuf_server(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    protobuf_server_for(body, true)
+}
+
+fn protobuf_server_for(
+    body: Vec<u8>,
+    workspace_bound: bool,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let task = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut request = Vec::new();
+        let header_end = loop {
+            let mut buffer = [0; 1024];
+            let count = stream.read(&mut buffer).expect("read");
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+        assert!(headers.starts_with("post /console.v1.managedsetupservice/getmanagedsetup "));
+        assert!(headers.contains("content-type: application/proto\r\n"));
+        assert!(headers.contains("accept: application/proto\r\n"));
+        assert!(headers.contains("authorization: bearer access-token\r\n"));
+        assert!(headers.contains("x-organization-id: org-a\r\n"));
+        if workspace_bound {
+            assert!(headers.contains("x-workspace-id: workspace-a\r\n"));
+        } else {
+            assert!(!headers.contains("x-workspace-id:"));
+        }
+        let length: usize = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .expect("length")
+            .parse()
+            .expect("number");
+        while request.len() < header_end + length {
+            let mut buffer = [0; 1024];
+            let count = stream.read(&mut buffer).expect("body");
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+        }
+        let expected: &[u8] = if workspace_bound {
+            b"\x0a\x05org-a\x12\x0bworkspace-a"
+        } else {
+            b"\x0a\x05org-a"
+        };
+        assert_eq!(&request[header_end..], expected);
+        // Decode the actual bytes crossing the HTTP boundary, not the request builder.
+        let decoded =
+            wire::GetManagedSetupRequest::decode(&request[header_end..]).expect("protobuf request");
+        assert_eq!(decoded.organization_id, "org-a");
+        assert_eq!(
+            decoded.workspace_id,
+            if workspace_bound { "workspace-a" } else { "" }
+        );
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/proto\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).expect("headers");
+        stream.write_all(&body).expect("response");
+    });
+    (format!("http://{address}"), task)
+}
+
+#[test]
+fn protobuf_transport_preserves_every_policy_field_and_cache_timestamp() {
+    let (base, server) = protobuf_server(protobuf_fixture().encode_to_vec());
+    let setup = fetch_managed_setup_from(&session(), &base).expect("policy");
+    server.join().expect("server");
+    assert_eq!(setup.version, u64::MAX);
+    assert_eq!(
+        setup.issued_at,
+        Some(ManagedSetupTimestamp {
+            seconds: 1_800_000_000,
+            nanos: 123
+        })
+    );
+    assert_eq!(setup.organization_id, "org-a");
+    assert_eq!(setup.workspace_id, "workspace-a");
+    assert_eq!(
+        setup.rules,
+        vec![ManagedRule {
+            id: "rule".into(),
+            title: "Review".into(),
+            body_markdown: "Read the runbook.".into(),
+            scope: RuleScope::Workspace
+        }]
+    );
+    assert_eq!(
+        setup.skills,
+        vec![ManagedSkillRef {
+            id: "triage".into(),
+            source: "catalog".into(),
+            version: "3".into(),
+            required: true
+        }]
+    );
+    assert_eq!(
+        setup.mcp,
+        McpPolicy {
+            mode: McpPolicyMode::Allowlist,
+            servers: vec![McpServerRef {
+                name: "docs".into(),
+                url_pattern: "https://docs.example.com/*".into(),
+                transport: "http".into()
+            }]
+        }
+    );
+    assert_eq!(setup.sandbox_policy_toml, "[network]\ndefault = \"deny\"\n");
+    let temp = tempfile::tempdir().expect("directory");
+    let path = temp.path().join("cache.json");
+    write_cache(&path, &session(), &setup, 42).expect("cache");
+    assert_eq!(read_cache(&path).expect("cached").setup, setup);
+}
+
+#[test]
+fn protobuf_transport_rejects_malformed_foreign_and_unknown_policy() {
+    let mut foreign_org = protobuf_fixture();
+    foreign_org.organization_id = "other".into();
+    let mut foreign_workspace = protobuf_fixture();
+    foreign_workspace.workspace_id = "other".into();
+    let mut unknown_mode = protobuf_fixture();
+    unknown_mode.mcp.as_mut().unwrap().mode = 99;
+    let mut unknown_scope = protobuf_fixture();
+    unknown_scope.rules[0].scope = 99;
+    let mut invalid_timestamp = protobuf_fixture();
+    invalid_timestamp.issued_at.as_mut().unwrap().nanos = -1;
+    for body in [
+        vec![0x80],
+        foreign_org.encode_to_vec(),
+        foreign_workspace.encode_to_vec(),
+        unknown_mode.encode_to_vec(),
+        unknown_scope.encode_to_vec(),
+        invalid_timestamp.encode_to_vec(),
+    ] {
+        let (base, server) = protobuf_server(body);
+        let client = ManagedSetupClient::resolve_with(
+            Some(&session()),
+            None,
+            42,
+            Duration::ZERO,
+            |session| fetch_managed_setup_from(session, &base),
+        );
+        server.join().expect("server");
+        assert_eq!(client.origin(), ManagedSetupOrigin::FailedClosed);
+        assert_eq!(client.mcp_policy(), &McpPolicy::deny_all());
+    }
+}
+
+#[test]
+fn protobuf_transport_accepts_organization_policy_for_both_selectors() {
+    for workspace_bound in [false, true] {
+        let mut policy = protobuf_fixture();
+        policy.workspace_id.clear();
+        let (base, server) = protobuf_server_for(policy.encode_to_vec(), workspace_bound);
+        let session = session_for("org-a", workspace_bound.then_some("workspace-a"));
+        let setup = fetch_managed_setup_from(&session, &base).expect("organization policy");
+        server.join().expect("server");
+        assert_eq!(setup.organization_id, "org-a");
+        assert!(setup.workspace_id.is_empty());
+    }
 }

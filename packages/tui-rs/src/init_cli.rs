@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 use uuid::Uuid;
 
-pub(crate) const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.evalops.dev";
+pub(crate) const DEFAULT_AGENT_MCP_BASE_URL: &str = "https://app.deixic.com";
 const DEFAULT_IDENTITY_BASE_URL: &str = "https://identity.evalops.dev";
 const TRUSTED_IDENTITY_AUTHORITIES: &[&str] = &["identity.evalops.dev", "api.staging.evalops.dev"];
 pub const TEST_IDENTITY_AUTHORITY_ENV: &str = "MAESTRO_TEST_IDENTITY_AUTHORITY";
@@ -46,7 +46,7 @@ fn open_browser_disabled() -> bool {
     )
 }
 const REQUIRED_LOGIN_SCOPES: &str =
-    "llm_gateway:invoke sessions:read sessions:write product_issues:write";
+    "llm_gateway:invoke sessions:read sessions:write product_issues:write console:read";
 const DEFAULT_API_KEY_SCOPES: &[&str] = &[
     "agent:register",
     "agent:heartbeat",
@@ -136,6 +136,11 @@ struct OAuthTokenExchange {
     refresh_token: String,
     scope: String,
     organization_id: String,
+    /// Identity returns the caller's workspace alongside the organization.
+    /// Optional so a response without it still parses, which is what every
+    /// token issued before the field existed looks like.
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -652,8 +657,7 @@ async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCre
     }
     status(options, "Opening EvalOps login");
     credentials = Some(login(options, client).await?);
-    let mut credentials = credentials.context("EvalOps login did not produce credentials")?;
-    maybe_enroll_desktop_device(client, &mut credentials).await;
+    let credentials = credentials.context("EvalOps login did not produce credentials")?;
     save_credentials(&credentials)?;
     Ok(credentials)
 }
@@ -753,29 +757,33 @@ async fn login_with_scopes(
     }
     let token: OAuthTokenExchange = serde_json::from_str(&token_response_body)
         .context("parse EvalOps authorization-code exchange")?;
+    let mut metadata = Map::from_iter([
+        ("identityBaseUrl".to_owned(), Value::String(identity)),
+        (
+            "organizationId".to_owned(),
+            Value::String(token.organization_id),
+        ),
+        ("providerRef".to_owned(), provider_ref()),
+        (
+            "scopes".to_owned(),
+            Value::Array(
+                token
+                    .scope
+                    .split_whitespace()
+                    .map(|scope| Value::String(scope.to_owned()))
+                    .collect(),
+            ),
+        ),
+    ]);
+    if let Some(workspace_id) = non_empty(token.workspace_id.as_deref()) {
+        metadata.insert("workspaceId".to_owned(), Value::String(workspace_id));
+    }
     Ok(OAuthCredentials {
         credential_type: "oauth".to_owned(),
         refresh: token.refresh_token,
         access: token.access_token,
         expires: Utc::now().timestamp_millis() + (token.expires_in as i64 * 1_000),
-        metadata: Map::from_iter([
-            ("identityBaseUrl".to_owned(), Value::String(identity)),
-            (
-                "organizationId".to_owned(),
-                Value::String(token.organization_id),
-            ),
-            ("providerRef".to_owned(), provider_ref()),
-            (
-                "scopes".to_owned(),
-                Value::Array(
-                    token
-                        .scope
-                        .split_whitespace()
-                        .map(|scope| Value::String(scope.to_owned()))
-                        .collect(),
-                ),
-            ),
-        ]),
+        metadata,
     })
 }
 
@@ -894,26 +902,10 @@ async fn refresh_credentials(
     let identity = metadata_string(&existing.metadata, "identityBaseUrl")
         .unwrap_or_else(identity_base_from_env);
     let existing_device_id = metadata_string(&existing.metadata, "deviceId");
-    let device_proof = crate::device_identity::build_enrolled_desktop_device_proof(
-        client,
-        &identity,
-        crate::device_identity::DeviceProofPurpose::Refresh,
-        existing_device_id.as_deref(),
-    )
-    .await;
-
-    let mut refresh_body = json!({ "refresh_token": existing.refresh });
-    if let Some(proof) = &device_proof {
-        refresh_body["device_proof"] = json!({
-            "challenge_id": proof.challenge_id,
-            "device_id": proof.device_id,
-            "signature": proof.signature,
-        });
-    }
 
     let response = client
         .post(format!("{identity}/v1/tokens/refresh"))
-        .json(&refresh_body)
+        .json(&json!({ "refresh_token": existing.refresh }))
         .send()
         .await?;
     let status = response.status();
@@ -929,10 +921,7 @@ async fn refresh_credentials(
     }
     let access =
         string_at(&payload, "access_token").context("EvalOps refresh missing access_token")?;
-    let expires = parse_timestamp(
-        payload.get("expires_at").and_then(Value::as_str),
-        "expires_at",
-    )?;
+    let expires = refresh_expiry(&payload, Utc::now().timestamp_millis())?;
     let mut metadata = existing.metadata.clone();
     metadata.insert(
         "identityBaseUrl".to_owned(),
@@ -941,7 +930,25 @@ async fn refresh_credentials(
     if let Some(org) = string_at(&payload, "organization_id") {
         metadata.insert("organizationId".to_owned(), Value::String(org));
     }
-    if let Some(scopes) = string_array(payload.get("scopes")) {
+    // Refresh re-issues the tenant binding. Absent means "unchanged", so the
+    // stored workspace survives a response that omits it.
+    if let Some(workspace) = string_at(&payload, "workspace_id") {
+        metadata.insert("workspaceId".to_owned(), Value::String(workspace));
+    }
+    if let Some(scope) = payload.get("scope") {
+        let scope = scope
+            .as_str()
+            .context("Invalid scope in EvalOps refresh response")?;
+        metadata.insert(
+            "scopes".to_owned(),
+            Value::Array(
+                scope
+                    .split_whitespace()
+                    .map(|scope| Value::String(scope.to_owned()))
+                    .collect(),
+            ),
+        );
+    } else if let Some(scopes) = string_array(payload.get("scopes")) {
         metadata.insert(
             "scopes".to_owned(),
             Value::Array(scopes.into_iter().map(Value::String).collect()),
@@ -950,35 +957,13 @@ async fn refresh_credentials(
     if let Some(device_id) = existing_device_id {
         metadata.insert("deviceId".to_owned(), Value::String(device_id));
     }
-    let refreshed = OAuthCredentials {
+    Ok(OAuthCredentials {
         credential_type: "oauth".to_owned(),
         refresh: string_at(&payload, "refresh_token").unwrap_or_else(|| existing.refresh.clone()),
         access,
         expires,
         metadata,
-    };
-
-    // Match TS: when no enrolled proof was available, persist the refresh first, then
-    // best-effort migrate/enroll the current desktop device and attach deviceId.
-    if device_proof.is_some() {
-        return Ok(refreshed);
-    }
-    let _ = save_credentials(&refreshed);
-    if let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
-        client,
-        &identity,
-        &refreshed.access,
-        Some(&package_version()),
-    )
-    .await
-    {
-        let mut migrated = refreshed;
-        migrated
-            .metadata
-            .insert("deviceId".to_owned(), Value::String(device_id));
-        return Ok(migrated);
-    }
-    Ok(refreshed)
+    })
 }
 
 async fn resolve_endpoint(
@@ -1115,7 +1100,10 @@ fn resolve_identity_base_url(
         .host_str()
         .unwrap_or_default()
         .to_owned();
-    let custom = !matches!(host.as_str(), "app.evalops.dev" | "staging.evalops.dev");
+    let custom = !matches!(
+        host.as_str(),
+        "app.evalops.dev" | "app.deixic.com" | "staging.evalops.dev"
+    );
     if custom {
         if let Some(stored) = stored {
             return Ok(normalize_identity(&stored));
@@ -1127,7 +1115,7 @@ fn resolve_identity_base_url(
 fn identity_from_mcp(endpoint: &str) -> Result<Option<String>> {
     let mut url = Url::parse(endpoint)?;
     let host = url.host_str().unwrap_or_default().to_owned();
-    if host == "app.evalops.dev" {
+    if matches!(host.as_str(), "app.evalops.dev" | "app.deixic.com") {
         return Ok(Some(DEFAULT_IDENTITY_BASE_URL.to_owned()));
     }
     if host == "staging.evalops.dev" {
@@ -1796,7 +1784,7 @@ fn authenticated_as(metadata: &Map<String, Value>) -> Option<String> {
 fn console_url(endpoint: &str) -> Result<String> {
     let mut url = Url::parse(endpoint)?;
     let environment = match url.host_str().unwrap_or_default() {
-        "app.evalops.dev" => "production",
+        "app.evalops.dev" | "app.deixic.com" => "production",
         "staging.evalops.dev" => "staging",
         _ => "local",
     };
@@ -1890,6 +1878,28 @@ fn has_trace_evidence(summary: &Value) -> bool {
         })
 }
 
+fn refresh_expiry(payload: &Value, now_ms: i64) -> Result<i64> {
+    if let Some(value) = payload.get("expires_in") {
+        let seconds = value
+            .as_u64()
+            .filter(|seconds| *seconds > 0)
+            .context("Invalid expires_in in EvalOps refresh response")?;
+        return i64::try_from(seconds)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000))
+            .and_then(|milliseconds| now_ms.checked_add(milliseconds))
+            .context("EvalOps refresh expiry is out of range");
+    }
+    let expires = parse_timestamp(
+        payload.get("expires_at").and_then(Value::as_str),
+        "expires_at",
+    )?;
+    if expires <= now_ms {
+        bail!("EvalOps refresh expiry is not in the future");
+    }
+    Ok(expires)
+}
+
 fn parse_timestamp(value: Option<&str>, field: &str) -> Result<i64> {
     let value = value.ok_or_else(|| anyhow!("Missing {field} in EvalOps response"))?;
     DateTime::parse_from_rfc3339(value)
@@ -1956,15 +1966,20 @@ fn login_tenant_hint() -> Option<(String, String)> {
         return complete_login_tenant_hint(environment_organization, environment_workspace);
     }
 
-    load_credentials().ok().flatten().and_then(|credentials| {
-        let organization = metadata_string(&credentials.metadata, "organizationId");
-        let workspace = credentials
-            .metadata
-            .get("agentMcp")
-            .and_then(Value::as_object)
-            .and_then(|metadata| metadata_string(metadata, "workspaceId"));
-        complete_login_tenant_hint(organization, workspace)
-    })
+    load_credentials()
+        .ok()
+        .flatten()
+        .and_then(|credentials| stored_login_tenant_hint(&credentials.metadata))
+}
+
+fn stored_login_tenant_hint(metadata: &Map<String, Value>) -> Option<(String, String)> {
+    let organization = metadata_string(metadata, "organizationId");
+    let workspace = metadata
+        .get("agentMcp")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata_string(metadata, "workspaceId"))
+        .or_else(|| metadata_string(metadata, "workspaceId"));
+    complete_login_tenant_hint(organization, workspace)
 }
 
 fn complete_login_tenant_hint(
@@ -2093,8 +2108,8 @@ fn package_version() -> String {
 // ── Shared EvalOps OAuth surface for `evalops_cli` ────────────────────────────
 //
 // Login uses the same dynamic client-registration + PKCE flow as `maestro init`.
-// Desktop device-identity enroll + refresh proofs are handled via
-// [`crate::device_identity`] (soft-fail when the helper is unavailable).
+// Device binding is handled by Identity's CodeAuthorityService, not by this
+// module.
 
 /// Snapshot of stored EvalOps agent-MCP registration metadata for status display.
 #[derive(Debug, Clone, Default)]
@@ -2121,6 +2136,10 @@ pub struct EvalOpsCredentialSnapshot {
     pub expires: i64,
     pub email: Option<String>,
     pub organization_id: Option<String>,
+    /// Workspace the issuer bound to this session. Distinct from
+    /// `agent_mcp.workspace_id`, which is recorded by agent registration and is
+    /// absent until `deixic-code init` runs.
+    pub workspace_id: Option<String>,
     pub user_id: Option<String>,
     pub identity_base_url: Option<String>,
     pub provider_ref: Option<Value>,
@@ -2143,6 +2162,48 @@ pub fn load_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
         return Ok(None);
     };
     Ok(Some(snapshot_from_credentials(&credentials)))
+}
+
+async fn load_current_evalops_snapshot_async() -> Result<Option<EvalOpsCredentialSnapshot>> {
+    let Some(credentials) = load_credentials()? else {
+        return Ok(None);
+    };
+    if credentials.expires > Utc::now().timestamp_millis() + 60_000 {
+        return Ok(Some(snapshot_from_credentials(&credentials)));
+    }
+    if credentials.refresh.trim().is_empty() {
+        bail!("EvalOps login expired and cannot be refreshed; run `maestro login`");
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("build EvalOps refresh client")?;
+    let refreshed = refresh_credentials(&credentials, &client)
+        .await
+        .context("refresh EvalOps login; run `maestro login` if the session was revoked")?;
+    save_credentials(&refreshed)?;
+    Ok(Some(snapshot_from_credentials(&refreshed)))
+}
+
+/// Load stored EvalOps credentials, refreshing an expired OAuth session
+/// without opening a browser.
+///
+/// Native-agent construction is synchronous and can run inside an existing
+/// Tokio runtime, so the async refresh stays isolated on a short-lived thread.
+/// An invalid or revoked refresh token fails closed and asks the user to log in
+/// again instead of unexpectedly launching an interactive OAuth flow.
+pub(crate) fn load_current_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
+    std::thread::spawn(|| -> Result<Option<EvalOpsCredentialSnapshot>> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build EvalOps refresh runtime")?
+            .block_on(load_current_evalops_snapshot_async())
+    })
+    .join()
+    .map_err(|_| anyhow!("EvalOps credential refresh thread panicked"))?
 }
 
 /// Resolve the trusted Identity authority used to verify a stored or
@@ -2264,32 +2325,9 @@ pub async fn perform_evalops_login() -> Result<()> {
         ..InitOptions::default()
     };
     status(&options, "Opening EvalOps login");
-    let mut credentials = login(&options, &client).await?;
-    maybe_enroll_desktop_device(&client, &mut credentials).await;
+    let credentials = login(&options, &client).await?;
     save_credentials(&credentials)?;
     Ok(())
-}
-
-/// Soft-fail desktop device enrollment; attaches `deviceId` to credential metadata when successful.
-async fn maybe_enroll_desktop_device(client: &Client, credentials: &mut OAuthCredentials) {
-    let identity = metadata_string(&credentials.metadata, "identityBaseUrl")
-        .unwrap_or_else(identity_base_from_env);
-    let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
-        client,
-        &identity,
-        &credentials.access,
-        Some(&package_version()),
-    )
-    .await
-    else {
-        return;
-    };
-    credentials
-        .metadata
-        .insert("identityBaseUrl".to_owned(), Value::String(identity));
-    credentials
-        .metadata
-        .insert("deviceId".to_owned(), Value::String(device_id));
 }
 
 /// Best-effort revoke of the EvalOps refresh token, then delete local credentials.
@@ -2351,6 +2389,7 @@ fn snapshot_from_credentials(credentials: &OAuthCredentials) -> EvalOpsCredentia
         expires: credentials.expires,
         email: authenticated_as(&credentials.metadata),
         organization_id: metadata_string(&credentials.metadata, "organizationId"),
+        workspace_id: metadata_string(&credentials.metadata, "workspaceId"),
         user_id: metadata_string(&credentials.metadata, "userId"),
         identity_base_url: metadata_string(&credentials.metadata, "identityBaseUrl"),
         provider_ref: credentials.metadata.get("providerRef").cloned(),
@@ -2363,7 +2402,7 @@ async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -
         .unwrap_or_else(identity_base_from_env);
     let response = client
         .post(format!("{identity}/v1/tokens/revoke"))
-        .json(&json!({ "refresh_token": credentials.refresh }))
+        .json(&json!({ "token": credentials.refresh }))
         .send()
         .await
         .context("revoke EvalOps refresh token")?;
@@ -2449,6 +2488,7 @@ mod tests {
             "https://identity.evalops.dev:8443",
             "https://identity.evalops.dev/tenant-controlled",
             "https://app.evalops.dev",
+            "https://identity.deixic.com",
         ] {
             let error = validate_identity_authority(authority, false)
                 .expect_err("caller-selected authority must fail closed");
@@ -2518,6 +2558,7 @@ mod tests {
             expires: 1,
             email: None,
             organization_id: Some("org".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: Some("https://identity.attacker.example".to_owned()),
             provider_ref: None,
@@ -2539,6 +2580,39 @@ mod tests {
         assert!(scopes.contains(&"product_issues:write"));
         assert!(scopes.contains(&"sessions:read"));
         assert!(scopes.contains(&"sessions:write"));
+    }
+
+    #[test]
+    fn stored_login_hint_preserves_login_only_scope_and_registration_precedence() {
+        let mut metadata = json!({
+            "organizationId": "org-1",
+            "workspaceId": "login-workspace"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "login-workspace".to_owned()))
+        );
+        metadata.insert(
+            "agentMcp".to_owned(),
+            json!({"workspaceId": "registered-workspace"}),
+        );
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "registered-workspace".to_owned()))
+        );
+        metadata.insert("agentMcp".to_owned(), json!({"workspaceId": " "}));
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "login-workspace".to_owned()))
+        );
+        metadata.remove("organizationId");
+        assert_eq!(stored_login_tenant_hint(&metadata), None);
+        metadata.insert("organizationId".to_owned(), json!("org-1"));
+        metadata.remove("workspaceId");
+        assert_eq!(stored_login_tenant_hint(&metadata), None);
     }
 
     #[test]
@@ -2642,6 +2716,65 @@ mod tests {
     }
 
     #[test]
+    fn public_agent_mcp_default_uses_deixic_origin() {
+        assert_eq!(DEFAULT_AGENT_MCP_BASE_URL, "https://app.deixic.com");
+    }
+
+    #[test]
+    fn deixic_agent_mcp_origin_uses_the_canonical_identity_authority() {
+        assert_eq!(
+            identity_from_mcp("https://app.deixic.com/mcp")
+                .unwrap()
+                .as_deref(),
+            Some("https://identity.evalops.dev")
+        );
+        assert_eq!(
+            identity_from_mcp("https://app.evalops.dev/mcp")
+                .unwrap()
+                .as_deref(),
+            Some("https://identity.evalops.dev")
+        );
+    }
+
+    #[test]
+    fn stored_deixic_agent_mcp_keeps_the_canonical_identity_authority() {
+        let _guard = crate::config::test_process_env_lock();
+        let env_names = [
+            "MAESTRO_IDENTITY_URL",
+            "EVALOPS_IDENTITY_URL",
+            "MAESTRO_PLATFORM_BASE_URL",
+            "MAESTRO_EVALOPS_BASE_URL",
+            "EVALOPS_BASE_URL",
+        ];
+        let previous_env = env_names.map(|name| (name, std::env::var(name).ok()));
+        for name in env_names {
+            std::env::remove_var(name);
+        }
+        let endpoint = Endpoint {
+            endpoint: "https://app.deixic.com/mcp".to_owned(),
+            identity_base_url: None,
+            manifest_url: None,
+            prefer_derived_identity: false,
+        };
+        let mut credentials = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: String::new(),
+            access: "access".to_owned(),
+            expires: 1,
+            metadata: Map::new(),
+        };
+        credentials.metadata.insert(
+            "identityBaseUrl".to_owned(),
+            json!("https://identity.attacker.example"),
+        );
+        let resolved = resolve_identity_base_url(&endpoint, &credentials).unwrap();
+        for (name, previous) in previous_env {
+            restore_env(name, previous);
+        }
+        assert_eq!(resolved, "https://identity.evalops.dev");
+    }
+
+    #[test]
     fn normalizes_manifest_and_mcp_urls() {
         assert_eq!(
             normalize_mcp_endpoint("https://app.evalops.dev").unwrap(),
@@ -2650,6 +2783,22 @@ mod tests {
         assert_eq!(
             normalize_manifest_url("https://app.evalops.dev").unwrap(),
             "https://app.evalops.dev/.well-known/evalops/agent-mcp.json"
+        );
+        assert_eq!(
+            normalize_mcp_endpoint("https://app.deixic.com").unwrap(),
+            "https://app.deixic.com/mcp"
+        );
+        assert_eq!(
+            normalize_manifest_url("https://app.deixic.com").unwrap(),
+            "https://app.deixic.com/.well-known/evalops/agent-mcp.json"
+        );
+    }
+
+    #[test]
+    fn deixic_console_url_uses_the_production_environment() {
+        assert_eq!(
+            console_url("https://app.deixic.com/mcp").unwrap(),
+            "https://app.deixic.com/overview?env=production"
         );
     }
 
@@ -2810,8 +2959,105 @@ mod tests {
         assert_eq!(refreshed.access, "access-two");
     }
 
+    async fn revoke_against_identity_stub(status: u16) -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        // Identity's JSON revoke contract uses `token`; refresh uses `refresh_token`.
+        #[derive(Deserialize)]
+        struct RevokeRequest {
+            token: String,
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let identity = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "POST /v1/tokens/revoke HTTP/1.1\r\n");
+            let mut length = None;
+            let mut content_type = None;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+                if name.eq_ignore_ascii_case("content-type") {
+                    content_type = Some(value.trim().to_owned());
+                }
+                assert!(!name.eq_ignore_ascii_case("authorization"));
+            }
+            assert_eq!(content_type.as_deref(), Some("application/json"));
+            let length = length.expect("JSON request length");
+            assert!(length < 4096);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).await.unwrap();
+            let request = serde_json::from_slice::<RevokeRequest>(&body);
+            let (response_status, response_body) = match request {
+                Ok(request) => {
+                    assert_eq!(request.token, "refresh-fixture");
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"token": "refresh-fixture"})
+                    );
+                    (
+                        status,
+                        if status == 200 {
+                            r#"{"revoked":true}"#
+                        } else {
+                            r#"{"error":"revocation_unavailable"}"#
+                        },
+                    )
+                }
+                Err(_) => (422, "missing field token"),
+            };
+            let response = format!(
+                "HTTP/1.1 {response_status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let credentials = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-fixture".to_owned(),
+            access: "access-must-not-be-sent".to_owned(),
+            expires: 0,
+            metadata: Map::from_iter([("identityBaseUrl".to_owned(), json!(identity))]),
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let result = revoke_refresh_token(&credentials, &client).await;
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("issuer request completes")
+            .expect("issuer contract assertions pass");
+        result
+    }
+
+    #[tokio::test]
+    async fn revoke_refresh_token_matches_identity_json_contract() {
+        revoke_against_identity_stub(200).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoke_refresh_token_preserves_issuer_errors() {
+        for status in [400, 503] {
+            let error = revoke_against_identity_stub(status).await.unwrap_err();
+            assert!(error.to_string().contains("revocation_unavailable"));
+        }
+    }
+
     struct IdentityStub {
         challenge: Option<String>,
+        requested_scopes: String,
         mismatch_state: bool,
     }
 
@@ -2822,6 +3068,7 @@ mod tests {
         let addr = listener.local_addr().expect("identity addr");
         let stub = std::sync::Arc::new(std::sync::Mutex::new(IdentityStub {
             challenge: None,
+            requested_scopes: String::new(),
             mismatch_state,
         }));
         let handle = tokio::spawn(async move {
@@ -2857,6 +3104,7 @@ mod tests {
                         let redirect = query.get("redirect_uri").cloned().unwrap_or_default();
                         if let Ok(mut stub) = stub.lock() {
                             stub.challenge = challenge;
+                            stub.requested_scopes = query.get("scope").cloned().unwrap_or_default();
                         }
                         let callback_state = if stub
                             .lock()
@@ -2898,10 +3146,22 @@ mod tests {
                             (
                                 200,
                                 String::new(),
-                                r#"{"access_token":"access-from-stub","expires_in":3600,"refresh_token":"refresh-from-stub","scope":"llm_gateway:invoke","organization_id":"org_from_stub"}"#.to_owned(),
+                                json!({
+                                    "access_token": "access-from-stub",
+                                    "expires_in": 3600,
+                                    "refresh_token": "refresh-from-stub",
+                                    "scope": stub.lock().expect("identity stub").requested_scopes,
+                                    "organization_id": "org_from_stub",
+                                    "workspace_id": "workspace_from_stub",
+                                }).to_string(),
                             )
                         }
                     }
+                    ("POST", "/v1/tokens/refresh") => (
+                        200,
+                        String::new(),
+                        r#"{"access_token":"access-refreshed","expires_in":3600,"refresh_token":"refresh-rotated","organization_id":"org_from_stub","workspace_id":"workspace_from_stub","scope":"llm_gateway:invoke sessions:read sessions:write"}"#.to_owned(),
+                    ),
                     _ => (404, String::new(), r#"{"error":"not_found"}"#.to_owned()),
                 };
                 let reason = match status {
@@ -2928,6 +3188,115 @@ mod tests {
         } else {
             std::env::remove_var(name);
         }
+    }
+
+    #[test]
+    fn refresh_expiry_accepts_native_seconds_and_legacy_absolute_time() {
+        let now = 1_000;
+        assert_eq!(
+            refresh_expiry(&json!({"expires_in": 3600}), now).unwrap(),
+            3_601_000
+        );
+        assert_eq!(
+            refresh_expiry(&json!({"expires_at": "1970-01-01T01:00:01Z"}), now).unwrap(),
+            3_601_000
+        );
+        assert_eq!(
+            refresh_expiry(
+                &json!({"expires_in": 1, "expires_at": "ignored legacy value"}),
+                now
+            )
+            .unwrap(),
+            2_000
+        );
+    }
+
+    #[test]
+    fn refresh_expiry_rejects_invalid_or_expired_values_without_legacy_fallback() {
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("3600"),
+            json!(true),
+            Value::Null,
+            json!(u64::MAX),
+        ] {
+            assert!(
+                refresh_expiry(
+                    &json!({"expires_in": value, "expires_at": "2099-01-01T00:00:00Z"}),
+                    1_000
+                )
+                .is_err()
+            );
+        }
+        for payload in [
+            json!({}),
+            json!({"expires_at": "invalid"}),
+            json!({"expires_at": "1970-01-01T00:00:01Z"}),
+        ] {
+            assert!(refresh_expiry(&payload, 1_000).is_err());
+        }
+        assert!(refresh_expiry(&json!({"expires_in": 1}), i64::MAX).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn expired_evalops_login_refreshes_without_browser() {
+        let _guard = crate::config::test_process_env_lock_async().await;
+        let home = tempfile::tempdir().expect("maestro home");
+        let (identity, identity_task) = spawn_identity_stub(false).await;
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let previous_storage = std::env::var("MAESTRO_OAUTH_STORAGE_MODE").ok();
+        let previous_keychain = std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok();
+        std::env::set_var("MAESTRO_HOME", home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+
+        let mut metadata = Map::new();
+        metadata.insert("identityBaseUrl".to_owned(), Value::String(identity));
+        save_credentials(&OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-from-stub".to_owned(),
+            access: "access-expired".to_owned(),
+            expires: Utc::now().timestamp_millis() - 1,
+            metadata,
+        })
+        .expect("save expired credentials");
+
+        let refresh_started_at = Utc::now().timestamp_millis();
+        let snapshot = load_current_evalops_snapshot()
+            .expect("refresh expired credentials")
+            .expect("stored credentials");
+        assert_eq!(snapshot.access, "access-refreshed");
+        assert_eq!(snapshot.refresh, "refresh-rotated");
+        assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
+        assert!(
+            (refresh_started_at + 3_600_000..=Utc::now().timestamp_millis() + 3_600_000)
+                .contains(&snapshot.expires)
+        );
+        let stored = load_credentials()
+            .expect("load refreshed credentials")
+            .expect("credentials");
+        assert_eq!(
+            stored.metadata.get("scopes"),
+            Some(&json!([
+                "llm_gateway:invoke",
+                "sessions:read",
+                "sessions:write"
+            ]))
+        );
+        // Identity re-issues the tenant binding on refresh. Dropping it here is
+        // what left `workspaceId` absent from every stored credential.
+        assert_eq!(
+            stored.metadata.get("workspaceId"),
+            Some(&json!("workspace_from_stub"))
+        );
+
+        delete_credentials().expect("delete test credentials");
+        restore_env("MAESTRO_HOME", previous_home);
+        restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
+        restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
+        identity_task.abort();
     }
 
     #[tokio::test]
@@ -2979,6 +3348,9 @@ mod tests {
                 panic!("PKCE login should succeed against the identity stub: {error:#}");
             }
         };
+        let stored = load_credentials()
+            .expect("load PKCE credentials")
+            .expect("stored PKCE credentials");
         restore_env("MAESTRO_HOME", previous_home);
         restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
         restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
@@ -2988,9 +3360,27 @@ mod tests {
         restore_env("MAESTRO_EVALOPS_ACCESS_TOKEN", previous_token);
         restore_env("MAESTRO_EVALOPS_ORG_ID", previous_org);
 
+        // The issuer fixture grants the scopes captured from the real authorize
+        // request. Exact equality excludes console write/admin and wildcard grants.
+        assert_eq!(
+            stored.metadata.get("scopes"),
+            Some(&json!([
+                "llm_gateway:invoke",
+                "sessions:read",
+                "sessions:write",
+                "product_issues:write",
+                "console:read"
+            ]))
+        );
         assert_eq!(snapshot.access, "access-from-stub");
         assert_eq!(snapshot.refresh, "refresh-from-stub");
         assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
+        // The workspace Identity returned is stored, so callers no longer have
+        // to recover it from MAESTRO_EVALOPS_WORKSPACE_ID.
+        assert_eq!(
+            stored.metadata.get("workspaceId"),
+            Some(&json!("workspace_from_stub"))
+        );
         let mode = crate::credential_mode::detect_from(
             Some(&snapshot),
             &std::collections::HashMap::from([(

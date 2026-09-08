@@ -86,8 +86,7 @@ pub fn build_setup_report(doctor: DoctorReport) -> SetupReport {
 
     for check in &doctor.checks {
         match check.id.as_str() {
-            "credential_mode" | "provider" | "auth_health" | "codex_login" | "codex_app_server" => {
-            }
+            "credential_mode" => {}
             "config" if check.status == CheckStatus::Fail => push_step(
                 &mut next_steps,
                 "config",
@@ -112,13 +111,23 @@ pub fn build_setup_report(doctor: DoctorReport) -> SetupReport {
                 "deixic-code doctor --live",
                 check.summary.clone(),
             ),
+            _ if check.status == CheckStatus::Fail => push_step(
+                &mut next_steps,
+                &check.id,
+                "deixic-code doctor --live",
+                check.summary.clone(),
+            ),
             _ => {}
         }
     }
 
     SetupReport {
         schema_version: SETUP_SCHEMA_VERSION,
-        ready: next_steps.is_empty(),
+        ready: doctor.ok
+            && !doctor
+                .checks
+                .iter()
+                .any(|check| check.status == CheckStatus::Fail),
         doctor,
         next_steps,
     }
@@ -189,7 +198,14 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         println!("Run deixic-code to start a session.");
         return Ok(0);
     }
-    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    if report
+        .doctor
+        .checks
+        .iter()
+        .any(|check| check.id == "credential_mode" && check.status == CheckStatus::Fail)
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+    {
         println!("EvalOps Identity is required before Deixic Code can run.");
         println!("Choose how to continue:");
         println!("  1. Sign in and use managed inference");
@@ -248,6 +264,21 @@ mod tests {
             detail: detail.map(str::to_owned),
             live: false,
         }
+    }
+
+    #[test]
+    fn failures_without_a_repair_mapping_cannot_claim_ready() {
+        let result = build_setup_report(report(
+            "openai",
+            vec![check(
+                "provider",
+                CheckStatus::Fail,
+                "resolution failed",
+                None,
+            )],
+        ));
+        assert!(!result.ready);
+        assert_eq!(result.next_steps[0].command, "deixic-code doctor --live");
     }
 
     #[test]

@@ -5,9 +5,6 @@
 //! - `login` / `logout` / `status` → best-effort parity with the former TypeScript handlers
 //! - `platform-tools` → Platform-owned ToolExecution MCP server and approval controls
 //!
-//! Desktop device-identity enroll + refresh proofs are handled via
-//! [`crate::device_identity`] (soft-fail without the native helper).
-//!
 //! Residual gap vs TypeScript:
 //! - Login uses the same dynamic client-registration + PKCE flow as `maestro init`
 //!   (not the identity-mediated Google-start URL used by the legacy TS path).
@@ -194,6 +191,7 @@ fn hosted_orb_smoke_credential(
         .agent_mcp
         .as_ref()
         .and_then(|agent| agent.workspace_id.as_deref())
+        .or(snapshot.workspace_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .context("stored EvalOps session has no workspace binding; run `deixic-code init`")?
@@ -266,8 +264,13 @@ fn resolve_managed_context(
     });
     let organization_id = env_from_map(env, EVALOPS_ORGANIZATION_ID_ENV_VARS)
         .or_else(|| snapshot.and_then(|value| value.organization_id.clone()));
+    // Organization already falls back to the stored session; workspace did not,
+    // so a signed-in user with no registered agent read as "scope unverified"
+    // even though the issuer bound a workspace. Agent registration still wins
+    // when present, so a managed agent session keeps its own workspace.
     let workspace_id = env_from_map(env, EVALOPS_WORKSPACE_ID_ENV_VARS)
-        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()));
+        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()))
+        .or_else(|| snapshot.and_then(|value| value.workspace_id.clone()));
     let agent_id = env_from_map(env, &["MAESTRO_AGENT_ID"])
         .or_else(|| agent_mcp.and_then(|meta| meta.agent_id.clone()));
     let run_id = env_from_map(env, &["MAESTRO_AGENT_RUN_ID"])
@@ -279,14 +282,14 @@ fn resolve_managed_context(
         || (env_from_map(env, EVALOPS_ACCESS_TOKEN_ENV_VARS).is_some()
             && (agent_id.is_some() || run_id.is_some()));
     let platform = organization_id.is_some() && workspace_id.is_some() && authenticated;
-    let scope_unavailable = organization_id.is_some() && workspace_id.is_none() && authenticated;
+    let scope_unverified = organization_id.is_some() && workspace_id.is_none() && authenticated;
     let managed = platform && managed_agent_session;
     let mode = if managed {
         "EvalOps managed"
     } else if platform {
         "EvalOps platform"
-    } else if scope_unavailable {
-        "EvalOps unavailable"
+    } else if scope_unverified {
+        "EvalOps scope unverified"
     } else {
         "byok"
     };
@@ -307,6 +310,8 @@ fn resolve_managed_context(
         expires_at: snapshot.map(|value| value.expires),
         inference: if platform {
             "llm-gateway"
+        } else if scope_unverified {
+            "unverified"
         } else {
             "local-provider"
         },
@@ -358,9 +363,9 @@ fn format_managed_status(context: &ManagedContext) -> String {
     if let Some(workspace) = context.workspace_id.as_deref() {
         lines.push(format!("Workspace: {workspace}"));
     }
-    if context.mode == "EvalOps unavailable" {
+    if context.mode == "EvalOps scope unverified" {
         lines.push(
-            "Control plane unavailable: an explicit workspace binding is required.".to_owned(),
+            "Workspace scope is not saved locally. Run `deixic-code doctor --live` to verify your account scope.".to_owned(),
         );
     }
     lines.push(format!(
@@ -432,7 +437,7 @@ fn control_plane_environment(endpoint: Option<&str>) -> Option<String> {
     let endpoint = endpoint?;
     let parsed = Url::parse(endpoint).ok()?;
     match parsed.host_str() {
-        Some("app.evalops.dev") => Some("production".to_owned()),
+        Some("app.evalops.dev" | "app.deixic.com") => Some("production".to_owned()),
         Some("staging.evalops.dev") => Some("staging".to_owned()),
         Some(host) => Some(host.to_owned()),
         None => Some(endpoint.to_owned()),
@@ -508,6 +513,57 @@ mod tests {
     }
 
     #[test]
+    fn login_only_snapshot_uses_the_issuer_workspace_binding() {
+        // A signed-in user with no registered agent. Identity bound a workspace
+        // and the client stores it, so this is a complete platform session --
+        // not "scope unverified".
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "tok".to_owned(),
+            refresh: "ref".to_owned(),
+            expires: now_ms() + 120_000,
+            email: Some("user@evalops.dev".to_owned()),
+            organization_id: Some("org_123".to_owned()),
+            workspace_id: Some("workspace_123".to_owned()),
+            user_id: Some("user_1".to_owned()),
+            identity_base_url: Some("https://identity.evalops.dev".to_owned()),
+            provider_ref: Some(json!({"provider": "openai", "environment": "prod"})),
+            agent_mcp: None,
+        };
+        let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
+        assert_eq!(context.workspace_id.as_deref(), Some("workspace_123"));
+        assert_eq!(context.mode, "EvalOps platform");
+        let output = format_managed_status(&context);
+        assert!(output.contains("Workspace: workspace_123"));
+        assert!(
+            !output.contains("Workspace scope is not saved locally"),
+            "a stored workspace must not report as unsaved: {output}"
+        );
+    }
+
+    #[test]
+    fn agent_registration_workspace_still_wins_over_the_session() {
+        // A managed agent keeps its own workspace; the session is only a
+        // fallback for when no agent is registered.
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "tok".to_owned(),
+            refresh: "ref".to_owned(),
+            expires: now_ms() + 120_000,
+            email: Some("user@evalops.dev".to_owned()),
+            organization_id: Some("org_123".to_owned()),
+            workspace_id: Some("workspace_session".to_owned()),
+            user_id: Some("user_1".to_owned()),
+            identity_base_url: Some("https://identity.evalops.dev".to_owned()),
+            provider_ref: None,
+            agent_mcp: Some(EvalOpsAgentMcpSnapshot {
+                workspace_id: Some("workspace_agent".to_owned()),
+                ..Default::default()
+            }),
+        };
+        let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
+        assert_eq!(context.workspace_id.as_deref(), Some("workspace_agent"));
+    }
+
+    #[test]
     fn managed_status_formats_login_only_snapshot() {
         let snapshot = EvalOpsCredentialSnapshot {
             access: "tok".to_owned(),
@@ -515,20 +571,21 @@ mod tests {
             expires: now_ms() + 120_000,
             email: Some("user@evalops.dev".to_owned()),
             organization_id: Some("org_123".to_owned()),
+            workspace_id: None,
             user_id: Some("user_1".to_owned()),
             identity_base_url: Some("https://identity.evalops.dev".to_owned()),
             provider_ref: Some(json!({"provider": "openai", "environment": "prod"})),
             agent_mcp: None,
         };
         let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
-        assert_eq!(context.mode, "EvalOps unavailable");
+        assert_eq!(context.mode, "EvalOps scope unverified");
         assert!(!context.managed);
-        assert_eq!(context.inference, "local-provider");
+        assert_eq!(context.inference, "unverified");
         let output = format_managed_status(&context);
-        assert!(output.contains("Mode: EvalOps unavailable"));
+        assert!(output.contains("Mode: EvalOps scope unverified"));
         assert!(
             output
-                .contains("Control plane unavailable: an explicit workspace binding is required.")
+                .contains("Workspace scope is not saved locally. Run `deixic-code doctor --live` to verify your account scope.")
         );
         assert!(output.contains("Organization: org_123"));
         assert!(output.contains("Authenticated as: user@evalops.dev"));
@@ -545,6 +602,7 @@ mod tests {
             expires: now_ms() + 120_000,
             email: Some("user@evalops.dev".to_owned()),
             organization_id: Some("org_fixture".to_owned()),
+            workspace_id: None,
             user_id: Some("user_fixture".to_owned()),
             identity_base_url: Some("https://identity.evalops.dev".to_owned()),
             provider_ref: None,
@@ -574,6 +632,7 @@ mod tests {
             expires: now_ms() + 3_600_000,
             email: None,
             organization_id: Some("org_abc".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: None,
             provider_ref: None,
@@ -618,6 +677,7 @@ mod tests {
             expires: 0,
             email: None,
             organization_id: Some("org_stored".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: None,
             provider_ref: None,
@@ -652,6 +712,10 @@ mod tests {
     fn control_plane_environment_maps_known_hosts() {
         assert_eq!(
             control_plane_environment(Some("https://app.evalops.dev/mcp")).as_deref(),
+            Some("production")
+        );
+        assert_eq!(
+            control_plane_environment(Some("https://app.deixic.com/mcp")).as_deref(),
             Some("production")
         );
         assert_eq!(
