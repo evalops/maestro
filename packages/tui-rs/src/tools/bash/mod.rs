@@ -1803,8 +1803,8 @@ impl BashTool {
                 .env_clear()
                 .envs(env)
                 // Defense-in-depth backstop, consistent with the other spawn
-                // sites in this crate (device_identity.rs, codex_app_server.rs,
-                // lsp.rs): if this `Child` is ever dropped without being
+                // sites in this crate (codex_app_server.rs, lsp.rs): if
+                // this `Child` is ever dropped without being
                 // waited on (e.g. the future is torn down from above without
                 // going through the cancel-token path below), tokio kills the
                 // immediate process rather than leaking it silently. This does

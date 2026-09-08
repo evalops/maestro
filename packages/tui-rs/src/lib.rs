@@ -195,7 +195,6 @@ pub mod codex_identity;
 pub use maestro_codex::codex_session;
 pub mod config_cli;
 pub mod context_cli;
-pub mod device_identity;
 pub mod evalops_cli;
 mod evidence;
 /// Droid-style executable slash commands from `.composer/commands/`.

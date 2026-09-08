@@ -1258,8 +1258,8 @@ async fn linux_read_only_blocks_network_sockets() {
 /// This deliberately avoids `std::env::set_var`/`remove_var`: those
 /// mutate real, process-wide state that every other test in this binary
 /// shares, which is exactly the kind of cross-test race the existing
-/// `env_lock()` helpers elsewhere in this crate (`config_cli.rs`,
-/// `device_identity.rs`) exist to paper over. Instead this reads `HOME`,
+/// `env_lock()` helpers elsewhere in this crate (`config_cli.rs`) exist
+/// to paper over. Instead this reads `HOME`,
 /// a variable already guaranteed to be set in the process running the
 /// test suite, without ever writing to the environment. `HOME` (unlike
 /// `PATH`) has no shell-assigned fallback value, so an unset `$HOME`
