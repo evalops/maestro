@@ -5,9 +5,6 @@
 //! - `login` / `logout` / `status` → best-effort parity with the former TypeScript handlers
 //! - `platform-tools` → Platform-owned ToolExecution MCP server and approval controls
 //!
-//! Desktop device-identity enroll + refresh proofs are handled via
-//! [`crate::device_identity`] (soft-fail without the native helper).
-//!
 //! Residual gap vs TypeScript:
 //! - Login uses the same dynamic client-registration + PKCE flow as `maestro init`
 //!   (not the identity-mediated Google-start URL used by the legacy TS path).

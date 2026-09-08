@@ -652,8 +652,7 @@ async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCre
     }
     status(options, "Opening EvalOps login");
     credentials = Some(login(options, client).await?);
-    let mut credentials = credentials.context("EvalOps login did not produce credentials")?;
-    maybe_enroll_desktop_device(client, &mut credentials).await;
+    let credentials = credentials.context("EvalOps login did not produce credentials")?;
     save_credentials(&credentials)?;
     Ok(credentials)
 }
@@ -894,26 +893,10 @@ async fn refresh_credentials(
     let identity = metadata_string(&existing.metadata, "identityBaseUrl")
         .unwrap_or_else(identity_base_from_env);
     let existing_device_id = metadata_string(&existing.metadata, "deviceId");
-    let device_proof = crate::device_identity::build_enrolled_desktop_device_proof(
-        client,
-        &identity,
-        crate::device_identity::DeviceProofPurpose::Refresh,
-        existing_device_id.as_deref(),
-    )
-    .await;
-
-    let mut refresh_body = json!({ "refresh_token": existing.refresh });
-    if let Some(proof) = &device_proof {
-        refresh_body["device_proof"] = json!({
-            "challenge_id": proof.challenge_id,
-            "device_id": proof.device_id,
-            "signature": proof.signature,
-        });
-    }
 
     let response = client
         .post(format!("{identity}/v1/tokens/refresh"))
-        .json(&refresh_body)
+        .json(&json!({ "refresh_token": existing.refresh }))
         .send()
         .await?;
     let status = response.status();
@@ -960,35 +943,13 @@ async fn refresh_credentials(
     if let Some(device_id) = existing_device_id {
         metadata.insert("deviceId".to_owned(), Value::String(device_id));
     }
-    let refreshed = OAuthCredentials {
+    Ok(OAuthCredentials {
         credential_type: "oauth".to_owned(),
         refresh: string_at(&payload, "refresh_token").unwrap_or_else(|| existing.refresh.clone()),
         access,
         expires,
         metadata,
-    };
-
-    // Match TS: when no enrolled proof was available, persist the refresh first, then
-    // best-effort migrate/enroll the current desktop device and attach deviceId.
-    if device_proof.is_some() {
-        return Ok(refreshed);
-    }
-    let _ = save_credentials(&refreshed);
-    if let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
-        client,
-        &identity,
-        &refreshed.access,
-        Some(&package_version()),
-    )
-    .await
-    {
-        let mut migrated = refreshed;
-        migrated
-            .metadata
-            .insert("deviceId".to_owned(), Value::String(device_id));
-        return Ok(migrated);
-    }
-    Ok(refreshed)
+    })
 }
 
 async fn resolve_endpoint(
@@ -2128,8 +2089,8 @@ fn package_version() -> String {
 // ── Shared EvalOps OAuth surface for `evalops_cli` ────────────────────────────
 //
 // Login uses the same dynamic client-registration + PKCE flow as `maestro init`.
-// Desktop device-identity enroll + refresh proofs are handled via
-// [`crate::device_identity`] (soft-fail when the helper is unavailable).
+// Device binding is handled by Identity's CodeAuthorityService, not by this
+// module.
 
 /// Snapshot of stored EvalOps agent-MCP registration metadata for status display.
 #[derive(Debug, Clone, Default)]
@@ -2341,32 +2302,9 @@ pub async fn perform_evalops_login() -> Result<()> {
         ..InitOptions::default()
     };
     status(&options, "Opening EvalOps login");
-    let mut credentials = login(&options, &client).await?;
-    maybe_enroll_desktop_device(&client, &mut credentials).await;
+    let credentials = login(&options, &client).await?;
     save_credentials(&credentials)?;
     Ok(())
-}
-
-/// Soft-fail desktop device enrollment; attaches `deviceId` to credential metadata when successful.
-async fn maybe_enroll_desktop_device(client: &Client, credentials: &mut OAuthCredentials) {
-    let identity = metadata_string(&credentials.metadata, "identityBaseUrl")
-        .unwrap_or_else(identity_base_from_env);
-    let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
-        client,
-        &identity,
-        &credentials.access,
-        Some(&package_version()),
-    )
-    .await
-    else {
-        return;
-    };
-    credentials
-        .metadata
-        .insert("identityBaseUrl".to_owned(), Value::String(identity));
-    credentials
-        .metadata
-        .insert("deviceId".to_owned(), Value::String(device_id));
 }
 
 /// Best-effort revoke of the EvalOps refresh token, then delete local credentials.
