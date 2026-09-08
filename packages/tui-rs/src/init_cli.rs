@@ -2440,7 +2440,7 @@ async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -
         .unwrap_or_else(identity_base_from_env);
     let response = client
         .post(format!("{identity}/v1/tokens/revoke"))
-        .json(&json!({ "refresh_token": credentials.refresh }))
+        .json(&json!({ "token": credentials.refresh }))
         .send()
         .await
         .context("revoke EvalOps refresh token")?;
@@ -2961,6 +2961,102 @@ mod tests {
             .unwrap()
             .expect("invalidated credentials should reload");
         assert_eq!(refreshed.access, "access-two");
+    }
+
+    async fn revoke_against_identity_stub(status: u16) -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        // Identity's JSON revoke contract uses `token`; refresh uses `refresh_token`.
+        #[derive(Deserialize)]
+        struct RevokeRequest {
+            token: String,
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let identity = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "POST /v1/tokens/revoke HTTP/1.1\r\n");
+            let mut length = None;
+            let mut content_type = None;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+                if name.eq_ignore_ascii_case("content-type") {
+                    content_type = Some(value.trim().to_owned());
+                }
+                assert!(!name.eq_ignore_ascii_case("authorization"));
+            }
+            assert_eq!(content_type.as_deref(), Some("application/json"));
+            let length = length.expect("JSON request length");
+            assert!(length < 4096);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).await.unwrap();
+            let request = serde_json::from_slice::<RevokeRequest>(&body);
+            let (response_status, response_body) = match request {
+                Ok(request) => {
+                    assert_eq!(request.token, "refresh-fixture");
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"token": "refresh-fixture"})
+                    );
+                    (
+                        status,
+                        if status == 200 {
+                            r#"{"revoked":true}"#
+                        } else {
+                            r#"{"error":"revocation_unavailable"}"#
+                        },
+                    )
+                }
+                Err(_) => (422, "missing field token"),
+            };
+            let response = format!(
+                "HTTP/1.1 {response_status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let credentials = OAuthCredentials {
+            credential_type: "oauth".to_owned(),
+            refresh: "refresh-fixture".to_owned(),
+            access: "access-must-not-be-sent".to_owned(),
+            expires: 0,
+            metadata: Map::from_iter([("identityBaseUrl".to_owned(), json!(identity))]),
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let result = revoke_refresh_token(&credentials, &client).await;
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("issuer request completes")
+            .expect("issuer contract assertions pass");
+        result
+    }
+
+    #[tokio::test]
+    async fn revoke_refresh_token_matches_identity_json_contract() {
+        revoke_against_identity_stub(200).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoke_refresh_token_preserves_issuer_errors() {
+        for status in [400, 503] {
+            let error = revoke_against_identity_stub(status).await.unwrap_err();
+            assert!(error.to_string().contains("revocation_unavailable"));
+        }
     }
 
     struct IdentityStub {
