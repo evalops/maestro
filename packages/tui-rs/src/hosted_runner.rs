@@ -52,6 +52,7 @@ use crate::headless_server::{GovernedGrantVerificationContext, verify_governed_t
 
 mod config;
 mod handle;
+mod initial_actions;
 mod manifests;
 pub mod rendezvous_carrier;
 pub mod rendezvous_protocol;
@@ -3007,6 +3008,13 @@ async fn route_request_inner(
             )
         }
         ("POST", path)
+            if path.starts_with("/api/headless/threads/") && path.ends_with("/initial-actions") =>
+        {
+            let thread_id = thread_id_from_path(path, "/initial-actions")?;
+            let input = parse_json::<initial_actions::InitialActionRequest>(&request.body)?;
+            initial_actions::handle_initial_action(shared, thread_id, request.headers, input)
+        }
+        ("POST", path)
             if path.starts_with("/api/headless/threads/") && path.ends_with("/turns") =>
         {
             let thread_id = thread_id_from_path(path, "/turns")?;
@@ -3804,7 +3812,17 @@ async fn handle_append_turn(
     }
 
     let turn_id = input.turn_id.clone();
-    let message = append_turn_message(input);
+    let mut dispatch_input = input;
+    {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(receipt) = state.thread.initial_actions.get(&turn_id) {
+            dispatch_input.content = receipt.context_for(&dispatch_input.content)?;
+        }
+    }
+    let message = append_turn_message(dispatch_input);
     let execution = handle_message_inner(shared.clone(), thread_id, headers, message).await;
     if let Err(error) = execution {
         let mut state = shared
@@ -4635,6 +4653,12 @@ async fn handle_message_inner(
             // transient journal failure cannot make the native transport retry
             // an already-executed approval, input, tool result, or retry.
             idempotency_persisted = false;
+            shared
+                .thread_persistence_retry_pending
+                .store(true, Ordering::Release);
+            // Finalization may be the last activity on this connection. Retry
+            // the retained completion even if no more runtime events arrive.
+            shared.schedule_thread_persistence_recovery();
             eprintln!("failed to persist response idempotency key: {error}");
         }
         if !idempotency_persisted {

@@ -15,7 +15,7 @@ fn maestro_tui_binary() -> std::ffi::OsString {
         .expect("Cargo must provide the maestro-tui integration-test binary")
 }
 
-fn assert_signal_drains(signal: &str) {
+fn assert_signal_drains(signal: libc::c_int) {
     let workspace = tempdir().expect("workspace");
     let agent = workspace.path().join("fake-agent.sh");
     let mut script = fs::File::create(&agent).expect("create fake agent");
@@ -74,11 +74,12 @@ fn assert_signal_drains(signal: &str) {
     let startup: serde_json::Value = serde_json::from_str(&startup).expect("startup json");
     assert_eq!(startup["runtime"], "rust-hosted-runner");
 
-    let kill_status = Command::new("kill")
-        .args([signal, &child.id().to_string()])
-        .status()
-        .expect("send hosted runner signal");
-    assert!(kill_status.success());
+    // Signal immediately after readiness, without the scheduling delay of
+    // spawning an external kill process. Readiness promises that drain handlers
+    // are already installed.
+    // SAFETY: kill only signals the child PID and does not access memory.
+    let kill_status = unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    assert_eq!(kill_status, 0, "send hosted runner signal");
 
     let shutdown = line_rx
         .recv_timeout(Duration::from_secs(10))
@@ -99,7 +100,9 @@ fn assert_signal_drains(signal: &str) {
 
 #[test]
 fn hangup_and_quit_drain_before_exit() {
-    for signal in ["-HUP", "-QUIT"] {
-        assert_signal_drains(signal);
+    for signal in [libc::SIGHUP, libc::SIGQUIT] {
+        for _ in 0..16 {
+            assert_signal_drains(signal);
+        }
     }
 }

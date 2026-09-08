@@ -2,7 +2,7 @@
   "name": "dex-appearance-picker-scrolled",
   "steps": [
     {
-      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
     },
     {
       "text": "/dex appearance"

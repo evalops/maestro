@@ -75,14 +75,14 @@ class CaptureTests(unittest.TestCase):
                     headers={"Content-Type": "application/json"},
                 )
                 with urllib.request.urlopen(request, timeout=3) as response:
-                    return response.read().decode()
+                    return response.read() if response.headers.get_content_type() == "application/proto" else response.read().decode()
 
             identity = json.loads(post("/v1/tokens/introspect"))
             self.assertEqual(identity["organization_id"], "capture-org")
             self.assertEqual(identity["workspace_id"], "capture-workspace")
-            policy = json.loads(post("/console.v1.ManagedSetupService/GetManagedSetup"))
+            policy = post("/console.v1.ManagedSetupService/GetManagedSetup")
             self.assertEqual(
-                policy["mcp"], {"mode": "MCP_POLICY_MODE_ALLOWLIST", "servers": []}
+                policy, b"\x08\x01\x2a\x02\x08\x02\x3a\x0bcapture-org"
             )
             self.assertIn("tool_calls", post("/v1/chat/completions"))
             self.assertIn(
@@ -99,6 +99,33 @@ class CaptureTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 post("/unknown")
             self.assertEqual(error.exception.code, 404)
+            error.exception.close()
+
+    def test_astra_responses_requires_the_real_tool_result(self):
+        from tui_capture_fixture import CaptureFixture
+
+        with CaptureFixture() as fixture:
+            def post(body):
+                request = urllib.request.Request(
+                    fixture.environment()["OPENAI_BASE_URL"] + "/responses",
+                    data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return json.loads(response.read().decode().removeprefix("data: "))
+
+            event = post({"model": "gpt-6-astra", "input": []})
+            self.assertEqual(event["response"]["model"], "gpt-6-astra")
+            call = event["response"]["output"][0]
+            self.assertEqual(call["type"], "function_call")
+            self.assertEqual(call["name"], "read")
+            event = post({"input": [{"type": "function_call_output", "call_id": call["call_id"], "output": "# Release checklist"}]})
+            self.assertIn("README", event["response"]["output"][0]["content"][0]["text"])
+        with CaptureFixture() as fixture:
+            post({"input": []})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                post({"input": []})
+            self.assertEqual(error.exception.code, 409)
             error.exception.close()
 
     def test_capture_waits_past_partial_frame_and_cursor_updates(self):

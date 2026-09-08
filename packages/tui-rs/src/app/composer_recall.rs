@@ -113,21 +113,9 @@ pub(super) fn render(
     area: Rect,
     input: Rect,
     search: Option<&HistorySearch>,
-    stashed: bool,
 ) {
     use ratatui::widgets::{Clear, Paragraph};
     let theme = crate::themes::current_ui_theme();
-    let hint = if stashed {
-        " Ctrl+S restore/swap draft · Ctrl+R history "
-    } else {
-        " Ctrl+S stash draft · Ctrl+R history "
-    };
-    if input.width > 4 && input.height > 0 {
-        frame.render_widget(
-            Paragraph::new(hint).style(theme.muted_style()),
-            Rect::new(input.x + 1, input.y, input.width - 2, 1),
-        );
-    }
     let Some(search) = search else { return };
     // A bounded inline list above the composer; preserve its original draft underneath.
     let height = input.y.saturating_sub(area.y).min(6);
@@ -175,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn composer_recall_inline_search_renders_selection_and_stash_hint() {
+    fn composer_recall_inline_search_keeps_controls_out_of_composer() {
         let backend = ratatui::backend::TestBackend::new(90, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let search = HistorySearch {
@@ -185,13 +173,7 @@ mod tests {
         };
         terminal
             .draw(|frame| {
-                render(
-                    frame,
-                    frame.area(),
-                    Rect::new(0, 9, 90, 3),
-                    Some(&search),
-                    true,
-                );
+                render(frame, frame.area(), Rect::new(0, 9, 90, 3), Some(&search));
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -202,6 +184,7 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("› deploy production"));
         assert!(rendered.contains("Enter restore text (attachments kept)"));
-        assert!(rendered.contains("Ctrl+S restore/swap draft"));
+        assert!(!rendered.contains("Ctrl+S"));
+        assert!(!rendered.contains("Ctrl+R"));
     }
 }

@@ -1,7 +1,7 @@
 //! Dex-derived Dex Code mark for the Maestro TUI welcome surface.
 //!
-//! The terminal mark carries the same small cues as Dex: a soft asymmetric
-//! sheet, expressive eyes, a small smile, and feet near the hem. Colors
+//! The terminal mark carries the same small cues as Dex: an angular hood,
+//! narrow eyes, pointed shoulders, and a tapered lower edge. Colors
 //! come from Deixic violet (`#6857fe`). Diagonal sheen uses [`crate::shimmer`]
 //! only while Maestro is working.
 //!
@@ -24,53 +24,55 @@ pub const PRODUCT_TITLE: &str = "Dex Code";
 /// Empty-composer hint shared by the welcome and status surfaces.
 pub const COMPOSER_HINT: &str = "Type a message or press ? for commands.";
 
-/// Full Dex mark. A friendly face and tiny feet survive without turning the
-/// empty session into a mascot-led hero.
+/// Angular Dex hood and mantle. Braille cells provide finer curves than box
+/// corners; all poses occupy the same terminal columns and rows.
 pub const LOGO_FULL: &str = r"
-       ╭────────╮
-    ╭──╯        ╰──╮
-   │      •   •     │
-   │       ╰─╯      │
-   ╰╮  ╭╯ ╰╮  ╭╯ ╰─╯
+      ⣀⡤⠞⠙⠦⣄⡀
+     ⡞⠁     ⠙⡆
+    ⣸⠁⠻⣄   ⣠⠟⢹⡀
+  ⣠⠞⠁⣀      ⢀⡀⠙⢦⡀
+⣠⠾⠗⠚⠉⠉⠳⣄  ⢀⡴⠋⠉⠙⠒⠿⢦⡀
+       ⠈⠳⡴⠋
 ";
 
 const LOGO_FULL_WORKING: &str = r"
-       ╭────────╮
-    ╭──╯        ╰──╮
-   │      •   •     │
-   │    ╰─╯   · · · │
-   ╰╮  ╭╯ ╰╮  ╭╯ ╰─╯
+      ⣀⡤⠞⠙⠦⣄⡀
+     ⡞⠁     ⠙⡆
+    ⣸⠁ ¬   ¬ ⢹⡀
+  ⣠⠞⠁⣀      ⢀⡀⠙⢦⡀
+⣠⠾⠗⠚⠉⠉⠳⣄  ⢀⡴⠋⠉⠙⠒⠿⢦⡀
+       ⠈⠳⡴⠋
 ";
 
-/// Compact mark for mid-height viewports.
+/// Compact cowl retains expressive eyes in short viewports.
 pub const LOGO_COMPACT: &str = r"
-    ╭───────╮
-  ╭─╯ •   •  ╰╮
-  ╰──╯ ╰─╯ ╰──╯
+   ⣀⡴⠚⠙⠲⣄⡀
+  ⠘⣅⠳   ⠞⡝
+   ⠈⠓⢦⣠⠖⠋
 ";
 
 const LOGO_COMPACT_WORKING: &str = r"
-    ╭───────╮
-  ╭─╯ •   •  ╰╮
-  ╰──╯ ··· ╰──╯
+   ⣀⡴⠚⠙⠲⣄⡀
+  ⠘⣅¬   ¬⡝
+   ⠈⠓⢦⣠⠖⠋
 ";
 
 /// Tiny two-line mark when vertical space is tight but not zero.
 pub const LOGO_TINY: &str = r"
-  ╭• •╮
-  ╰╯ ╰╯
+  ⢠⠳ ⠞⡄
+   ⠑⣄⠔⠁
 ";
 
 const LOGO_TINY_WORKING: &str = r"
-  ╭• •╮
-  ╰╯···╰╯
+  ⢠¬ ¬⡄
+   ⠑⣄⠔⠁
 ";
 
 /// One-line mark for compact terminal panes. It keeps the product visibly
 /// branded when there is room for the title and hint but not the two-line art.
-pub const LOGO_MICRO: &str = "  (• •)";
+pub const LOGO_MICRO: &str = "  ⟨⠳ ⠞⟩";
 
-const LOGO_MICRO_WORKING: &str = "  ◉···";
+const LOGO_MICRO_WORKING: &str = "  ⟨¬ ¬⟩";
 
 /// Minimum area height (rows) to show the one-line mark.
 pub const MICRO_MIN_HEIGHT: u16 = 4;
@@ -80,6 +82,35 @@ pub const TINY_MIN_HEIGHT: u16 = 7;
 pub const COMPACT_MIN_HEIGHT: u16 = 10;
 /// Minimum area height for the full mark.
 pub const FULL_MIN_HEIGHT: u16 = 14;
+
+/// Startup reserves a row above the mark for the selected accessory and rows
+/// below it for the welcome prompt and tip. Short panes keep the compact sprite.
+#[must_use]
+pub const fn welcome_logo_height(area_height: u16) -> u16 {
+    if area_height >= 9 {
+        FULL_MIN_HEIGHT
+    } else {
+        COMPACT_MIN_HEIGHT
+    }
+}
+
+/// The first row below the portrait and its breathing room.
+#[must_use]
+pub fn welcome_prompt_row(area: Rect) -> u16 {
+    area.y + logo_line_count(welcome_logo_height(area.height)) + 2
+}
+
+/// Substitute an expression without changing the full portrait's cell width.
+#[must_use]
+pub fn portrait_expression(line: &str, eyes: &str) -> String {
+    if eyes == "• •" {
+        return line.to_owned();
+    }
+    let wide_eyes = eyes.replace(' ', "   ");
+    line.replace("⠻⣄   ⣠⠟", &format!("{wide_eyes:^7}"))
+        .replace("⠳   ⠞", &format!("{wide_eyes:^5}"))
+        .replace("⠳ ⠞", eyes)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LaunchState {
@@ -322,8 +353,9 @@ pub fn render_welcome_with_theme(
         return;
     }
     if area.width >= 44 && area.height >= 5 {
+        let logo_height = welcome_logo_height(area.height);
         let logo = static_logo_lines_for_state(
-            COMPACT_MIN_HEIGHT,
+            logo_height,
             if ready {
                 LaunchState::Idle
             } else {
@@ -384,18 +416,23 @@ pub fn render_welcome_with_theme(
                 }
             }
         }
-        if ready && facts.is_some() && area.height >= 6 {
-            Paragraph::new("What are we making?")
+        if ready && facts.is_some() && welcome_prompt_row(area) < area.bottom() {
+            Paragraph::new("Objective?")
                 .style(Style::default().fg(theme.map_or(
                     Color::Rgb(DEIXIC_MUTED.0, DEIXIC_MUTED.1, DEIXIC_MUTED.2),
                     |theme| theme.muted,
                 )))
                 .render(
-                    Rect::new(area.x + 3, area.y + 5, area.width.saturating_sub(3), 1),
+                    Rect::new(
+                        area.x + 3,
+                        welcome_prompt_row(area),
+                        area.width.saturating_sub(3),
+                        1,
+                    ),
                     buf,
                 );
         }
-        let logo_width = logo_visual_width(COMPACT_MIN_HEIGHT) + 3;
+        let logo_width = logo_visual_width(logo_height) + 3;
         for (row, mut line) in logo.into_iter().enumerate() {
             if let Some(theme) = theme {
                 line.style = line.style.fg(theme.focus);
@@ -452,6 +489,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expressions_keep_sprite_dimensions_for_all_supported_eyes() {
+        for height in [
+            MICRO_MIN_HEIGHT,
+            TINY_MIN_HEIGHT,
+            COMPACT_MIN_HEIGHT,
+            FULL_MIN_HEIGHT,
+        ] {
+            let original = logo_lines(pick_logo(height).unwrap());
+            for eyes in [
+                "• •", "¬ ¬", "• ?", "− −", "^ ^", "⠶ ⠶", "⠂ ⠕", "o-o", "• O", "o o", "^ −",
+            ] {
+                for line in &original {
+                    let posed = portrait_expression(line, eyes);
+                    assert_eq!(
+                        posed.width(),
+                        line.width(),
+                        "height {height}, eyes {eyes}: {posed}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            logo_lines(LOGO_FULL).len(),
+            logo_lines(LOGO_FULL_WORKING).len()
+        );
+        for (idle, working) in logo_lines(LOGO_FULL)
+            .iter()
+            .zip(logo_lines(LOGO_FULL_WORKING))
+        {
+            assert_eq!(idle.width(), working.width());
+        }
+    }
+
+    #[test]
+    fn welcome_geometry_keeps_art_and_prompt_clear_of_summary_and_input() {
+        for width in [44, 60, 100] {
+            for height in 5..=30 {
+                let area = Rect::new(2, 3, width, height);
+                let mut buf = Buffer::empty(Rect::new(0, 0, 110, 40));
+                render_welcome_with_summary(
+                    area,
+                    &mut buf,
+                    false,
+                    None,
+                    true,
+                    Some(("runtime", "workspace")),
+                );
+                let mark = crate::dex_delight::welcome_portrait_area(area).unwrap();
+                assert!(mark.right() < area.right());
+                assert!(mark.bottom() <= area.bottom());
+                assert_eq!(mark.height, if height >= 9 { 6 } else { 3 });
+                let summary_row: String = (mark.right()..area.right())
+                    .map(|x| buf[(x, area.y + 1)].symbol())
+                    .collect();
+                assert!(summary_row.contains(PRODUCT_TITLE));
+                for y in area.bottom()..40 {
+                    assert!((0..110).all(|x| buf[(x, y)].symbol() == " "));
+                }
+                let prompt_y = welcome_prompt_row(area);
+                assert!(prompt_y > mark.bottom());
+                if prompt_y < area.bottom() {
+                    let row: String = (area.x..area.right())
+                        .map(|x| buf[(x, prompt_y)].symbol())
+                        .collect();
+                    assert!(row.contains("Objective?"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn welcome_summary_sits_beside_small_mark_at_top() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buffer = Buffer::empty(area);
@@ -463,7 +571,8 @@ mod tests {
         };
         assert!(row(1).contains(PRODUCT_TITLE));
         assert!(row(3).contains("session session-1"));
-        assert!(row(1).find("╭").unwrap() < row(1).find(PRODUCT_TITLE).unwrap());
+        let crown = logo_lines(LOGO_FULL)[0].trim();
+        assert!(row(1).find(crown).unwrap() < row(1).find(PRODUCT_TITLE).unwrap());
         assert!(row(15).trim().is_empty());
     }
 
@@ -498,11 +607,29 @@ mod tests {
     }
 
     #[test]
+    fn every_pose_preserves_row_widths() {
+        for height in [
+            MICRO_MIN_HEIGHT,
+            TINY_MIN_HEIGHT,
+            COMPACT_MIN_HEIGHT,
+            FULL_MIN_HEIGHT,
+        ] {
+            let widths = |state| {
+                logo_lines(pick_logo_for_state(height, state).unwrap())
+                    .into_iter()
+                    .map(UnicodeWidthStr::width)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(widths(LaunchState::Idle), widths(LaunchState::Working));
+        }
+    }
+
+    #[test]
     fn full_mark_is_compact_and_keeps_dex_cues() {
-        assert!(logo_lines(LOGO_FULL).len() <= 5);
-        assert!(LOGO_FULL.contains("•   •"));
-        assert!(LOGO_FULL.contains("╰─╯"));
-        assert!(LOGO_COMPACT.contains("╰──╯"));
+        assert_eq!(logo_lines(LOGO_FULL).len(), 6);
+        assert!(LOGO_FULL.contains("⠻⣄   ⣠⠟"));
+        assert!(LOGO_FULL.contains("⠈⠳⡴⠋"));
+        assert!(LOGO_COMPACT.contains("⠳   ⠞"));
     }
 
     #[test]
@@ -536,8 +663,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(!idle_text.contains("· · ·"));
-        assert!(working_text.contains("· · ·"));
+        assert!(!idle_text.contains("¬   ¬"));
+        assert!(working_text.contains("¬   ¬"));
         assert!(idle_text.contains("• ready"));
         assert!(working_text.contains("• working"));
     }
@@ -555,8 +682,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(!idle.contains("· · ·"));
-        assert!(working.contains("· · ·"));
+        assert!(!idle.contains("¬   ¬"));
+        assert!(working.contains("¬   ¬"));
     }
 
     #[test]
@@ -591,7 +718,7 @@ mod tests {
             .map(Line::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("(• •)"));
+        assert!(text.contains("⟨⠳ ⠞⟩"));
         assert!(text.contains(PRODUCT_TITLE));
         assert!(text.contains(COMPOSER_HINT));
         assert_eq!(lines.len(), 3);

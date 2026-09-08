@@ -73,3 +73,17 @@ test("the guard requires the Dex Code terminal title and shared title renderer",
 		assert(problems.some((problem) => problem.startsWith(`${path} is missing`)));
 	}
 });
+
+test("the guard requires the extracted native runtime description", () => {
+	const path = "packages/runtime-rs/Cargo.toml";
+	const content = readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+	for (const stale of [
+		"runtime compatibility facade for Deixic Code",
+		"Native agent runtime for Maestro",
+	]) {
+		const problems = findDeixicCodeNamingProblems(root, new Map([
+			[path, content.replace("Native agent runtime for Deixic Code", stale)],
+		]));
+		assert(problems.some((problem) => problem.startsWith(`${path} is missing`)));
+	}
+});

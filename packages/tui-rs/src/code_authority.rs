@@ -16,23 +16,7 @@ use tokio::{
     sync::Mutex,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CodeAuthorityDecision {
-    pub allowed: bool,
-    pub device_id: String,
-    pub decision_id: String,
-    pub policy_id: String,
-    pub policy_version: String,
-    pub request_digest: String,
-    #[serde(deserialize_with = "read_i64")]
-    pub expires_at_unix_seconds: i64,
-}
-impl CodeAuthorityDecision {
-    pub(crate) fn is_current(&self) -> bool {
-        self.allowed && self.expires_at_unix_seconds > now()
-    }
-}
+pub use maestro_runtime::CodeAuthorityDecision;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -334,14 +318,6 @@ pub async fn enroll() -> Result<i32> {
         .await?;
     println!("Device enrolled for Code tool authority.");
     Ok(0)
-}
-
-fn read_i64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
-    let value = Value::deserialize(deserializer)?;
-    value
-        .as_i64()
-        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
-        .ok_or_else(|| serde::de::Error::custom("invalid int64"))
 }
 
 pub async fn revoke() -> Result<i32> {

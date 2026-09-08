@@ -10,6 +10,8 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const checker = join(repositoryRoot, "scripts/check-docker-runtime-workspaces.mjs");
 const sourceDockerfile = readFileSync(join(repositoryRoot, "Dockerfile"), "utf8");
 const runtimeCopy = "COPY packages/runtime-rs ./packages/runtime-rs";
+const runtimeContractsCopy =
+	"COPY packages/runtime-contracts-rs ./packages/runtime-contracts-rs";
 
 const sourceCargoManifest = readFileSync(join(repositoryRoot, "Cargo.toml"), "utf8");
 
@@ -43,7 +45,37 @@ test("Docker runtime guard rejects a runtime copy missing from the native stage"
 			assert.equal(error.status, 1);
 			assert.match(
 				`${error.stdout}\n${error.stderr}`,
-				/native runtime boundary crate in native Docker stage/,
+				/native runtime facade crate in native Docker stage/,
+			);
+			return true;
+		},
+	);
+});
+
+test("Docker runtime guard rejects a contracts copy missing from the native stage", () => {
+	const firstCopy = sourceDockerfile.indexOf(runtimeContractsCopy);
+	const secondCopy = sourceDockerfile.indexOf(
+		runtimeContractsCopy,
+		firstCopy + runtimeContractsCopy.length,
+	);
+	assert.notEqual(firstCopy, -1, "planner runtime contracts copy fixture");
+	assert.notEqual(secondCopy, -1, "native runtime contracts copy fixture");
+
+	const withoutNativeCopy =
+		sourceDockerfile.slice(0, secondCopy) +
+		sourceDockerfile.slice(secondCopy + runtimeContractsCopy.length);
+	const duplicatedPlannerCopy = withoutNativeCopy.replace(
+		runtimeContractsCopy,
+		`${runtimeContractsCopy}\n${runtimeContractsCopy}`,
+	);
+
+	assert.throws(
+		() => runChecker(duplicatedPlannerCopy),
+		(error) => {
+			assert.equal(error.status, 1);
+			assert.match(
+				`${error.stdout}\n${error.stderr}`,
+				/dependency-light runtime contracts crate in native Docker stage/,
 			);
 			return true;
 		},

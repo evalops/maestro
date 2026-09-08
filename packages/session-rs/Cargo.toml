@@ -1,0 +1,26 @@
+[package]
+name = "maestro-session"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local JSONL session and checkpoint persistence for Deixic Code"
+
+[dependencies]
+chrono.workspace = true
+dirs.workspace = true
+fd-lock.workspace = true
+libc.workspace = true
+maestro-ai.workspace = true
+maestro-context.workspace = true
+maestro-runtime-contracts.workspace = true
+maestro-workspace.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+tempfile.workspace = true

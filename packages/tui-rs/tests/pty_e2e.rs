@@ -6,10 +6,9 @@
 //! server that serves scripted streaming responses, poll the terminal output
 //! until expected content appears, and dump the captured output on failure.
 //!
-//! Unlike the reference harness we do not model a full virtual screen
-//! (alacritty_terminal) or YAML scenario files; assertions run against the
-//! accumulated ANSI-stripped PTY stream, which is sufficient for these
-//! scenarios. Those remain possible follow-ups.
+//! A virtual terminal reconstructs cursor positioning, differential repaints,
+//! and scrollback before assertions inspect text. Recent screen snapshots also
+//! retain transient dialogs that disappear between assertion polls.
 //!
 //! The tests need no network access, no real API key, and no display; they
 //! only require a Unix PTY.
@@ -21,6 +20,10 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[path = "support/terminal_capture.rs"]
+mod terminal_capture;
+use terminal_capture::TerminalCapture;
 
 use portable_pty::native_pty_system;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
@@ -111,6 +114,7 @@ struct MockState {
 struct MockOpenAiServer {
     base_url: String,
     identity_base_url: String,
+    managed_setup_base_url: String,
     state: Arc<Mutex<MockState>>,
 }
 
@@ -137,6 +141,7 @@ impl MockOpenAiServer {
         Self {
             base_url: format!("http://{addr}/v1"),
             identity_base_url: start_mock_identity_server(),
+            managed_setup_base_url: start_mock_managed_setup_server(),
             state,
         }
     }
@@ -145,6 +150,16 @@ impl MockOpenAiServer {
         let Ok(body) = read_request_body(&mut stream) else {
             return;
         };
+        // Doctor's GET /models has no body and must not consume a model turn.
+        if body.is_empty() {
+            let payload = r#"{"data":[{"id":"gpt-4o"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            return;
+        }
         let next = {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state.requests.push(body);
@@ -173,6 +188,40 @@ impl MockOpenAiServer {
             .requests
             .len()
     }
+}
+
+/// Serve a valid empty managed-setup document for PTY scenarios. The
+/// production default points at the first-party Platform origin, but these
+/// tests must remain deterministic and never reach the public network.
+fn start_mock_managed_setup_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock managed setup server");
+    let address = listener
+        .local_addr()
+        .expect("mock managed setup server address");
+    std::thread::Builder::new()
+        .name("pty-e2e-mock-managed-setup".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    break;
+                };
+                let request = read_request_body(&mut stream).expect("managed setup request");
+                assert_eq!(request.as_bytes(), b"\x0a\x0bpty-e2e-org\x12\x11pty-e2e-workspace");
+                // Canonical console.v1.ManagedSetup tags: version=1, mcp=5,
+                // organization_id=7, workspace_id=8. The real native client
+                // must decode protobuf here, exactly as it does with Platform.
+                let body = b"\x08\x01\x2a\x02\x08\x02\x3a\x0bpty-e2e-org\x42\x11pty-e2e-workspace";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/proto\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+            }
+        })
+        .expect("spawn mock managed setup server thread");
+    format!("http://{address}")
 }
 
 /// Serve the minimal signed-Identity projection required by the real Maestro
@@ -254,7 +303,7 @@ struct PtySession {
     // Kept alive so the PTY master (and the reader thread's source) stays open.
     _master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    output: Arc<Mutex<Vec<u8>>>,
+    output: Arc<Mutex<TerminalCapture>>,
 }
 
 impl PtySession {
@@ -297,6 +346,10 @@ impl PtySession {
 
         let maestro_home = workdir.join("maestro-home");
         std::fs::create_dir_all(&maestro_home).expect("create MAESTRO_HOME");
+        let preferences = maestro_home.join("ui.json");
+        if !preferences.exists() {
+            std::fs::write(&preferences, r#"{"onboardingSeen":true}"#).unwrap();
+        }
 
         let mut command = CommandBuilder::new(
             std::env::var_os("CARGO_BIN_EXE_maestro-tui")
@@ -314,15 +367,23 @@ impl PtySession {
         command.env("TERM", "xterm-256color");
         command.env("HOME", workdir);
         command.env("MAESTRO_HOME", &maestro_home);
+        command.env("MAESTRO_TELEMETRY", "0");
+        command.env("MAESTRO_AUTO_UPDATE", "0");
+
         command.env("OPENAI_BASE_URL", &mock.base_url);
         command.env("OPENAI_API_KEY", "pty-e2e-key");
         command.env("MAESTRO_IDENTITY_URL", &mock.identity_base_url);
+        command.env("MAESTRO_MANAGED_SETUP_URL", &mock.managed_setup_base_url);
         command.env(maestro_tui::init_cli::TEST_IDENTITY_AUTHORITY_ENV, "1");
         command.env(
             maestro_tui::credential_mode::ACCESS_TOKEN_ENV,
             "pty-e2e-identity-token",
         );
         command.env(maestro_tui::credential_mode::ORG_ID_ENV, "pty-e2e-org");
+        command.env(
+            maestro_tui::credential_mode::WORKSPACE_ID_ENV,
+            "pty-e2e-workspace",
+        );
         command.env("MAESTRO_DISABLE_KEYCHAIN", "1");
         command.env(
             "MAESTRO_PROMPT_HISTORY_FILE",
@@ -335,7 +396,7 @@ impl PtySession {
             .expect("spawn maestro-tui");
         drop(pair.slave);
 
-        let output = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::new(Mutex::new(TerminalCapture::new(36, 120)));
         let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
         let writer = Arc::new(Mutex::new(
             pair.master.take_writer().expect("take PTY writer") as Box<dyn Write + Send>,
@@ -362,7 +423,7 @@ impl PtySession {
                             reader_output
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .extend_from_slice(&buf[..n]);
+                                .process(&buf[..n]);
                             let mut window = std::mem::take(&mut tail);
                             window.extend_from_slice(&buf[..n]);
                             let query_count = window
@@ -395,32 +456,12 @@ impl PtySession {
         }
     }
 
-    /// Everything the child wrote so far, ANSI escapes stripped.
+    /// Reconstructed screen, scrollback, and recent observed screens.
     fn screen_text(&self) -> String {
-        let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
-        strip_ansi(&output)
+        self.output.lock().unwrap_or_else(|e| e.into_inner()).text()
     }
 
-    /// Optimized terminal painting moves across existing blank cells instead
-    /// of emitting spaces. Compare content without whitespace for prose checks.
-    fn wait_for_compact_text(&mut self, needle: &str, timeout: Duration) {
-        let expected: String = needle.chars().filter(|c| !c.is_whitespace()).collect();
-        let deadline = Instant::now() + timeout;
-        loop {
-            let screen = self.screen_text();
-            let compact: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
-            if compact.contains(&expected) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {needle:?}: {screen}"
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Poll until `needle` appears in the stripped output; panic with a dump
+    /// Poll until `needle` appears in the terminal capture; panic with a dump
     /// of the captured output on timeout (grok-build's screen dump on failure).
     fn wait_for_text(&mut self, needle: &str, timeout: Duration) {
         let deadline = Instant::now() + timeout;
@@ -651,18 +692,6 @@ fn write_fork_fixture(workdir: &std::path::Path, session_id: &str) -> std::path:
     path
 }
 
-/// Strip ANSI escape sequences (CSI, OSC, charset selection, and two-byte
-/// escapes) and carriage returns from the raw PTY stream so substring
-/// assertions see roughly what a user would read.
-fn strip_ansi(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let pattern = regex::Regex::new(
-        r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z%]|\x1b[@-Z\\-_]",
-    )
-    .expect("valid ANSI strip pattern");
-    pattern.replace_all(&text, "").replace('\r', "")
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Scenarios
 // ─────────────────────────────────────────────────────────────────────────────
@@ -686,6 +715,62 @@ fn pty_prompt_streams_answer() {
         mock.request_count(),
         1,
         "a plain answer turn should hit the mock exactly once"
+    );
+
+    session.shutdown();
+}
+
+/// The grouped `/model` menu must open its child selector and let Escape
+/// return to chat without issuing a provider request. A follow-up turn proves
+/// the modal stack was actually dismissed rather than only painted away.
+#[test]
+fn pty_grouped_model_menu_opens_selector_and_escape_returns_to_chat() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![
+        text_turn("PTY_GROUPED_MODEL_MENU_READY"),
+        text_turn("PTY_GROUPED_MODEL_MENU_FOLLOWUP_OK"),
+    ]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let mut session = PtySession::spawn(&mock, workdir.path(), "start grouped model menu");
+
+    session.wait_for_text("PTY_GROUPED_MODEL_MENU_READY", READY_TIMEOUT);
+    session.submit_prompt("/model");
+    session.wait_for_text("Model and effort", TURN_TIMEOUT);
+    session.wait_for_text("Choose model", TURN_TIMEOUT);
+    let grouped_menu = session.screen_text();
+    assert!(
+        grouped_menu.contains("Model and effort")
+            && grouped_menu.contains("Choose model")
+            && grouped_menu.contains("Effort"),
+        "grouped model menu labels were not rendered exactly:\n{grouped_menu}"
+    );
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "opening the grouped menu must not issue a provider request"
+    );
+
+    // Enter selects the first grouped row, which must keep the child selector
+    // open rather than treating the parent palette as the final destination.
+    session.send_bytes_until(b"\r", "Select Model", TURN_TIMEOUT);
+    session.wait_for_text("Enter select · Esc cancel", TURN_TIMEOUT);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "opening the model selector must not issue a provider request"
+    );
+
+    // The first Escape can race a cursor-position probe. Send it twice so the
+    // cancellation remains deterministic without depending on stale screen
+    // history as a post-cancel marker.
+    session.send_bytes(b"\x1b");
+    session.send_bytes(b"\x1b");
+    session.submit_prompt("PTY_GROUPED_MODEL_MENU_FOLLOWUP");
+    session.wait_for_text("PTY_GROUPED_MODEL_MENU_FOLLOWUP_OK", TURN_TIMEOUT);
+    assert_eq!(
+        mock.request_count(),
+        2,
+        "canceling the grouped selector must allow exactly one follow-up provider request"
     );
 
     session.shutdown();
@@ -1025,12 +1110,12 @@ fn pty_bug_report_draft_review_and_dismiss() {
     let mock = MockOpenAiServer::start(vec![text_turn("PTY_BUG_READY")]);
     let workdir = tempfile::tempdir().expect("temp workdir");
     let mut session = PtySession::spawn(&mock, workdir.path(), "start bug report scenario");
-    session.wait_for_compact_text("PTY_BUG_READY", READY_TIMEOUT);
+    session.wait_for_text("PTY_BUG_READY", READY_TIMEOUT);
     session.submit_prompt("/bug draft The terminal stopped responding");
-    session.wait_for_compact_text("Bug report drafted", TURN_TIMEOUT);
+    session.wait_for_text("Bug report drafted", TURN_TIMEOUT);
     session.submit_prompt("/bug review");
-    session.wait_for_compact_text("What happened:", TURN_TIMEOUT);
-    session.wait_for_compact_text("Diagnostics: None", TURN_TIMEOUT);
+    session.wait_for_text("What happened:", TURN_TIMEOUT);
+    session.wait_for_text("Diagnostics: None", TURN_TIMEOUT);
     session.send_bytes(b"0");
     wait_for_feedback_status(workdir.path(), "Dismissed");
     let mut paths = vec![workdir.path().join(".composer/agent/sessions")];
@@ -1074,14 +1159,14 @@ fn pty_model_feedback_card_review_edit_and_discard() {
     ]);
     let workdir = tempfile::tempdir().unwrap();
     let mut session = PtySession::spawn(&mock, workdir.path(), "Draft feedback for this failure");
-    session.wait_for_compact_text("PTY_FEEDBACK_DRAFTED", READY_TIMEOUT);
-    session.wait_for_compact_text("Bug report drafted", TURN_TIMEOUT);
+    session.wait_for_text("PTY_FEEDBACK_DRAFTED", READY_TIMEOUT);
+    session.wait_for_text("Bug report drafted", TURN_TIMEOUT);
     session.send_bytes(b"1");
-    session.wait_for_compact_text("Reproduction steps:", TURN_TIMEOUT);
+    session.wait_for_text("Reproduction steps:", TURN_TIMEOUT);
     session.send_bytes(b"r");
-    session.wait_for_compact_text("Edit repro", TURN_TIMEOUT);
+    session.wait_for_text("Edit repro", TURN_TIMEOUT);
     session.send_bytes(b" and inspect the output\r");
-    session.wait_for_compact_text("and inspect the output", TURN_TIMEOUT);
+    session.wait_for_text("and inspect the output", TURN_TIMEOUT);
     session.send_bytes(b"0");
     wait_for_feedback_status(workdir.path(), "Dismissed");
     assert_eq!(
@@ -1125,4 +1210,98 @@ fn wait_for_feedback_status(root: &std::path::Path, expected: &str) {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn onboarding_first_run_checks_fixed_prompt_and_persists_display_choice() {
+    let _guard = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("maestro-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("ui.json"),
+        r#"{"onboardingSeen":false,"animations":false}"#,
+    )
+    .unwrap();
+    let mock = MockOpenAiServer::start(vec![text_turn("ready")]);
+    let mut session = PtySession::spawn(&mock, temp.path(), "");
+    session.wait_for_text("Let's get Deixic Code ready", READY_TIMEOUT);
+    session.send_bytes(b"\x04");
+    session.wait_for_text("Share setup information: off", TURN_TIMEOUT);
+    session.send_bytes(b"\r");
+    session.wait_for_text("What is your role?", TURN_TIMEOUT);
+    session.send_bytes(b"\r");
+    session.wait_for_text("What do you want to do first?", TURN_TIMEOUT);
+    session.send_bytes(b"\r");
+    session.wait_for_text("How do you plan to run", TURN_TIMEOUT);
+    session.send_bytes(b"\r");
+    session.wait_for_text("incur usage charges.", TURN_TIMEOUT);
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "no model request before explicit test confirmation"
+    );
+    session.send_bytes(b"\r");
+    session.wait_for_text(
+        "model access and the native read test passed",
+        READY_TIMEOUT,
+    );
+    assert_eq!(mock.request_count(), 1);
+    let requests = mock.state.lock().unwrap().requests.clone();
+    let request: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(request["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        request["messages"][0]["content"],
+        "Reply with the single word ready."
+    );
+    session.send_bytes(b"\r");
+    let deadline = Instant::now() + TURN_TIMEOUT;
+    loop {
+        let prefs: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("ui.json")).unwrap()).unwrap();
+        if prefs["onboardingSeen"] == true {
+            assert_eq!(prefs["onboardingShareDiagnostics"], false);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "onboarding preference was not saved"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    session.shutdown();
+}
+
+#[test]
+fn onboarding_failed_model_requires_retry_and_never_claims_verified() {
+    let _guard = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("maestro-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("ui.json"),
+        r#"{"onboardingSeen":false,"animations":false}"#,
+    )
+    .unwrap();
+    let mock = MockOpenAiServer::start(vec![text_turn("")]);
+    let mut session = PtySession::spawn(&mock, temp.path(), "");
+    session.wait_for_text("Let's get Deixic Code ready", READY_TIMEOUT);
+    for expected in [
+        "What is your role?",
+        "What do you want to do first?",
+        "How do you plan to run",
+        "incur usage charges.",
+    ] {
+        session.send_bytes(b"\r");
+        session.wait_for_text(expected, TURN_TIMEOUT);
+    }
+    session.send_bytes(b"\r");
+    session.wait_for_text("Setup needs attention before your first run", READY_TIMEOUT);
+    assert_eq!(mock.request_count(), 1);
+    let prefs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("ui.json")).unwrap()).unwrap();
+    assert_eq!(prefs["onboardingSeen"], false);
+    session.send_bytes(b"\x1b");
+    session.wait_for_text("Managed inference", TURN_TIMEOUT);
+    session.shutdown();
 }

@@ -197,21 +197,21 @@ impl Default for ThemeColors {
             dim: "#6f678f".to_string(),
             text: hex(controls.text),
 
-            user_message_bg: "#1c1830".to_string(),
-            user_message_text: "#e9e5f7".to_string(),
-            assistant_message_bg: "transparent".to_string(),
-            assistant_message_text: "#e9e5f7".to_string(),
+            user_message_bg: hex(controls.panel.unwrap_or(controls.surface)),
+            user_message_text: hex(controls.text),
+            assistant_message_bg: hex(controls.surface),
+            assistant_message_text: hex(controls.text),
 
-            tool_pending_bg: "#1c1830".to_string(),
+            tool_pending_bg: hex(controls.selection.unwrap_or(controls.surface)),
             tool_success_bg: "#14532d20".to_string(),
             tool_error_bg: "#7f1d1d20".to_string(),
 
-            md_heading: "#b9adff".to_string(),
-            md_link: "#a99aff".to_string(),
+            md_heading: hex(controls.focus),
+            md_link: hex(controls.focus),
             md_code: "#fde047".to_string(),
             md_code_block: hex(controls.surface),
-            md_code_block_border: "#3d3272".to_string(),
-            md_quote: "#9a92ba".to_string(),
+            md_code_block_border: hex(controls.border),
+            md_quote: hex(controls.muted),
 
             syntax_comment: "#64748b".to_string(),
             syntax_keyword: "#c084fc".to_string(),
@@ -357,34 +357,35 @@ pub fn dark_theme() -> Theme {
 pub fn light_theme() -> Theme {
     let mut theme = Theme::new("light");
     theme.colors = ThemeColors {
-        accent: "#70537c".to_string(),
-        border: "#c6bac5".to_string(),
+        // The darker brand violet keeps small text readable on lavender selection.
+        accent: "#5847e6".to_string(),
+        border: "#d9d5e8".to_string(),
         success: "#38594c".to_string(),
         error: "#893747".to_string(),
         warning: "#704d2d".to_string(),
-        muted: "#655868".to_string(),
+        muted: "#645d78".to_string(),
         dim: "#5d5063".to_string(),
-        text: "#514754".to_string(),
+        text: "#171624".to_string(),
 
-        user_message_bg: "#e7dfd7".to_string(),
-        user_message_text: "#514754".to_string(),
-        assistant_message_bg: "#eee8e0".to_string(),
-        assistant_message_text: "#514754".to_string(),
+        user_message_bg: "#f5f3fc".to_string(),
+        user_message_text: "#171624".to_string(),
+        assistant_message_bg: "#ffffff".to_string(),
+        assistant_message_text: "#171624".to_string(),
 
-        tool_pending_bg: "#e7dfd7".to_string(),
+        tool_pending_bg: "#f5f3fc".to_string(),
         tool_success_bg: "#dfe7dc".to_string(),
         tool_error_bg: "#eedde0".to_string(),
 
-        md_heading: "#4d5275".to_string(),
-        md_link: "#70537c".to_string(),
+        md_heading: "#5847e6".to_string(),
+        md_link: "#5847e6".to_string(),
         md_code: "#68492e".to_string(),
-        md_code_block: "#e7dfd7".to_string(),
-        md_code_block_border: "#c6bac5".to_string(),
-        md_quote: "#655868".to_string(),
+        md_code_block: "#f5f3fc".to_string(),
+        md_code_block_border: "#d9d5e8".to_string(),
+        md_quote: "#645d78".to_string(),
 
         syntax_comment: "#5d5063".to_string(),
-        syntax_keyword: "#70537c".to_string(),
-        syntax_function: "#4d5275".to_string(),
+        syntax_keyword: "#5847e6".to_string(),
+        syntax_function: "#5847e6".to_string(),
         syntax_variable: "#68492e".to_string(),
         syntax_string: "#38594c".to_string(),
         syntax_number: "#7a4633".to_string(),
@@ -392,10 +393,10 @@ pub fn light_theme() -> Theme {
 
         thinking_off: "#5d5063".to_string(),
         thinking_low: "#704d2d".to_string(),
-        thinking_medium: "#4d5275".to_string(),
-        thinking_high: "#70537c".to_string(),
+        thinking_medium: "#5847e6".to_string(),
+        thinking_high: "#5847e6".to_string(),
     };
-    theme.colors.tool_pending_bg = "#dfd5d0".into();
+    theme.colors.tool_pending_bg = "#efebff".into();
     theme
 }
 
@@ -828,6 +829,39 @@ mod ui_theme_tests {
     use super::*;
 
     #[test]
+    fn brand_themes_share_canvas_and_control_colors() {
+        let dark = dark_theme();
+        let ui = dark.ui_theme();
+        let brand = maestro_presentation::palette::default_controls();
+        for (actual, expected) in [
+            (ui.surface, brand.surface),
+            (ui.text, brand.text),
+            (ui.muted, brand.muted),
+            (ui.border, brand.border),
+            (ui.focus, brand.focus),
+            (ui.success, brand.success),
+            (ui.attention, brand.attention),
+            (ui.error, brand.error),
+            (ui.panel.unwrap(), brand.panel.unwrap()),
+            (ui.selection.unwrap(), brand.selection.unwrap()),
+        ] {
+            let Color::Rgb(r, g, b) = expected else {
+                panic!("brand requires RGB");
+            };
+            assert_eq!(actual, palette::best_color(r, g, b));
+        }
+        for theme in [dark, light_theme()] {
+            assert_eq!(theme.canvas_style().bg, Some(theme.ui_theme().surface));
+            assert_eq!(theme.canvas_style().fg, Some(theme.ui_theme().text));
+            assert_eq!(theme.get_color("md_link"), Some(theme.ui_theme().focus));
+        }
+        let light = light_theme().ui_theme();
+        assert_eq!(light.focus, palette::best_color(0x58, 0x47, 0xe6));
+        assert_eq!(light.selection, Some(palette::best_color(0xef, 0xeb, 0xff)));
+        assert_eq!(light.text, palette::best_color(0x17, 0x16, 0x24));
+    }
+
+    #[test]
     fn built_in_control_surfaces_are_opaque_including_light_on_dark_terminals() {
         for theme in [dark_theme(), light_theme(), high_contrast_theme()] {
             let ui = theme.ui_theme();
@@ -856,7 +890,10 @@ mod ui_theme_tests {
             let ui = theme.ui_theme();
             assert_eq!(theme.canvas_style().bg, Some(ui.surface));
             assert_eq!(theme.canvas_style().fg, Some(ui.text));
-            assert_eq!(dark_theme().canvas_style(), Style::default());
+            assert_eq!(
+                dark_theme().canvas_style().bg,
+                Some(dark_theme().ui_theme().surface)
+            );
             let luminance = |hex: &str| {
                 let linear = |offset| {
                     let value =

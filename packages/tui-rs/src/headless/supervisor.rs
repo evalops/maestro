@@ -1173,6 +1173,7 @@ impl AgentSupervisor {
         if let FromAgentMessage::ConversationSnapshot {
             protocol_version,
             messages,
+            ..
         } = &message
         {
             // This in-memory reconnect boundary must not depend on the optional
@@ -1710,12 +1711,7 @@ impl SupervisorBuilder {
         // the session's historical title, usage totals, and message count
         // instead of preserving them.
         let recorder = SessionRecorder::resume(sessions_dir, session_id)?;
-        let replay = SessionReplay {
-            state: recorder.replay_state().clone(),
-            last_init: recorder.last_init().cloned(),
-            semantic_conversation: recorder.replay().semantic_conversation,
-            last_workspace_capability_set: recorder.replay().last_workspace_capability_set,
-        };
+        let replay = recorder.replay();
         self.session_replay = Some(replay);
         self.session_recorder = Some(recorder);
         Ok(self)

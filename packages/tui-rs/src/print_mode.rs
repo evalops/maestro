@@ -397,6 +397,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         .map(|level| level.to_config())
         .unwrap_or((false, 0));
     let config = NativeAgentConfig {
+        model_capabilities: None,
         model_dynamics: crate::config::model_dynamics_config(),
         model: model.clone(),
         max_tokens: limits.max_tokens,

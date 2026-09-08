@@ -37,7 +37,7 @@
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/codex_app_server.rs",
+			"path": "packages/codex-rs/src/codex_app_server.rs",
 			"anchors": [
 				"start_chatgpt_login",
 				"wait_for_login_completion",
@@ -59,7 +59,7 @@
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/codex_app_server.rs",
+			"path": "packages/codex-rs/src/codex_app_server.rs",
 			"anchors": [
 				"initializes_and_sends_the_initialized_notification",
 				"starts_login_waits_for_completion_end_to_end",
@@ -549,7 +549,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/swarm/types/tests.rs",
+			"path": "packages/swarm-rs/src/types/tests.rs",
 			"anchors": [
 				"test_subagent_dispatch_matches_protocol_fixture",
 				"resolve_subagent_dispatch",

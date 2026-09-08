@@ -47,6 +47,11 @@ pub enum ScriptedBlock {
         kind: ProviderStreamErrorKind,
         message: String,
     },
+    /// No assistant content; the usage chunk reports these output tokens.
+    ///
+    /// Models that think privately (Gemini 2.5 on Vertex Chat Completions)
+    /// finish this way: billed `completion_tokens`, empty `delta.content`.
+    BilledSilence { output_tokens: u64 },
 }
 
 /// One scripted assistant response (one `stream` call's worth of events).
@@ -133,6 +138,7 @@ impl ScriptedClient {
             })?;
 
         let (tx, rx) = mpsc::unbounded_channel();
+        let mut output_tokens = 0u64;
         let _ = tx.send(StreamEvent::MessageStart {
             id: format!("scripted-{}", self.model),
             model: self.model.clone(),
@@ -180,6 +186,12 @@ impl ScriptedClient {
                     });
                     return Ok(rx);
                 }
+                ScriptedBlock::BilledSilence {
+                    output_tokens: tokens,
+                } => {
+                    output_tokens = *tokens;
+                    continue;
+                }
             }
             let _ = tx.send(StreamEvent::ContentBlockStop {
                 index,
@@ -188,7 +200,7 @@ impl ScriptedClient {
         }
         let _ = tx.send(StreamEvent::Usage {
             input_tokens: 0,
-            output_tokens: 0,
+            output_tokens,
             cache_read_tokens: Some(0),
             cache_creation_tokens: Some(0),
         });

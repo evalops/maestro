@@ -85,7 +85,8 @@ mod google;
 mod kimi;
 mod model_capabilities;
 pub use model_capabilities::{
-    ASTRA_CONTEXT_TOKENS, ASTRA_OUTPUT_TOKENS, OpenAiRequestCapabilities, OpenAiWireProtocol,
+    ASTRA_CONTEXT_TOKENS, ASTRA_OUTPUT_TOKENS, AnthropicRequestCapabilities, AnthropicThinkingMode,
+    OpenAiRequestCapabilities, OpenAiWireProtocol, anthropic_request_capabilities,
     openai_request_capabilities,
 };
 pub mod op_secret;

@@ -3,7 +3,7 @@ use crate::{
     AppState, ChatRequest, PendingToolResponseOwner, now_millis, now_rfc3339, send_sse,
     send_ws_json,
 };
-use maestro_tui::agent::{TokenUsage, ToolResult};
+use maestro_runtime::{TokenUsage, ToolResult};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::env;

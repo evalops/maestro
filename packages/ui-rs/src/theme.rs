@@ -44,6 +44,33 @@ impl Default for UiTheme {
 }
 
 impl UiTheme {
+    /// Quiet accent for decorative outlines; keep focal details in `focus`.
+    /// Unknown terminal palettes retain their original accent.
+    pub fn decorative_focus(self) -> Color {
+        self.blended_focus(65)
+    }
+
+    /// Slightly quieter focus for an idle indicator; preserve terminal palettes.
+    pub fn resting_focus_style(self) -> Style {
+        let style = Style::default().fg(self.blended_focus(80));
+        match (self.focus, self.surface) {
+            (Color::Rgb(..), Color::Rgb(..)) => style,
+            _ => style.add_modifier(Modifier::DIM),
+        }
+    }
+
+    fn blended_focus(self, percent: u16) -> Color {
+        match (self.focus, self.surface) {
+            (Color::Rgb(r, g, b), Color::Rgb(sr, sg, sb)) => {
+                let blend = |ink: u8, surface: u8| {
+                    ((u16::from(ink) * percent + u16::from(surface) * (100 - percent)) / 100) as u8
+                };
+                Color::Rgb(blend(r, sr), blend(g, sg), blend(b, sb))
+            }
+            _ => self.focus,
+        }
+    }
+
     /// Resolve a palette for controls placed on an inset surface.
     pub fn on_panel(self) -> Self {
         Self {
@@ -73,6 +100,70 @@ impl UiTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resting_focus_is_between_outline_and_active_ink() {
+        let theme = UiTheme {
+            focus: Color::Rgb(100, 120, 200),
+            surface: Color::Rgb(0, 0, 0),
+            ..Default::default()
+        };
+        assert_eq!(
+            theme.resting_focus_style().fg,
+            Some(Color::Rgb(80, 96, 160))
+        );
+        assert!(
+            !theme
+                .resting_focus_style()
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        let indexed = UiTheme {
+            focus: Color::Indexed(5),
+            ..theme
+        };
+        assert_eq!(indexed.resting_focus_style().fg, Some(Color::Indexed(5)));
+        assert!(
+            indexed
+                .resting_focus_style()
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn decorative_focus_uses_the_surface_and_preserves_unknown_palettes() {
+        let theme = UiTheme {
+            focus: Color::Rgb(100, 120, 200),
+            surface: Color::Rgb(0, 0, 0),
+            ..Default::default()
+        };
+        assert_eq!(theme.decorative_focus(), Color::Rgb(65, 78, 130));
+        assert_eq!(
+            UiTheme {
+                surface: Color::Rgb(200, 200, 200),
+                ..theme
+            }
+            .decorative_focus(),
+            Color::Rgb(135, 148, 200)
+        );
+        assert_eq!(
+            UiTheme {
+                surface: Color::Reset,
+                ..theme
+            }
+            .decorative_focus(),
+            theme.focus
+        );
+        assert_eq!(
+            UiTheme {
+                focus: Color::Indexed(5),
+                ..theme
+            }
+            .decorative_focus(),
+            Color::Indexed(5)
+        );
+    }
+
     #[test]
     fn selection_keeps_status_ink_and_legacy_palettes_keep_their_surface() {
         let legacy = UiTheme {

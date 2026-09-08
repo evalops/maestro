@@ -17,7 +17,9 @@ use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::providers::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
 use super::scripted::ScriptedClient;
-use super::types::{Message, ProviderStreamErrorKind, RequestConfig, StreamEvent};
+use super::types::{
+    Message, ProviderStreamErrorKind, RequestConfig, StreamEvent, StreamObservation, StreamObserver,
+};
 use super::vertex::VertexAiClient;
 
 /// AI provider enum
@@ -529,7 +531,11 @@ impl UnifiedClient {
                     .credential
                     .as_deref()
                     .context("provider credential unexpectedly missing")?;
-                Ok(Self::Anthropic(AnthropicClient::new(credential)?))
+                let client = match resolved.base_url.as_deref() {
+                    Some(base_url) => AnthropicClient::with_base_url(credential, base_url)?,
+                    None => AnthropicClient::new(credential)?,
+                };
+                Ok(Self::Anthropic(client))
             }
             ProviderProtocol::Google => {
                 let credential = resolved
@@ -758,11 +764,26 @@ impl UnifiedClient {
         messages: Arc<Vec<Message>>,
         config: RequestConfig,
     ) -> Result<CancellableStream> {
+        self.stream_owned_config_shared_messages_observed(messages, config, None)
+            .await
+    }
+
+    /// Stream with content-free observations from the existing retry/watchdog owner.
+    /// The observer runs locally and must not block or perform network work.
+    pub async fn stream_owned_config_shared_messages_observed(
+        &self,
+        messages: Arc<Vec<Message>>,
+        config: RequestConfig,
+        observer: Option<StreamObserver>,
+    ) -> Result<CancellableStream> {
+        if let Some(observer) = &observer {
+            observer(StreamObservation::Observed);
+        }
         let provider = self.provider_name().to_string();
         let (idle_timeout, max_retries) = self.stream_idle_policy();
         let model = config.model.trim().to_string();
         let provider_model = telemetry_provider_model(&provider, &model);
-        let model_span = maestro_runtime::model_span(&provider, &provider_model);
+        let model_span = maestro_runtime_contracts::model_span(&provider, &provider_model);
         let started = Instant::now();
         tracing::info!(
             target: "maestro.llm",
@@ -791,6 +812,9 @@ impl UnifiedClient {
             {
                 Ok(first) => first,
                 Err(error) => {
+                    if let Some(observer) = &observer {
+                        observer(StreamObservation::OpenFailed);
+                    }
                     tracing::warn!(
                         target: "maestro.llm",
                         event = "llm_stream_start_failed",
@@ -844,6 +868,7 @@ impl UnifiedClient {
                     max_retries,
                     tx,
                     model_span.clone(),
+                    observer,
                 )
                 .instrument(model_span.clone())
                 .await;
@@ -915,6 +940,7 @@ async fn forward_stream_with_idle_policy<F, Fut, S>(
         max_retries,
         tx,
         tracing::Span::none(),
+        None,
     )
     .await;
 }
@@ -926,11 +952,17 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
     max_retries: u32,
     tx: mpsc::UnboundedSender<StreamEvent>,
     model_span: tracing::Span,
+    observer: Option<StreamObserver>,
 ) where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<S>>,
     S: Into<CancellableStream>,
 {
+    let observe = |observation| {
+        if let Some(observer) = &observer {
+            observer(observation);
+        }
+    };
     let max_attempts = max_retries.saturating_add(1);
     let mut attempt = u32::from(first.is_some());
     let mut pending_attempt = first.map(Into::into);
@@ -943,6 +975,9 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
         } else {
             loop {
                 attempt += 1;
+                if attempt > 1 {
+                    observe(StreamObservation::Retry);
+                }
                 let Some(begin_attempt_fn) = begin_attempt.as_mut() else {
                     tracing::error!(
                         target: "maestro.llm",
@@ -966,6 +1001,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 match opened {
                     Ok(next) => break next.into(),
                     Err(err) if attempt < max_attempts => {
+                        observe(StreamObservation::OpenFailed);
                         tracing::warn!(
                             target: "maestro.llm",
                             event = "llm_stream_retry",
@@ -978,6 +1014,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                         );
                     }
                     Err(err) => {
+                        observe(StreamObservation::OpenFailed);
                         tracing::error!(
                             target: "maestro.llm",
                             event = "llm_stream_failed",
@@ -1010,6 +1047,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
             let event = match received {
                 Ok(Some(event)) => event,
                 Ok(None) => {
+                    observe(StreamObservation::Disconnect);
                     if !committed_content && attempt < max_attempts {
                         tracing::warn!(
                             target: "maestro.llm",
@@ -1052,6 +1090,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                     return;
                 }
                 Err(_elapsed) => {
+                    observe(StreamObservation::IdleTimeout);
                     if !committed_content && attempt < max_attempts {
                         tracing::warn!(
                             target: "maestro.llm",
@@ -1108,7 +1147,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 cache_creation_tokens,
             } = &event
             {
-                maestro_runtime::record_model_usage(
+                maestro_runtime_contracts::record_model_usage(
                     &model_span,
                     *input_tokens,
                     *output_tokens,
@@ -1170,6 +1209,9 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 );
             }
             let terminal = terminal_error || matches!(&event, StreamEvent::MessageStop { .. });
+            if matches!(&event, StreamEvent::MessageStop { .. }) && attempt > 1 {
+                observe(StreamObservation::Recovery);
+            }
             if tx.send(event).is_err() {
                 tracing::debug!(
                     target: "maestro.llm",
@@ -1186,7 +1228,7 @@ async fn forward_stream_with_idle_policy_with_span<F, Fut, S>(
                 return; // Caller dropped the receiver.
             }
             if terminal {
-                maestro_runtime::record_outcome(
+                maestro_runtime_contracts::record_outcome(
                     &model_span,
                     if terminal_error { "error" } else { "success" },
                     stream_started.elapsed(),
@@ -1291,6 +1333,84 @@ mod tests {
             AiProvider::from_model("anthropic/claude"),
             AiProvider::Anthropic
         );
+    }
+
+    #[tokio::test]
+    async fn anthropic_uses_resolved_base_url_for_messages_stream() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Anthropic API");
+        let address = listener.local_addr().expect("mock Anthropic address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Anthropic request");
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).expect("read Anthropic request");
+            request_tx
+                .send(String::from_utf8_lossy(&request[..bytes_read]).into_owned())
+                .expect("record Anthropic request");
+
+            let body = concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_local\",\"model\":\"claude-opus-4-7\"}}\n\n",
+                "event: content_block_start\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+                "event: content_block_stop\n",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n",
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .expect("write Anthropic stream");
+        });
+
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "test-key".to_string());
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            format!("http://{address}/v1/"),
+        );
+        let client = UnifiedClient::from_model_with_env("anthropic/claude-opus-4-7", &env)
+            .expect("construct Anthropic client from resolved provider");
+        let mut events = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "anthropic/claude-opus-4-7".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("open mock Anthropic stream");
+
+        let mut saw_message_stop = false;
+        while let Some(event) = events.recv().await {
+            if matches!(event, StreamEvent::MessageStop { .. }) {
+                saw_message_stop = true;
+                break;
+            }
+        }
+        assert!(saw_message_stop, "mock Anthropic stream must terminate");
+
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("mock Anthropic request");
+        assert!(
+            request.starts_with("POST /v1/messages HTTP/1.1"),
+            "resolved base URL must be joined with /messages: {request}"
+        );
+        server.join().expect("mock Anthropic server");
     }
 
     #[test]
@@ -1771,6 +1891,122 @@ mod stream_idle_policy_tests {
         let (tx, rx) = mpsc::unbounded_channel();
         keepalive.push(tx);
         rx
+    }
+
+    #[tokio::test]
+    async fn observer_covers_failed_provider_open_before_watchdog_exists() {
+        let client = UnifiedClient::Scripted(crate::ScriptedClient::new("empty", vec![]));
+        let (tx, mut observations) = mpsc::unbounded_channel();
+        let result = client
+            .stream_owned_config_shared_messages_observed(
+                Arc::new(vec![Message {
+                    role: crate::Role::User,
+                    content: crate::MessageContent::text("fixture"),
+                }]),
+                RequestConfig {
+                    model: "fixture".to_owned(),
+                    max_tokens: 32,
+                    ..Default::default()
+                },
+                Some(Arc::new(move |observation| {
+                    tx.send(observation).unwrap();
+                })),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            observations.try_recv().unwrap(),
+            StreamObservation::Observed
+        );
+        assert_eq!(
+            observations.try_recv().unwrap(),
+            StreamObservation::OpenFailed
+        );
+        assert!(observations.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn observer_measures_idle_disconnect_retry_and_recovery_without_stream_changes() {
+        let mut keepalive = Keepalive::new();
+        let first = hung_attempt(&mut keepalive);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (observation_tx, mut observations) = mpsc::unbounded_channel();
+        let mut retries = 0;
+        forward_stream_with_idle_policy_with_span(
+            Some(first),
+            || {
+                retries += 1;
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                if retries == 2 {
+                    attempt_tx
+                        .send(StreamEvent::MessageStop { stop_reason: None })
+                        .unwrap();
+                }
+                // The first retry closes without a terminal; the second succeeds.
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+            tracing::Span::none(),
+            Some(Arc::new(move |observation| {
+                observation_tx.send(observation).unwrap();
+            })),
+        )
+        .await;
+        assert_eq!(retries, 2);
+        let mut observed = Vec::new();
+        while let Ok(observation) = observations.try_recv() {
+            observed.push(observation);
+        }
+        assert_eq!(
+            observed,
+            vec![
+                StreamObservation::IdleTimeout,
+                StreamObservation::Retry,
+                StreamObservation::Disconnect,
+                StreamObservation::Retry,
+                StreamObservation::Recovery,
+            ]
+        );
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], StreamEvent::MessageStop { .. }));
+    }
+
+    #[tokio::test]
+    async fn observer_does_not_report_recovery_or_retry_after_committed_content() {
+        let (attempt_tx, first) = mpsc::unbounded_channel();
+        attempt_tx
+            .send(StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".into(),
+            })
+            .unwrap();
+        drop(attempt_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (observation_tx, mut observations) = mpsc::unbounded_channel();
+        forward_stream_with_idle_policy_with_span(
+            Some(first),
+            || std::future::ready(Err::<AttemptRx, _>(anyhow::anyhow!("unexpected retry"))),
+            IDLE,
+            RETRIES,
+            tx,
+            tracing::Span::none(),
+            Some(Arc::new(move |observation| {
+                observation_tx.send(observation).unwrap();
+            })),
+        )
+        .await;
+        assert_eq!(
+            observations.try_recv().unwrap(),
+            StreamObservation::Disconnect
+        );
+        assert!(observations.try_recv().is_err());
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
+        assert!(matches!(events[1], StreamEvent::ProviderError { .. }));
     }
 
     #[test]

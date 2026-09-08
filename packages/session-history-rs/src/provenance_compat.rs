@@ -161,15 +161,69 @@ fn write_private_json(path: &Path, value: &Value) -> std::io::Result<()> {
     fs::rename(temporary, path)
 }
 
-pub(crate) fn redact_text(input: &str, repo: &Path) -> String {
-    let mut text = input.to_string();
-    for pattern in builtin_patterns()
-        .into_iter()
-        .chain(custom_patterns(repo).unwrap_or_default())
-    {
-        text = replace_pattern(&text, &pattern);
+/// Snapshot repository policy once per capture, retaining the ordered semantics.
+pub(crate) struct Redactor {
+    custom: Vec<Option<Regex>>,
+    fingerprint: String,
+}
+
+impl Redactor {
+    pub(crate) fn new(repo: &Path) -> std::io::Result<Self> {
+        use sha2::{Digest, Sha256};
+        let patterns = custom_patterns(repo)?;
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(super::REDACTION_POLICY_VERSION, &patterns))
+                    .map_err(std::io::Error::other)?
+            )
+        );
+        Ok(Self {
+            custom: patterns
+                .iter()
+                .map(|pattern| Regex::new(pattern).ok())
+                .collect(),
+            fingerprint,
+        })
     }
-    redact_high_entropy_tokens(&strip_env_and_headers(&text))
+
+    pub(crate) fn fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
+
+    pub(crate) fn redact(&self, input: &str) -> String {
+        use std::borrow::Cow;
+        static BUILTINS: OnceLock<Vec<Regex>> = OnceLock::new();
+        let builtins = BUILTINS.get_or_init(|| {
+            builtin_patterns()
+                .iter()
+                .map(|pattern| Regex::new(pattern).expect("built-in redaction regex"))
+                .collect()
+        });
+        let mut text = Cow::Borrowed(input);
+        for pattern in builtins
+            .iter()
+            .map(Some)
+            .chain(self.custom.iter().map(Option::as_ref))
+        {
+            match pattern {
+                Some(pattern) => {
+                    if let Cow::Owned(replaced) = pattern.replace_all(&text, "[redacted]") {
+                        text = Cow::Owned(replaced);
+                    }
+                }
+                None => text = Cow::Borrowed("[redacted]"),
+            }
+        }
+        redact_high_entropy_tokens(&strip_env_and_headers(&text))
+    }
+}
+
+pub(crate) fn redact_text(input: &str, repo: &Path) -> String {
+    match Redactor::new(repo) {
+        Ok(redactor) => redactor.redact(input),
+        Err(_) => "[redacted]".to_string(),
+    }
 }
 
 fn redact_high_entropy_tokens(input: &str) -> String {
@@ -241,6 +295,7 @@ fn custom_patterns(repo: &Path) -> std::io::Result<Vec<String>> {
     Ok(patterns)
 }
 
+#[cfg(test)]
 fn replace_pattern(input: &str, pattern: &str) -> String {
     if pattern.is_empty() {
         return input.to_string();
@@ -382,5 +437,57 @@ mod tests {
         assert!(!clear_hook_session(directory.path(), "runner-2").expect("foreign clear"));
         assert!(clear_hook_session(directory.path(), "runner-1").expect("owned clear"));
         assert!(!path.exists());
+    }
+}
+
+#[cfg(test)]
+mod redactor_equivalence_tests {
+    use super::*;
+    #[test]
+    fn compiled_policy_is_byte_identical_to_ordered_legacy_replacements() {
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir(repo.path().join(".evalops")).unwrap();
+        fs::write(
+            repo.path().join(".evalops/redaction-patterns"),
+            "# custom\ncustomer-[0-9]+\n",
+        )
+        .unwrap();
+        let redactor = Redactor::new(repo.path()).unwrap();
+        for input in [
+            "",
+            "ordinary unicode text λ 東京\n",
+            "ghp_012345678901234567890123456789",
+            "Bearer sample-token",
+            "password=example customer-123",
+            "line\nCookie: sample\nkeep\n",
+            "-----BEGIN PRIVATE KEY-----\nsample\n-----END PRIVATE KEY-----",
+            "api-key: sample",
+        ] {
+            let mut legacy = input.to_string();
+            for pattern in builtin_patterns()
+                .into_iter()
+                .chain(custom_patterns(repo.path()).unwrap())
+            {
+                legacy = replace_pattern(&legacy, &pattern);
+            }
+            legacy = redact_high_entropy_tokens(&strip_env_and_headers(&legacy));
+            assert_eq!(redactor.redact(input), legacy);
+        }
+        fs::write(repo.path().join(".evalops/redaction-patterns"), "[").unwrap();
+        assert_eq!(
+            Redactor::new(repo.path()).unwrap().redact("ordinary text"),
+            "[redacted]"
+        );
+        assert_eq!(
+            redactor.redact("customer-123"),
+            "[redacted]",
+            "capture keeps one policy snapshot"
+        );
+    }
+    #[test]
+    fn unreadable_custom_policy_cannot_silently_disable_redaction() {
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".evalops/redaction-patterns")).unwrap();
+        assert!(Redactor::new(repo.path()).is_err());
     }
 }

@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const CONFORMANCE_FIXTURE = JSON.parse(
-	readFileSync(resolve(ROOT, "packages/runtime-rs/fixtures/runtime-conformance-v1.json"), "utf8"),
+	readFileSync(resolve(ROOT, "packages/runtime-contracts-rs/fixtures/runtime-conformance-v1.json"), "utf8"),
 );
 const AUTH_TOKEN = "runtime-conformance-local-only";
 const SESSION_ID = "runtime-conformance-session-v1";

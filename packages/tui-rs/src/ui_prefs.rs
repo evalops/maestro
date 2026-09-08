@@ -1,6 +1,6 @@
 //! Lightweight UI preferences persisted under `~/.maestro/ui.json`.
 //!
-//! Currently stores footer density (`/footer`). Load failures fall back to
+//! Stores presentation preferences. Load failures fall back to
 //! defaults so a corrupt file never blocks TUI startup.
 
 use std::fs;
@@ -10,10 +10,20 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::FooterStyle;
+use crate::state::OutputDetail;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiPrefs {
+    /// Suppresses the introductory walkthrough only; never proves runtime readiness.
+    #[serde(default)]
+    pub onboarding_seen: bool,
+    /// The user's choice for structured onboarding information collection.
+    #[serde(default)]
+    pub onboarding_share_diagnostics: Option<bool>,
+    /// Conversation output detail. Missing values retain compact tool previews.
+    #[serde(default)]
+    pub output_detail: Option<String>,
     #[serde(default)]
     pub footer_style: Option<String>,
     #[serde(default)]
@@ -38,6 +48,19 @@ pub struct UiPrefs {
 }
 
 impl UiPrefs {
+    /// Return the persisted output detail, using the legacy default if absent or unknown.
+    pub fn output_detail(&self) -> OutputDetail {
+        self.output_detail
+            .as_deref()
+            .and_then(OutputDetail::parse)
+            .unwrap_or_default()
+    }
+
+    /// Set output detail without replacing unrelated preferences.
+    pub fn set_output_detail(&mut self, detail: OutputDetail) {
+        self.output_detail = Some(detail.as_str().to_string());
+    }
+
     pub fn load_default() -> Self {
         load_from_path(&default_path()).unwrap_or_default()
     }
@@ -95,6 +118,40 @@ fn save_to_path(prefs: &UiPrefs, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn output_detail_roundtrip_preserves_other_preferences() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ui.json");
+        let mut prefs = UiPrefs::default();
+        prefs.set_footer_style(FooterStyle::Solo);
+        prefs.timestamps = Some(true);
+        for detail in [
+            OutputDetail::Summary,
+            OutputDetail::Compact,
+            OutputDetail::Expanded,
+        ] {
+            prefs.set_output_detail(detail);
+            save_to_path(&prefs, &path).unwrap();
+            let loaded = load_from_path(&path).unwrap();
+            assert_eq!(loaded.output_detail(), detail);
+            assert_eq!(loaded.footer_style(), FooterStyle::Solo);
+            assert_eq!(loaded.timestamps, Some(true));
+        }
+    }
+
+    #[test]
+    fn output_detail_missing_or_unknown_defaults_to_legacy_compact() {
+        for raw in [
+            r#"{"footerStyle":"solo"}"#,
+            r#"{"outputDetail":"future"}"#,
+            r#"{"outputDetail":null}"#,
+        ] {
+            let prefs: UiPrefs = serde_json::from_str(raw).unwrap();
+            assert_eq!(prefs.output_detail(), OutputDetail::Compact);
+        }
+        assert_eq!(UiPrefs::default().output_detail(), OutputDetail::Compact);
+    }
 
     #[test]
     fn roundtrip_footer_style() {
@@ -166,5 +223,19 @@ mod tests {
         let old: UiPrefs = serde_json::from_str(r#"{"footerStyle":"solo"}"#).unwrap();
         assert_eq!(old.dex_accessory, DexAccessory::None);
         assert!(!old.dex_notifications);
+    }
+    #[test]
+    fn onboarding_display_and_sharing_preferences_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ui.json");
+        let mut prefs = UiPrefs::default();
+        assert!(!prefs.onboarding_seen);
+        assert_eq!(prefs.onboarding_share_diagnostics, None);
+        prefs.onboarding_seen = true;
+        prefs.onboarding_share_diagnostics = Some(false);
+        save_to_path(&prefs, &path).unwrap();
+        let loaded = load_from_path(&path).unwrap();
+        assert!(loaded.onboarding_seen);
+        assert_eq!(loaded.onboarding_share_diagnostics, Some(false));
     }
 }

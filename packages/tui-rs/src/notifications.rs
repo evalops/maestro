@@ -131,7 +131,7 @@ pub fn notify_dex_attention(event: DexAttention) {
         .await;
         match result {
             Ok(Ok(status)) if status.success() => {}
-            result => tracing::warn!(?result, "Dex desktop notification was not delivered"),
+            result => tracing::warn!(?result, "Dex attention notification was not delivered"),
         }
     });
 }

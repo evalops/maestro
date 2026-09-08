@@ -72,7 +72,7 @@
 
 mod claude_code_import;
 mod config;
-mod context;
+pub(crate) mod context;
 mod hot_reload;
 mod integration;
 mod lua;

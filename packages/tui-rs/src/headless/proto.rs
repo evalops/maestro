@@ -541,6 +541,7 @@ mod tests {
                 ),
             },
             FromAgentMessage::ConversationSnapshot {
+                processed_queue_ids: vec![7, 9],
                 protocol_version: "snapshot-v1".into(),
                 messages: vec![],
             },

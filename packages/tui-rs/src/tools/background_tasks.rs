@@ -1505,6 +1505,7 @@ mod tests {
 
     #[test]
     fn test_ensure_logs_dir_success() {
+        let _env_guard = crate::config::test_process_env_lock();
         // Should succeed (creates dir if needed)
         let result = ensure_logs_dir();
         assert!(result.is_ok());

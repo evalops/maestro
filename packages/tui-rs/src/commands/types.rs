@@ -208,6 +208,10 @@ pub enum CommandOutput {
 /// ```
 #[derive(Debug, Clone)]
 pub enum CommandAction {
+    /// Open a read-only settings or task navigation view.
+    OpenPanel(ControlPanel),
+    /// Apply one coherent tool output presentation preference.
+    SetOutputDetail(crate::state::OutputDetail),
     /// Clear all messages from the chat display
     ClearMessages,
     /// Toggle zen mode (minimal UI)
@@ -855,6 +859,26 @@ pub enum ModalType {
     Setup,
 }
 
+/// Navigation within existing runtime, session, and configuration owners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlPanel {
+    Settings,
+    Account,
+    Permissions,
+    Appearance,
+    Output,
+    Footer,
+    Capabilities,
+    Advanced,
+    Tasks,
+    Context,
+    Model,
+    Effort,
+    Review,
+    Help,
+    Session,
+}
+
 /// Error from command execution
 ///
 /// Rich error type for command failures, including a message and optional hint
@@ -1232,6 +1256,8 @@ impl CommandArgument {
 /// - `&CommandContext`: Immutable reference to execution context
 /// - `CommandResult`: Returns Ok(CommandOutput) or Err(CommandError)
 pub struct Command {
+    /// Primary browse order; None keeps compatibility/advanced commands searchable only.
+    pub browse_order: Option<u16>,
     /// Primary command name (without slash)
     pub name: String,
     /// Short description for help and autocomplete
@@ -1262,6 +1288,7 @@ impl Command {
     ) -> Self {
         let name = name.into();
         Self {
+            browse_order: None,
             usage: format!("/{name}"),
             name,
             description: description.into(),
@@ -1272,6 +1299,12 @@ impl Command {
             is_group: false,
             subcommands: Vec::new(),
         }
+    }
+
+    /// Include this command in normal discovery at a stable position.
+    pub fn primary(mut self, order: u16) -> Self {
+        self.browse_order = Some(order);
+        self
     }
 
     /// Add an alias

@@ -10,6 +10,8 @@ import threading
 
 
 class CaptureFixture:
+    model = "gpt-6-astra"
+
     def __init__(self, scene="conversation"):
         self.scene = scene
         self.stopped = threading.Event()
@@ -28,7 +30,8 @@ class CaptureFixture:
                     self.send_error(413)
                     return
                 request_body = self.rfile.read(length)
-                if self.path == "/v1/chat/completions":
+                if self.path in {"/v1/chat/completions", "/v1/responses"}:
+                    responses = self.path == "/v1/responses"
                     fixture.turn += 1
                     if fixture.scene == "streaming":
                         self.send_response(200)
@@ -38,7 +41,7 @@ class CaptureFixture:
                             "id": "capture-stream",
                             "object": "chat.completion.chunk",
                             "created": 0,
-                            "model": "gpt-4o",
+                            "model": fixture.model,
                             "choices": [
                                 {
                                     "index": 0,
@@ -51,7 +54,10 @@ class CaptureFixture:
                             ],
                         }
                         self.wfile.write(
-                            ("data: " + json.dumps(chunk) + "\n\n").encode()
+                            ("data: " + json.dumps(
+                                {"type": "response.output_text.delta", "delta": chunk["choices"][0]["delta"]["content"]}
+                                if responses else chunk
+                            ) + "\n\n").encode()
                         )
                         self.wfile.flush()
                         fixture.stopped.wait(20)
@@ -96,13 +102,13 @@ class CaptureFixture:
                     elif fixture.turn == 2:
                         request = json.loads(request_body)
                         if not any(
-                            message.get("role") == "tool"
+                            (message.get("role") == "tool" or message.get("type") == "function_call_output")
                             and (
                                 fixture.scene == "error"
                                 or "Release checklist"
-                                in str(message.get("content", ""))
+                                in str(message.get("content", message.get("output", "")))
                             )
-                            for message in request.get("messages", [])
+                            for message in (request.get("input", []) if responses else request.get("messages", []))
                         ):
                             self.send_error(
                                 409, "capture requires the actual README tool result"
@@ -137,7 +143,7 @@ class CaptureFixture:
                             "id": "capture-1",
                             "object": "chat.completion.chunk",
                             "created": 0,
-                            "model": "gpt-4o",
+                            "model": fixture.model,
                             "choices": [
                                 {"index": 0, "delta": content, "finish_reason": reason}
                             ],
@@ -150,19 +156,25 @@ class CaptureFixture:
                         )
                         + "data: [DONE]\n\n"
                     )
+                    if responses:
+                        output = [
+                            {"type": "function_call", "call_id": call["id"], **call["function"]}
+                            for call in delta.get("tool_calls", [])
+                        ]
+                        if "content" in delta:
+                            output.append({"type": "message", "role": "assistant", "content": [
+                                {"type": "output_text", "text": delta["content"]}
+                            ]})
+                        event = {"type": "response.completed", "response": {
+                            "id": "capture-response", "model": fixture.model, "output": output,
+                            "usage": {"input_tokens": 100, "output_tokens": 20},
+                        }}
+                        body = "data: " + json.dumps(event) + "\n\n"
                     content_type = "text/event-stream"
                 elif self.path == "/console.v1.ManagedSetupService/GetManagedSetup":
-                    body = json.dumps(
-                        {
-                            "version": 1,
-                            "organizationId": "capture-org",
-                            "workspaceId": "",
-                            "rules": [],
-                            "skills": [],
-                            "mcp": {"mode": "MCP_POLICY_MODE_ALLOWLIST", "servers": []},
-                        }
-                    )
-                    content_type = "application/json"
+                    # ManagedSetup v1, empty MCP allowlist, capture organization.
+                    body = b"\x08\x01\x2a\x02\x08\x02\x3a\x0bcapture-org"
+                    content_type = "application/proto"
                 elif self.path == "/v1/tokens/introspect":
                     fixture.identity_requests += 1
                     body = json.dumps(
@@ -179,7 +191,7 @@ class CaptureFixture:
                 else:
                     self.send_error(404)
                     return
-                payload = body.encode()
+                payload = body if isinstance(body, bytes) else body.encode()
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(payload)))

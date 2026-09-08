@@ -274,7 +274,7 @@ fn run_set(args: &[String]) -> Result<i32> {
     };
 
     let path = settings_path(scope)?;
-    let mut root = load_toml(&path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
+    let mut root = load_toml_for_update(&path)?;
     let parsed = parse_cli_value(&value_raw);
     set_dotted(&mut root, &key, parsed)?;
     if let Some(parent) = path.parent() {
@@ -298,7 +298,7 @@ pub fn persist_user_model_default(model_id: &str) -> Result<PathBuf> {
 /// Persist the selected model and provider in user-scope `config.toml`.
 pub fn persist_user_model_and_provider(model_id: &str, provider: &str) -> Result<PathBuf> {
     let path = settings_path(Scope::User)?;
-    let mut root = load_toml(&path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
+    let mut root = load_toml_for_update(&path)?;
     set_dotted(&mut root, "model", TomlValue::String(model_id.to_owned()))?;
     set_dotted(
         &mut root,
@@ -314,7 +314,7 @@ pub fn persist_user_model_and_provider(model_id: &str, provider: &str) -> Result
 }
 
 fn persist_model_default_to(path: &Path, model_id: &str) -> Result<()> {
-    let mut root = load_toml(path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
+    let mut root = load_toml_for_update(path)?;
     set_dotted(&mut root, "model", TomlValue::String(model_id.to_owned()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1426,6 +1426,22 @@ fn parse_scope_json(args: &[String], default: Scope) -> Result<(Scope, bool)> {
     Ok((scope, json))
 }
 
+/// Only an absent config may start empty. Read/parse failures must preserve it.
+fn load_toml_for_update(path: &Path) -> Result<TomlValue> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(TomlValue::Table(toml::map::Map::new()));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    // Parser diagnostics can contain config values. Keep those out of the TUI.
+    raw.parse::<TomlValue>()
+        .map_err(|_| anyhow::anyhow!("invalid TOML in {}; file left unchanged", path.display()))
+}
+
 fn load_toml(path: &Path) -> Option<TomlValue> {
     fs::read_to_string(path)
         .ok()
@@ -2103,6 +2119,35 @@ mod tests {
             keys,
             vec!["history.persistence".to_owned(), "model".to_owned()]
         );
+    }
+
+    #[test]
+    fn config_updates_preserve_invalid_or_unreadable_settings() {
+        if crate::config::test_reexec_for_process_isolation() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        env::set_var("MAESTRO_HOME", temp.path());
+        let path = temp.path().join("config.toml");
+        let original = "theme = \"dark\"\nsecret_fixture = \"do-not-echo\"\n[broken\n";
+        for update in 0..3 {
+            fs::write(&path, original).unwrap();
+            let error = match update {
+                0 => persist_user_model_default("gpt-5.6").map(|_| ()),
+                1 => persist_user_model_and_provider("gpt-5.6", "openai").map(|_| ()),
+                _ => run_set(&["model".into(), "gpt-5.6".into()]).map(|_| ()),
+            }
+            .unwrap_err();
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+            assert!(!format!("{error:#}").contains("do-not-echo"));
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(persist_user_model_default("gpt-5.6").is_err());
+        assert!(path.is_dir());
+        fs::remove_dir(&path).unwrap();
+        persist_user_model_default("gpt-5.6").unwrap();
+        assert_eq!(load_toml(&path).unwrap()["model"].as_str(), Some("gpt-5.6"));
     }
 
     #[test]

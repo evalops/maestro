@@ -151,11 +151,7 @@ fn conversation_theme() -> maestro_ui::UiTheme {
 }
 
 fn conversation_theme_for(theme: &crate::themes::Theme) -> maestro_ui::UiTheme {
-    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
-        theme.ui_theme()
-    } else {
-        maestro_presentation::palette::conversation()
-    }
+    theme.ui_theme()
 }
 
 fn semantic_color(key: &str, fallback: Color) -> Color {
@@ -163,11 +159,7 @@ fn semantic_color(key: &str, fallback: Color) -> Color {
 }
 
 fn semantic_color_for_theme(theme: &crate::themes::Theme, key: &str, fallback: Color) -> Color {
-    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
-        theme.get_color(key).unwrap_or(fallback)
-    } else {
-        fallback
-    }
+    theme.get_color(key).unwrap_or(fallback)
 }
 
 fn themed_chrome(key: &str, fallback: (u8, u8, u8)) -> Color {
@@ -800,7 +792,9 @@ impl Widget for MessageWidget<'_> {
                 }
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
-                        MessageKind::System => ("• ", "System", Color::Yellow),
+                        MessageKind::System => {
+                            ("• ", "System", semantic_color("warning", Color::Yellow))
+                        }
                         MessageKind::SideAnswer => ("• ", "Dex (side)", brand_muted()),
                         _ => ("• ", "Dex", brand_violet()),
                     };
@@ -1901,6 +1895,12 @@ impl<'a> StatusBarWidget<'a> {
 
 impl Widget for StatusBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_with_theme(area, buf, crate::themes::current_ui_theme());
+    }
+}
+
+impl StatusBarWidget<'_> {
+    fn render_with_theme(self, area: Rect, buf: &mut Buffer, theme: maestro_ui::UiTheme) {
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -1911,6 +1911,8 @@ impl Widget for StatusBarWidget<'_> {
         if matches!(self.footer_style, FooterStyle::Clear) {
             return;
         }
+
+        buf.set_style(area, theme.text_style());
 
         let show_chrome = matches!(self.footer_style, FooterStyle::Rich);
         let show_location = matches!(self.footer_style, FooterStyle::Rich) && !self.shortcut_hints;
@@ -1928,11 +1930,11 @@ impl Widget for StatusBarWidget<'_> {
             crate::model_dynamics::BoostStatus::Active => Some("✦"),
         };
         if let Some(label) = boost_label {
-            spans.push(Span::styled(label, Style::default().fg(brand_violet())));
+            spans.push(Span::styled(label, Style::default().fg(theme.focus)));
         }
         if show_shortcuts {
             if boost_label.is_some() {
-                spans.push(Span::styled(" · ", Style::default().fg(brand_muted())));
+                spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
             }
             let hints = if self.pending_approvals > 0 {
                 "Respond to the approval above"
@@ -1951,23 +1953,23 @@ impl Widget for StatusBarWidget<'_> {
             } else {
                 "? search · / commands"
             };
-            spans.push(Span::styled(hints, Style::default().fg(brand_muted())));
+            spans.push(Span::styled(hints, Style::default().fg(theme.muted)));
         }
 
         // Model info (rich + solo)
         if !history_only {
             if let Some(model) = self.model {
                 if !spans.is_empty() {
-                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
                     chrome_model_label(model),
-                    Style::default().fg(brand_muted()),
+                    Style::default().fg(theme.muted),
                 ));
                 if let Some(provider) = self.provider {
                     if show_chrome {
                         spans.push(Span::raw(" via "));
-                        spans.push(Span::styled(provider, Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(provider, Style::default().fg(theme.muted)));
                     }
                 }
             }
@@ -1977,11 +1979,11 @@ impl Widget for StatusBarWidget<'_> {
         if !history_only {
             if let Some(goal) = self.goal_badge {
                 if !spans.is_empty() {
-                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
                     goal.to_string(),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.attention),
                 ));
             }
         }
@@ -1993,7 +1995,7 @@ impl Widget for StatusBarWidget<'_> {
                 }
                 spans.push(Span::styled(
                     worker.to_owned(),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme.focus),
                 ));
             }
         }
@@ -2001,26 +2003,26 @@ impl Widget for StatusBarWidget<'_> {
         // Pending attachments (rich + solo)
         if !history_only && self.attach_count > 0 {
             if !spans.is_empty() {
-                spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
             }
             spans.push(Span::styled(
                 format!("attach:{}", self.attach_count),
-                Style::default().fg(brand_violet()),
+                Style::default().fg(theme.focus),
             ));
         }
 
         // Working directory + git (rich only)
         if show_location {
             if !spans.is_empty() && self.cwd.is_some() {
-                spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
             }
             if let Some(cwd) = self.cwd {
                 let short_cwd = cwd.rsplit('/').next().unwrap_or(cwd);
-                spans.push(Span::styled(short_cwd, Style::default().fg(brand_muted())));
+                spans.push(Span::styled(short_cwd, Style::default().fg(theme.muted)));
 
                 if let Some(branch) = self.git_branch {
-                    spans.push(Span::styled("  ", Style::default().fg(brand_border())));
-                    spans.push(Span::styled(branch, Style::default().fg(brand_violet())));
+                    spans.push(Span::styled("  ", Style::default().fg(theme.border)));
+                    spans.push(Span::styled(branch, Style::default().fg(theme.focus)));
                 }
             }
         }
@@ -2029,11 +2031,11 @@ impl Widget for StatusBarWidget<'_> {
         if show_chrome {
             if let Some(count) = self.hook_count.filter(|count| *count > 0) {
                 if !spans.is_empty() {
-                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
                     format!("hooks:{count}"),
-                    Style::default().fg(brand_muted()),
+                    Style::default().fg(theme.muted),
                 ));
             }
         }
@@ -2042,11 +2044,11 @@ impl Widget for StatusBarWidget<'_> {
         if !history_only {
             if let Some(note) = self.paste_note {
                 if !spans.is_empty() {
-                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
                     note.to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.muted),
                 ));
             }
         }
@@ -2056,23 +2058,23 @@ impl Widget for StatusBarWidget<'_> {
             if self.pending_approvals > 0 {
                 spans.push(Span::styled(
                     format!("approvals:{}", self.pending_approvals),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.attention),
                 ));
             }
             if self.alert_count > 0 {
                 if !spans.is_empty() {
-                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
                     format!("alerts:{}", self.alert_count),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme.error),
                 ));
             }
         }
 
         let line = Line::from(spans);
         let left_width = line.width() as u16;
-        let para = Paragraph::new(line).style(Style::default().fg(Color::DarkGray));
+        let para = Paragraph::new(line).style(Style::default().fg(theme.muted));
         para.render(area, buf);
 
         // Build right-side info (usage + terminal size)
@@ -2184,10 +2186,7 @@ impl Widget for StatusBarWidget<'_> {
         if !right_text.is_empty()
             && UnicodeWidthStr::width(right_text.as_str()) <= available_width as usize
         {
-            let right_line = Line::from(Span::styled(
-                right_text,
-                Style::default().fg(Color::DarkGray),
-            ));
+            let right_line = Line::from(Span::styled(right_text, Style::default().fg(theme.muted)));
             let right_width = right_line.width() as u16;
             let right_x = area.right().saturating_sub(right_width);
             buf.set_line(right_x, area.y, &right_line, right_width);
@@ -2756,7 +2755,10 @@ impl ChatView<'_> {
                         .map(|_| crate::themes::current_ui_theme()),
                 );
             }
-            if area.height >= 7 {
+            if area.height >= 7
+                && (self.dex_personality == super::dex_companion::DexPersonality::Quiet
+                    || super::deixic_logo::welcome_prompt_row(area) + 1 < area.bottom())
+            {
                 if let Some(text) = self.dex_notice.or(self.dex_tip) {
                     maestro_ui::Notice::new(text)
                         .style(Style::default().fg(crate::themes::current_ui_theme().muted))
@@ -2768,7 +2770,7 @@ impl ChatView<'_> {
                                 {
                                     area.bottom().saturating_sub(1)
                                 } else {
-                                    area.y + 6
+                                    super::deixic_logo::welcome_prompt_row(area) + 1
                                 },
                                 area.width.saturating_sub(3),
                                 1,
@@ -2900,7 +2902,67 @@ impl ChatView<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clear_footer_preserves_canvas_with_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            let area = Rect::new(0, 0, 120, 1);
+            let mut buffer = Buffer::empty(area);
+            buffer.set_style(area, Style::default().fg(Color::Gray).bg(Color::Black));
+            let original = buffer.clone();
+            StatusBarWidget::new(None, None, None, None)
+                .with_footer_style(crate::commands::FooterStyle::Clear)
+                .render_with_theme(area, &mut buffer, theme);
+            assert_eq!(buffer, original);
+        }
+    }
+
+    #[test]
+    fn status_bar_uses_shared_theme() {
+        for theme in crate::components::theme_test::palettes() {
+            for footer in [
+                crate::commands::FooterStyle::Rich,
+                crate::commands::FooterStyle::Solo,
+                crate::commands::FooterStyle::History,
+            ] {
+                let area = Rect::new(0, 0, 240, 1);
+                let mut buffer = Buffer::empty(area);
+                StatusBarWidget::new(
+                    Some("gpt-4o"),
+                    Some("openai"),
+                    Some("/workspace"),
+                    Some("main"),
+                )
+                .with_boost_status(crate::model_dynamics::BoostStatus::Suggested)
+                .with_footer_style(footer)
+                .with_goal_badge(Some("goal"))
+                .with_worker_badge(Some("worker"))
+                .with_paste_note(Some("pasted 42 lines"))
+                .with_hooks(Some(2))
+                .with_attach_count(1)
+                .with_pending_approvals(1)
+                .with_alert_count(1)
+                .render_with_theme(area, &mut buffer, theme);
+                crate::components::theme_test::assert_palette(&buffer, theme);
+            }
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn system_message_header_uses_the_theme_warning_color() {
+        let mut message = polish_message("system", "Setup needs attention");
+        message.kind = MessageKind::System;
+        let area = Rect::new(0, 0, 60, 6);
+        let mut buffer = Buffer::empty(area);
+        MessageWidget::new(&message).render(area, &mut buffer);
+        let label = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "S")
+            .unwrap();
+        assert_eq!(label.fg, crate::themes::current_ui_theme().attention);
+    }
 
     #[test]
     fn inline_code_uses_readable_theme_ink_without_terminal_dimming() {
@@ -2923,8 +2985,10 @@ mod tests {
             assert_eq!(code.style.fg, theme.get_color("md_code"));
             assert!(!code.style.add_modifier.contains(Modifier::DIM));
         }
-        let legacy = parse_markdown_line_with_theme("`cargo test`", &crate::themes::dark_theme());
-        assert!(legacy.spans[0].style.add_modifier.contains(Modifier::DIM));
+        let dark = crate::themes::dark_theme();
+        let code = parse_markdown_line_with_theme("`cargo test`", &dark);
+        assert_eq!(code.spans[0].style.fg, dark.get_color("md_code"));
+        assert!(!code.spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -2947,7 +3011,10 @@ mod tests {
             "[guide](https://example.com)",
             &crate::themes::dark_theme(),
         );
-        assert_eq!(line.spans[0].style.fg, Some(Color::Blue));
+        assert_eq!(
+            line.spans[0].style.fg,
+            crate::themes::dark_theme().get_color("md_link")
+        );
     }
 
     fn polish_message(id: &str, content: &str) -> Message {
@@ -3522,12 +3589,14 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.starts_with("──"));
-        assert!(!rendered.contains("│"));
+        assert!(rendered.starts_with('╭'));
+        assert!(rendered.contains('╮'));
+        assert!(rendered.contains('╰'));
+        assert!(rendered.contains('╯'));
         assert!(!rendered.contains("Describe what you want to build..."));
         let lines = buffer_lines(&buf, width, height);
         assert!(
-            lines[0].starts_with("──"),
+            lines[0].starts_with('╭'),
             "prompt must not sit on the top border: {}",
             lines[0]
         );
@@ -4037,7 +4106,7 @@ mod transparent_theme_regression {
         );
         assert_eq!(
             conversation_theme_for(&crate::themes::dark_theme()).text,
-            maestro_presentation::palette::conversation().text
+            crate::themes::dark_theme().ui_theme().text
         );
     }
 }

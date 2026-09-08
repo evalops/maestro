@@ -131,3 +131,61 @@ fn empty_editor_suggestion_preserves_prompt_spacing() {
     .render(buf.area, &mut buf);
     assert!(text(&buf).contains("> Summarize the changes"));
 }
+
+#[test]
+fn composer_frames_context_without_changing_editor_geometry() {
+    let mut editor = TextArea::new();
+    editor.set_text("Review the changes");
+    for busy in [false, true] {
+        let area = Rect::new(2, 1, 60, 4);
+        let view = Composer {
+            editor: &editor,
+            queued: &[],
+            busy,
+            footer: Some("Mode: Plan · Claude"),
+            completion: None,
+            theme: UiTheme::default(),
+        };
+        assert_eq!(view.editor_area(area), Rect::new(5, 2, 56, 2));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 64, 6));
+        view.render(area, &mut buf);
+        assert_eq!(buf[(2, 1)].symbol(), "╭");
+        assert_eq!(buf[(61, 1)].symbol(), "╮");
+        assert_eq!(buf[(2, 4)].symbol(), "╰");
+        assert_eq!(buf[(61, 4)].symbol(), "╯");
+        let top: String = (2..62).map(|x| buf[(x, 1)].symbol()).collect();
+        assert!(top.contains(" Mode: Plan · Claude "));
+        assert!(text(&buf).contains("> Review the changes"));
+        assert_eq!(buf[(3, 2)].fg, UiTheme::default().focus);
+    }
+}
+
+#[test]
+fn composer_context_and_unicode_stay_inside_tiny_frames() {
+    let editor = TextArea::new();
+    for width in 0..24 {
+        for height in 0..5 {
+            let area = Rect::new(2, 2, width, height);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 28, 9));
+            buf[(area.right(), 2)].set_symbol("x");
+            let view = Composer {
+                editor: &editor,
+                queued: &[],
+                busy: false,
+                footer: Some("Mode: Plan · 世界"),
+                completion: None,
+                theme: UiTheme::default(),
+            };
+            if let Some((x, y)) = view.cursor_pos(area) {
+                assert!(x > area.x && x < area.right() - 1);
+                assert!(y > area.y && y < area.bottom() - 1);
+            }
+            view.render(area, &mut buf);
+            assert_eq!(buf[(area.right(), 2)].symbol(), "x");
+            if width >= 2 && height >= 2 {
+                assert_eq!(buf[(area.right() - 1, 2)].symbol(), "╮");
+                assert_eq!(buf[(2, area.bottom() - 1)].symbol(), "╰");
+            }
+        }
+    }
+}

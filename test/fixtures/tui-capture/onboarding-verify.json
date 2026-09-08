@@ -1,0 +1,41 @@
+{
+  "name": "onboarding-verify",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/setup"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Let.s get Deixic Code ready"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "What is your role"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "What do you want to do first"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "How do you plan to run"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "incur usage charges"
+    }
+  ]
+}

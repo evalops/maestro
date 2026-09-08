@@ -34,6 +34,40 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{ExecutionStatus, FromAgent, TokenUsage};
 use crate::kill_ring::{KillRing, next_word_start, previous_word_start};
 use crate::session::ThinkingLevel;
+
+/// Conversation output detail, combining turn summaries and tool previews.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputDetail {
+    /// Summarize tool activity per turn, with individual turns expandable.
+    Summary,
+    /// Show short tool previews, with individual results expandable.
+    #[default]
+    Compact,
+    /// Show full tool output by default.
+    Expanded,
+}
+
+impl OutputDetail {
+    /// Stable value used in settings and persisted preferences.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::Compact => "compact",
+            Self::Expanded => "expanded",
+        }
+    }
+
+    /// Parse a settings value.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "summary" => Some(Self::Summary),
+            "compact" => Some(Self::Compact),
+            "expanded" => Some(Self::Expanded),
+            _ => None,
+        }
+    }
+}
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
@@ -850,7 +884,7 @@ impl AppState {
     pub fn handle_agent_message(&mut self, msg: FromAgent) {
         match msg {
             // Private durable provider state is not interactive UI state.
-            FromAgent::ConversationSnapshot { .. } => {}
+            FromAgent::LocalAssistantContent { .. } | FromAgent::ConversationSnapshot { .. } => {}
             // Managed receipts are forwarded to headless consumers but carry
             // no interactive UI content.
             FromAgent::ManagedGatewayReceipt { .. } => {}
@@ -1112,7 +1146,12 @@ impl AppState {
                 self.status = Some(message);
             }
 
-            FromAgent::Compaction { .. } => {}
+            // Content-free observations are consumed by TurnTracker; they do not
+            // create messages or change the interactive execution state.
+            FromAgent::Compaction { .. }
+            | FromAgent::StreamObservation { .. }
+            | FromAgent::RequestRetryObservation
+            | FromAgent::CompactionMeasured { .. } => {}
 
             // Session info updated
             FromAgent::SessionInfo {
@@ -1911,6 +1950,26 @@ impl AppState {
         }
     }
 
+    /// Apply an output detail preset, clearing overrides from the previous view.
+    /// This changes presentation only; approval and tool execution state are untouched.
+    pub fn set_output_detail(&mut self, detail: OutputDetail) {
+        self.expanded_tool_calls.clear();
+        self.clear_focus_turn_state();
+        self.compact_tool_outputs = detail != OutputDetail::Expanded;
+        self.set_focus_view(detail == OutputDetail::Summary);
+    }
+
+    /// Return the detail preset represented by the current presentation flags.
+    pub fn output_detail(&self) -> OutputDetail {
+        if self.focus_view {
+            OutputDetail::Summary
+        } else if self.compact_tool_outputs {
+            OutputDetail::Compact
+        } else {
+            OutputDetail::Expanded
+        }
+    }
+
     /// Set Focus view explicitly and return the resulting state.
     pub fn set_focus_view(&mut self, enabled: bool) -> bool {
         self.focus_view = enabled;
@@ -2133,6 +2192,53 @@ mod focus_view_tests {
         assert!(state.toggle_focus_view());
         assert!(state.focus_view);
         assert!(!state.set_focus_view(false));
+    }
+
+    #[test]
+    fn output_detail_expanded_exits_focus_and_clears_collapsed_tool_overrides() {
+        let mut state = AppState::new();
+        state.messages.push(tool_message("first"));
+        assert_eq!(state.output_detail(), OutputDetail::Compact);
+
+        state.set_output_detail(OutputDetail::Summary);
+        assert!(state.focus_view);
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("first"));
+        state.toggle_focus_turn("first");
+        state.toggle_tool_call("call-first");
+
+        state.set_output_detail(OutputDetail::Expanded);
+        assert_eq!(state.output_detail(), OutputDetail::Expanded);
+        assert!(!state.focus_view);
+        assert!(!state.compact_tool_outputs);
+        assert!(state.expanded_focus_turns.is_empty());
+        assert!(state.focus_selected_turn.is_none());
+        assert!(state.expanded_tool_calls.is_empty());
+        assert!(state.is_tool_call_expanded("call-first"));
+        assert_eq!(
+            state.messages[0].tool_calls[0].status,
+            ToolCallStatus::Completed
+        );
+
+        state.toggle_tool_call("call-first");
+        assert!(!state.is_tool_call_expanded("call-first"));
+        state.set_output_detail(OutputDetail::Compact);
+        assert_eq!(state.output_detail(), OutputDetail::Compact);
+        assert!(!state.focus_view);
+        assert!(state.compact_tool_outputs);
+        assert!(state.expanded_tool_calls.is_empty());
+        assert!(!state.is_tool_call_expanded("call-first"));
+    }
+
+    #[test]
+    fn output_detail_summary_clears_previous_turn_expansions() {
+        let mut state = AppState::new();
+        state.messages.push(tool_message("first"));
+        state.set_focus_view(true);
+        state.toggle_focus_turn("first");
+        state.set_output_detail(OutputDetail::Summary);
+        assert_eq!(state.output_detail(), OutputDetail::Summary);
+        assert!(state.expanded_focus_turns.is_empty());
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("first"));
     }
 
     #[test]

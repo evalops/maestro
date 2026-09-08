@@ -58,7 +58,7 @@ npm run check:codex-operating-layer
 | Requirement | Evidence area | Primary artifacts |
 | --- | --- | --- |
 | installed by default | `default-install` | `package.json`, `test/install/native-dependencies.test.ts` |
-| ChatGPT sign-in | `chatgpt-sign-in` | `packages/tui-rs/src/codex_cli.rs`, `packages/tui-rs/src/codex_app_server.rs` |
+| ChatGPT sign-in | `chatgpt-sign-in` | `packages/tui-rs/src/codex_cli.rs`, `packages/codex-rs/src/codex_app_server.rs` |
 | dynamic tools | `dynamic-tools` | `src/codex/compatibility.ts`, `src/agent/providers/codex-app-server.ts`, `test/codex/compatibility.test.ts`, `test/agent/codex-app-server.test.ts` |
 | durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `src/server/run-reconstruction.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/cli/run-command.test.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/runtime-gateway-rs/src/main.rs`, `docs/protocols/pending-requests.md` |

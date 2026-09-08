@@ -932,6 +932,10 @@ pub enum FromAgentMessage {
     ConversationSnapshot {
         protocol_version: String,
         messages: Vec<maestro_ai::Message>,
+        /// Correlation metadata for prompts represented by this checkpoint;
+        /// never authority to admit or retry an effect.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        processed_queue_ids: Vec<u64>,
     },
     /// Handshake acknowledgement for a specific client connection
     HelloOk {

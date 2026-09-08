@@ -266,12 +266,14 @@ pub struct CanonicalTurnEvent {
     pub tool_count: u32,
     pub tool_success_count: u32,
     pub tool_failure_count: u32,
+    pub tool_outcomes: ToolOutcomeMeasurements,
 
     // ─── Token Economics ────────────────────────────────────────────────────
     pub tokens: TokenUsage,
     pub cost_usd: f64,
     /// Provider-reported cost only when every response supplied a cost.
     pub reported_cost_usd: Option<f64>,
+    pub measurements: Option<TurnMeasurements>,
 
     // ─── Business Context ───────────────────────────────────────────────────
     pub sandbox_mode: SandboxMode,
@@ -295,6 +297,41 @@ pub struct CanonicalTurnEvent {
     // ─── Sampling Metadata ──────────────────────────────────────────────────
     pub sampled: bool,
     pub sample_reason: SampleReason,
+}
+
+/// Observations made by the native event collector. Missing latency means no
+/// nonempty output was observed, not a zero-latency response.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnMeasurements {
+    pub first_output_ms: Option<u64>,
+    pub compaction_duration_ms: Option<u64>,
+    pub stream_stall_count: Option<u32>,
+    pub stream_open_failure_count: Option<u32>,
+    pub stream_disconnect_count: Option<u32>,
+    pub stream_retry_count: Option<u32>,
+    pub stream_recovery_count: Option<u32>,
+    pub request_retry_count: u32,
+    pub compaction_count: u32,
+    pub automatic_compaction_count: u32,
+    pub compacted_input_tokens: u64,
+    pub response_count: u32,
+    pub responses_with_usage: u32,
+    pub responses_with_cost: u32,
+}
+
+/// Receipt-backed outcomes. Legacy producers without a matching receipt remain
+/// unknown; absent duration is not a zero-duration execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolOutcomeMeasurements {
+    pub succeeded: u32,
+    pub failed: u32,
+    pub denied: u32,
+    pub cancelled: u32,
+    pub indeterminate: u32,
+    pub unknown: u32,
+    pub measured_execution_count: u32,
+    pub execution_duration_ms: u64,
 }
 
 /// Closed, content-free projection allowed to cross the external telemetry
@@ -321,11 +358,15 @@ pub struct ExternalTurnEvent {
     pub tool_count: u32,
     pub tool_success_count: u32,
     pub tool_failure_count: u32,
+    #[serde(default)]
+    pub tool_outcomes: ToolOutcomeMeasurements,
     pub tokens: TokenUsage,
     pub cost_usd: f64,
     /// Provider-reported cost only when every response supplied a cost.
     #[serde(default)]
     pub reported_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurements: Option<TurnMeasurements>,
     pub sandbox_mode: SandboxMode,
     pub approval_mode: ApprovalMode,
     pub mcp_server_count: u32,
@@ -360,9 +401,11 @@ impl CanonicalTurnEvent {
             tool_count: self.tool_count,
             tool_success_count: self.tool_success_count,
             tool_failure_count: self.tool_failure_count,
+            tool_outcomes: self.tool_outcomes.clone(),
             tokens: self.tokens.clone(),
             cost_usd: self.cost_usd,
             reported_cost_usd: self.reported_cost_usd,
+            measurements: self.measurements.clone(),
             sandbox_mode: self.sandbox_mode,
             approval_mode: self.approval_mode,
             mcp_server_count: self.mcp_server_count,
@@ -453,6 +496,8 @@ pub struct TurnCollector {
     turn_number: u32,
     turn_id: String,
     start_time: Instant,
+    measurements: TurnMeasurements,
+    tool_outcomes: ToolOutcomeMeasurements,
     sampling_config: TailSamplingConfig,
 
     // Timing
@@ -466,6 +511,8 @@ pub struct TurnCollector {
 
     // Tools
     pending_tools: HashMap<String, PendingTool>,
+    // Receipt observation precedes ToolEnd; its success flag completes this entry.
+    observed_tool_terminals: HashMap<String, Option<bool>>,
     completed_tools: Vec<ToolExecution>,
 
     // Context
@@ -491,6 +538,8 @@ impl TurnCollector {
             turn_number,
             turn_id: Uuid::new_v4().to_string(),
             start_time: Instant::now(),
+            measurements: TurnMeasurements::default(),
+            tool_outcomes: ToolOutcomeMeasurements::default(),
             sampling_config: config,
             llm_start_time: None,
             accumulated_llm_duration_ms: 0,
@@ -498,6 +547,7 @@ impl TurnCollector {
             model: ModelInfo::default(),
             trace_id: None,
             pending_tools: HashMap::new(),
+            observed_tool_terminals: HashMap::new(),
             completed_tools: Vec::new(),
             sandbox_mode: SandboxMode::None,
             approval_mode: ApprovalMode::Prompt,
@@ -508,6 +558,89 @@ impl TurnCollector {
             output_size_bytes: 0,
             features: FeatureFlags::default(),
         }
+    }
+
+    /// Observe the stream owner without inferring coverage for other transports.
+    pub fn record_stream_observation(&mut self, observation: crate::ai::StreamObservation) {
+        use crate::ai::StreamObservation;
+        let m = &mut self.measurements;
+        match observation {
+            StreamObservation::Observed => {
+                m.stream_stall_count.get_or_insert(0);
+                m.stream_open_failure_count.get_or_insert(0);
+                m.stream_disconnect_count.get_or_insert(0);
+                m.stream_retry_count.get_or_insert(0);
+                m.stream_recovery_count.get_or_insert(0);
+            }
+            StreamObservation::OpenFailed => {
+                m.stream_open_failure_count =
+                    Some(m.stream_open_failure_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::IdleTimeout => {
+                m.stream_stall_count = Some(m.stream_stall_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Disconnect => {
+                m.stream_disconnect_count =
+                    Some(m.stream_disconnect_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Retry => {
+                m.stream_retry_count = Some(m.stream_retry_count.unwrap_or(0).saturating_add(1));
+            }
+            StreamObservation::Recovery => {
+                m.stream_recovery_count =
+                    Some(m.stream_recovery_count.unwrap_or(0).saturating_add(1));
+            }
+        }
+    }
+
+    pub fn record_request_retry(&mut self) {
+        self.measurements.request_retry_count =
+            self.measurements.request_retry_count.saturating_add(1);
+    }
+
+    pub fn record_compaction_duration(&mut self, duration_ms: u64) {
+        self.measurements.compaction_duration_ms = Some(
+            self.measurements
+                .compaction_duration_ms
+                .unwrap_or(0)
+                .saturating_add(duration_ms),
+        );
+    }
+
+    /// Observe output without retaining its content.
+    pub fn record_output(&mut self) {
+        self.measurements.first_output_ms.get_or_insert_with(|| {
+            self.start_time
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        });
+    }
+
+    /// Observe a completed compaction without retaining the summary.
+    pub fn record_compaction(&mut self, automatic: bool, tokens_before: u64) {
+        self.measurements.compaction_count = self.measurements.compaction_count.saturating_add(1);
+        self.measurements.automatic_compaction_count = self
+            .measurements
+            .automatic_compaction_count
+            .saturating_add(u32::from(automatic));
+        self.measurements.compacted_input_tokens = self
+            .measurements
+            .compacted_input_tokens
+            .saturating_add(tokens_before);
+    }
+
+    /// Track coverage separately from zero-valued provider usage.
+    pub fn record_response_coverage(&mut self, has_usage: bool, has_cost: bool) {
+        self.measurements.response_count = self.measurements.response_count.saturating_add(1);
+        self.measurements.responses_with_usage = self
+            .measurements
+            .responses_with_usage
+            .saturating_add(u32::from(has_usage));
+        self.measurements.responses_with_cost = self
+            .measurements
+            .responses_with_cost
+            .saturating_add(u32::from(has_cost));
     }
 
     // ─── Setters ──────────────────────────────────────────────────────────────
@@ -602,6 +735,54 @@ impl TurnCollector {
         self
     }
 
+    /// Consume one terminal outcome per call, independently of approval timing.
+    pub fn record_tool_receipt(
+        &mut self,
+        call_id: &str,
+        receipt: Option<&maestro_runtime::ExecutionReceipt>,
+    ) {
+        use maestro_runtime::{ExecutionPhase, ExecutionStatus};
+        // Auto-approved native calls can emit a terminal receipt without a
+        // preceding approval event. Timing availability is not receipt authority.
+        if self.observed_tool_terminals.contains_key(call_id) {
+            return;
+        }
+        self.observed_tool_terminals
+            .insert(call_id.to_owned(), None);
+        let pending = self.pending_tools.get(call_id);
+        let Some(receipt) = receipt.filter(|r| {
+            !call_id.is_empty()
+                && r.call_id == call_id
+                && !r.tool_name.is_empty()
+                && pending.is_none_or(|p| r.tool_name == p.name)
+        }) else {
+            self.tool_outcomes.unknown = self.tool_outcomes.unknown.saturating_add(1);
+            return;
+        };
+        let counts = &mut self.tool_outcomes;
+        let count = match receipt.status {
+            ExecutionStatus::Succeeded => &mut counts.succeeded,
+            ExecutionStatus::Failed => &mut counts.failed,
+            ExecutionStatus::Denied => &mut counts.denied,
+            ExecutionStatus::Cancelled { .. } => &mut counts.cancelled,
+            ExecutionStatus::Indeterminate => &mut counts.indeterminate,
+        };
+        *count = count.saturating_add(1);
+        if !matches!(
+            receipt.status,
+            ExecutionStatus::Denied
+                | ExecutionStatus::Cancelled {
+                    phase: ExecutionPhase::Queued
+                }
+        ) {
+            if let Some(duration) = receipt.duration_ms {
+                counts.measured_execution_count = counts.measured_execution_count.saturating_add(1);
+                counts.execution_duration_ms =
+                    counts.execution_duration_ms.saturating_add(duration);
+            }
+        }
+    }
+
     pub fn record_tool_end(
         &mut self,
         call_id: &str,
@@ -609,6 +790,14 @@ impl TurnCollector {
         output_size_bytes: Option<u64>,
         error_code: Option<String>,
     ) -> &mut Self {
+        let terminal = self
+            .observed_tool_terminals
+            .entry(call_id.to_owned())
+            .or_default();
+        if terminal.is_some() {
+            return self;
+        }
+        *terminal = Some(success);
         if let Some(pending) = self.pending_tools.remove(call_id) {
             let duration_ms = pending.start_time.elapsed().as_millis() as u64;
             self.completed_tools.push(ToolExecution {
@@ -653,8 +842,18 @@ impl TurnCollector {
         // Apply tail sampling
         let (sampled, sample_reason) = self.should_sample(status, total_duration_ms);
 
-        let tool_count = self.completed_tools.len() as u32;
-        let tool_success_count = self.completed_tools.iter().filter(|t| t.success).count() as u32;
+        // Terminal events establish counts even when approval did not emit a
+        // ToolCall. Keep measured timing separate instead of inventing a start.
+        let tool_count = self
+            .observed_tool_terminals
+            .values()
+            .filter(|result| result.is_some())
+            .count() as u32;
+        let tool_success_count = self
+            .observed_tool_terminals
+            .values()
+            .filter(|result| **result == Some(true))
+            .count() as u32;
         let tool_failure_count = tool_count - tool_success_count;
 
         CanonicalTurnEvent {
@@ -682,11 +881,13 @@ impl TurnCollector {
             tool_count,
             tool_success_count,
             tool_failure_count,
+            tool_outcomes: self.tool_outcomes,
 
             // Tokens
             tokens,
             cost_usd,
             reported_cost_usd: None,
+            measurements: Some(self.measurements),
 
             // Business context
             sandbox_mode: self.sandbox_mode,
@@ -720,9 +921,13 @@ impl TurnCollector {
     // ─── Sampling Logic ───────────────────────────────────────────────────────
 
     fn should_sample(&self, status: TurnStatus, total_duration_ms: u64) -> (bool, SampleReason) {
-        // Always sample errors
+        // Always retain non-success outcomes, including fast user cancellations.
         if status == TurnStatus::Error {
             return (true, SampleReason::Error);
+        }
+
+        if status == TurnStatus::Aborted {
+            return (true, SampleReason::Always);
         }
 
         // Always sample first N turns
@@ -748,6 +953,68 @@ impl TurnCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_only_receipts_are_counted_once_without_pending_timing() {
+        use maestro_runtime::{
+            ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails,
+        };
+        let mut collector = TurnCollector::new("fixture", 1, TailSamplingConfig::default());
+        let mut receipt = ExecutionReceipt {
+            code_authority: None,
+            call_id: "native-call".to_owned(),
+            tool_name: "bash".to_owned(),
+            source: ExecutionSource::Native,
+            status: ExecutionStatus::Succeeded,
+            duration_ms: Some(17),
+            policy: None,
+            details: ToolReceiptDetails::None,
+        };
+        collector.record_tool_receipt("native-call", Some(&receipt));
+        collector.record_tool_receipt("native-call", Some(&receipt));
+        collector.record_tool_end("native-call", true, None, None);
+        collector.record_tool_receipt("wrong-call", Some(&receipt));
+        receipt.call_id = "denied-call".to_owned();
+        receipt.status = ExecutionStatus::Denied;
+        collector.record_tool_receipt("denied-call", Some(&receipt));
+        assert_eq!(collector.tool_outcomes.succeeded, 1);
+        assert_eq!(collector.tool_outcomes.denied, 1);
+        assert_eq!(collector.tool_outcomes.unknown, 1);
+        assert_eq!(collector.tool_outcomes.measured_execution_count, 1);
+        assert_eq!(collector.tool_outcomes.execution_duration_ms, 17);
+        assert!(collector.completed_tools.is_empty());
+    }
+
+    #[test]
+    fn measurement_coverage_counts_actual_responses_and_compaction() {
+        let mut collector = TurnCollector::new("fixture", 1, TailSamplingConfig::default());
+        collector.record_response_coverage(false, false);
+        collector.record_response_coverage(true, false);
+        collector.record_response_coverage(true, true);
+        collector.record_compaction(true, 1200);
+        collector.record_compaction(false, 300);
+        collector.record_compaction_duration(42);
+        let event = collector.complete(TurnStatus::Success, TokenUsage::default(), 0.0, None, None);
+        let m = event.measurements.unwrap();
+        assert_eq!(
+            (
+                m.response_count,
+                m.responses_with_usage,
+                m.responses_with_cost
+            ),
+            (3, 2, 1)
+        );
+        assert_eq!(
+            (
+                m.compaction_count,
+                m.automatic_compaction_count,
+                m.compacted_input_tokens
+            ),
+            (2, 1, 1500)
+        );
+        assert_eq!(m.compaction_duration_ms, Some(42));
+        assert_eq!(m.stream_stall_count, None);
+    }
 
     #[test]
     fn test_turn_collector_basic() {
@@ -782,6 +1049,27 @@ mod tests {
         assert_eq!(event.tool_success_count, 1);
         assert!(event.sampled); // First turn is always sampled
         assert_eq!(event.sample_reason, SampleReason::FirstTurn);
+    }
+
+    #[test]
+    fn fast_aborted_turns_are_retained_when_success_sampling_is_disabled() {
+        let collector = TurnCollector::new(
+            "fixture",
+            10,
+            TailSamplingConfig {
+                success_sample_rate: 0.0,
+                always_sample_first_n: 0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            collector.should_sample(TurnStatus::Aborted, 0),
+            (true, SampleReason::Always)
+        );
+        assert_eq!(
+            collector.should_sample(TurnStatus::Success, 0),
+            (false, SampleReason::Random)
+        );
     }
 
     #[test]

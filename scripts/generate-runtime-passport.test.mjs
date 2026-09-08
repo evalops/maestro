@@ -21,7 +21,7 @@ const options = {
 test("passport binds the exact artifact and executable conformance suite", () => {
 	const passport = buildRuntimePassport(options);
 	const contract = JSON.parse(
-		readFileSync("packages/runtime-rs/fixtures/runtime-passport-contract-v1.json", "utf8"),
+		readFileSync("packages/runtime-contracts-rs/fixtures/runtime-passport-contract-v1.json", "utf8"),
 	);
 	assert.equal(passport.schemaVersion, "evalops.maestro.runtime-passport.v1");
 	assert.deepEqual(Object.keys(passport).sort(), [...contract.fields].sort());
@@ -59,7 +59,7 @@ test("passport changes when the exact artifact digest changes", () => {
 
 test("canonical conformance fixture is present and versioned", () => {
 	const fixture = JSON.parse(
-		readFileSync("packages/runtime-rs/fixtures/runtime-conformance-v1.json", "utf8"),
+		readFileSync("packages/runtime-contracts-rs/fixtures/runtime-conformance-v1.json", "utf8"),
 	);
 	assert.equal(fixture.schemaVersion, "evalops.maestro.runtime-conformance.v1");
 	assert.equal(fixture.profile, "hosted-http-sse-v1");

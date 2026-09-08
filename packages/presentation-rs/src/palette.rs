@@ -2,27 +2,16 @@
 use maestro_ui::UiTheme;
 use ratatui::style::Color;
 pub fn default_controls() -> UiTheme {
-    UiTheme {
-        panel: None,
-        selection: None,
-        surface: Color::Rgb(0x14, 0x11, 0x22),
-        text: Color::Rgb(0xe9, 0xe5, 0xf7),
-        muted: Color::Rgb(0x9a, 0x92, 0xba),
-        border: Color::Rgb(0x3d, 0x32, 0x72),
-        focus: Color::Rgb(0x68, 0x57, 0xfe),
-        success: Color::Rgb(0x86, 0xef, 0xac),
-        attention: Color::Rgb(0xfb, 0xbf, 0x24),
-        error: Color::Rgb(0xfc, 0xa5, 0xa5),
-    }
+    conversation()
 }
 
-/// The restrained conversation palette used by the composer and transcript.
+/// The brand palette shared by the composer, transcript, and controls.
 pub fn conversation() -> UiTheme {
     use crate::shimmer::{DEIXIC_ACCENT, DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT};
     let color = |(r, g, b)| Color::Rgb(r, g, b);
     UiTheme {
-        panel: None,
-        selection: None,
+        panel: Some(Color::Rgb(0x21, 0x1f, 0x30)),
+        selection: Some(Color::Rgb(0x35, 0x2c, 0x50)),
         surface: color(DEIXIC_SURFACE),
         text: color(DEIXIC_TEXT),
         muted: color(DEIXIC_MUTED),
@@ -31,5 +20,18 @@ pub fn conversation() -> UiTheme {
         success: Color::Rgb(0xa3, 0xbb, 0xa1),
         attention: Color::Rgb(0xcf, 0xb9, 0x87),
         error: Color::Rgb(0xdb, 0x9b, 0x96),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_controls_and_conversation_share_the_brand_palette() {
+        let controls = default_controls();
+        assert_eq!(controls, conversation());
+        assert_eq!(controls.surface, Color::Rgb(0x17, 0x16, 0x24));
+        assert_eq!(controls.focus, Color::Rgb(0x9c, 0x92, 0xfc));
     }
 }

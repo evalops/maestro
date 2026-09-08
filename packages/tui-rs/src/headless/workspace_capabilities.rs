@@ -123,6 +123,12 @@ impl PreparedWorkspaceCapabilitySet {
         }
     }
 
+    /// Bind the admission receipt to the complete instructions the runtime will send.
+    pub(crate) fn bind_provider_prompt(&mut self, prompt: &str) {
+        let (Self::New(set) | Self::Idempotent(set)) = self;
+        set.provider_prompt_sha256 = sha256_prefixed(prompt.as_bytes());
+    }
+
     #[must_use]
     pub(crate) fn is_idempotent(&self) -> bool {
         matches!(self, Self::Idempotent(_))

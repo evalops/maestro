@@ -18,6 +18,8 @@ enum RustTuiKeybindingAction {
     FileSearch,
     ToggleToolOutputs,
     EditLastQueuedFollowUp,
+    CycleModel,
+    CycleModelBackward,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -28,10 +30,15 @@ enum RustTuiKeybindingShortcut {
     CtrlT,
     AltUp,
     ShiftLeft,
+    AltP,
+    CtrlShiftP,
+    AltShiftP,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RustTuiKeybindingLabels {
+    pub cycle_model: String,
+    pub cycle_model_backward: String,
     pub command_palette: String,
     pub file_search: String,
     pub toggle_tool_outputs: String,
@@ -41,6 +48,8 @@ pub struct RustTuiKeybindingLabels {
 impl Default for RustTuiKeybindingLabels {
     fn default() -> Self {
         Self {
+            cycle_model: ctrl(KeyCode::Char('p')).display(),
+            cycle_model_backward: alt(KeyCode::Char('p')).display(),
             command_palette: ctrl(KeyCode::Char('k')).display(),
             file_search: ctrl(KeyCode::Char('o')).display(),
             toggle_tool_outputs: ctrl(KeyCode::Char('t')).display(),
@@ -51,6 +60,8 @@ impl Default for RustTuiKeybindingLabels {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RustTuiKeybindings {
+    pub cycle_model: KeyBinding,
+    pub cycle_model_backward: KeyBinding,
     pub command_palette: KeyBinding,
     pub file_search: KeyBinding,
     pub toggle_tool_outputs: KeyBinding,
@@ -61,6 +72,8 @@ impl RustTuiKeybindings {
     #[must_use]
     pub fn labels(&self) -> RustTuiKeybindingLabels {
         RustTuiKeybindingLabels {
+            cycle_model: self.cycle_model.display(),
+            cycle_model_backward: self.cycle_model_backward.display(),
             command_palette: self.command_palette.display(),
             file_search: self.file_search.display(),
             toggle_tool_outputs: self.toggle_tool_outputs.display(),
@@ -76,11 +89,13 @@ struct StoredRustTuiKeybindingsFile {
     rust_bindings: HashMap<String, String>,
 }
 
-const RUST_TUI_KEYBINDING_ACTIONS: [RustTuiKeybindingAction; 4] = [
+const RUST_TUI_KEYBINDING_ACTIONS: [RustTuiKeybindingAction; 6] = [
     RustTuiKeybindingAction::CommandPalette,
     RustTuiKeybindingAction::FileSearch,
     RustTuiKeybindingAction::ToggleToolOutputs,
     RustTuiKeybindingAction::EditLastQueuedFollowUp,
+    RustTuiKeybindingAction::CycleModel,
+    RustTuiKeybindingAction::CycleModelBackward,
 ];
 
 const TUI_KEYBINDING_ACTIONS: [&str; 7] = [
@@ -195,7 +210,7 @@ fn load_rust_tui_keybindings_from_path(
     terminal_name: &str,
     in_tmux: bool,
 ) -> RustTuiKeybindings {
-    let defaults = default_shortcuts(terminal_name, in_tmux);
+    let mut defaults = default_shortcuts(terminal_name, in_tmux);
     let Some(path) = config_path else {
         return shortcuts_to_bindings(&defaults);
     };
@@ -206,6 +221,31 @@ fn load_rust_tui_keybindings_from_path(
         resolved.insert(*action, *shortcut);
     }
 
+    // Preserve existing custom shortcuts when introducing model cycling.
+    // An unconfigured new action takes a free alternative instead of evicting
+    // an established file-search or palette binding.
+    for action in [
+        RustTuiKeybindingAction::CycleModel,
+        RustTuiKeybindingAction::CycleModelBackward,
+    ] {
+        if !overrides.contains_key(&action)
+            && overrides
+                .values()
+                .any(|shortcut| *shortcut == resolved[&action])
+        {
+            for candidate in [
+                RustTuiKeybindingShortcut::CtrlShiftP,
+                RustTuiKeybindingShortcut::AltShiftP,
+                RustTuiKeybindingShortcut::AltP,
+            ] {
+                if !resolved.values().any(|shortcut| *shortcut == candidate) {
+                    resolved.insert(action, candidate);
+                    defaults.insert(action, candidate);
+                    break;
+                }
+            }
+        }
+    }
     let overridden_actions: HashSet<RustTuiKeybindingAction> = overrides.keys().copied().collect();
     let mut changed = true;
     while changed {
@@ -282,9 +322,14 @@ fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
             RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
             RustTuiKeybindingShortcut::AltUp => "alt+up",
             RustTuiKeybindingShortcut::ShiftLeft => "shift+left",
+            RustTuiKeybindingShortcut::AltP => "alt+p",
+            RustTuiKeybindingShortcut::CtrlShiftP => "ctrl+shift+p",
+            RustTuiKeybindingShortcut::AltShiftP => "alt+shift+p",
         };
 
     HashMap::from([
+        ("cycle-model", "ctrl+p"),
+        ("cycle-model-backward", "alt+p"),
         ("command-palette", "ctrl+k"),
         ("file-search", "ctrl+o"),
         ("toggle-tool-outputs", "ctrl+t"),
@@ -517,6 +562,8 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
             "file-search",
             "toggle-tool-outputs",
             "edit-last-follow-up",
+            "cycle-model",
+            "cycle-model-backward",
         ],
         &[
             "ctrl+k",
@@ -525,6 +572,9 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
             "ctrl+t",
             "alt+up",
             "shift+left",
+            "alt+p",
+            "ctrl+shift+p",
+            "alt+shift+p",
         ],
         &mut issues,
     );
@@ -569,10 +619,12 @@ fn generate_keybindings_template() -> String {
         "edit-last-follow-up": tui_edit_last_follow_up_shortcut_from_env(),
     });
     let rust_bindings = json!({
-        "command-palette": "ctrl+p",
+        "command-palette": "ctrl+k",
         "file-search": "ctrl+o",
         "toggle-tool-outputs": "ctrl+t",
         "edit-last-follow-up": default_rust_shortcuts()["edit-last-follow-up"],
+        "cycle-model": "ctrl+p",
+        "cycle-model-backward": "alt+p",
     });
     format!(
         "{}\n",
@@ -653,6 +705,14 @@ fn default_shortcuts(
 ) -> HashMap<RustTuiKeybindingAction, RustTuiKeybindingShortcut> {
     HashMap::from([
         (
+            RustTuiKeybindingAction::CycleModel,
+            RustTuiKeybindingShortcut::CtrlP,
+        ),
+        (
+            RustTuiKeybindingAction::CycleModelBackward,
+            RustTuiKeybindingShortcut::AltP,
+        ),
+        (
             RustTuiKeybindingAction::CommandPalette,
             RustTuiKeybindingShortcut::CtrlK,
         ),
@@ -678,6 +738,10 @@ fn shortcuts_to_bindings(
     shortcuts: &HashMap<RustTuiKeybindingAction, RustTuiKeybindingShortcut>,
 ) -> RustTuiKeybindings {
     RustTuiKeybindings {
+        cycle_model: binding_for_shortcut(shortcuts[&RustTuiKeybindingAction::CycleModel]),
+        cycle_model_backward: binding_for_shortcut(
+            shortcuts[&RustTuiKeybindingAction::CycleModelBackward],
+        ),
         command_palette: binding_for_shortcut(shortcuts[&RustTuiKeybindingAction::CommandPalette]),
         file_search: binding_for_shortcut(shortcuts[&RustTuiKeybindingAction::FileSearch]),
         toggle_tool_outputs: binding_for_shortcut(
@@ -717,6 +781,8 @@ fn read_rust_tui_keybinding_overrides(
 
 fn parse_action_name(value: &str) -> Option<RustTuiKeybindingAction> {
     match value {
+        "cycle-model" => Some(RustTuiKeybindingAction::CycleModel),
+        "cycle-model-backward" => Some(RustTuiKeybindingAction::CycleModelBackward),
         "command-palette" => Some(RustTuiKeybindingAction::CommandPalette),
         "file-search" => Some(RustTuiKeybindingAction::FileSearch),
         "toggle-tool-outputs" => Some(RustTuiKeybindingAction::ToggleToolOutputs),
@@ -732,6 +798,9 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
         .collect::<String>()
         .to_ascii_lowercase();
     match normalized.as_str() {
+        "alt+p" => Some(RustTuiKeybindingShortcut::AltP),
+        "ctrl+shift+p" => Some(RustTuiKeybindingShortcut::CtrlShiftP),
+        "alt+shift+p" => Some(RustTuiKeybindingShortcut::AltShiftP),
         "ctrl+k" => Some(RustTuiKeybindingShortcut::CtrlK),
         "ctrl+p" => Some(RustTuiKeybindingShortcut::CtrlP),
         "ctrl+o" => Some(RustTuiKeybindingShortcut::CtrlO),
@@ -744,6 +813,16 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
 
 fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
     match shortcut {
+        RustTuiKeybindingShortcut::AltP => alt(KeyCode::Char('p')),
+        RustTuiKeybindingShortcut::CtrlShiftP => KeyBinding {
+            key: KeyCode::Char('p'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL
+                | crossterm::event::KeyModifiers::SHIFT,
+        },
+        RustTuiKeybindingShortcut::AltShiftP => KeyBinding {
+            key: KeyCode::Char('p'),
+            modifiers: crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SHIFT,
+        },
         RustTuiKeybindingShortcut::CtrlK => ctrl(KeyCode::Char('k')),
         RustTuiKeybindingShortcut::CtrlP => ctrl(KeyCode::Char('p')),
         RustTuiKeybindingShortcut::CtrlO => ctrl(KeyCode::Char('o')),
@@ -755,6 +834,23 @@ fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
 
 fn shortcut_for_binding(binding: KeyBinding) -> RustTuiKeybindingShortcut {
     match (binding.key, binding.modifiers) {
+        (KeyCode::Char('p'), crossterm::event::KeyModifiers::ALT) => {
+            RustTuiKeybindingShortcut::AltP
+        }
+        (KeyCode::Char('p'), modifiers)
+            if modifiers
+                == (crossterm::event::KeyModifiers::CONTROL
+                    | crossterm::event::KeyModifiers::SHIFT) =>
+        {
+            RustTuiKeybindingShortcut::CtrlShiftP
+        }
+        (KeyCode::Char('p'), modifiers)
+            if modifiers
+                == (crossterm::event::KeyModifiers::ALT
+                    | crossterm::event::KeyModifiers::SHIFT) =>
+        {
+            RustTuiKeybindingShortcut::AltShiftP
+        }
         (KeyCode::Char('k'), crossterm::event::KeyModifiers::CONTROL) => {
             RustTuiKeybindingShortcut::CtrlK
         }
@@ -779,6 +875,25 @@ fn shortcut_for_binding(binding: KeyBinding) -> RustTuiKeybindingShortcut {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn model_cycle_bindings_preserve_existing_custom_keys() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("keybindings.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"rustBindings":{"file-search":"ctrl+p"}}"#,
+        )
+        .unwrap();
+        let bindings = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
+        assert_eq!(bindings.file_search, ctrl(KeyCode::Char('p')));
+        assert_ne!(bindings.cycle_model, bindings.file_search);
+        assert_eq!(bindings.cycle_model_backward, alt(KeyCode::Char('p')));
+        fs::write(&path, r#"{"version":1,"rustBindings":{"cycle-model":"alt+p","cycle-model-backward":"ctrl+p"}}"#).unwrap();
+        let bindings = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
+        assert_eq!(bindings.cycle_model, alt(KeyCode::Char('p')));
+        assert_eq!(bindings.cycle_model_backward, ctrl(KeyCode::Char('p')));
+    }
 
     #[test]
     fn uses_terminal_aware_default_queued_follow_up_binding() {

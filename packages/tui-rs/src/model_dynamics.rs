@@ -1,180 +1,47 @@
-//! Task-level model choices. Global preferences never grant provider or tool authority.
-use crate::session::ThinkingLevel;
-use serde::{Deserialize, Serialize};
+//! TUI model catalog integration for the runtime-owned model preference values.
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskDifficulty {
-    Light,
-    #[default]
-    Medium,
-    Heavy,
+// The value types and loop state live in `maestro-runtime`; the TUI keeps the
+// catalog-aware normalization and boost compatibility checks here.
+pub(crate) use maestro_runtime::agent::model_dynamics::same_model_route;
+pub use maestro_runtime::agent::model_dynamics::thinking_level;
+pub use maestro_runtime::agent::{
+    BoostStatus, ModelChoice, ModelDynamicsConfig, TaskDifficulty, ThinkingLevel,
+};
+
+pub(crate) fn configured_thinking(
+    config: &crate::config::ComposerConfig,
+    model: &str,
+    dynamics: &ModelDynamicsConfig,
+) -> ThinkingLevel {
+    let default = match config.model_reasoning_effort {
+        Some(crate::config::ReasoningEffort::Minimal) => ThinkingLevel::Minimal,
+        Some(crate::config::ReasoningEffort::Low) => ThinkingLevel::Low,
+        Some(crate::config::ReasoningEffort::Medium) => ThinkingLevel::Medium,
+        Some(crate::config::ReasoningEffort::High) => ThinkingLevel::High,
+        None => ThinkingLevel::Off,
+    };
+    let requested = dynamics.effort_for_model(model).unwrap_or(default);
+    normalize_thinking(model, requested)
 }
 
-impl TaskDifficulty {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "light" => Ok(Self::Light),
-            "medium" => Ok(Self::Medium),
-            "heavy" => Ok(Self::Heavy),
-            _ => Err("difficulty must be light, medium, or heavy".into()),
-        }
+pub(crate) fn next_cycle_route<'a>(
+    routes: &'a [String],
+    current: &str,
+    backward: bool,
+) -> Option<&'a str> {
+    if routes.is_empty() {
+        return None;
     }
-
-    pub fn cap(self, inherited: ThinkingLevel) -> ThinkingLevel {
-        let limit = match self {
-            Self::Light => ThinkingLevel::Low,
-            Self::Medium => ThinkingLevel::Medium,
-            Self::Heavy => ThinkingLevel::High,
-        };
-        if inherited.to_config().1 > limit.to_config().1 {
-            limit
-        } else {
-            inherited
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelChoice {
-    pub model: String,
-    #[serde(default)]
-    pub thinking: ThinkingLevel,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ModelDynamicsConfig {
-    pub light: Option<ModelChoice>,
-    pub medium: Option<ModelChoice>,
-    pub heavy: Option<ModelChoice>,
-    pub boost: Option<ModelChoice>,
-    /// Optional tool-free summarizer; the active conversation model is unchanged.
-    pub summary_model: Option<String>,
-    pub fallbacks: Vec<ModelChoice>,
-    pub auto_boost: bool,
-}
-
-impl ModelDynamicsConfig {
-    pub fn choice(&self, difficulty: TaskDifficulty) -> Option<&ModelChoice> {
-        match difficulty {
-            TaskDifficulty::Light => self.light.as_ref(),
-            TaskDifficulty::Medium => self.medium.as_ref(),
-            TaskDifficulty::Heavy => self.heavy.as_ref(),
-        }
-    }
-
-    pub fn resolve_child(
-        &self,
-        difficulty: TaskDifficulty,
-        model: Option<&str>,
-        thinking: Option<ThinkingLevel>,
-        parent: &ModelChoice,
-    ) -> ModelChoice {
-        let tier = self.choice(difficulty);
-        ModelChoice {
-            model: model
-                .map(str::to_owned)
-                .or_else(|| tier.map(|choice| choice.model.clone()))
-                .unwrap_or_else(|| parent.model.clone()),
-            thinking: thinking.unwrap_or_else(|| {
-                // A profile's explicit model must not acquire another model's effort.
-                if let Some(model) = model {
-                    if model == parent.model {
-                        difficulty.cap(parent.thinking)
-                    } else {
-                        ThinkingLevel::Medium
-                    }
-                } else {
-                    tier.map(|choice| choice.thinking)
-                        .unwrap_or_else(|| difficulty.cap(parent.thinking))
-                }
-            }),
-        }
-    }
-}
-
-/// Recover the persisted UI level from the existing native budget contract.
-pub fn thinking_level(enabled: bool, budget: u32) -> ThinkingLevel {
-    if !enabled {
-        return ThinkingLevel::Off;
-    }
-    match budget {
-        0..=1024 => ThinkingLevel::Minimal,
-        1025..=4096 => ThinkingLevel::Low,
-        4097..=10000 => ThinkingLevel::Medium,
-        10001..=20000 => ThinkingLevel::High,
-        _ => ThinkingLevel::Max,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn difficulty_changes_effort_without_changing_role_or_model() {
-        let config = ModelDynamicsConfig::default();
-        let parent = ModelChoice {
-            model: "fixture".into(),
-            thinking: ThinkingLevel::Max,
-        };
-        for (difficulty, expected) in [
-            (TaskDifficulty::Light, ThinkingLevel::Low),
-            (TaskDifficulty::Medium, ThinkingLevel::Medium),
-            (TaskDifficulty::Heavy, ThinkingLevel::High),
-        ] {
-            let resolved = config.resolve_child(difficulty, None, None, &parent);
-            assert_eq!(resolved.model, parent.model);
-            assert_eq!(resolved.thinking, expected);
-        }
-    }
-    #[test]
-    fn explicit_choices_win_and_off_remains_off() {
-        let config = ModelDynamicsConfig {
-            heavy: Some(ModelChoice {
-                model: "tier".into(),
-                thinking: ThinkingLevel::High,
-            }),
-            ..Default::default()
-        };
-        let parent = ModelChoice {
-            model: "parent".into(),
-            thinking: ThinkingLevel::Low,
-        };
-        let explicit = config.resolve_child(
-            TaskDifficulty::Heavy,
-            Some("pinned"),
-            Some(ThinkingLevel::Off),
-            &parent,
-        );
-        assert_eq!(explicit.model, "pinned");
-        assert_eq!(explicit.thinking, ThinkingLevel::Off);
-        let routed = config.resolve_child(TaskDifficulty::Heavy, None, None, &parent);
-        assert_eq!(routed.model, "tier");
-        assert_eq!(routed.thinking, ThinkingLevel::High);
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BoostStatus {
-    #[default]
-    Idle,
-    Suggested,
-    Pending,
-    Active,
-}
-
-/// Shared only between a runner and its extension. Durable choices use session entries.
-#[derive(Debug, Default)]
-pub(crate) struct DynamicsState {
-    pub status: BoostStatus,
-    pub requested: bool,
-    pub used: bool,
-    pub available: bool,
-    pub fallback_models: std::collections::HashSet<String>,
-    pub fallback_attempts: usize,
+    let index = routes
+        .iter()
+        .position(|route| same_model_route(route, current));
+    let next = match index {
+        Some(index) if backward => (index + routes.len() - 1) % routes.len(),
+        Some(index) => (index + 1) % routes.len(),
+        None if backward => routes.len() - 1,
+        None => 0,
+    };
+    (!same_model_route(&routes[next], current)).then_some(routes[next].as_str())
 }
 
 pub fn boost_choice(current: &ModelChoice, config: &ModelDynamicsConfig) -> Option<ModelChoice> {
@@ -253,6 +120,23 @@ pub fn normalize_thinking(model: &str, requested: ThinkingLevel) -> ThinkingLeve
     if !info.capabilities.reasoning {
         return ThinkingLevel::Off;
     }
+    if info.capabilities.protocol == crate::model_catalog::ModelProtocol::Anthropic {
+        let caps = crate::ai::anthropic_request_capabilities(Some(&info.provider), model);
+        if requested == ThinkingLevel::Off {
+            return if caps.thinking == crate::ai::AnthropicThinkingMode::AlwaysOn {
+                ThinkingLevel::High
+            } else {
+                requested
+            };
+        }
+        return match caps.effort_for_budget(requested.to_config().1) {
+            Some("low") => ThinkingLevel::Low,
+            Some("medium") => ThinkingLevel::Medium,
+            Some("high") => ThinkingLevel::High,
+            Some("max") => ThinkingLevel::Max,
+            _ => requested,
+        };
+    }
     if !matches!(
         info.capabilities.protocol,
         crate::model_catalog::ModelProtocol::OpenAiChat
@@ -287,6 +171,7 @@ pub fn next_thinking_level(model: &str, current: ThinkingLevel) -> ThinkingLevel
             levels.push(level);
         }
     }
+    levels.sort_by_key(|level| level.to_config().1);
     let current = normalize_thinking(model, current);
     let index = levels
         .iter()
@@ -298,6 +183,86 @@ pub fn next_thinking_level(model: &str, current: ThinkingLevel) -> ThinkingLevel
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    #[test]
+    fn cycle_scope_preserves_order_direction_and_provider_identity() {
+        let routes = vec![
+            "openai/gpt-5.6".into(),
+            "anthropic/claude-fable-5-1".into(),
+            "openai-codex/gpt-5.6".into(),
+        ];
+        assert_eq!(
+            next_cycle_route(&routes, "gpt-5.6", false),
+            Some(routes[1].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, &routes[0], true),
+            Some(routes[2].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, &routes[2], false),
+            Some(routes[0].as_str())
+        );
+        assert_eq!(
+            next_cycle_route(&routes, "unknown", true),
+            Some(routes[2].as_str())
+        );
+        assert_eq!(next_cycle_route(&routes[..1], "gpt-5.6", false), None);
+        assert_eq!(next_cycle_route(&[], "gpt-5.6", false), None);
+    }
+
+    #[test]
+    fn configured_startup_effort_and_scoped_effort_are_normalized() {
+        let mut config = crate::config::ComposerConfig::default();
+        let mut dynamics = ModelDynamicsConfig::default();
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::Off
+        );
+        config.model_reasoning_effort = Some(crate::config::ReasoningEffort::High);
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::High
+        );
+        dynamics.cycle.push(ModelChoice {
+            model: "openai/gpt-5.6".into(),
+            thinking: ThinkingLevel::Low,
+        });
+        assert_eq!(
+            configured_thinking(&config, "gpt-5.6", &dynamics),
+            ThinkingLevel::Low
+        );
+        assert_eq!(dynamics.effort_for_model("openai-codex/gpt-5.6"), None);
+        assert_eq!(
+            configured_thinking(&config, "claude-fable-5-1", &dynamics),
+            ThinkingLevel::High
+        );
+    }
+
+    #[test]
+    fn always_on_claude_effort_matches_the_wire_and_cycles_in_order() {
+        let model = "anthropic/claude-fable-5-1";
+        assert_eq!(
+            normalize_thinking(model, ThinkingLevel::Off),
+            ThinkingLevel::High
+        );
+        assert_eq!(
+            normalize_thinking(model, ThinkingLevel::Minimal),
+            ThinkingLevel::Low
+        );
+        for (current, next) in [
+            (ThinkingLevel::Low, ThinkingLevel::Medium),
+            (ThinkingLevel::Medium, ThinkingLevel::High),
+            (ThinkingLevel::High, ThinkingLevel::Max),
+            (ThinkingLevel::Max, ThinkingLevel::Low),
+        ] {
+            assert_eq!(next_thinking_level(model, current), next);
+        }
+        assert_eq!(
+            normalize_thinking("anthropic/claude-sonnet-4-6", ThinkingLevel::Off),
+            ThinkingLevel::Off
+        );
+    }
+
     #[test]
     fn shift_tab_cycles_distinct_provider_levels() {
         let model = "openai/gpt-4o";

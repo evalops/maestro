@@ -787,6 +787,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
                             fail_on_approval: false,
                         })
                         .await?;
+                    crate::telemetry::flush_first_party_telemetry().await;
                     std::process::exit(code);
                 }
             }
@@ -842,6 +843,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
 
     let keep_worktree = keep_session_worktree(&raw_args);
     let result = run_agent(raw_args).await;
+    crate::telemetry::flush_first_party_telemetry().await;
     if let Some(session) = worktree {
         if keep_worktree {
             session.keep();

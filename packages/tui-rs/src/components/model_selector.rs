@@ -19,6 +19,50 @@ pub use crate::model_catalog::{ModelInfo, ModelVerification, available_models};
 /// "show all models" affordance expands the full catalog.
 const FOCUSED_SLICE_LIMIT: usize = 8;
 
+/// A route restored from state can be valid for the provider while absent from
+/// the bundled/runtime catalog. Keep that row distinguishable from sourced
+/// catalog metadata so the picker can show the active choice safely.
+const ACTIVE_ROUTE_SOURCE: &str = "active-route";
+
+/// Current coding models promoted in discovery, independently of saved runtime
+/// defaults. IDs are checked against the bundled models.dev snapshot in tests.
+const PREFERRED_MODELS: &[(&str, &str)] = &[
+    ("openai", "gpt-6-astra"),
+    ("anthropic", "claude-fable-5-1"),
+    ("openai", "gpt-5.6"),
+    ("openai", "gpt-5.6-sol"),
+    ("openai", "gpt-5.6-terra"),
+    ("openai", "gpt-5.6-luna"),
+];
+
+fn discovery_priority(model: &ModelInfo) -> usize {
+    let routed = model.provider == "openrouter";
+    let (provider, id) = if routed {
+        let Some((provider, id)) = model.id.split_once('/') else {
+            return PREFERRED_MODELS.len() * 2;
+        };
+        // OpenRouter uses a dotted release suffix for the same Fable model.
+        (
+            provider,
+            if id == "claude-fable-5.1" {
+                "claude-fable-5-1"
+            } else {
+                id
+            },
+        )
+    } else {
+        (model.provider.as_str(), model.id.as_str())
+    };
+    PREFERRED_MODELS
+        .iter()
+        .position(|&(preferred_provider, preferred_id)| {
+            provider == preferred_provider && id == preferred_id
+        })
+        .map_or(PREFERRED_MODELS.len() * 2, |rank| {
+            rank + if routed { PREFERRED_MODELS.len() } else { 0 }
+        })
+}
+
 /// Return the route that must be passed to the native agent for a catalog
 /// selection. Google and Vertex share Gemini ids, so both rows need an
 /// explicit provider qualifier to keep Enter and Ctrl+D selections distinct;
@@ -79,8 +123,107 @@ fn model_matches_current(
     canonical_current: Option<&str>,
 ) -> bool {
     let route = selection_model_id(model);
+    let provider_route = format!("{}/{}", model.provider, model.id);
     canonical_current == Some(route.as_str())
+        || canonical_current == Some(provider_route.as_str())
         || (canonical_current.is_none() && raw_current == model.id && model.provider != "vertex-ai")
+}
+
+fn current_model_route(model_id: &str, models: &[ModelInfo]) -> Option<String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return None;
+    }
+    if let Some((_, bare_id)) = model_id.split_once('/') {
+        if bare_id.trim().is_empty() {
+            return None;
+        }
+    }
+    if let Some(route) = canonical_current_route(model_id, models) {
+        return Some(route);
+    }
+
+    let descriptor = crate::ai::ProviderRegistry::resolve_descriptor(model_id).ok()?;
+    if let Some((_, bare_id)) = model_id.split_once('/') {
+        Some(format!("{}/{}", descriptor.id, bare_id.trim()))
+    } else {
+        Some(model_id.to_owned())
+    }
+}
+
+fn model_row_identity(model: &ModelInfo, route: Option<&str>) -> String {
+    if model.verification.source == ACTIVE_ROUTE_SOURCE {
+        format!("active/{}", route.unwrap_or(model.id.as_str()))
+    } else {
+        format!("{}/{}", model.provider, model.id)
+    }
+}
+
+fn uncatalogued_model(route: &str) -> Option<ModelInfo> {
+    let inspection = crate::model_catalog::inspect_model(route).ok()?;
+    if inspection.catalog.is_some() {
+        return None;
+    }
+    let descriptor = crate::ai::ProviderRegistry::resolve_descriptor(route).ok()?;
+    let model_id = route.split_once('/').map_or(route, |(_, id)| id).trim();
+    if model_id.is_empty() {
+        return None;
+    }
+    let protocol = inspection
+        .resolved
+        .request_capabilities
+        .as_ref()
+        .map(|request| match request.protocol {
+            crate::ai::OpenAiWireProtocol::OpenAiChat => {
+                crate::model_catalog::ModelProtocol::OpenAiChat
+            }
+            crate::ai::OpenAiWireProtocol::OpenAiResponses => {
+                crate::model_catalog::ModelProtocol::OpenAiResponses
+            }
+        })
+        .unwrap_or_else(|| match descriptor.protocol {
+            crate::ai::ProviderProtocol::Anthropic => {
+                crate::model_catalog::ModelProtocol::Anthropic
+            }
+            crate::ai::ProviderProtocol::Google | crate::ai::ProviderProtocol::VertexAi => {
+                crate::model_catalog::ModelProtocol::Google
+            }
+            crate::ai::ProviderProtocol::Codex => {
+                crate::model_catalog::ModelProtocol::CodexAppServer
+            }
+            // The shared catalog protocol enum has no separate variants for
+            // managed and compatible provider families. Their capabilities
+            // remain unknown on this row, so this value is never presented as
+            // a support claim to the user.
+            crate::ai::ProviderProtocol::OpenAi
+            | crate::ai::ProviderProtocol::OpenAiCompatible
+            | crate::ai::ProviderProtocol::AzureOpenAi
+            | crate::ai::ProviderProtocol::Bedrock
+            | crate::ai::ProviderProtocol::Managed => {
+                crate::model_catalog::ModelProtocol::OpenAiChat
+            }
+        });
+
+    Some(ModelInfo {
+        id: model_id.to_owned(),
+        name: model_id.to_owned(),
+        provider: descriptor.id.to_owned(),
+        description: format!("Active route {route}; capabilities are not in the catalog"),
+        capabilities: crate::model_catalog::ModelCapabilities {
+            protocol,
+            tools: false,
+            vision: false,
+            reasoning: false,
+            streaming: false,
+            context_tokens: 0,
+            output_tokens: None,
+        },
+        verification: ModelVerification {
+            state: crate::model_catalog::VerificationState::Unknown,
+            source: ACTIVE_ROUTE_SOURCE.to_owned(),
+            detail: Some("Capabilities are not in the catalog".to_owned()),
+        },
+    })
 }
 
 #[derive(Clone)]
@@ -88,6 +231,8 @@ struct ModelRow {
     // Provider-qualified catalog identity is distinct from the execution route.
     id: String,
     model_index: Option<usize>,
+    /// Explicit execution route for an active row that is not cataloged.
+    route: Option<String>,
 }
 
 /// Model selector modal state
@@ -176,7 +321,7 @@ impl ModelSelector {
             return false;
         };
         // A registry-only auth check is weaker than a successful live local
-        // discovery. Preserve the live source so the ready badge and active
+        // discovery. Preserve the live source so the discovery label and active
         // row retention continue to reflect the strongest evidence.
         if model.verification.source == "local-runtime"
             && verification.state == crate::model_catalog::VerificationState::Verified
@@ -275,12 +420,20 @@ impl ModelSelector {
         self.picker.open();
         self.show_all = false;
         self.filter();
-        // Opening chooses the freshly ordered focused row (the active model),
-        // while later refreshes preserve the highlighted identity.
-        if let Some(&index) = self.filtered.first() {
+        // Keep the active choice selected even when newer recommendations lead
+        // discovery. Opening and confirming must not silently change models.
+        let current = self.current_model.as_deref();
+        let canonical = current.and_then(|id| canonical_current_route(id, &self.models));
+        let active = self.filtered.iter().copied().find(|&index| {
+            current.is_some_and(|id| {
+                model_matches_current(&self.models[index], id, canonical.as_deref())
+            })
+        });
+        if let Some(index) = active.or_else(|| self.filtered.first().copied()) {
             let model = &self.models[index];
-            self.picker
-                .select_id(&format!("{}/{}", model.provider, model.id));
+            let route = (model.verification.source == ACTIVE_ROUTE_SOURCE)
+                .then_some(current.unwrap_or_default());
+            self.picker.select_id(&model_row_identity(model, route));
         }
     }
 
@@ -374,10 +527,19 @@ impl ModelSelector {
     }
 
     /// Get the selected model route, preserving provider identity for shared
-    /// Google/Vertex model ids. Used by both Enter and Ctrl+D paths.
+    /// Google/Vertex model ids and retaining an active uncatalogued route.
+    /// Used by both Enter and Ctrl+D paths.
     #[must_use]
     pub fn selected_model_id(&self) -> Option<String> {
-        self.selected_model().map(selection_model_id)
+        self.picker.selected().and_then(|row| {
+            row.model_index
+                .and_then(|idx| self.models.get(idx))
+                .map(|model| {
+                    row.route
+                        .clone()
+                        .unwrap_or_else(|| selection_model_id(model))
+                })
+        })
     }
 
     /// Confirm selection and return the model ID. Confirming the "show all
@@ -394,8 +556,10 @@ impl ModelSelector {
 
     /// Filter models based on query
     fn filter(&mut self) {
+        self.ensure_active_route_row();
         let query = self.picker.query().to_lowercase();
-        let full: Vec<usize> = self
+        let current_route = self.current_model.as_deref();
+        let mut full: Vec<usize> = self
             .models
             .iter()
             .enumerate()
@@ -406,11 +570,18 @@ impl ModelSelector {
                 m.id.to_lowercase().contains(&query)
                     || m.name.to_lowercase().contains(&query)
                     || m.provider.to_lowercase().contains(&query)
+                    || format!("{}/{}", m.provider, m.id)
+                        .to_lowercase()
+                        .contains(&query)
+                    || (m.verification.source == ACTIVE_ROUTE_SOURCE
+                        && current_route.is_some_and(|route| route.to_lowercase().contains(&query)))
                     || model_status_summary(m).to_lowercase().contains(&query)
+                    || capability_summary(m).to_lowercase().contains(&query)
                     || crate::palette_resource::PaletteResource::from(*m).matches(&query)
             })
             .map(|(i, _)| i)
             .collect();
+        full.sort_by_key(|&index| discovery_priority(&self.models[index]));
 
         // With an empty query show the focused slice plus a "show all"
         // affordance; any search or an explicit expansion lists everything.
@@ -425,15 +596,23 @@ impl ModelSelector {
         let mut rows: Vec<_> = self
             .filtered
             .iter()
-            .map(|&index| ModelRow {
-                id: format!("{}/{}", self.models[index].provider, self.models[index].id),
-                model_index: Some(index),
+            .map(|&index| {
+                let model = &self.models[index];
+                let route = (model.verification.source == ACTIVE_ROUTE_SOURCE)
+                    .then(|| current_route.map(str::to_owned))
+                    .flatten();
+                ModelRow {
+                    id: model_row_identity(model, route.as_deref()),
+                    model_index: Some(index),
+                    route,
+                }
             })
             .collect();
         if self.show_all_affordance {
             rows.push(ModelRow {
                 id: "show-all".into(),
                 model_index: None,
+                route: None,
             });
         }
         self.picker.set_status(PickerStatus::Ready);
@@ -444,17 +623,59 @@ impl ModelSelector {
         }
     }
 
-    /// Current model, discovered local models, and each catalog provider's
-    /// default, deduplicated and normally capped at [`FOCUSED_SLICE_LIMIT`].
-    /// The active row and every discovered row remain visible above that cap.
+    /// Retain a valid active route when the catalog has no metadata for it.
+    /// The provider registry validates the route; capabilities stay unknown.
+    fn ensure_active_route_row(&mut self) {
+        let Some(current) = self.current_model.as_deref() else {
+            self.models
+                .retain(|model| model.verification.source != ACTIVE_ROUTE_SOURCE);
+            return;
+        };
+        let canonical = canonical_current_route(current, &self.models);
+        let catalog_match = self.models.iter().any(|model| {
+            model.verification.source != ACTIVE_ROUTE_SOURCE
+                && model_matches_current(model, current, canonical.as_deref())
+        });
+        if !catalog_match
+            && self.models.iter().any(|model| {
+                model.verification.source == ACTIVE_ROUTE_SOURCE
+                    && model_matches_current(model, current, canonical.as_deref())
+            })
+        {
+            return;
+        }
+
+        self.models
+            .retain(|model| model.verification.source != ACTIVE_ROUTE_SOURCE);
+        let Some(route) = current_model_route(current, &self.models) else {
+            return;
+        };
+        if let Some(model) = uncatalogued_model(&route) {
+            self.models.push(model);
+        }
+    }
+
+    /// Preferred models, current model, local discoveries, then provider defaults.
+    /// Recommendations, the active row, and discoveries survive the normal cap.
     fn focused_slice(&self) -> Vec<usize> {
         let mut slice: Vec<usize> = Vec::new();
+        for &(provider, id) in PREFERRED_MODELS {
+            if let Some(index) = self
+                .models
+                .iter()
+                .position(|model| model.provider == provider && model.id == id)
+            {
+                slice.push(index);
+            }
+        }
         if let Some(current) = &self.current_model {
             let canonical_current = canonical_current_route(current, &self.models);
             if let Some(idx) = self.models.iter().position(|model| {
                 model_matches_current(model, current, canonical_current.as_deref())
             }) {
-                slice.push(idx);
+                if !slice.contains(&idx) {
+                    slice.push(idx);
+                }
             }
         }
         for (idx, model) in self.models.iter().enumerate() {
@@ -462,6 +683,7 @@ impl ModelSelector {
                 slice.push(idx);
             }
         }
+        let retained_rows = slice.len();
         for provider in crate::model_catalog::MODEL_SELECTOR_PROVIDERS {
             let Some(default_id) = crate::model_catalog::default_model_for_provider(provider)
             else {
@@ -477,19 +699,24 @@ impl ModelSelector {
                 }
             }
         }
-        if slice.len() > FOCUSED_SLICE_LIMIT {
-            let detected = slice
-                .iter()
-                .filter(|&&idx| self.models[idx].verification.source == "local-runtime")
-                .count();
-            let active_catalog_row = usize::from(
-                slice
-                    .first()
-                    .is_some_and(|&idx| self.models[idx].verification.source != "local-runtime"),
-            );
-            slice.truncate(FOCUSED_SLICE_LIMIT.max(detected + active_catalog_row));
-        }
+        slice.truncate(FOCUSED_SLICE_LIMIT.max(retained_rows));
         slice
+    }
+
+    pub(crate) fn cycle_routes(&self) -> Vec<String> {
+        self.focused_slice()
+            .into_iter()
+            .map(|index| {
+                let model = &self.models[index];
+                if model.verification.source == ACTIVE_ROUTE_SOURCE {
+                    self.current_model
+                        .clone()
+                        .unwrap_or_else(|| selection_model_id(model))
+                } else {
+                    selection_model_id(model)
+                }
+            })
+            .collect()
     }
 
     /// Render the modal
@@ -546,42 +773,25 @@ impl ModelSelector {
                     spans.push(Span::styled("*", Style::default().fg(theme.success)));
                 }
 
-                spans.push(Span::styled(
-                    format!(" {}", model_status_summary(model)),
+                // Keep availability and capabilities off the name line so long
+                // model/provider names cannot hide them at standard terminal widths.
+                let status = Line::from(Span::styled(
+                    format!(
+                        "  {} · {}",
+                        model_status_summary(model),
+                        format_context_window(model.capabilities.context_tokens)
+                    ),
+                    theme.muted_style(),
+                ));
+                let capabilities = Line::from(Span::styled(
+                    format!("  {}", capability_summary(model)),
                     theme.muted_style(),
                 ));
 
-                let detail = Line::from(Span::styled(
-                    format!("  {}", description_summary(model)),
-                    theme.muted_style(),
-                ));
-
-                ListItem::new(vec![Line::from(spans), detail])
+                ListItem::new(vec![Line::from(spans), status, capabilities])
             },
         );
     }
-}
-
-/// Upper bound for the catalog description shown in a row's detail line, so
-/// the context window label stays visible inside the modal.
-const DESCRIPTION_MAX_CHARS: usize = 48;
-
-/// Detail line under a model row: the catalog description plus its context
-/// window. The models.dev snapshot carries no pricing data, so the context
-/// window is the only metadata shown here.
-fn description_summary(model: &ModelInfo) -> String {
-    let mut description: String = model
-        .description
-        .chars()
-        .take(DESCRIPTION_MAX_CHARS)
-        .collect();
-    if model.description.chars().count() > DESCRIPTION_MAX_CHARS {
-        description.push('…');
-    }
-    format!(
-        "{description} · {}",
-        format_context_window(model.capabilities.context_tokens)
-    )
 }
 
 /// Compact context window label: `1M ctx` for exact millions, `200k ctx`
@@ -596,30 +806,34 @@ fn format_context_window(context_tokens: u32) -> String {
     }
 }
 
-fn model_status_summary(model: &ModelInfo) -> String {
-    let local = model.verification.source == "local-runtime";
+fn model_status_summary(model: &ModelInfo) -> &'static str {
+    use crate::model_catalog::VerificationState;
+    match (model.verification.source.as_str(), model.verification.state) {
+        ("local-runtime", VerificationState::Verified) => "Local · detected",
+        ("local-runtime", VerificationState::Unavailable) => "Local · unavailable",
+        ("local-runtime", _) => "Local · unknown",
+        (ACTIVE_ROUTE_SOURCE, VerificationState::Unknown) => "Active · uncataloged",
+        (_, VerificationState::Unavailable) => "Catalog · unavailable",
+        // Provider authentication alone does not prove model availability.
+        _ => "Catalog · availability unchecked",
+    }
+}
+
+fn capability_summary(model: &ModelInfo) -> String {
     let unknown = model
         .verification
         .detail
         .as_deref()
         .is_some_and(|detail| detail.contains("not in the catalog"));
-    let prefix = if local {
-        match model.verification.state {
-            crate::model_catalog::VerificationState::Verified => "Local · ready",
-            crate::model_catalog::VerificationState::Unavailable => "Local · unavailable",
-            crate::model_catalog::VerificationState::Catalog
-            | crate::model_catalog::VerificationState::Unknown => "Local · unknown",
-        }
-    } else {
-        "Catalog"
-    };
-    let mark = if unknown { "?" } else { "" };
+    if unknown {
+        return "Capabilities: unknown (not in catalog)".to_owned();
+    }
+    let supported = |value| if value { "yes" } else { "no" };
     format!(
-        "{prefix} · {mark}T{} {mark}V{} {mark}R{} · {}",
-        u8::from(model.capabilities.tools),
-        u8::from(model.capabilities.vision),
-        u8::from(model.capabilities.reasoning),
-        format_context_window(model.capabilities.context_tokens),
+        "Tools: {} · Images: {} · Reasoning: {}",
+        supported(model.capabilities.tools),
+        supported(model.capabilities.vision),
+        supported(model.capabilities.reasoning),
     )
 }
 
@@ -831,6 +1045,39 @@ mod tests {
     }
 
     #[test]
+    fn uncatalogued_active_route_is_retained_and_searchable_as_unknown() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        selector.set_current_model(Some("openai/future-custom-model".to_owned()));
+        selector.show();
+
+        let active = selector.selected_model().expect("active route row");
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("openai/future-custom-model")
+        );
+        assert_eq!(active.provider, "openai");
+        assert_eq!(active.id, "future-custom-model");
+        assert_eq!(
+            active.verification.state,
+            crate::model_catalog::VerificationState::Unknown
+        );
+        assert_eq!(active.verification.source, ACTIVE_ROUTE_SOURCE);
+        assert_eq!(active.capabilities.context_tokens, 0);
+        assert_eq!(model_status_summary(active), "Active · uncataloged");
+        assert_eq!(
+            capability_summary(active),
+            "Capabilities: unknown (not in catalog)"
+        );
+
+        selector.insert_str("openai/future-custom-model");
+        assert_eq!(selector.filtered.len(), 1);
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("openai/future-custom-model")
+        );
+    }
+
+    #[test]
     fn verification_updates_matching_catalog_model_only() {
         let mut selector = ModelSelector::new();
         let verification = ModelVerification {
@@ -1004,6 +1251,98 @@ mod tests {
     }
 
     #[test]
+    fn newer_models_lead_discovery_without_replacing_the_active_choice() {
+        let mut models = vec![test_model("gpt-4o", "openai")];
+        models.extend(
+            PREFERRED_MODELS
+                .iter()
+                .rev()
+                .map(|&(provider, id)| test_model(id, provider)),
+        );
+        let mut selector = ModelSelector::with_models(models);
+        let discovered = (0..10)
+            .map(|index| {
+                let mut model = test_model(&format!("local-{index}"), "ollama");
+                model.verification.source = "local-runtime".to_owned();
+                model
+            })
+            .collect();
+        selector.replace_discovered_models(1, discovered);
+        selector.set_current_model(Some("gpt-4o".to_owned()));
+        selector.show();
+
+        let ids: Vec<_> = selector
+            .filtered
+            .iter()
+            .map(|&index| selector.models[index].id.as_str())
+            .collect();
+        assert_eq!(
+            &ids[..6],
+            &[
+                "gpt-6-astra",
+                "claude-fable-5-1",
+                "gpt-5.6",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+            ]
+        );
+        assert_eq!(ids.iter().filter(|id| id.starts_with("local-")).count(), 10);
+        assert_eq!(selector.confirm().as_deref(), Some("gpt-4o"));
+
+        selector.show();
+        selector.toggle_show_all();
+        assert_eq!(selector.models[selector.filtered[0]].id, "gpt-6-astra");
+        selector.insert_str("gpt");
+        assert_eq!(selector.models[selector.filtered[0]].id, "gpt-6-astra");
+        assert_eq!(
+            selector.models[*selector.filtered.last().unwrap()].id,
+            "gpt-4o"
+        );
+    }
+
+    #[test]
+    fn preferred_models_exist_in_the_bundled_catalog() {
+        let bundled: serde_json::Value =
+            serde_json::from_str(include_str!("../model_catalog_data.json")).unwrap();
+        for &(provider, id) in PREFERRED_MODELS {
+            assert!(
+                bundled["models"].as_array().unwrap().iter().any(|model| {
+                    model["provider"].as_str() == Some(provider) && model["id"].as_str() == Some(id)
+                }),
+                "preferred model {provider}/{id} must have sourced catalog metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_filtered_search_prioritizes_current_openrouter_routes() {
+        let mut selector = ModelSelector::with_models(vec![
+            test_model("openai/gpt-4o", "openrouter"),
+            test_model("openai/gpt-5.6-sol", "openrouter"),
+            test_model("anthropic/claude-fable-5.1", "openrouter"),
+            test_model("openai/gpt-6-astra", "openrouter"),
+            test_model("gpt-6-astra", "openai"),
+        ]);
+        selector.show();
+        selector.insert_str("openrouter");
+        let ids: Vec<_> = selector
+            .filtered
+            .iter()
+            .map(|&index| selector.models[index].id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "openai/gpt-6-astra",
+                "anthropic/claude-fable-5.1",
+                "openai/gpt-5.6-sol",
+                "openai/gpt-4o"
+            ]
+        );
+    }
+
+    #[test]
     fn focused_slice_keeps_current_model_ahead_of_discovered_models() {
         let mut selector = ModelSelector::with_models(slice_catalog());
         let discovered = (0..10)
@@ -1077,8 +1416,8 @@ mod tests {
         for (state, query, expected) in [
             (
                 crate::model_catalog::VerificationState::Verified,
-                "ready",
-                "ready-local",
+                "detected",
+                "detected-local",
             ),
             (
                 crate::model_catalog::VerificationState::Unavailable,
@@ -1111,21 +1450,50 @@ mod tests {
     }
 
     #[test]
-    fn description_summary_shows_description_and_context_window() {
-        let mut model = test_model("gpt-5.5", "openai");
-        model.description = "Flagship general-purpose model".to_owned();
-        model.capabilities.context_tokens = 1_050_000;
-        assert_eq!(
-            description_summary(&model),
-            "Flagship general-purpose model · 1050k ctx"
-        );
+    fn context_window_labels_preserve_known_and_unknown_limits() {
+        assert_eq!(format_context_window(1_050_000), "1050k ctx");
+        assert_eq!(format_context_window(1_000_000), "1M ctx");
+        assert_eq!(format_context_window(131_072), "131k ctx");
+        assert_eq!(format_context_window(0), "unknown ctx");
+    }
 
-        model.capabilities.context_tokens = 1_000_000;
-        assert!(description_summary(&model).ends_with("1M ctx"));
-        model.capabilities.context_tokens = 131_072;
-        assert!(description_summary(&model).ends_with("131k ctx"));
-        model.capabilities.context_tokens = 0;
-        assert!(description_summary(&model).ends_with("unknown ctx"));
+    #[test]
+    fn picker_at_80_columns_keeps_status_and_capabilities_visible() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut known = test_model("a-long-model-name-with-a-provider-and-version", "openai");
+        known.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "provider-registry".to_owned(),
+            detail: None,
+        };
+        let mut discovered = test_model("local-model", "llamacpp");
+        discovered.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: Some("Capabilities are not in the catalog".to_owned()),
+        };
+        discovered.capabilities.context_tokens = 0;
+        let mut selector = ModelSelector::with_models(vec![known, discovered]);
+        selector.show();
+        selector.toggle_show_all();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Catalog · availability unchecked · 200k ctx"));
+        assert!(text.contains("Tools: yes · Images: no · Reasoning: no"));
+        assert!(text.contains("Local · detected · unknown ctx"));
+        assert!(text.contains("Capabilities: unknown (not in catalog)"));
+        assert!(!text.contains("ready"));
+        assert!(!text.contains("T1"));
+        assert!(!text.contains("?T0"));
     }
 
     #[test]
@@ -1244,10 +1612,11 @@ mod tests {
         );
         let status = model_status_summary(retained);
         assert!(status.starts_with("Local · unavailable"));
-        assert!(!status.contains("Local · ready"));
-        assert!(status.contains("· ?T"));
-        assert!(status.contains(" ?V"));
-        assert!(status.contains(" ?R"));
+        assert!(!status.contains("Local · detected"));
+        assert_eq!(
+            capability_summary(retained),
+            "Capabilities: unknown (not in catalog)"
+        );
         let detail = retained.verification.detail.as_deref().expect("detail");
         assert!(detail.contains("Capabilities are not in the catalog"));
         assert!(detail.contains("Not reported by the local runtime"));
@@ -1295,14 +1664,26 @@ mod tests {
     }
 
     #[test]
-    fn description_summary_truncates_long_descriptions() {
-        let mut model = test_model("gpt-5.5", "openai");
-        model.description = "a".repeat(DESCRIPTION_MAX_CHARS + 10);
-        let summary = description_summary(&model);
-        assert!(summary.starts_with(&format!("{}… · ", "a".repeat(DESCRIPTION_MAX_CHARS))));
-
-        model.description = "short".to_owned();
-        assert!(description_summary(&model).starts_with("short · "));
+    fn capability_labels_distinguish_unsupported_from_unknown() {
+        let mut model = test_model("local-model", "llamacpp");
+        model.capabilities.tools = false;
+        assert_eq!(
+            capability_summary(&model),
+            "Tools: no · Images: no · Reasoning: no"
+        );
+        model.verification.detail = Some("Capabilities are not in the catalog".to_owned());
+        assert_eq!(
+            capability_summary(&model),
+            "Capabilities: unknown (not in catalog)"
+        );
+        model.verification.detail = None;
+        model.capabilities.tools = true;
+        model.capabilities.vision = true;
+        model.capabilities.reasoning = true;
+        assert_eq!(
+            capability_summary(&model),
+            "Tools: yes · Images: yes · Reasoning: yes"
+        );
     }
 
     #[test]
