@@ -47,6 +47,15 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.79] - 2026-09-07
+
+### Fixed
+
+- Assert causal native cancellation order (#8678). <!-- maestro-release-note:dba11dbe20fa -->
+- Request managed setup read scope during login (#8674). <!-- maestro-release-note:8c61e69dc268 -->
+- Fetch managed setup with Connect protobuf (#8668). <!-- maestro-release-note:f6b3c604c453 -->
+- Bind configuration receipts to verified Identity scope (#8665). <!-- maestro-release-note:d495176e17b6 -->
+
 ## [0.10.78] - 2026-09-07
 
 ### Added
