@@ -736,9 +736,17 @@ impl PlatformSession {
         env.insert(ORG_ID_ENV.to_owned(), self.organization_id.clone());
         env.insert(WORKSPACE_ID_ENV.to_owned(), workspace_id.to_owned());
         // Existing Identity snapshots may carry the previous OpenAI default.
-        // Selecting the shipped GLM route selects Fireworks explicitly, while
+        // Selecting a shipped Fireworks route selects Fireworks explicitly, while
         // preserving the authenticated tenant, environment, and team scope.
-        let select_fireworks = model == DEFAULT_MANAGED_MODEL
+        let select_fireworks = model
+            .strip_prefix("evalops/")
+            .or_else(|| model.strip_prefix("maestro-managed/"))
+            .and_then(|model| {
+                crate::model_catalog::MANAGED_FIREWORKS_MODELS
+                    .iter()
+                    .find(|entry| entry.id == model)
+            })
+            .is_some()
             && provider_ref_string(&self.provider_ref, "provider").as_deref() != Some("fireworks");
         let provider = if select_fireworks {
             "fireworks".to_owned()
@@ -1255,15 +1263,17 @@ mod tests {
                 "credential_name": "default"
             }),
         };
-        let model = "evalops/accounts/fireworks/models/glm-5p3";
-        let env = session.managed_env(model, &HashMap::new()).unwrap();
-        assert_eq!(env[PROVIDER_ENV], "fireworks");
-        assert_eq!(env[ORG_ID_ENV], "org-1");
-        assert_eq!(env[WORKSPACE_ID_ENV], "workspace-2");
-        assert_eq!(env[ENVIRONMENT_ENV], "production");
-        assert_eq!(env[CREDENTIAL_NAME_ENV], "deixic-llm-gateway-glm53");
-        assert_eq!(session.managed_model_route(model), model);
-        assert!(!env.contains_key("FIREWORKS_API_KEY"));
+        for price in crate::model_catalog::MANAGED_FIREWORKS_MODELS {
+            let model = format!("evalops/{}", price.id);
+            let env = session.managed_env(&model, &HashMap::new()).unwrap();
+            assert_eq!(env[PROVIDER_ENV], "fireworks");
+            assert_eq!(env[ORG_ID_ENV], "org-1");
+            assert_eq!(env[WORKSPACE_ID_ENV], "workspace-2");
+            assert_eq!(env[ENVIRONMENT_ENV], "production");
+            assert_eq!(env[CREDENTIAL_NAME_ENV], "deixic-llm-gateway-glm53");
+            assert_eq!(session.managed_model_route(&model), model);
+            assert!(!env.contains_key("FIREWORKS_API_KEY"));
+        }
     }
 
     fn snapshot(org: &str, token: &str) -> EvalOpsCredentialSnapshot {

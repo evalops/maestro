@@ -47,6 +47,29 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.83] - 2026-09-08
+
+### Added
+
+- Link Code turns to their captured conversations in Session History, with per-session telemetry and links back to the transcript (#8800). <!-- maestro-release-note:1624b58500b6 -->
+- Report known provider charges separately when a turn's full cost is unavailable.
+- Report the client's latest upload queue size, retained rejections, and oldest pending event with the next turn. This is an upload observation, not a live device status.
+
+### Changed
+
+- Recognize theme-derived resting eye colors (#8801). <!-- maestro-release-note:69809b409c9f -->
+- Bound session history upload path (#8791). <!-- maestro-release-note:56ed113ef6c0 -->
+
+### Fixed
+
+- Keep rollout visibility limited to supported consumers (#8806). <!-- maestro-release-note:792a1b1cbc1d -->
+- Recover updates through legacy package launchers (#8798). <!-- maestro-release-note:00504d260be6 -->
+- Isolate Cargo artifacts across checkouts (#8796). <!-- maestro-release-note:27361ea49601 -->
+- Enable shared GitHub App authorization (#8799). <!-- maestro-release-note:cb4359ff38f3 -->
+- Cross-compile service images on the builder CPU (#8795). <!-- maestro-release-note:d29d9416468f -->
+- Bind rotating logs to their supplied parent directory (#8792). <!-- maestro-release-note:eee2660b2dec -->
+- Repair Zstandard wrappers and preserve transcript compatibility (#8789). <!-- maestro-release-note:810daf331684 -->
+
 ## [0.10.82] - 2026-09-08
 
 ### Added

@@ -6870,15 +6870,19 @@ async fn configuration_visibility_uses_live_oauth_scope_and_rejects_stale_origin
         ),
     );
     let session = crate::credential_mode::current_verified_identity_session().unwrap();
+    // Background runtime telemetry uses MAESTRO_HOME. Keep this recorder's
+    // exact-count assertions on its own outbox when the suite runs in parallel.
+    let isolated_outbox = tempdir().unwrap();
+    let outbox = isolated_outbox.path().join("outbox");
     assert_eq!(
         crate::telemetry::test_record_visibility_with_session(
             &event,
             origin.clone(),
-            session.clone()
+            session.clone(),
+            &outbox,
         ),
         crate::telemetry::OnboardingCollectionStatus::Queued
     );
-    let outbox = home.path().join("telemetry/outbox");
     let queued_paths = std::fs::read_dir(&outbox)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -6895,7 +6899,12 @@ async fn configuration_visibility_uses_live_oauth_scope_and_rejects_stale_origin
     let wrong_origin =
         crate::telemetry::TelemetryIdentityScope::new("other-org", Some("other-workspace"));
     assert_eq!(
-        crate::telemetry::test_record_visibility_with_session(&event, wrong_origin, session),
+        crate::telemetry::test_record_visibility_with_session(
+            &event,
+            wrong_origin,
+            session,
+            &outbox
+        ),
         crate::telemetry::OnboardingCollectionStatus::Unavailable
     );
 
@@ -6917,7 +6926,7 @@ async fn configuration_visibility_uses_live_oauth_scope_and_rejects_stale_origin
     assert!(incomplete.managed_setup_identity_scope.is_none());
     let session = crate::credential_mode::current_verified_identity_session().unwrap();
     assert_eq!(
-        crate::telemetry::test_record_visibility_with_session(&event, origin, session),
+        crate::telemetry::test_record_visibility_with_session(&event, origin, session, &outbox),
         crate::telemetry::OnboardingCollectionStatus::Unavailable
     );
     assert_eq!(

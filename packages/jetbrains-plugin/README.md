@@ -36,7 +36,7 @@ This plugin supports all JetBrains IDEs based on IntelliJ Platform 2024.3+:
 
 ```bash
 # Install Deixic Code from the retained compatibility package
-npm install -g @evalops/maestro
+npm install -g @evalops/deixic-code
 
 # Start the web server with the canonical command
 deixic-code web

@@ -58,6 +58,26 @@ fn test_identity_scope(organization_id: &str, workspace_id: &str) -> TelemetryId
         .expect("complete test Identity scope")
 }
 
+#[test]
+fn delivery_observations_count_pending_and_rejected_events_in_their_own_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let scope = test_identity_scope("org-a", "workspace-a");
+    let other = test_identity_scope("org-a", "workspace-b");
+    let event =
+        first_party_event(&canonical_event(TurnStatus::Success).external_projection()).unwrap();
+    let rejected = persist_first_party_event(temp.path(), &scope, &event).unwrap();
+    assert!(move_to_dead_letter(temp.path(), &rejected));
+    persist_first_party_event(temp.path(), &scope, &event).unwrap();
+    persist_first_party_event(temp.path(), &other, &event).unwrap();
+    let observation = delivery_snapshot(temp.path(), &scope);
+    assert_eq!(observation.pending_events, 1);
+    assert_eq!(observation.rejected_events, 1);
+    assert_eq!(observation.queue_capacity, OUTBOX_CAPACITY as u32);
+    let other_observation = delivery_snapshot(temp.path(), &other);
+    assert_eq!(other_observation.pending_events, 1);
+    assert_eq!(other_observation.rejected_events, 0);
+}
+
 fn delivery_session(
     access_token: &str,
     identity_scope: TelemetryIdentityScope,
@@ -285,7 +305,8 @@ fn canonical_turn_is_durably_logged_and_queued_without_exporting_content() {
     std::env::set_var("MAESTRO_HOME", temp.path());
     clear_telemetry_env();
 
-    record_canonical_turn_event(&canonical_event(TurnStatus::Error));
+    let canonical = canonical_event(TurnStatus::Error);
+    record_canonical_turn_event(&canonical);
 
     let encoded = fs::read_to_string(telemetry_path).expect("local telemetry log");
     let payload = parse_jsonl_record(&encoded);
@@ -302,7 +323,10 @@ fn canonical_turn_is_durably_logged_and_queued_without_exporting_content() {
     assert_eq!(paths.len(), 1, "first-party delivery must be durable");
     let queued = fs::read_to_string(&paths[0]).expect("queued telemetry event");
     assert!(queued.contains("\"eventId\""));
-    for secret in ["private-session", "/private/path", "token=secret"] {
+    let queued_json: Value = serde_json::from_str(&queued).unwrap();
+    assert_eq!(queued_json["event"]["sessionId"], "private-session");
+    assert_eq!(queued_json["event"]["turnId"], canonical.turn_id);
+    for secret in ["/private/path", "token=secret"] {
         assert!(!queued.contains(secret), "outbox leaked {secret}");
     }
     #[cfg(unix)]

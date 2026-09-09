@@ -240,6 +240,7 @@ impl NativeAgent {
             Arc::clone(&telemetry_identity_scope),
         )?;
         let runtime_config = config.into_runtime();
+        let telemetry_host = host.clone();
         let (inner, events) = maestro_runtime::agent::NativeAgent::start_with_resolved_client(
             runtime_config,
             host,
@@ -254,6 +255,7 @@ impl NativeAgent {
             &telemetry_config,
             provider_name,
             telemetry_identity_scope,
+            Some(telemetry_host),
         );
         Ok((Self { inner }, events))
     }
@@ -620,6 +622,7 @@ fn relay_runtime_events(
     config: &NativeAgentConfig,
     provider_name: String,
     telemetry_identity_scope: Arc<RwLock<Option<crate::telemetry::TelemetryIdentityScope>>>,
+    telemetry_host: Option<maestro_runtime::agent::NativeExecutionHostHandle>,
 ) -> tokio::sync::mpsc::UnboundedReceiver<FromAgent> {
     let (consumer_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut turn_tracker =
@@ -655,6 +658,13 @@ fn relay_runtime_events(
     });
     tokio::spawn(async move {
         while let Some(event) = runtime_event_rx.recv().await {
+            if matches!(&event, FromAgent::ResponseStart { .. }) {
+                if let Some(host) = &telemetry_host {
+                    if let Some(session_id) = host.hook_session_id().await {
+                        turn_tracker.set_session_id(session_id);
+                    }
+                }
+            }
             if matches!(&event, FromAgent::ModelChanged { .. }) {
                 turn_tracker.set_identity_scope(
                     telemetry_identity_scope
@@ -709,6 +719,7 @@ mod identity_transition_tests {
             &super::NativeAgentConfig::default(),
             "test".to_owned(),
             std::sync::Arc::new(std::sync::RwLock::new(None)),
+            None,
         );
         drop(consumer);
         runtime_tx

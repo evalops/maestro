@@ -68,6 +68,11 @@ impl TurnTracker {
         }
     }
 
+    /// Bind future turns to the saved conversation used by transcript capture.
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.config.session_id = session_id;
+    }
+
     /// Update the context for future turns.
     pub fn update_context(&mut self, context: TurnTrackerContext) {
         self.context = context;
@@ -371,6 +376,36 @@ impl TurnTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_session_identity_survives_mid_turn_changes_and_resume() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "runtime-run".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.set_session_id("saved-conversation".into());
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "response-1".into(),
+        });
+        tracker.set_session_id("resumed-conversation".into());
+        assert_eq!(
+            tracker
+                .end_turn(TurnStatus::Success, None)
+                .unwrap()
+                .session_id,
+            "saved-conversation"
+        );
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "response-2".into(),
+        });
+        assert_eq!(
+            tracker
+                .end_turn(TurnStatus::Success, None)
+                .unwrap()
+                .session_id,
+            "resumed-conversation"
+        );
+    }
 
     #[test]
     fn response_coverage_requires_matching_open_response_and_ignores_cleanup() {
