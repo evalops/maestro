@@ -183,14 +183,37 @@ function hasNeed(job, dependency) {
 	return job?.needs.includes(dependency) ?? false;
 }
 
-function checkoutIsBound(job) {
+function checkoutIsBound(
+	job,
+	{ workflowHelper = false, ref = RELEASE_SHA_EXPRESSION } = {},
+) {
 	const checkouts =
 		job?.steps.filter((step) => step.uses.startsWith("actions/checkout@")) ?? [];
+	const helperCheckouts = checkouts.filter(
+		(step) => step.with.path === ".release-workflow",
+	);
+	if (workflowHelper) {
+		if (
+			helperCheckouts.length !== 1 ||
+			helperCheckouts[0].condition ||
+			(helperCheckouts[0].continueOnError &&
+				helperCheckouts[0].continueOnError !== "false") ||
+			helperCheckouts[0].with.ref !== "${{ github.sha }}" ||
+			helperCheckouts[0].with["persist-credentials"] !== "false" ||
+			helperCheckouts[0].with["sparse-checkout"] !== ".github/workflows"
+		) {
+			return false;
+		}
+	}
+	const releaseCheckouts = checkouts.filter(
+		(step) => step.with.path !== ".release-workflow",
+	);
 	return (
-		checkouts.length === 1 &&
-		!checkouts[0].condition &&
-		(!checkouts[0].continueOnError || checkouts[0].continueOnError === "false") &&
-		checkouts[0].with.ref === RELEASE_SHA_EXPRESSION
+		releaseCheckouts.length === 1 &&
+		!releaseCheckouts[0].condition &&
+		(!releaseCheckouts[0].continueOnError ||
+			releaseCheckouts[0].continueOnError === "false") &&
+		releaseCheckouts[0].with.ref === ref
 	);
 }
 
@@ -246,29 +269,104 @@ export function validateReleaseWorkflow(source) {
 	const publish = jobs.publish;
 	const release = jobs["github-release"];
 	const canary = jobs["post-publish-canary"];
-    const identity = jobs["identity-readiness"];
-    const identityStep = findStep(identity, "Verify release test Identity session");
-    const identityCheckout = identity?.steps.filter(step => step.uses.startsWith("actions/checkout@")) ?? [];
-    const identityEnv = {
-        MAESTRO_EVALOPS_ACCESS_TOKEN: "${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}",
-        MAESTRO_EVALOPS_ORG_ID: "${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}",
-    };
-    if (!identity || identity.condition || identity.continueOnError ||
-        identity.environment !== "npm-release" || !hasNeed(identity, "prepare") ||
-        !hasExactPermissions(identity.permissions, {contents: "read"}) ||
-        identityCheckout.length !== 1 || identityCheckout[0].with.ref !== "${{ github.sha }}" ||
-        identityCheckout[0].with["persist-credentials"] !== "false" ||
-        !identityStep || requiredStepCanBeSkippedOrIgnored(identityStep) ||
-        identityStep.run !== "node .github/workflows/check-release-identity.mjs" ||
-        !hasExactRecord(identityStep.env, identityEnv) || !hasNeed(publish, "identity-readiness")) {
-        failures.push("publication must require the protected release-test Identity preflight");
-    }
-    const authenticatedReplayStep = findStep(canary, "Verify published package from npm");
-    if (canary?.environment !== "npm-release" ||
-        Object.entries(identityEnv).some(([key, value]) => authenticatedReplayStep?.env[key] !== value) ||
-        !hasNeed(release, "post-publish-canary")) {
-        failures.push("GitHub publication must wait for the authenticated registry replay canary");
-    }
+	const identity = jobs["identity-readiness"];
+	const identityAuthStep = findStep(
+		identity,
+		"Authenticate to the release-test Secret Manager lane",
+	);
+	const identityRefreshStep = findStep(
+		identity,
+		"Rotate and verify release-test Identity session",
+	);
+	const identityStep = findStep(identity, "Verify release-test Identity session");
+	const identityEnv = {
+		MAESTRO_EVALOPS_ORG_ID: "${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}",
+	};
+	const releaseTestAuthUses =
+		"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093";
+	const releaseTestAuthEnv = {
+		workload_identity_provider:
+			"${{ vars.MAESTRO_RELEASE_TEST_GCP_WORKLOAD_IDENTITY_PROVIDER }}",
+		service_account: "${{ vars.MAESTRO_RELEASE_TEST_GCP_SERVICE_ACCOUNT }}",
+		create_credentials_file: "true",
+		export_environment_variables: "true",
+	};
+	const releaseTestRefreshEnv = {
+		MAESTRO_RELEASE_TEST_SESSION_SECRET:
+			"${{ vars.MAESTRO_RELEASE_TEST_SESSION_SECRET }}",
+		MAESTRO_RELEASE_TEST_ORG_ID: "${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}",
+		MAESTRO_RELEASE_TEST_WORKSPACE_ID:
+			"${{ vars.MAESTRO_RELEASE_TEST_WORKSPACE_ID }}",
+		MAESTRO_RELEASE_TEST_SUBJECT: "${{ vars.MAESTRO_RELEASE_TEST_SUBJECT }}",
+	};
+	if (
+		!identity ||
+		identity.condition ||
+		identity.continueOnError ||
+		identity.environment !== "npm-release" ||
+		!hasNeed(identity, "prepare") ||
+		!hasExactPermissions(identity.permissions, {
+			contents: "read",
+			"id-token": "write",
+		}) ||
+		!checkoutIsBound(identity, { ref: "${{ github.sha }}" }) ||
+		!identityAuthStep ||
+		identityAuthStep.uses !== releaseTestAuthUses ||
+		!hasExactRecord(identityAuthStep.with, releaseTestAuthEnv) ||
+		requiredStepCanBeSkippedOrIgnored(identityAuthStep) ||
+		!identityRefreshStep ||
+		requiredStepCanBeSkippedOrIgnored(identityRefreshStep) ||
+		identityRefreshStep.run !==
+			"node .github/workflows/refresh-release-identity.mjs" ||
+		!hasExactRecord(identityRefreshStep.env, releaseTestRefreshEnv) ||
+		!identityStep ||
+		requiredStepCanBeSkippedOrIgnored(identityStep) ||
+		identityStep.run !== "node .github/workflows/check-release-identity.mjs" ||
+		!hasExactRecord(identityStep.env, identityEnv) ||
+		!hasNeed(publish, "identity-readiness")
+	) {
+		failures.push(
+			"publication must require the protected release-test Identity preflight",
+		);
+	}
+	const canaryAuthStep = findStep(
+		canary,
+		"Authenticate to the release-test Secret Manager lane",
+	);
+	const canaryRefreshStep = findStep(
+		canary,
+		"Rotate release-test Identity session",
+	);
+	const authenticatedReplayStep = findStep(
+		canary,
+		"Verify published package from npm",
+	);
+	if (
+		canary?.environment !== "npm-release" ||
+		!hasExactPermissions(canary.permissions, {
+			contents: "read",
+			"id-token": "write",
+		}) ||
+		!checkoutIsBound(canary, { workflowHelper: true }) ||
+		!canaryAuthStep ||
+		canaryAuthStep.uses !== releaseTestAuthUses ||
+		!hasExactRecord(canaryAuthStep.with, releaseTestAuthEnv) ||
+		requiredStepCanBeSkippedOrIgnored(canaryAuthStep) ||
+		!canaryRefreshStep ||
+		requiredStepCanBeSkippedOrIgnored(canaryRefreshStep) ||
+		canaryRefreshStep.run !==
+			"node .release-workflow/.github/workflows/refresh-release-identity.mjs" ||
+		!hasExactRecord(canaryRefreshStep.env, releaseTestRefreshEnv) ||
+		Object.entries(identityEnv).some(
+			([key, value]) => authenticatedReplayStep?.env[key] !== value,
+		) ||
+		Object.hasOwn(authenticatedReplayStep?.env ?? {}, "MAESTRO_EVALOPS_ACCESS_TOKEN") ||
+		!hasNeed(release, "post-publish-canary")
+	) {
+		failures.push(
+			"GitHub publication must wait for the authenticated registry replay canary",
+		);
+	}
 
 
 	for (const [name, job] of [
@@ -292,10 +390,7 @@ export function validateReleaseWorkflow(source) {
 			"release workflows must serialize only duplicate paths for the same normalized release tag",
 		);
 	}
-	for (const [name, job] of [
-		["prepare", prepare],
-		["post-publish-canary", canary],
-	]) {
+	for (const [name, job] of [["prepare", prepare]]) {
 		if (!hasExactPermissions(job.permissions, { contents: "read" })) {
 			failures.push(`${name} permissions must be exactly contents: read`);
 		}

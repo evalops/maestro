@@ -6,7 +6,7 @@ export async function checkReleaseIdentity(env, request = fetch) {
   const token = env.MAESTRO_EVALOPS_ACCESS_TOKEN?.trim();
   const organization = env.MAESTRO_EVALOPS_ORG_ID?.trim();
   if (!token || !organization) {
-    throw new Error("Configure MAESTRO_RELEASE_TEST_ACCESS_TOKEN and MAESTRO_RELEASE_TEST_ORG_ID in the npm-release environment for a dedicated release-test account.");
+    throw new Error("The rotating release-test Identity session was not provided; configure the managed session and tenant variables in the npm-release environment.");
   }
   let response;
   try {
