@@ -2619,6 +2619,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             subagent_parent_scope_id,
         ) {
             Ok((agent, event_rx)) => {
+                self.restore_request_cache(&agent);
                 let tool_tx = agent.tool_response_sender();
                 self.native_agent = Some(agent);
                 self.native_event_rx = Some(event_rx);
@@ -3754,6 +3755,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
+                self.persist_request_cache();
                 Some((response_id.clone(), usage.clone()))
             }
             _ => None,
