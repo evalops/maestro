@@ -1,5 +1,5 @@
 {
-  "generated_at": 1788852633,
+  "generated_at": 1788939087,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1438,7 +1438,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 131072
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -1457,7 +1457,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 943718
+        "output_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -2445,7 +2445,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 384000
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -2483,7 +2483,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 384000
+        "output_tokens": 393216
       },
       "verification": {
         "state": "catalog",
@@ -3175,8 +3175,8 @@
       }
     },
     {
-      "id": "inception/mercury-2.5-preview",
-      "name": "Inception: Mercury 2.5 Preview",
+      "id": "inception/mercury-2.5",
+      "name": "Inception: Mercury 2.5",
       "provider": "openrouter",
       "description": "Mercury 2.5 is the fastest reasoning LLM, and the latest diffusion LLM (dLLM) from Inception. Instead of generating…",
       "capabilities": {
@@ -4353,14 +4353,14 @@
       }
     },
     {
-      "id": "nex-agi/nex-n2-mini",
-      "name": "Nex AGI: Nex-N2-Mini",
+      "id": "nex-agi/nex-n2.5-mini:free",
+      "name": "Nex AGI: Nex-N2.5-Mini (free)",
       "provider": "openrouter",
-      "description": "Nex-N2-Mini is an open-source agentic mixture-of-experts model from Nex AGI, the smaller sibling in the Nex-N2 series.…",
+      "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
-        "vision": true,
+        "vision": false,
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
@@ -4372,10 +4372,10 @@
       }
     },
     {
-      "id": "nex-agi/nex-n2-pro",
-      "name": "Nex AGI: Nex-N2-Pro",
+      "id": "nex-agi/nex-n2.5-pro:free",
+      "name": "Nex AGI: Nex-N2.5-Pro (free)",
       "provider": "openrouter",
-      "description": "Nex-N2-Pro is an agentic mixture-of-experts model from Nex AGI, with 17B active parameters out of 397B total. Built on…",
+      "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -4515,7 +4515,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1000000,
+        "context_tokens": 262144,
         "output_tokens": 16384
       },
       "verification": {
@@ -6527,7 +6527,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 235929
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -6755,7 +6755,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 65536
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -7002,7 +7002,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 262144
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7838,7 +7838,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 204800,
-        "output_tokens": 131072
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",

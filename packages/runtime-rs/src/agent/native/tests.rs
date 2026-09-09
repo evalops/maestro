@@ -2002,6 +2002,15 @@ fn process_budget_provider_cost_preserves_exact_gateway_micros_and_real_fraction
 
 #[tokio::test]
 async fn process_budget_refuses_model_tool_effects_before_replay_can_intervene() {
+    assert_process_budget_refuses_model_tool_effects(0).await;
+}
+
+#[tokio::test]
+async fn process_budget_counts_cached_input_before_tool_execution() {
+    assert_process_budget_refuses_model_tool_effects(6).await;
+}
+
+async fn assert_process_budget_refuses_model_tool_effects(cached_tokens: u64) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2009,7 +2018,8 @@ async fn process_budget_refuses_model_tool_effects_before_replay_can_intervene()
         read_scripted_provider_request(&mut stream).await;
         let usage = serde_json::json!({"id":"budget-response", "object":"chat.completion.chunk",
             "created":0, "model":"gpt-4o", "choices":[],
-            "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}});
+            "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11,
+                "prompt_tokens_details":{"cached_tokens":cached_tokens}}});
         let body = chat_sse_response("budget-response", "Read the file.", true)
             .replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
         let wire = format!(
@@ -2447,17 +2457,17 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
 }
 
 #[tokio::test]
-async fn max_tokens_overflow_compaction_is_measured_as_automatic() {
+async fn max_tokens_does_not_rewrite_input_history() {
     let workspace = tempfile::tempdir().unwrap();
     let config = NativeAgentConfig {
         model: "openai/gpt-4o".into(),
         cwd: workspace.path().display().to_string(),
-        context_window: Some(1024),
+        context_window: Some(128_000),
         ..Default::default()
     };
-    let mut response = crate::ai::ScriptedResponse::text("Done.");
+    let mut response = crate::ai::ScriptedResponse::text("Partial answer.");
     response.stop_reason = crate::ai::StopReason::MaxTokens;
-    let client = crate::ai::ScriptedClient::new("overflow", vec![response]);
+    let client = crate::ai::ScriptedClient::new("output-limit", vec![response]);
     let (agent, mut events) =
         NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(client)).unwrap();
     agent.replace_history_with_continuation(
@@ -2475,22 +2485,90 @@ async fn max_tokens_overflow_compaction_is_measured_as_automatic() {
     );
     agent.prompt("Continue".into(), vec![]).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
-        let mut measured = false;
-        while let Some(event) = events.recv().await {
-            match event {
-                FromAgent::CompactionMeasured { .. } => measured = true,
-                FromAgent::Compaction { auto, .. } => {
-                    assert!(measured, "overflow must measure completed compaction");
-                    assert!(auto, "MaxTokens is an automatic compaction trigger");
-                    return;
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Compaction { .. } | FromAgent::CompactionMeasured { .. }) => {
+                    panic!("an output limit must not compact input history")
                 }
-                _ => {}
+                Some(FromAgent::TurnCompleted { .. }) => break,
+                Some(FromAgent::Error {
+                    terminal: true,
+                    message,
+                    ..
+                }) => panic!("{message}"),
+                Some(_) => {}
+                None => panic!("agent ended before completing the response"),
             }
         }
-        panic!("runner ended without overflow compaction");
     })
     .await
-    .expect("overflow should compact");
+    .expect("turn completed");
+    agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn max_tokens_refuses_complete_json_tool_calls_without_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scripted = crate::ai::ScriptedClient::new(
+        "output-limit",
+        vec![
+            crate::ai::ScriptedResponse {
+                blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                    id: "truncated-write".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({"path":"result.txt","content":"valid but incomplete"}),
+                }],
+                stop_reason: crate::ai::StopReason::MaxTokens,
+                error: None,
+            },
+            crate::ai::ScriptedResponse::text("The truncated call did not execute."),
+        ],
+    );
+    let config = NativeAgentConfig {
+        model: "scripted/output-limit".into(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        ..Default::default()
+    };
+    let host = RuntimeTestHost::new(workspace.path(), UnifiedClient::Scripted(scripted.clone()));
+    let executions = Arc::clone(&host.completed_tool_executions);
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    let mut refused = false;
+    agent.prompt("Write a file".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Error {
+                    message,
+                    terminal: false,
+                    ..
+                }) => {
+                    refused |= message.contains("not_executed") && message.contains("truncated");
+                }
+                Some(FromAgent::Error {
+                    message,
+                    terminal: true,
+                    ..
+                }) => panic!("{message}"),
+                Some(FromAgent::TurnCompleted { .. }) => break,
+                Some(_) => {}
+                None => panic!("agent ended before completing the response"),
+            }
+        }
+    })
+    .await
+    .expect("turn completed");
+    assert!(
+        refused,
+        "the truncated call must produce an explicit refusal"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        scripted.remaining(),
+        0,
+        "the model receives the refusal and can continue"
+    );
+    assert!(!workspace.path().join("result.txt").exists());
     agent.shutdown().await;
 }
 
