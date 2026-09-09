@@ -896,3 +896,81 @@ fn wired_and_unwired_hook_events_partition_the_enum() {
     );
     let _ = mem::size_of::<HookEventType>();
 }
+
+#[tokio::test]
+async fn bash_capture_survives_native_compaction_and_continuation_replay() {
+    let workspace = TempDir::new().expect("workspace");
+    let evidence = format!(
+        "{}\nUNIQUE_CAPTURE_MIDDLE_EVIDENCE\n{}",
+        "a".repeat(40_000),
+        "z".repeat(40_000)
+    );
+    fs::write(workspace.path().join("evidence.txt"), &evidence).expect("evidence fixture");
+    let client = UnifiedClient::Scripted(ScriptedClient::new(
+        "scripted-replay/maestro-replay-v1",
+        vec![
+            ScriptedResponse {
+                blocks: vec![ScriptedBlock::ToolUse {
+                    id: "capture-bash".into(),
+                    name: "bash".into(),
+                    input: json!({"command": "cat evidence.txt"}),
+                }],
+                stop_reason: StopReason::ToolUse,
+                error: None,
+            },
+            ScriptedResponse::text("Finished reading."),
+            ScriptedResponse::text("Continued."),
+        ],
+    ));
+    let config = NativeAgentConfig {
+        model: "scripted-replay/maestro-replay-v1".into(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        context_window: Some(4_096),
+        ..NativeAgentConfig::default()
+    };
+    let (agent, mut events) = NativeAgent::new_with_test_client(config, client).expect("agent");
+    agent
+        .prompt("Read the evidence file.".into(), vec![])
+        .await
+        .expect("prompt");
+    let continuation = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut continued = false;
+        loop {
+            match events.recv().await {
+                Some(FromAgent::TurnCompleted { .. }) if !continued => {
+                    continued = true;
+                    agent
+                        .prompt(
+                            "Continue with the captured evidence. ".repeat(1_000),
+                            vec![],
+                        )
+                        .await
+                        .expect("continuation prompt");
+                }
+                Some(FromAgent::Compaction {
+                    continuation: Some(record),
+                    ..
+                }) => break record,
+                Some(FromAgent::Error { message, .. }) => panic!("agent error: {message}"),
+                Some(_) => {}
+                None => panic!("agent closed before compaction"),
+            }
+        }
+    })
+    .await
+    .expect("compaction timeout");
+    agent.shutdown().await;
+    let serialized = serde_json::to_vec(&continuation).expect("serialize continuation");
+    let replay: maestro_runtime::agent::compaction::ContinuationRecord =
+        serde_json::from_slice(&serialized).expect("replay continuation");
+    let output = replay
+        .tool_outputs
+        .iter()
+        .find(|output| output.tool_call_id == "capture-bash")
+        .expect("native Bash capture must be retained without an outer spill");
+    assert_eq!(
+        fs::read_to_string(&output.path).expect("read original capture"),
+        evidence
+    );
+}
