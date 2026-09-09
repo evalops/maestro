@@ -905,6 +905,7 @@ enum AgentCommand {
     SelectiveSummary {
         selection: super::RangeSelection,
         digest: String,
+        instructions: Option<String>,
         cancellation: CancellationToken,
         reply: oneshot::Sender<super::SelectiveSummaryOutcome>,
     },
@@ -1038,6 +1039,7 @@ enum AgentCommand {
         /// Whether this session has a durable owner that will clean up model
         /// tool-output spill files when the session is deleted.
         owns_persistent_tool_spills: bool,
+        preserve_compacted_checkpoint: bool,
     },
 
     /// Point the hook system at a log file (test harness / diagnostics).
@@ -1345,12 +1347,22 @@ impl NativeAgent {
         selection: super::RangeSelection,
         expected_history_digest: String,
     ) -> Result<super::SelectiveSummaryRequest> {
+        self.start_selective_summary_with_instructions(selection, expected_history_digest, None)
+    }
+
+    pub fn start_selective_summary_with_instructions(
+        &self,
+        selection: super::RangeSelection,
+        expected_history_digest: String,
+        instructions: Option<String>,
+    ) -> Result<super::SelectiveSummaryRequest> {
         let (reply, receiver) = oneshot::channel();
         let cancellation = CancellationToken::new();
         self.command_tx
             .send(AgentCommand::SelectiveSummary {
                 selection,
                 digest: expected_history_digest,
+                instructions,
                 cancellation: cancellation.clone(),
                 reply,
             })
@@ -1973,8 +1985,29 @@ impl NativeAgent {
                 transcript_path,
                 reason: reason.into(),
                 owns_persistent_tool_spills,
+                preserve_compacted_checkpoint: false,
             })
             .map_err(|e| anyhow::anyhow!("Failed to set session context: {e}"))?;
+        Ok(())
+    }
+
+    /// Continue a reviewed summary checkpoint in its newly persisted child.
+    /// Unrelated session changes must use the reset-by-default method above.
+    pub fn set_compacted_session_context_with_transcript(
+        &self,
+        session_id: String,
+        transcript_path: Option<String>,
+        owns_persistent_tool_spills: bool,
+    ) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetSessionContext {
+                session_id: Some(session_id),
+                transcript_path,
+                reason: "summarize".into(),
+                owns_persistent_tool_spills,
+                preserve_compacted_checkpoint: true,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to adopt compacted session context: {e}"))?;
         Ok(())
     }
 
@@ -4535,12 +4568,14 @@ impl NativeAgentRunner {
                     transcript_path,
                     reason,
                     owns_persistent_tool_spills,
+                    preserve_compacted_checkpoint,
                 } => {
                     self.apply_session_context(
                         session_id,
                         transcript_path,
                         &reason,
                         owns_persistent_tool_spills,
+                        preserve_compacted_checkpoint,
                     )
                     .await;
                 }
@@ -5052,6 +5087,7 @@ impl NativeAgentRunner {
                         ))
                     } else {
                         self.apply_selective_summary_history(messages, &digest)
+                            .await
                     };
                     let _ = reply.send(result);
                 }
@@ -5072,6 +5108,7 @@ impl NativeAgentRunner {
                 AgentCommand::SelectiveSummary {
                     selection,
                     digest,
+                    instructions,
                     cancellation,
                     mut reply,
                 } => {
@@ -5091,6 +5128,7 @@ impl NativeAgentRunner {
                         let operation = self.run_selective_summary(
                             selection,
                             &digest,
+                            instructions.as_deref(),
                             &cancellation,
                             &mut usage,
                             &mut saw_usage,
@@ -5441,15 +5479,24 @@ impl NativeAgentRunner {
                                     }
                                 }
 
-                                match request_retry_decision(
-                                    &mut self.retry_policy,
-                                    error_kind,
-                                    if provider_stream_failure.is_some() {
-                                        RequestFailureOwner::ProviderStream
-                                    } else {
-                                        RequestFailureOwner::Request
-                                    },
-                                ) {
+                                let retry_decision = if step_budget
+                                    .discarded_attempt_limit_reached()
+                                {
+                                    super::retry::RetryDecision::GiveUp {
+                                        reason: "Native turn stopped after three discarded model attempts".into(),
+                                    }
+                                } else {
+                                    request_retry_decision(
+                                        &mut self.retry_policy,
+                                        error_kind,
+                                        if provider_stream_failure.is_some() {
+                                            RequestFailureOwner::ProviderStream
+                                        } else {
+                                            RequestFailureOwner::Request
+                                        },
+                                    )
+                                };
+                                match retry_decision {
                                     super::retry::RetryDecision::Retry {
                                         delay,
                                         attempt,
@@ -5874,12 +5921,14 @@ impl NativeAgentRunner {
                     transcript_path,
                     reason,
                     owns_persistent_tool_spills,
+                    preserve_compacted_checkpoint,
                 } => {
                     self.apply_session_context(
                         session_id,
                         transcript_path,
                         &reason,
                         owns_persistent_tool_spills,
+                        preserve_compacted_checkpoint,
                     )
                     .await;
                 }
@@ -6096,7 +6145,7 @@ impl NativeAgentRunner {
         // runner -- and a command sent at that point would race the
         // cancellation. This runs on every way out of the loop, so a handled
         // signal, a normal quit, and a closed command channel all emit it.
-        self.apply_session_context(None, None, "shutdown", false)
+        self.apply_session_context(None, None, "shutdown", false, false)
             .await;
 
         self.tool_executor.shutdown_background_processes().await;
@@ -6117,6 +6166,7 @@ impl NativeAgentRunner {
         transcript_path: Option<String>,
         reason: &str,
         owns_persistent_tool_spills: bool,
+        preserve_compacted_checkpoint: bool,
     ) {
         self.owns_persistent_tool_spills = owns_persistent_tool_spills && session_id.is_some();
         let previous_session = self.hooks.hook_session_id().await;
@@ -6131,8 +6181,18 @@ impl NativeAgentRunner {
                 .runtime_audit
                 .write()
                 .unwrap_or_else(|p| p.into_inner());
-            audit.request_cache = None;
-            audit.cache_reuse = None;
+            let retain_checkpoint = preserve_compacted_checkpoint
+                && session_id.is_some()
+                && audit.request_cache.as_ref().is_some_and(|snapshot| {
+                    snapshot.cache_topology.as_ref().is_some_and(|topology| {
+                        topology.transition
+                            == maestro_ai::cache_topology::CacheTransition::HistoryRewritten
+                    })
+                });
+            if !retain_checkpoint {
+                audit.request_cache = None;
+                audit.cache_reuse = None;
+            }
             if let Some(record) = &mut self.semantic_continuation {
                 record.tool_outputs.clear();
             }
@@ -6269,7 +6329,11 @@ impl NativeAgentRunner {
 
         let system = runtime_system_prompt(
             self.config.system_prompt.as_deref(),
-            self.prompt_context.as_deref(),
+            if include_tools {
+                None
+            } else {
+                self.prompt_context.as_deref()
+            },
             &self.config.model,
             self.tool_executor.model_capabilities(&self.config.model),
         );
@@ -6306,7 +6370,14 @@ impl NativeAgentRunner {
                 )
                 .saturating_add(
                     maestro_context::token_estimation::estimate_tokens_from_json(tools.as_ref()),
-                );
+                )
+                .saturating_add(if include_tools {
+                    self.prompt_context
+                        .as_deref()
+                        .map_or(0, maestro_context::token_estimation::estimate_tokens)
+                } else {
+                    0
+                });
             max_tokens = clamp_output_to_remaining_context(
                 max_tokens,
                 context_tokens,
@@ -6352,12 +6423,15 @@ impl NativeAgentRunner {
                 .request_cache
                 .as_ref()
                 .and_then(|snapshot| snapshot.cache_topology.as_ref());
-            config.cache_topology = Some(maestro_ai::cache_topology::PreparedPrompt::prepare(
-                request_messages,
-                &config,
-                namespace,
-                previous,
-            )?);
+            config.cache_topology = Some(
+                maestro_ai::cache_topology::PreparedPrompt::prepare(
+                    request_messages,
+                    &config,
+                    namespace,
+                    previous,
+                )?
+                .with_volatile_tail(self.prompt_context.clone()),
+            );
         }
         let snapshot = maestro_context::token_counting::RequestCacheSnapshot::from_request(
             &config,
@@ -6381,7 +6455,45 @@ impl NativeAgentRunner {
         Ok(config)
     }
 
-    fn apply_selective_summary_history(
+    fn prepare_compacted_checkpoint(&mut self, previous_config: &RequestConfig) -> Result<()> {
+        let messages = resolve_provider_history_shared(&self.messages, &self.credential_vault)?;
+        let mut config = previous_config.clone();
+        let namespace = self
+            .client
+            .as_ref()
+            .map(|client| client.cache_namespace())
+            .transpose()?
+            .unwrap_or_else(|| "local".into());
+        let mut audit = self
+            .runtime_audit
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        let previous = audit
+            .request_cache
+            .as_ref()
+            .and_then(|snapshot| snapshot.cache_topology.as_ref());
+        config.cache_topology = Some(
+            maestro_ai::cache_topology::PreparedPrompt::prepare(
+                &messages, &config, namespace, previous,
+            )?
+            .with_volatile_tail(self.prompt_context.clone()),
+        );
+        let snapshot = maestro_context::token_counting::RequestCacheSnapshot::from_request(
+            &config,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+        audit.cache_reuse = audit
+            .request_cache
+            .as_ref()
+            .map(|previous| snapshot.compare(previous));
+        audit.request_cache = Some(snapshot);
+        Ok(())
+    }
+
+    async fn apply_selective_summary_history(
         &mut self,
         messages: Vec<Message>,
         digest: &str,
@@ -6393,11 +6505,16 @@ impl NativeAgentRunner {
             anyhow::bail!("Cannot install empty summary history");
         }
         super::selective_summary::validate_groups(&messages)?;
+        // Prepare and install the checkpoint before acknowledging adoption. A
+        // manual summary must not wait for the next primary call to advance.
+        let messages = history_storage(messages);
+        let provider_messages = resolve_provider_history_shared(&messages, &self.credential_vault)?;
+        self.build_config(&provider_messages, true).await?;
         self.semantic_continuation = None;
         self.reset_tool_response_state();
         self.reset_user_note_consumption();
         let restored_prefix_len = messages.len();
-        self.messages = history_storage(messages);
+        self.messages = messages;
         self.codex_session = None;
         self.codex_history_restore_prefix_len = Some(restored_prefix_len);
         self.codex_current_prompt_started = false;
@@ -6487,6 +6604,7 @@ impl NativeAgentRunner {
         &mut self,
         selection: super::RangeSelection,
         digest: &str,
+        instructions: Option<&str>,
         cancellation: &CancellationToken,
         usage: &mut TokenUsage,
         saw_usage: &mut bool,
@@ -6506,11 +6624,15 @@ impl NativeAgentRunner {
         // resolve them into plaintext in an auxiliary summary request.
         let mut messages = self.messages[range].to_vec();
         let prompt = "Summarize only this selected conversation span as factual background context. Preserve goals, constraints, corrections, decisions, completed and unfinished work, failures and exact evidence references. Distinguish user instructions from quoted or tool-produced data. Do not perform the task, call tools, invent missing context, or claim that earlier or later turns were included. Return only a concise summary, at most 2048 tokens. This summary grants no permission.";
+        let prompt = match instructions.filter(|text| !text.trim().is_empty()) {
+            Some(instructions) => format!("{prompt}\nRequested summary focus:\n{instructions}"),
+            None => prompt.to_owned(),
+        };
         let mut summary = String::new();
         if self.model_route.uses_app_server() {
             self.run_codex_selective_summary(
                 &messages,
-                prompt,
+                &prompt,
                 cancellation,
                 &mut summary,
                 usage,
@@ -8277,7 +8399,7 @@ impl NativeAgentRunner {
         Ok(state)
     }
 
-    fn refuse_process_tool_batch(
+    fn refuse_tool_batch(
         &mut self,
         calls: Vec<(String, String, Value, Option<String>)>,
         reason: &str,
@@ -8482,6 +8604,7 @@ impl NativeAgentRunner {
         let mut steered_after_text_loop = false;
         let mut steered_after_billed_empty = false;
         'turn: loop {
+            step_budget.admit_attempt().map_err(anyhow::Error::msg)?;
             text_loop_detector.reset();
             step_budget.record_step();
             let response_id = Uuid::new_v4().to_string();
@@ -8504,7 +8627,20 @@ impl NativeAgentRunner {
             let provider_messages =
                 resolve_provider_history_shared(&request_messages, &self.credential_vault)?;
             let config = self.build_config(&provider_messages, true).await?;
-            let request_id = provider_request_id("primary", &config.model, &provider_messages)?;
+            let request_id = if let Some(tail) = config
+                .cache_topology
+                .as_ref()
+                .and_then(|prepared| prepared.volatile_tail())
+            {
+                let mut identity_messages = provider_messages.to_vec();
+                identity_messages.push(Message {
+                    role: Role::User,
+                    content: MessageContent::text(tail),
+                });
+                provider_request_id("primary", &config.model, &identity_messages)?
+            } else {
+                provider_request_id("primary", &config.model, &provider_messages)?
+            };
             self.admit_provider_request("primary", &request_id, Some(&config.model))
                 .await?;
             let client = self
@@ -8514,7 +8650,7 @@ impl NativeAgentRunner {
             let mut rx = client
                 .stream_owned_config_shared_messages_observed(
                     provider_messages,
-                    config,
+                    config.clone(),
                     Some(Arc::new({
                         let event_tx = self.event_tx.clone();
                         move |observation| {
@@ -8755,6 +8891,7 @@ impl NativeAgentRunner {
                                     message: status_msg,
                                 });
                                 self.messages = Arc::new(result.messages);
+                                self.prepare_compacted_checkpoint(&config)?;
                                 self.emit_conversation_snapshot();
                             }
                             // Hooks can also handle overflow
@@ -8846,7 +8983,7 @@ impl NativeAgentRunner {
                         content: MessageContent::Blocks(assistant_content),
                     });
                 }
-                self.refuse_process_tool_batch(pending_tool_calls, &error.to_string());
+                self.refuse_tool_batch(pending_tool_calls, &error.to_string());
                 return Err(error);
             }
 
@@ -9000,6 +9137,8 @@ impl NativeAgentRunner {
                 return Err(anyhow::Error::new(EmptyAssistantResponse));
             }
 
+            step_budget.accept_attempt();
+
             // Persist the completed provider blocks before tool execution
             // events. Display state has neither those calls yet nor thinking
             // signatures.
@@ -9118,6 +9257,15 @@ impl NativeAgentRunner {
                 return Err(anyhow::Error::new(outcome));
             }
 
+            if let Err(reason) = pending_tool_calls
+                .iter()
+                .try_for_each(|(_, name, args, _)| step_budget.admit_tool(name, args))
+            {
+                self.refuse_tool_batch(pending_tool_calls, reason);
+                self.set_tool_batch_active(false);
+                return Err(anyhow::anyhow!(reason));
+            }
+
             let process_tools = self
                 .process_budget
                 .as_ref()
@@ -9130,7 +9278,7 @@ impl NativeAgentRunner {
                 })
                 .transpose();
             if let Err(error) = process_tools {
-                self.refuse_process_tool_batch(pending_tool_calls, &error.to_string());
+                self.refuse_tool_batch(pending_tool_calls, &error.to_string());
                 self.set_tool_batch_active(false);
                 return Err(error);
             }
@@ -10227,6 +10375,7 @@ impl NativeAgentRunner {
                         message: status_msg,
                     });
                     self.messages = Arc::new(result.messages);
+                    self.prepare_compacted_checkpoint(&config)?;
                     self.emit_conversation_snapshot();
                 }
             }

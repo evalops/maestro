@@ -1841,6 +1841,10 @@ fn chat_sse_indexed_tool_response(index: usize) -> String {
 /// A provider that never stops asking for tools, and counts how many
 /// requests the runner made before it gave up.
 async fn scripted_tool_loop_provider() -> (String, Arc<AtomicUsize>) {
+    scripted_tool_loop_provider_with_repetition(false).await
+}
+
+async fn scripted_tool_loop_provider_with_repetition(repeat: bool) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind provider");
@@ -1852,6 +1856,11 @@ async fn scripted_tool_loop_provider() -> (String, Arc<AtomicUsize>) {
             let _ = read_scripted_provider_request(&mut stream).await;
             let index = counted.fetch_add(1, Ordering::SeqCst);
             let response = chat_sse_indexed_tool_response(index);
+            let response = if repeat {
+                response.replace(&format!("loop-{index}.md"), "same.md")
+            } else {
+                response
+            };
             let wire = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response.len(),
@@ -2119,6 +2128,55 @@ async fn turn_loop_stops_at_the_step_budget_and_names_the_refused_tool_calls() {
         4,
         "the turn must stop after exactly max_turn_steps provider requests"
     );
+}
+
+#[tokio::test]
+async fn native_identical_tool_guard_stops_an_unbounded_turn() {
+    let (base_url, requests) = scripted_tool_loop_provider_with_repetition(true).await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".to_owned(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        allow_unbounded_turn: true,
+        ..NativeAgentConfig::default()
+    };
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("scripted client"),
+    );
+    let (agent, mut events) =
+        NativeAgent::new_with_test_client(config, client).expect("looping agent");
+
+    agent
+        .prompt("Read every file you can find.".to_owned(), vec![])
+        .await
+        .expect("looping prompt");
+
+    let message = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Error {
+                    message,
+                    terminal: true,
+                    ..
+                }) => break message,
+                Some(FromAgent::TurnCompleted { .. }) => {
+                    panic!("a turn that never stops calling tools must not complete")
+                }
+                Some(_) => {}
+                None => panic!("agent event channel closed before the step-budget terminal"),
+            }
+        }
+    })
+    .await
+    .expect("step budget terminal timeout");
+    agent.shutdown().await;
+
+    assert!(
+        message.contains("three identical tool proposals"),
+        "{message}"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
@@ -2501,7 +2559,25 @@ async fn ordinary_compaction_keeps_restored_user_boundaries_in_checkpoint() {
     })
     .await
     .expect("compaction should complete");
+    let audit = Arc::clone(&agent.runtime_audit);
     agent.shutdown().await;
+    let snapshot = audit.read().unwrap().clone();
+    let topology = snapshot
+        .request_cache
+        .as_ref()
+        .unwrap()
+        .cache_topology
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        topology.generation, 2,
+        "checkpoint must be installed without another model request"
+    );
+    assert_eq!(
+        topology.transition,
+        maestro_ai::cache_topology::CacheTransition::HistoryRewritten
+    );
+
     assert_eq!(
         checkpoint.user_requests.first().map(String::as_str),
         Some("Do not publish. Work locally.")
@@ -2509,6 +2585,119 @@ async fn ordinary_compaction_keeps_restored_user_boundaries_in_checkpoint() {
     let restored: super::super::compaction::ContinuationRecord =
         serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
     assert_eq!(restored.user_requests, checkpoint.user_requests);
+}
+
+#[tokio::test]
+async fn manual_summary_installs_next_generation_before_another_primary_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let client = crate::ai::ScriptedClient::new(
+        "manual-summary",
+        vec![
+            crate::ai::ScriptedResponse::text("Original answer."),
+            crate::ai::ScriptedResponse::text("Continued summary."),
+            crate::ai::ScriptedResponse::text("Unrelated session."),
+        ],
+    );
+    let (agent, mut events) =
+        NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(client)).unwrap();
+    agent
+        .set_session_context(Some("source".into()), "new", false)
+        .unwrap();
+    agent
+        .prompt("Retain this constraint".into(), vec![])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnCompleted { .. }) {
+                return;
+            }
+        }
+        panic!("turn did not complete");
+    })
+    .await
+    .unwrap();
+    let before = agent
+        .runtime_audit_snapshot()
+        .request_cache
+        .unwrap()
+        .cache_topology
+        .unwrap();
+    let preview = agent
+        .start_selective_summary_preview()
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    agent
+        .apply_selective_summary(
+            vec![Message {
+                role: Role::User,
+                content: MessageContent::text("Reviewed summary: retain this constraint"),
+            }],
+            preview.history_digest,
+        )
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    let after = agent
+        .runtime_audit_snapshot()
+        .request_cache
+        .unwrap()
+        .cache_topology
+        .unwrap();
+    assert_eq!(after.generation, before.generation + 1);
+    assert_eq!(
+        after.transition,
+        maestro_ai::cache_topology::CacheTransition::HistoryRewritten
+    );
+    agent
+        .set_compacted_session_context_with_transcript("summary-child".into(), None, false)
+        .unwrap();
+    for (prompt, generation, transition) in [
+        (
+            "Continue the summary",
+            2,
+            maestro_ai::cache_topology::CacheTransition::Append,
+        ),
+        (
+            "A separate conversation",
+            1,
+            maestro_ai::cache_topology::CacheTransition::Initial,
+        ),
+    ] {
+        if generation == 1 {
+            agent
+                .set_session_context(Some("unrelated".into()), "new", false)
+                .unwrap();
+        }
+        agent.prompt(prompt.into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.recv().await {
+                if matches!(event, FromAgent::TurnCompleted { .. }) {
+                    return;
+                }
+            }
+            panic!("turn did not complete");
+        })
+        .await
+        .unwrap();
+        let topology = agent
+            .runtime_audit_snapshot()
+            .request_cache
+            .unwrap()
+            .cache_topology
+            .unwrap();
+        assert_eq!(topology.generation, generation);
+        assert_eq!(topology.transition, transition);
+    }
+    agent.shutdown().await;
 }
 
 #[tokio::test]
@@ -2568,9 +2757,10 @@ async fn selective_summary_uses_only_selected_history_without_tools_and_applies_
         .unwrap()
         .unwrap();
     let request = agent
-        .start_selective_summary(
+        .start_selective_summary_with_instructions(
             super::super::RangeSelection::FromTurn(2),
             preview.history_digest.clone(),
+            Some("Retain selected evidence".into()),
         )
         .unwrap();
     let outcome = tokio::time::timeout(Duration::from_secs(5), request.receiver)
@@ -2589,6 +2779,7 @@ async fn selective_summary_uses_only_selected_history_without_tools_and_applies_
     let captured = server.await.unwrap();
     let sent = serde_json::to_string(&captured["messages"]).unwrap();
     assert!(sent.contains("SELECTED_TURN_FACT"));
+    assert!(sent.contains("Retain selected evidence"));
     assert!(!sent.contains("PRIVATE_UNSELECTED_PREFIX"));
     assert!(
         captured

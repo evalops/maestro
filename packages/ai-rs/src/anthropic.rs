@@ -415,6 +415,12 @@ impl AnthropicClient {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
 
+        if let Some(prepared) = &config.cache_topology {
+            if config.cache_system_prompt {
+                crate::cache_topology::mark_stable_history(&mut body, "5m");
+            }
+            prepared.append_volatile_tail(&mut body);
+        }
         Ok(body)
     }
 }

@@ -484,61 +484,7 @@ impl App {
             CommandAction::Attach(action) => self.handle_attach_action(action),
             CommandAction::SummarizeConversation => self.open_selective_summary(),
             CommandAction::CompactConversation(instructions) => {
-                // Compact conversation by summarizing older messages
-                let transcript_messages: Vec<_> = self
-                    .state
-                    .messages
-                    .iter()
-                    .filter(|message| message.counts_toward_compaction_index())
-                    .cloned()
-                    .collect();
-                let msg_count = transcript_messages.len();
-                if msg_count <= 4 {
-                    self.state.status = Some("Conversation too short to compact".to_string());
-                    return;
-                }
-
-                // Keep last 2 messages, summarize the rest
-                let keep_count = 2;
-                let to_summarize = msg_count - keep_count;
-                let tokens_before = self.usage_tracker.total_tokens();
-
-                // Build summary of compacted messages
-                let mut summary = String::new();
-                summary.push_str("## Conversation Summary\n\n");
-
-                for (i, msg) in transcript_messages.iter().take(to_summarize).enumerate() {
-                    let role = match msg.role {
-                        MessageRole::User => "User",
-                        MessageRole::Assistant => "Assistant",
-                    };
-                    let chars: Vec<char> = msg.content.chars().collect();
-                    let preview = if chars.len() > 100 {
-                        format!("{}...", chars[..97].iter().collect::<String>())
-                    } else {
-                        msg.content.clone()
-                    };
-                    summary.push_str(&format!("{}. **{}**: {}\n", i + 1, role, preview));
-                }
-
-                if let Some(ref instr) = instructions {
-                    summary.push_str(&format!("\n*Focus: {instr}*\n"));
-                }
-
-                let summary_clone = summary.clone();
-                self.state
-                    .apply_compaction(summary, to_summarize, SystemTime::now());
-
-                self.record_compaction_entry(
-                    summary_clone,
-                    to_summarize,
-                    tokens_before,
-                    false,
-                    instructions.clone(),
-                    None,
-                );
-
-                self.state.status = Some(format!("Compacted {to_summarize} messages into summary"));
+                self.open_selective_summary_with_instructions(instructions);
             }
             CommandAction::Mcp(action) => {
                 self.handle_mcp_action(action).await;

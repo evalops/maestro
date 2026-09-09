@@ -6328,15 +6328,15 @@ fn tool_result_for_record(record: SubagentRecord) -> ToolResult {
             | SubagentStatus::TimedOut
             | SubagentStatus::Interrupted
     ) {
-        ToolResult::failure(
+        ToolResult::failure(super::subagent_handoff::parent_output(
             record
                 .error
                 .clone()
                 .unwrap_or_else(|| format!("Subagent {} failed", record.id)),
-        )
+        ))
         .with_details(details)
     } else {
-        ToolResult::success(output).with_details(details)
+        ToolResult::success(super::subagent_handoff::parent_output(output)).with_details(details)
     }
 }
 
@@ -8300,6 +8300,34 @@ mod tests {
         assert_ne!(
             details.get("status").and_then(serde_json::Value::as_str),
             Some("released_by_steering")
+        );
+    }
+
+    #[test]
+    fn child_output_firewall_bounds_parent_delivery_and_preserves_saved_result() {
+        let root = tempfile::tempdir().unwrap();
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let mut record = running_wait_record(root.path());
+        record.backend = SubagentBackend::Native;
+        record.status = SubagentStatus::Completed;
+        record.result = Some(SubagentResult {
+            output: "界".repeat(10_000),
+            files_modified: vec![],
+        });
+        manager.write_record(&record).unwrap();
+        let result = manager.get(&serde_json::json!({"subagent_id": record.id}));
+        assert!(result.output.len() <= 8_192);
+        assert!(result.output.contains("inspect the saved child session"));
+        assert_eq!(
+            manager
+                .load_record(&record.id)
+                .unwrap()
+                .result
+                .unwrap()
+                .output
+                .len(),
+            30_000
         );
     }
 

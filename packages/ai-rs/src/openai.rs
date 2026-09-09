@@ -1950,6 +1950,24 @@ impl OpenAiClient {
         } else {
             self.build_chat_request_body(messages, config)
         };
+        if let Some(prepared) = &config.cache_topology {
+            // The admitted session selects a fixed one-hour policy. Auxiliary
+            // summaries never acquire breakpoints or affinity.
+            if prepared.topology().transition != crate::cache_topology::CacheTransition::Auxiliary
+                && self.route_provider.as_deref() == Some("openrouter")
+                && config.model.contains("claude")
+                && !responses
+            {
+                let ttl = if self.managed_gateway && self.managed_inference_authorization.is_some()
+                {
+                    "1h"
+                } else {
+                    "5m"
+                };
+                crate::cache_topology::mark_stable_history(&mut body, ttl);
+            }
+            prepared.append_volatile_tail(&mut body);
+        }
         let legacy_affinity = if config.cache_topology.is_none() && !self.managed_gateway {
             std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY").ok()
         } else {
@@ -2480,16 +2498,21 @@ impl OpenAiClient {
                                                 let _ =
                                                     tx.send(StreamEvent::ProviderCost { cost_usd });
                                             }
+                                            let cache_write = usage
+                                                .get("input_tokens_details")
+                                                .and_then(|details| {
+                                                    details.get("cache_write_tokens")
+                                                })
+                                                .and_then(serde_json::Value::as_u64);
                                             let _ = tx.send(StreamEvent::Usage {
-                                                input_tokens: input,
+                                                input_tokens: uncached_input_tokens(
+                                                    input,
+                                                    cache_read,
+                                                    cache_write,
+                                                ),
                                                 output_tokens: output,
                                                 cache_read_tokens: cache_read,
-                                                cache_creation_tokens: usage
-                                                    .get("input_tokens_details")
-                                                    .and_then(|details| {
-                                                        details.get("cache_write_tokens")
-                                                    })
-                                                    .and_then(serde_json::Value::as_u64),
+                                                cache_creation_tokens: cache_write,
                                             });
                                         }
                                     }
@@ -2742,7 +2765,17 @@ impl OpenAiClient {
                                                     tx.send(StreamEvent::ProviderCost { cost_usd });
                                             }
                                             let _ = tx.send(StreamEvent::Usage {
-                                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                                input_tokens: uncached_input_tokens(
+                                                    usage.prompt_tokens.unwrap_or(0),
+                                                    usage
+                                                        .prompt_tokens_details
+                                                        .as_ref()
+                                                        .and_then(|d| d.cached_tokens),
+                                                    usage
+                                                        .prompt_tokens_details
+                                                        .as_ref()
+                                                        .and_then(|d| d.cache_write_tokens),
+                                                ),
                                                 output_tokens: usage.completion_tokens.unwrap_or(0),
                                                 cache_read_tokens: usage
                                                     .prompt_tokens_details
@@ -3037,6 +3070,14 @@ impl OpenAiUsage {
     }
 }
 
+// OpenAI-compatible prompt counts include cached reads/writes. The native
+// usage contract keeps these as separate buckets, like Anthropic usage.
+fn uncached_input_tokens(total: u64, read: Option<u64>, write: Option<u64>) -> u64 {
+    total
+        .saturating_sub(read.unwrap_or(0))
+        .saturating_sub(write.unwrap_or(0))
+}
+
 #[derive(Debug, Deserialize)]
 struct PromptTokensDetails {
     cached_tokens: Option<u64>,
@@ -3082,6 +3123,78 @@ struct ToolCallAccumulator {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_prompt_buckets_do_not_inflate_native_context() {
+        // Counts observed during the governed Fireworks tmux trial.
+        assert_eq!(uncached_input_tokens(11_958, Some(10_875), Some(0)), 1_083);
+        assert_eq!(uncached_input_tokens(100, None, None), 100);
+        assert_eq!(uncached_input_tokens(100, Some(70), Some(30)), 0);
+        assert_eq!(uncached_input_tokens(10, Some(20), None), 0);
+    }
+
+    #[test]
+    fn cache_topology_hosted_checkpoint_uses_one_hour_before_tail() {
+        let mut client = OpenAiClient::new("fixture")
+            .unwrap()
+            .with_route_provider("openrouter")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider":"openrouter", "environment":"production", "credential_name":"default"
+                }),
+            )
+            .unwrap();
+        client.set_managed_inference_authorization(Some(managed_authorization_fixture("cache-1")));
+        let scope = client.cache_scope().unwrap().unwrap();
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("checkpoint"),
+        }];
+        let mut config = RequestConfig {
+            model: "claude-sonnet-4-5".into(),
+            ..Default::default()
+        };
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &history,
+                &config,
+                scope.namespace(),
+                None,
+            )
+            .unwrap()
+            .with_volatile_tail(Some("clock and plan".into())),
+        );
+        let body = client.build_request_body_for_api(&history, &config, false);
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["ttl"],
+            "1h"
+        );
+        assert_eq!(body["messages"][1]["content"], "clock and plan");
+        let wire = maestro_runtime_contracts::cache_topology::CacheTopology::prepare(
+            maestro_runtime_contracts::cache_topology::wire_shape(&body, scope.namespace())
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+        let mut changed = body.clone();
+        changed["messages"][1]["content"] = serde_json::json!("late change");
+        assert!(
+            wire.validate(
+                &maestro_runtime_contracts::cache_topology::wire_shape(&changed, scope.namespace())
+                    .unwrap()
+            )
+            .is_err()
+        );
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::auxiliary(&history, &config, scope.namespace())
+                .unwrap(),
+        );
+        let auxiliary = client.build_request_body_for_api(&history, &config, false);
+        assert_eq!(auxiliary["messages"][0]["content"], "checkpoint");
+        assert!(auxiliary.get("prompt_cache_key").is_none());
+    }
+
     #[test]
     fn prompt_cache_affinity_is_opt_in_and_openrouter_only() {
         let mut body = serde_json::json!({});
@@ -3259,9 +3372,13 @@ mod tests {
                     cache_creation_tokens,
                     ..
                 } => {
-                    assert_eq!(input_tokens, 100);
+                    assert_eq!(input_tokens, 0);
                     assert_eq!(cache_read_tokens, Some(70));
                     assert_eq!(cache_creation_tokens, Some(30));
+                    assert_eq!(
+                        input_tokens + cache_read_tokens.unwrap() + cache_creation_tokens.unwrap(),
+                        100
+                    );
                     saw_usage = true;
                 }
                 StreamEvent::MessageStop { .. } => {
