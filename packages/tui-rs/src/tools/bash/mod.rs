@@ -151,6 +151,7 @@ use crate::safety::{
 };
 use crate::sandbox::{SandboxPolicy, spawn_sandboxed_command, spawn_unsandboxed_command};
 
+mod shield;
 mod versions;
 
 #[cfg(test)]
@@ -1842,6 +1843,20 @@ impl BashTool {
             .min(MAX_TIMEOUT_MS);
 
         let env = resolve_shell_environment(Path::new(&self.cwd), None);
+        if let Err(error) = shield::check(
+            &args.command,
+            Path::new(&self.cwd),
+            &env,
+            if args.bypass_sandbox {
+                None
+            } else {
+                self.sandbox_policy.as_ref()
+            },
+        )
+        .await
+        {
+            return ToolResult::failure(error.to_string());
+        }
 
         // Track execution timing
         let start_time = Instant::now();
