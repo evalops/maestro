@@ -663,10 +663,13 @@ fn relay_runtime_events(
             .clone(),
     });
     tokio::spawn(async move {
+        let mut journal = crate::telemetry::TurnJournal::open();
         while let Some(event) = runtime_event_rx.recv().await {
             if matches!(
                 &event,
                 FromAgent::TurnStarted | FromAgent::ResponseStart { .. }
+                    | FromAgent::SideQuestionStart { .. }
+                    | FromAgent::OperationObservation { observation: maestro_runtime_contracts::operation_observation::OperationObservation::Admitted { .. } }
             ) {
                 let session_id = match &telemetry_host {
                     Some(host) => host.hook_session_id().await,
@@ -686,7 +689,23 @@ fn relay_runtime_events(
             }
             let completed = turn_tracker.handle_event(&event);
             if let Some(completed) = completed.as_ref() {
-                crate::telemetry::record_canonical_turn_event(completed);
+                if let Some(journal) = &mut journal {
+                    journal.finish(completed);
+                } else {
+                    crate::telemetry::record_canonical_turn_event(completed);
+                }
+            }
+            if matches!(
+                &event,
+                FromAgent::TurnStarted
+                    | FromAgent::OperationObservation { .. }
+                    | FromAgent::SideQuestionStart { .. }
+                    | FromAgent::ResponseStart { .. }
+                    | FromAgent::ResponseEnd { .. }
+            ) {
+                if let Some(journal) = &mut journal {
+                    journal.observe(&turn_tracker.pending_snapshots());
+                }
             }
             // A detached consumer does not end the actor's turn. Keep draining
             // until the runtime exits so terminal telemetry is still recorded.

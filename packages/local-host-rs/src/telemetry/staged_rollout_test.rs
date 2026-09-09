@@ -29,7 +29,7 @@ impl Drop for EnvRestore {
     }
 }
 
-fn canonical_event(status: TurnStatus) -> CanonicalTurnEvent {
+pub(super) fn canonical_event(status: TurnStatus) -> CanonicalTurnEvent {
     let mut event = crate::telemetry::TurnCollector::new(
         "private-session",
         1,

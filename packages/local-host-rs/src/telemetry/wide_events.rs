@@ -245,6 +245,7 @@ pub struct CanonicalTurnEvent {
     pub turn_id: String,
     pub turn_number: u32,
     pub trace_id: Option<String>,
+    pub diagnostics: Option<super::operation::OperationDiagnostics>,
 
     /// Private delivery binding set by [`crate::telemetry::TurnTracker`] when
     /// the turn begins. It is intentionally not part of the serializable
@@ -477,7 +478,7 @@ impl TailSamplingConfig {
 // In-progress Tool Tracking
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingTool {
     name: String,
     start_time: Instant,
@@ -492,7 +493,7 @@ struct PendingTool {
 ///
 /// Create a new collector at the start of each turn, record events as they
 /// happen, then call `complete()` to emit the canonical event.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TurnCollector {
     session_id: String,
     turn_number: u32,
@@ -660,6 +661,14 @@ impl TurnCollector {
     pub fn set_model(&mut self, model: ModelInfo) -> &mut Self {
         self.model = model;
         self
+    }
+
+    pub fn set_turn_id(&mut self, id: String) {
+        self.turn_id = id;
+    }
+
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
     }
 
     pub fn set_trace_id(&mut self, trace_id: impl Into<String>) -> &mut Self {
@@ -877,6 +886,7 @@ impl TurnCollector {
             turn_id: self.turn_id,
             turn_number: self.turn_number,
             trace_id: self.trace_id,
+            diagnostics: None,
             identity_scope: None,
 
             // Model

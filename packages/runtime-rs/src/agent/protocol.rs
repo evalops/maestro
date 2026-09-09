@@ -976,6 +976,11 @@ pub enum FromAgent {
     /// The exact provider request and its local context accounting are ready.
     RequestContextPrepared { response_id: String },
 
+    /// Content-free measurements associated with the exact native operation.
+    OperationObservation {
+        observation: maestro_runtime_contracts::operation_observation::OperationObservation,
+    },
+
     /// One user turn entered the native runtime loop.
     TurnStarted,
 

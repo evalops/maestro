@@ -192,6 +192,8 @@ pub enum StreamEvent {
     },
     /// Provider-reported USD cost; absent pricing is never inferred as zero.
     ProviderCost { cost_usd: f64 },
+    /// Provider-reported reasoning tokens, a subset of output tokens.
+    ReasoningUsage { tokens: u64 },
     /// Usage stats
     Usage {
         input_tokens: u64,

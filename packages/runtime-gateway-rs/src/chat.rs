@@ -1190,6 +1190,7 @@ pub(crate) async fn handle_chat_endpoint(
             FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
             | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::OperationObservation { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::ContextCalibration { .. }
@@ -2110,6 +2111,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
             | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::OperationObservation { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::ContextCalibration { .. }

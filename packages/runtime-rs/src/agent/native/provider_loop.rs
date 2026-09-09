@@ -14,6 +14,17 @@ impl NativeAgentRunner {
         self.turn_tool_calls = 0;
         // Announce the user turn before fallible preparation. Recovery may
         // re-enter run_loop_inner, but must not create another user turn.
+        let _ = self.event_tx.send(FromAgent::OperationObservation {
+            observation:
+                maestro_runtime_contracts::operation_observation::OperationObservation::Admitted {
+                    turn_id: self.current_turn_id.clone(),
+                    thinking_level: self
+                        .current_model_choice()
+                        .thinking
+                        .label()
+                        .to_ascii_lowercase(),
+                },
+        });
         let _ = self.event_tx.send(FromAgent::TurnStarted);
 
         self.apply_requested_boost().await?;
@@ -218,6 +229,13 @@ impl NativeAgentRunner {
             let _ = self.event_tx.send(FromAgent::RequestContextPrepared {
                 response_id: response_id.clone(),
             });
+            let _ = self.event_tx.send(FromAgent::OperationObservation {
+                observation: maestro_runtime_contracts::operation_observation::OperationObservation::Prepared {
+                    response_id: response_id.clone(), model_id: config.model.clone(), model_provider: self.client.as_ref().map(|client| client.provider_name()).unwrap_or("unknown").to_owned(),
+                    message_count: provider_messages.len().try_into().unwrap_or(u32::MAX),
+                    input_size_bytes: serde_json::to_vec(provider_messages.as_ref()).ok().map(|v| v.len() as u64),
+                },
+            });
             let request_id = provider_request_id_with_tail(
                 "primary",
                 &config.model,
@@ -282,6 +300,12 @@ impl NativeAgentRunner {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::ManagedGatewayReceipt(receipt) => {
+                        let _ = self.event_tx.send(FromAgent::OperationObservation {
+                            observation: maestro_runtime_contracts::operation_observation::OperationObservation::GatewayReceipt {
+                                response_id: response_id.clone(), request_id: receipt.request_id.clone(),
+                                record_id: receipt.record_id.clone(), lineage_id: receipt.lineage_id.clone(),
+                            },
+                        });
                         let _ = self
                             .event_tx
                             .send(Self::managed_gateway_receipt_event(receipt, true));
@@ -405,6 +429,11 @@ impl NativeAgentRunner {
                             });
                             pending_tool_calls.push((id, name, input, parse_error));
                         }
+                    }
+                    StreamEvent::ReasoningUsage { tokens } => {
+                        let _ = self.event_tx.send(FromAgent::OperationObservation {
+                            observation: maestro_runtime_contracts::operation_observation::OperationObservation::ReasoningUsage { response_id: response_id.clone(), tokens },
+                        });
                     }
                     StreamEvent::ProviderCost { cost_usd } => {
                         usage.cost = Some(cost_usd);

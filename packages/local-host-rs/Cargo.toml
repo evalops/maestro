@@ -28,6 +28,7 @@ futures.workspace = true
 maestro-ai = { workspace = true, features = ["bedrock"] }
 maestro-context.workspace = true
 maestro-runtime.workspace = true
+maestro-runtime-contracts.workspace = true
 maestro-session-history.workspace = true
 maestro-session.workspace = true
 

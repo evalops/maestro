@@ -35,6 +35,14 @@ impl NativeAgentRunner {
                 content: MessageContent::text(question.clone()),
             });
             let config = self.build_config(&messages, false).await?;
+            let _ = self.event_tx.send(FromAgent::RequestContextPrepared { response_id: side_id.clone() });
+            let _ = self.event_tx.send(FromAgent::OperationObservation {
+                observation: maestro_runtime_contracts::operation_observation::OperationObservation::Prepared {
+                    response_id: side_id.clone(), model_id: config.model.clone(), model_provider: self.client.as_ref().map(|client| client.provider_name()).unwrap_or("unknown").to_owned(),
+                    message_count: messages.len().try_into().unwrap_or(u32::MAX),
+                    input_size_bytes: serde_json::to_vec(&messages).ok().map(|v| v.len() as u64),
+                },
+            });
             let client = self
                 .client
                 .as_ref()
@@ -47,6 +55,12 @@ impl NativeAgentRunner {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::ManagedGatewayReceipt(receipt) => {
+                        let _ = self.event_tx.send(FromAgent::OperationObservation {
+                            observation: maestro_runtime_contracts::operation_observation::OperationObservation::GatewayReceipt {
+                                response_id: side_id.clone(), request_id: receipt.request_id.clone(),
+                                record_id: receipt.record_id.clone(), lineage_id: receipt.lineage_id.clone(),
+                            },
+                        });
                         let _ = self
                             .event_tx
                             .send(Self::managed_gateway_receipt_event(receipt, true));
@@ -66,6 +80,11 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
                             side_id: side_id.clone(),
                             content: text,
+                        });
+                    }
+                    StreamEvent::ReasoningUsage { tokens } => {
+                        let _ = self.event_tx.send(FromAgent::OperationObservation {
+                            observation: maestro_runtime_contracts::operation_observation::OperationObservation::ReasoningUsage { response_id: side_id.clone(), tokens },
                         });
                     }
                     StreamEvent::ProviderCost { cost_usd } => {

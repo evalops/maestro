@@ -12,6 +12,7 @@ pub mod cache_topology;
 pub mod contracts;
 pub mod delegation;
 mod launch_spec;
+pub mod operation_observation;
 pub mod passport;
 pub mod protocol;
 pub mod receipt_contract;
