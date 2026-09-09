@@ -58,6 +58,13 @@ impl RequestContextUsage {
                 }
             }
         }
+        if let Some(tail) = config
+            .cache_topology
+            .as_ref()
+            .and_then(|prepared| prepared.volatile_tail())
+        {
+            usage.conversation += count(tail);
+        }
         usage
             .tools
             .sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -70,6 +77,21 @@ mod tests {
     use super::*;
     use maestro_ai::Tool;
     use std::sync::Arc;
+
+    #[test]
+    fn volatile_tail_is_counted_without_becoming_system_context() {
+        let mut config = RequestConfig::default();
+        let counter = TokenCounter::new(Some(config.model.clone()));
+        let before = RequestContextUsage::from_request(&[], &config, &counter);
+        config.cache_topology = Some(
+            maestro_ai::cache_topology::PreparedPrompt::prepare(&[], &config, "scope".into(), None)
+                .unwrap()
+                .with_volatile_tail(Some("current plan ".repeat(100))),
+        );
+        let after = RequestContextUsage::from_request(&[], &config, &counter);
+        assert_eq!(before.system, after.system);
+        assert!(after.conversation > before.conversation);
+    }
 
     #[test]
     fn reports_only_schemas_in_the_prepared_request() {

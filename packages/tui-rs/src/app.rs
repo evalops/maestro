@@ -3019,6 +3019,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// session id and the lifecycle dispatch both travel as a command; the
     /// runner compares against the session it holds and fires the transition.
     pub(super) fn adopt_session_context(&mut self, session_id: Option<&str>, reason: &str) {
+        self.adopt_session_context_inner(session_id, reason, false);
+    }
+
+    pub(super) fn adopt_compacted_session_context(&mut self, session_id: &str) {
+        self.adopt_session_context_inner(Some(session_id), "summarize", true);
+    }
+
+    fn adopt_session_context_inner(
+        &mut self,
+        session_id: Option<&str>,
+        reason: &str,
+        preserve_compacted_checkpoint: bool,
+    ) {
         let scope = subagent_scope_for_session(session_id);
         self.tool_executor.set_subagent_parent_scope(scope.clone());
         let Some(agent) = &self.native_agent else {
@@ -3034,12 +3047,22 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 .current_session_path()
                 .map(|path| path.to_string_lossy().into_owned())
         });
-        if let Err(e) = agent.set_session_context_with_transcript(
-            session_id.map(str::to_owned),
-            transcript_path,
-            reason,
-            owns_persistent_tool_spills,
-        ) {
+        let transition =
+            if let Some(session_id) = session_id.filter(|_| preserve_compacted_checkpoint) {
+                agent.set_compacted_session_context_with_transcript(
+                    session_id.to_owned(),
+                    transcript_path,
+                    owns_persistent_tool_spills,
+                )
+            } else {
+                agent.set_session_context_with_transcript(
+                    session_id.map(str::to_owned),
+                    transcript_path,
+                    reason,
+                    owns_persistent_tool_spills,
+                )
+            };
+        if let Err(e) = transition {
             self.state.error = Some(format!("Failed to update session context: {e}"));
         }
     }

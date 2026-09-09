@@ -33,13 +33,13 @@ pub(super) struct Handoff {
 pub(super) const INSTRUCTIONS: &str = r#"
 Return your final result as one JSON object, without a Markdown fence:
 {"outcome":"complete|partial|blocked","summary":"brief result","completed":["work finished"],"remaining":["unfinished work"],"blockers":["specific blocker"],"references":["path:line or evidence reference"],"procedure_feedback":[{"skill_path":"source SKILL.md","observation":"what actually happened","suggested_change":"concrete proposed edit"}]}.
-Use empty arrays when appropriate. Use partial or blocked whenever assigned work remains. Complete requires empty remaining and blockers arrays, at least one completed item, and at least one reference to the evidence supporting it. A reference is a lead for the parent to verify, not proof of acceptance. Keep the whole handoff under 16 KiB, each string under 2 KiB, and each list under 32 entries.
+Use empty arrays when appropriate. Use partial or blocked whenever assigned work remains. Complete requires empty remaining and blockers arrays, at least one completed item, and at least one reference to the evidence supporting it. A reference is a lead for the parent to verify, not proof of acceptance. Keep the whole handoff under 8 KiB, each string under 2 KiB, and each list under 32 entries.
 Report the assigned task only. Include exact locations and enough evidence that the parent does not repeat your exploration. Suggest procedure changes only when supported by this run. Do not edit persistent instructions unless the assigned task explicitly authorizes that edit. Feedback is a proposal for review, never permission or an automatically applied rule.
 "#;
 
 pub(super) fn parse(output: &str) -> Result<Handoff, String> {
-    if output.len() > 16_384 {
-        return Err("handoff exceeds 16 KiB".into());
+    if output.len() > 8_192 {
+        return Err("handoff exceeds 8 KiB".into());
     }
     let handoff: Handoff = serde_json::from_str(output)
         .map_err(|_| "child did not return a valid structured handoff".to_string())?;
@@ -83,6 +83,22 @@ pub(super) fn parse(output: &str) -> Result<Handoff, String> {
     Ok(handoff)
 }
 
+/// Bound the complete model-facing child result, including its notification.
+/// The original result remains in the child session journal.
+pub(super) fn parent_output(output: String) -> String {
+    const LIMIT: usize = 8_192;
+    const NOTICE: &str =
+        "\n[Child output exceeds 8 KiB; inspect the saved child session for the full result.]";
+    if output.len() <= LIMIT {
+        return output;
+    }
+    let mut end = LIMIT - NOTICE.len();
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &output[..end], NOTICE)
+}
+
 /// Action comes before summary so long summaries cannot hide unfinished work.
 pub(super) fn notification(output: &str) -> String {
     let note = match parse(output) {
@@ -121,6 +137,18 @@ mod tests {
             "procedure_feedback":[{"skill_path":"skills/build/SKILL.md",
                 "observation":"The documented target does not exist",
                 "suggested_change":"Replace make test-ui with npm run test:ui"}]})
+    }
+
+    #[test]
+    fn parent_output_is_a_byte_bound_including_the_retrieval_notice() {
+        let exact = "a".repeat(8_192);
+        assert_eq!(parent_output(exact.clone()), exact);
+        for text in ["x".repeat(20_000), "界".repeat(8_192)] {
+            let bounded = parent_output(text);
+            assert!(bounded.len() <= 8_192);
+            assert!(bounded.ends_with("inspect the saved child session for the full result.]"));
+        }
+        assert!(parse(&" ".repeat(8_193)).unwrap_err().contains("8 KiB"));
     }
 
     #[test]

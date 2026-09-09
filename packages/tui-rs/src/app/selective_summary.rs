@@ -33,6 +33,7 @@ enum Stage {
 
 pub(super) struct SummaryDialog {
     stage: Stage,
+    instructions: Option<String>,
 }
 
 impl SummaryDialog {
@@ -62,6 +63,13 @@ impl SummaryDialog {
 
 impl App {
     pub(super) fn open_selective_summary(&mut self) {
+        self.open_selective_summary_with_instructions(None);
+    }
+
+    pub(super) fn open_selective_summary_with_instructions(
+        &mut self,
+        instructions: Option<String>,
+    ) {
         if self.state.busy || !self.queued_prompts.is_empty() {
             self.state.status =
                 Some("Finish the active response and queued prompts before summarizing.".into());
@@ -76,6 +84,7 @@ impl App {
             Ok(receiver) => {
                 self.selective_summary = Some(SummaryDialog {
                     stage: Stage::Loading(receiver),
+                    instructions,
                 });
                 self.active_modal = ActiveModal::SelectiveSummary;
             }
@@ -216,7 +225,11 @@ impl App {
                             self.native_agent
                                 .as_ref()
                                 .ok_or_else(|| anyhow::anyhow!("Agent stopped"))?
-                                .start_selective_summary(selection, preview.history_digest.clone())
+                                .start_selective_summary_with_instructions(
+                                    selection,
+                                    preview.history_digest.clone(),
+                                    dialog.instructions.clone(),
+                                )
                         });
                         match started {
                             Ok(request) => {
@@ -312,7 +325,11 @@ impl App {
         self.reset_rendered_viewport();
         restore_visible_session_messages(&mut self.state, &child);
         self.state.session_id = Some(child_id.clone());
-        self.adopt_session_context(Some(&child_id), "summarize");
+        self.adopt_compacted_session_context(&child_id);
+        self.persist_request_cache();
+        if !self.flush_session() {
+            anyhow::bail!("Failed to persist the adopted checkpoint cache audit");
+        }
         crate::plan_mode::set_active_session_id(Some(child_id.clone()));
         self.session_resume_failed = false;
         let notice = format!(
@@ -359,6 +376,7 @@ mod tests {
         picker.open();
         picker.handle_key(KeyCode::Down, false);
         let mut dialog = SummaryDialog {
+            instructions: None,
             stage: Stage::Picking {
                 preview: SelectiveSummaryPreview {
                     turns,
@@ -389,6 +407,7 @@ mod tests {
     #[test]
     fn summary_dialog_review_displays_result_and_discard_action() {
         let mut dialog = SummaryDialog {
+            instructions: None,
             stage: Stage::Review {
                 result: SelectiveSummaryResult {
                     messages: Vec::new(),
