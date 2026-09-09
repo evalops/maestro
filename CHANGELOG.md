@@ -47,6 +47,21 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.84] - 2026-09-08
+
+### Added
+
+- Prepare upcoming work and resume connected tasks (#8803). <!-- maestro-release-note:e097b40a7d5f -->
+- Link search passages and pair parallel tools (#8810). <!-- maestro-release-note:08492868faf2 -->
+
+### Fixed
+
+- Isolate canonical verification artifacts by checkout (#8812). <!-- maestro-release-note:08cfcd23378c -->
+- Preserve transcript wakeups and interrupted receipt recovery (#8794). <!-- maestro-release-note:19f24655f26b -->
+- Reject blank review anchors with usable repair hints (#8811). <!-- maestro-release-note:8cb11235d0a1 -->
+- Avoid redundant publisher downloads and cache shutdown (#8813). <!-- maestro-release-note:4ded1c494e7e -->
+- Enforce hosted shell and effect boundaries (#8805). <!-- maestro-release-note:54808c52892e -->
+
 ## [0.10.83] - 2026-09-08
 
 ### Added
