@@ -3810,6 +3810,7 @@ dependencies = [
  "maestro-interaction",
  "maestro-presentation",
  "maestro-runtime",
+ "maestro-runtime-contracts",
  "maestro-sandbox",
  "maestro-session",
  "maestro-session-history",

@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::entries::{SessionEntry, SessionHeader};
+use super::entries::{CustomEntry, SessionEntry, SessionHeader};
 use super::writer::generate_session_filename;
 
 pub const MAX_SESSION_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -146,6 +146,35 @@ pub fn fork_session_prefix(source_path: &Path, end: Option<u64>) -> io::Result<F
                 writer.write_all(pending.as_bytes())?;
             }
         }
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let mut event = maestro_runtime_contracts::SessionEvent::new(
+            event_id.clone(),
+            timestamp.clone(),
+            id.clone(),
+            maestro_runtime_contracts::SessionEventLane::Runtime,
+            if end.is_some() {
+                "session.rewound"
+            } else {
+                "session.forked"
+            },
+            maestro_runtime_contracts::SessionEventPhase::Completed,
+        );
+        event.correlation_id = Some(source_id.clone());
+        let entry =
+            SessionEntry::Custom(CustomEntry {
+                id: Some(event_id),
+                parent_id: None,
+                timestamp,
+                custom_type: maestro_runtime_contracts::SESSION_EVENT_CUSTOM_TYPE.into(),
+                data: Some(serde_json::to_value(event).map_err(|error| {
+                    invalid_data(format!("failed to encode fork event: {error}"))
+                })?),
+            });
+        let mut encoded = serde_json::to_string(&entry)
+            .map_err(|error| invalid_data(format!("failed to encode fork event: {error}")))?;
+        encoded.push('\n');
+        writer.write_all(encoded.as_bytes())?;
         writer.flush()?;
         writer.get_ref().sync_all()
     })();
@@ -245,6 +274,8 @@ mod tests {
         let fork = fork_session_prefix(&source_path, Some(boundary)).unwrap();
         let reopened = SessionReader::read_file(&fork.path).unwrap();
         assert_eq!(reopened.stats.user_messages, 1);
+        assert_eq!(reopened.session_events.len(), 1);
+        assert_eq!(reopened.session_events[0].kind, "session.rewound");
         assert_eq!(reopened.messages.last().unwrap().text_content(), "Done A.");
         assert_eq!(reopened.header.parent_session.as_deref(), Some("source-id"));
         {
@@ -324,6 +355,8 @@ mod tests {
             "fork keeps the original start timestamp"
         );
         assert_eq!(fork.messages.len(), source.messages.len());
+        assert_eq!(fork.session_events.len(), 1);
+        assert_eq!(fork.session_events[0].kind, "session.forked");
         for (forked_msg, source_msg) in fork.messages.iter().zip(source.messages.iter()) {
             assert_eq!(forked_msg.text_content(), source_msg.text_content());
         }

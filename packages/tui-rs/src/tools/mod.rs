@@ -103,7 +103,9 @@ mod shell_env;
 mod status;
 mod subagents;
 pub mod tool_call_contract;
-pub(crate) use subagents::{CoordinationSnapshot, SubagentLifecycleEvent, coordination_snapshots};
+pub(crate) use subagents::{
+    CoordinationSnapshot, SubagentLifecycleEvent, SubagentStatus, coordination_snapshots,
+};
 pub(crate) mod todo;
 pub mod versions;
 mod web_fetch;

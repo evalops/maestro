@@ -5,6 +5,7 @@
 //! state, and summary framing. It remains independent of the TUI, provider
 //! catalog, live agent loop, and tool policy.
 
+pub mod budget;
 pub mod compaction;
 pub mod context_usage;
 pub mod envelope;
@@ -12,6 +13,10 @@ pub mod token_counter;
 pub mod token_counting;
 pub mod token_estimation;
 
+pub use budget::{
+    BudgetCountConfidence, CONTEXT_BUDGET_CUSTOM_TYPE, CONTEXT_BUDGET_SCHEMA, ContextBudgetPhase,
+    ContextBudgetSnapshot,
+};
 pub use compaction::{
     CompactionConfig, CompactionResult, ContextCompactor, ContinuationCommand, ContinuationRecord,
     CutPoint, allocate_summary_chars, build_continuation_record, extract_context_summary,

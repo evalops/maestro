@@ -1189,6 +1189,9 @@ pub(crate) async fn handle_chat_endpoint(
             // Local measurements are consumed by native telemetry, not the chat wire protocol.
             FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
+            | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::TurnStarted
+            | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
@@ -2105,6 +2108,9 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             // Local measurements are consumed by native telemetry, not the chat wire protocol.
             FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
+            | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::TurnStarted
+            | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,

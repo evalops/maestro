@@ -764,8 +764,12 @@ impl App {
             .state
             .locale
             .translate("No comparison is available for the current request.");
+        let mut response_reserve = None;
+        let mut runtime_context_window = None;
         if let Some(agent) = &self.native_agent {
             let snapshot = agent.runtime_audit_snapshot();
+            response_reserve = Some(u64::from(snapshot.max_output_tokens));
+            runtime_context_window = snapshot.context_window;
             if let Some(reason) = snapshot.cache_reuse {
                 cache_explanation = reason.explanation();
             }
@@ -799,11 +803,26 @@ impl App {
             }
         }
         breakdown.tool_schemas = tool_rows.iter().map(|(_, tokens)| tokens).sum();
-        let context_window = self.state.context_window.or_else(|| {
-            crate::model_catalog::find_model(&self.current_model)
-                .map(|info| u64::from(info.capabilities.context_tokens))
+        let context_window = runtime_context_window
+            .or(self.state.context_window)
+            .or_else(|| {
+                crate::model_catalog::find_model(&self.current_model)
+                    .map(|info| u64::from(info.capabilities.context_tokens))
+            });
+        let remaining_headroom = context_window.map(|window| {
+            window.saturating_sub(
+                breakdown
+                    .total()
+                    .saturating_add(response_reserve.unwrap_or(0))
+                    .saturating_add(maestro_runtime::agent::REQUEST_CONTEXT_SAFETY_TOKENS),
+            )
         });
-        let mut report = breakdown.render(Some(&report_model), context_window);
+        let mut report = breakdown.render_with_budget(
+            Some(&report_model),
+            context_window,
+            response_reserve,
+            remaining_headroom,
+        );
         report.push_str(&format!("\n\n{basis}"));
         report.push_str(&self.state.locale.format("\n\nPrompt cache estimate: {0} Provider-reported cache usage is shown separately in /usage.", &[(cache_explanation).to_string()]));
         tool_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -1388,6 +1407,13 @@ impl App {
         self.session_resume_failed = false;
         self.last_esc_at = None;
         crate::plan_mode::set_active_session_id(Some(session_id.clone()));
+        if let Some(event) = self.new_session_event(
+            maestro_runtime_contracts::SessionEventLane::Runtime,
+            "session.resumed",
+            maestro_runtime_contracts::SessionEventPhase::Completed,
+        ) {
+            self.record_session_event(event);
+        }
     }
 
     /// Resume a specific session before the event loop starts.

@@ -2499,6 +2499,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         // docs/design/HOOKS_SYSTEM.md so nobody builds cleanup that depends on
         // `SessionEnd` always arriving.
         if self.state.session_id.is_some() {
+            if let Some(event) = self.new_session_event(
+                maestro_runtime_contracts::SessionEventLane::Runtime,
+                "session.closed",
+                maestro_runtime_contracts::SessionEventPhase::Completed,
+            ) {
+                self.record_session_event(event);
+                self.flush_session();
+            }
             self.adopt_session_context(None, "exit");
         }
 
@@ -3880,6 +3888,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         {
             self.pending_assistant_content = Some((response_id.clone(), content.clone()));
         }
+        self.record_agent_session_events(&msg);
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
                 self.persist_request_cache();
@@ -4087,6 +4096,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 continuation,
                 timestamp,
             } => {
+                self.record_context_budget_snapshot(
+                    maestro_context::ContextBudgetPhase::BeforeCompaction,
+                    None,
+                );
                 self.state.apply_compaction(
                     summary.clone(),
                     *first_kept_entry_index,

@@ -1023,6 +1023,8 @@ fn test_restore_visible_session_messages_applies_compactions() {
             custom_instructions: None,
             continuation: None,
         }],
+        session_events: Vec::new(),
+        context_budget_snapshots: Vec::new(),
         lifecycle_notifications: Vec::new(),
         pending_lifecycle_agent_notes: Vec::new(),
         side_questions: Vec::new(),
@@ -1162,6 +1164,8 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
                 continuation: None,
             },
         ],
+        session_events: Vec::new(),
+        context_budget_snapshots: Vec::new(),
         lifecycle_notifications: Vec::new(),
         pending_lifecycle_agent_notes: Vec::new(),
         side_questions: Vec::new(),
@@ -1251,6 +1255,8 @@ fn test_restore_lifecycle_notifications_in_compacted_transcript_order() {
             custom_instructions: None,
             continuation: None,
         }],
+        session_events: Vec::new(),
+        context_budget_snapshots: Vec::new(),
         lifecycle_notifications: vec![
             crate::session::LifecycleNotificationEntry {
                 id: "notice-a".to_string(),
@@ -3354,6 +3360,8 @@ fn restore_side_questions_by_timestamp_without_model_history_entries() {
         thinking_level_changes: Vec::new(),
         model_changes: Vec::new(),
         compactions: Vec::new(),
+        session_events: Vec::new(),
+        context_budget_snapshots: Vec::new(),
         lifecycle_notifications: Vec::new(),
         pending_lifecycle_agent_notes: Vec::new(),
         side_questions: vec![SideQuestionEntry {

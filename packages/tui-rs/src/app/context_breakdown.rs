@@ -1,6 +1,6 @@
 //! `/context` breakdown: estimate how the current session's context window is
-//! spent, split by category (system prompt, tool results, conversation,
-//! other/overhead).
+//! spent, split by category (system prompt, tool schemas, tool results,
+//! conversation, other/overhead), with an optional compact budget waterfall.
 //!
 //! Token counts use the selected model's bundled tokenizer when available and
 //! clearly identify heuristic estimates otherwise. The input is the live
@@ -12,6 +12,8 @@
 use crate::state::Message;
 use maestro_context::token_counting::{self, CountConfidence};
 use maestro_context::token_estimation;
+
+const WATERFALL_WIDTH: usize = 20;
 
 /// Token breakdown of the current session context, by category.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -156,9 +158,32 @@ impl ContextBreakdown {
 
     /// Render the breakdown as a chat message with counts, percentages, and a
     /// progress bar against the model's context window (when known).
+    #[cfg(test)]
     #[must_use]
     pub fn render(&self, model: Option<&str>, context_window: Option<u64>) -> String {
+        self.render_with_budget(model, context_window, None, None)
+    }
+
+    /// Render with an optional response reserve and remaining headroom budget.
+    ///
+    /// The legacy [`Self::render`] output stays unchanged when neither budget
+    /// input is supplied. When a budget input is supplied and the context
+    /// window is known, the progress bar becomes a proportional waterfall.
+    #[must_use]
+    pub fn render_with_budget(
+        &self,
+        model: Option<&str>,
+        context_window: Option<u64>,
+        response_reserve: Option<u64>,
+        remaining_headroom: Option<u64>,
+    ) -> String {
         let total = self.total();
+        let known_window = context_window.filter(|window| *window > 0);
+        let remaining_headroom = remaining_headroom.or_else(|| {
+            response_reserve.and_then(|reserve| {
+                known_window.map(|window| window.saturating_sub(total.saturating_add(reserve)))
+            })
+        });
         let mut lines = vec![
             maestro_ui::localization::tr("## Context Breakdown").to_string(),
             String::new(),
@@ -200,6 +225,12 @@ impl ContextBreakdown {
                 format_tokens(tokens)
             ));
         }
+        if let Some(tokens) = response_reserve {
+            lines.push(format!("- **Response reserve:** {}", format_tokens(tokens)));
+        }
+        if let Some(tokens) = remaining_headroom {
+            lines.push(format!("- **Remaining:** {}", format_tokens(tokens)));
+        }
         lines.push(String::new());
 
         match context_window {
@@ -210,7 +241,17 @@ impl ContextBreakdown {
                     format_tokens(total),
                     format_tokens(window)
                 ));
-                lines.push(progress_bar(used_pct / 100.0, 20));
+                if response_reserve.is_some() || remaining_headroom.is_some() {
+                    let segments = self.waterfall_segments(response_reserve, remaining_headroom);
+                    lines.push(format!(
+                        "**Waterfall:** {}",
+                        proportional_waterfall(&segments, WATERFALL_WIDTH)
+                    ));
+                    lines.push("S system · D schemas · R results · C conversation".to_string());
+                    lines.push("O other · P reserve · . remaining".to_string());
+                } else {
+                    lines.push(progress_bar(used_pct / 100.0, WATERFALL_WIDTH));
+                }
             }
             _ => {
                 lines.push(format!("**Total:** {} (estimated)", format_tokens(total)));
@@ -221,6 +262,54 @@ impl ContextBreakdown {
         lines.push(self.advice(context_window));
         lines.join("\n")
     }
+
+    fn waterfall_segments(
+        &self,
+        response_reserve: Option<u64>,
+        remaining_headroom: Option<u64>,
+    ) -> Vec<WaterfallSegment> {
+        let mut segments = vec![
+            WaterfallSegment {
+                marker: 'S',
+                tokens: self.system_prompt,
+            },
+            WaterfallSegment {
+                marker: 'D',
+                tokens: self.tool_schemas,
+            },
+            WaterfallSegment {
+                marker: 'R',
+                tokens: self.tool_results,
+            },
+            WaterfallSegment {
+                marker: 'C',
+                tokens: self.conversation,
+            },
+            WaterfallSegment {
+                marker: 'O',
+                tokens: self.other,
+            },
+        ];
+        if let Some(tokens) = response_reserve {
+            segments.push(WaterfallSegment {
+                marker: 'P',
+                tokens,
+            });
+        }
+        if let Some(tokens) = remaining_headroom {
+            segments.push(WaterfallSegment {
+                marker: '.',
+                tokens,
+            });
+        }
+        segments
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WaterfallSegment {
+    marker: char,
+    tokens: u64,
 }
 
 /// Share of `part` in `total` as a percentage; `0.0` when `total` is zero.
@@ -242,6 +331,52 @@ fn progress_bar(fraction: f64, width: usize) -> String {
         "░".repeat(empty),
         fraction * 100.0
     )
+}
+
+/// Render a bounded proportional bar, using largest-remainder allocation so
+/// every cell is assigned without letting zero-sized categories appear.
+fn proportional_waterfall(segments: &[WaterfallSegment], width: usize) -> String {
+    if width == 0 {
+        return "[]".to_string();
+    }
+
+    let total: u128 = segments
+        .iter()
+        .map(|segment| u128::from(segment.tokens))
+        .sum();
+    if total == 0 {
+        return format!("[{}]", ".".repeat(width));
+    }
+
+    let mut cells = Vec::with_capacity(segments.len());
+    let mut remainders = Vec::with_capacity(segments.len());
+    let mut allocated = 0usize;
+    for (index, segment) in segments.iter().enumerate() {
+        let scaled = u128::from(segment.tokens) * width as u128;
+        let segment_cells = usize::try_from(scaled / total).unwrap_or(width);
+        cells.push(segment_cells);
+        allocated = allocated.saturating_add(segment_cells);
+        if segment.tokens > 0 {
+            remainders.push((scaled % total, index));
+        }
+    }
+
+    remainders.sort_by(
+        |(left_remainder, left_index), (right_remainder, right_index)| {
+            right_remainder
+                .cmp(left_remainder)
+                .then_with(|| left_index.cmp(right_index))
+        },
+    );
+    for (_, index) in remainders.into_iter().take(width.saturating_sub(allocated)) {
+        cells[index] += 1;
+    }
+
+    let mut bar = String::with_capacity(width);
+    for (segment, segment_cells) in segments.iter().zip(cells) {
+        bar.extend(std::iter::repeat_n(segment.marker, segment_cells));
+    }
+    format!("[{bar}]")
 }
 
 /// Human-readable token count, matching the usage tracker's K/M style.
@@ -418,6 +553,65 @@ mod tests {
     }
 
     #[test]
+    fn render_with_budget_includes_rows_and_all_waterfall_categories() {
+        let breakdown = ContextBreakdown {
+            system_prompt: 100,
+            tool_schemas: 100,
+            tool_results: 200,
+            conversation: 300,
+            other: 100,
+        };
+        let rendered =
+            breakdown.render_with_budget(Some("fixture"), Some(1_000), Some(100), Some(100));
+
+        assert!(rendered.contains("- **Response reserve:** 100"));
+        assert!(rendered.contains("- **Remaining:** 100"));
+        let waterfall = rendered
+            .lines()
+            .find(|line| line.starts_with("**Waterfall:**"))
+            .expect("budget render should include a waterfall");
+        let bar = waterfall
+            .strip_prefix("**Waterfall:** ")
+            .expect("waterfall label should be present");
+        assert_eq!(bar.chars().count(), WATERFALL_WIDTH + 2);
+        for marker in ['S', 'D', 'R', 'C', 'O', 'P', '.'] {
+            assert!(bar.contains(marker), "waterfall should contain {marker}");
+        }
+        assert!(rendered.contains("S system"));
+        assert!(rendered.contains("D schemas"));
+        assert!(rendered.contains("R results"));
+        assert!(rendered.contains("C conversation"));
+        assert!(rendered.contains("O other"));
+        assert!(rendered.contains("P reserve"));
+        assert!(rendered.contains(". remaining"));
+    }
+
+    #[test]
+    fn render_with_budget_derives_remaining_from_known_window() {
+        let breakdown = ContextBreakdown {
+            conversation: 300,
+            ..Default::default()
+        };
+        let rendered = breakdown.render_with_budget(None, Some(1_000), Some(200), None);
+
+        assert!(rendered.contains("- **Response reserve:** 200"));
+        assert!(rendered.contains("- **Remaining:** 500"));
+        assert!(rendered.contains("**Waterfall:**"));
+    }
+
+    #[test]
+    fn render_with_budget_keeps_unknown_window_without_waterfall() {
+        let rendered =
+            ContextBreakdown::default().render_with_budget(None, None, Some(100), Some(50));
+
+        assert!(rendered.contains("**Context window:** unknown"));
+        assert!(rendered.contains("- **Response reserve:** 100"));
+        assert!(rendered.contains("- **Remaining:** 50"));
+        assert!(!rendered.contains("**Waterfall:**"));
+        assert!(!rendered.contains('['));
+    }
+
+    #[test]
     fn render_without_window_omits_bar() {
         let breakdown = ContextBreakdown::compute("sys", &[]);
         let rendered = breakdown.render(None, None);
@@ -432,6 +626,22 @@ mod tests {
         assert_eq!(progress_bar(1.0, 10), "[██████████] 100%");
         // Over-100% usage clamps instead of overflowing the bar.
         assert_eq!(progress_bar(1.5, 10), "[██████████] 100%");
+    }
+
+    #[test]
+    fn proportional_waterfall_stays_bounded_for_narrow_widths() {
+        let segments = [
+            WaterfallSegment {
+                marker: 'S',
+                tokens: 1,
+            },
+            WaterfallSegment {
+                marker: '.',
+                tokens: 1,
+            },
+        ];
+        assert_eq!(proportional_waterfall(&segments, 1), "[S]");
+        assert_eq!(proportional_waterfall(&segments, 0), "[]");
     }
 }
 
