@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:6db824f166e40d8952b4eea95ef7a43f6971a9f4dc741d335ee4d156ac993357",
+  "compatibilityDigest": "sha256:4bcbc853490d46efdcbcb1de022872054f127c5d954dff9183af01dfa9586628",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -174,7 +174,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:424b43325bbb2fcf1ce979e8f87ef12a6ffc6854d683ba7dcf11fdf154a55bf0",
+      "contractDigest": "sha256:05af2c2e7f5b7458ac12b2c5440fba1bc98917340d0ba965c4ac8078b73815f0",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",

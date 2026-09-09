@@ -55,7 +55,7 @@ pub fn catalog() -> Vec<Scene> {
                 time_ms: 0,
             });
         }
-        for time_ms in [0, 400, 650, 900] {
+        for time_ms in [0, 200, 400, 600, 900] {
             scenes.push(Scene {
                 id: "pet".into(),
                 label: "Pet reaction".into(),
@@ -308,16 +308,16 @@ mod tests {
                     scene.width
                 );
             }
-            if scene.id == "pet" && scene.time_ms != 900 {
+            if scene.id == "pet" {
                 let mut expired = scene.clone();
                 expired.time_ms = 900;
-                assert_ne!(
-                    render(&scene).unwrap(),
-                    render(&expired).unwrap(),
-                    "{}ms at {}",
-                    scene.time_ms,
-                    scene.width
-                );
+                let actual = render(&scene).unwrap();
+                let resting = render(&expired).unwrap();
+                if scene.time_ms < 600 {
+                    assert_ne!(actual, resting, "{}ms at {}", scene.time_ms, scene.width);
+                } else {
+                    assert_eq!(actual, resting, "{}ms at {}", scene.time_ms, scene.width);
+                }
             }
         }
     }

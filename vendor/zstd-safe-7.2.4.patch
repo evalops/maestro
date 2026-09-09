@@ -1,0 +1,99 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -401,7 +401,7 @@
+     #[cfg(feature = "experimental")]
+     #[cfg_attr(feature = "doc-cfg", doc(cfg(feature = "experimental")))]
+     #[deprecated]
+-    pub fn init_using_cdict<'b>(&mut self, cdict: &CDict<'b>) -> SafeResult
++    pub fn init_using_cdict<'b>(&mut self, cdict: &'a CDict<'b>) -> SafeResult
+     where
+         'b: 'a, // Dictionary outlives the stream.
+     {
+@@ -438,7 +438,17 @@
+     /// Wraps the `ZSTD_CCtx_refCDict()` function.
+     ///
+     /// Dictionary must outlive the context.
+-    pub fn ref_cdict<'b>(&mut self, cdict: &CDict<'b>) -> SafeResult
++    /// The dictionary object must outlive the context's reference.
++    ///
++    /// ```compile_fail
++    /// let mut context = zstd_safe::CCtx::create();
++    /// {
++    ///     let dictionary = zstd_safe::CDict::create(b"dictionary", 1);
++    ///     context.ref_cdict(&dictionary).unwrap();
++    /// }
++    /// let _ = context.sizeof();
++    /// ```
++    pub fn ref_cdict<'b>(&mut self, cdict: &'a CDict<'b>) -> SafeResult
+     where
+         'b: 'a,
+     {
+@@ -1029,7 +1039,7 @@
+     #[cfg(feature = "experimental")]
+     #[cfg_attr(feature = "doc-cfg", doc(cfg(feature = "experimental")))]
+     #[deprecated]
+-    pub fn init_using_ddict<'b>(&mut self, ddict: &DDict<'b>) -> SafeResult
++    pub fn init_using_ddict<'b>(&mut self, ddict: &'a DDict<'b>) -> SafeResult
+     where
+         'b: 'a,
+     {
+@@ -1094,7 +1104,17 @@
+     /// It will apply to all frames decompressed by this context (until a new dictionary is set).
+     ///
+     /// Wraps the `ZSTD_DCtx_refDDict()` function.
+-    pub fn ref_ddict<'b>(&mut self, ddict: &DDict<'b>) -> SafeResult
++    /// The dictionary object must outlive the context's reference.
++    ///
++    /// ```compile_fail
++    /// let mut context = zstd_safe::DCtx::create();
++    /// {
++    ///     let dictionary = zstd_safe::DDict::create(b"dictionary");
++    ///     context.ref_ddict(&dictionary).unwrap();
++    /// }
++    /// let _ = context.sizeof();
++    /// ```
++    pub fn ref_ddict<'b>(&mut self, ddict: &'a DDict<'b>) -> SafeResult
+     where
+         'b: 'a,
+     {
+@@ -1816,9 +1836,9 @@
+     ///
+     /// # Panics
+     ///
+-    /// If `pos > dst.capacity()`.
++    /// If `pos > dst.as_slice().len()`: bytes before the position must already be initialized.
+     pub fn around_pos(dst: &'a mut C, pos: usize) -> Self {
+-        if pos > dst.capacity() {
++        if pos > dst.as_slice().len() {
+             panic!("Given position outside of the buffer bounds.");
+         }
+ 
+diff --git a/src/tests.rs b/src/tests.rs
+--- a/src/tests.rs
++++ b/src/tests.rs
+@@ -330,3 +330,24 @@
+     let decompressed = &buffer[..written];
+     assert_eq!(INPUT, decompressed);
+ }
++
++#[test]
++#[should_panic(expected = "Given position outside of the buffer bounds")]
++fn out_buffer_rejects_uninitialized_prefix() {
++    let mut bytes = Vec::<u8>::with_capacity(128);
++    let _ = super::OutBuffer::around_pos(&mut bytes, 64);
++}
++
++#[test]
++fn out_buffer_preserves_initialized_prefix() {
++    let mut bytes = std::vec![42; 64];
++    bytes.reserve(128);
++    let mut context = super::CCtx::create();
++    context.init(1).unwrap();
++    let mut output = super::OutBuffer::around_pos(&mut bytes, 64);
++    context.compress_stream2(&mut output, &mut super::InBuffer::around(&[]),
++        zstd_sys::ZSTD_EndDirective::ZSTD_e_end).unwrap();
++    drop(output);
++    assert_eq!(&bytes[..64], &[42; 64]);
++    assert!(bytes.len() > 64);
++}

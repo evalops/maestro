@@ -1,0 +1,63 @@
+diff --git a/src/stream/raw.rs b/src/stream/raw.rs
+--- a/src/stream/raw.rs
++++ b/src/stream/raw.rs
+@@ -164,7 +164,7 @@
+ 
+     /// Creates a new decoder, using an existing `DecoderDictionary`.
+     pub fn with_prepared_dictionary<'b>(
+-        dictionary: &DecoderDictionary<'b>,
++        dictionary: &'a DecoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,
+@@ -299,7 +299,7 @@
+ 
+     /// Creates a new encoder using an existing `EncoderDictionary`.
+     pub fn with_prepared_dictionary<'b>(
+-        dictionary: &EncoderDictionary<'b>,
++        dictionary: &'a EncoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,
+diff --git a/src/stream/read/mod.rs b/src/stream/read/mod.rs
+--- a/src/stream/read/mod.rs
++++ b/src/stream/read/mod.rs
+@@ -73,7 +73,7 @@
+     /// The dictionary must be the same as the one used during compression.
+     pub fn with_prepared_dictionary<'b>(
+         reader: R,
+-        dictionary: &DecoderDictionary<'b>,
++        dictionary: &'a DecoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,
+@@ -171,7 +171,7 @@
+     /// The dictionary must be the same as the one used during compression.
+     pub fn with_prepared_dictionary<'b>(
+         reader: R,
+-        dictionary: &EncoderDictionary<'b>,
++        dictionary: &'a EncoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,
+diff --git a/src/stream/write/mod.rs b/src/stream/write/mod.rs
+--- a/src/stream/write/mod.rs
++++ b/src/stream/write/mod.rs
+@@ -218,7 +218,7 @@
+     /// but requires the dictionary to be present during decompression.)
+     pub fn with_prepared_dictionary<'b>(
+         writer: W,
+-        dictionary: &EncoderDictionary<'b>,
++        dictionary: &'a EncoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,
+@@ -376,7 +376,7 @@
+     /// but requires the dictionary to be present during decompression.)
+     pub fn with_prepared_dictionary<'b>(
+         writer: W,
+-        dictionary: &DecoderDictionary<'b>,
++        dictionary: &'a DecoderDictionary<'b>,
+     ) -> io::Result<Self>
+     where
+         'b: 'a,

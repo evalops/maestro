@@ -92,6 +92,18 @@ use crate::hooks::IntegratedHookSystem;
 use crate::state::{ApprovalMode, QueueMode};
 use crate::tools::ToolExecutor;
 
+pub(crate) use native_host::catalog_model_capabilities;
+
+/// Render the same standing instructions used by the native runtime.
+pub(crate) fn provider_system_prompt(
+    base: &str,
+    model: &str,
+    capabilities: maestro_runtime::agent::NativeModelCapabilities,
+) -> String {
+    maestro_runtime::agent::runtime_system_prompt(Some(base), None, model, capabilities)
+        .expect("runtime model instructions are always present")
+}
+
 /// Configuration retained for the TUI-facing API.
 ///
 /// managed_mcp_policy stays on this application-facing value because the TUI
@@ -101,6 +113,8 @@ use crate::tools::ToolExecutor;
 #[derive(Debug, Clone)]
 pub struct NativeAgentConfig {
     pub model: String,
+    /// Headless sessions bind prompt receipts and provider rendering to one snapshot.
+    pub model_capabilities: Option<maestro_runtime::agent::NativeModelCapabilities>,
     pub max_tokens: u32,
     pub max_tokens_source: maestro_runtime::agent::MaxTokensSource,
     pub system_prompt: Option<String>,
@@ -123,6 +137,7 @@ impl Default for NativeAgentConfig {
         Self {
             max_tokens: crate::model_catalog::default_max_output_tokens(&model),
             model,
+            model_capabilities: None,
             max_tokens_source: maestro_runtime::agent::MaxTokensSource::Catalog,
             system_prompt: None,
             thinking_enabled: false,
@@ -225,6 +240,7 @@ impl NativeAgent {
             Arc::clone(&telemetry_identity_scope),
         )?;
         let runtime_config = config.into_runtime();
+        let telemetry_host = host.clone();
         let (inner, events) = maestro_runtime::agent::NativeAgent::start_with_resolved_client(
             runtime_config,
             host,
@@ -239,6 +255,7 @@ impl NativeAgent {
             &telemetry_config,
             provider_name,
             telemetry_identity_scope,
+            Some(telemetry_host),
         );
         Ok((Self { inner }, events))
     }
@@ -589,6 +606,9 @@ fn build_tui_host(
         hooks,
         resolve_model,
         model_route,
+        config
+            .model_capabilities
+            .map(|caps| (config.model.clone(), caps)),
     ))
 }
 
@@ -602,6 +622,7 @@ fn relay_runtime_events(
     config: &NativeAgentConfig,
     provider_name: String,
     telemetry_identity_scope: Arc<RwLock<Option<crate::telemetry::TelemetryIdentityScope>>>,
+    telemetry_host: Option<maestro_runtime::agent::NativeExecutionHostHandle>,
 ) -> tokio::sync::mpsc::UnboundedReceiver<FromAgent> {
     let (consumer_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut turn_tracker =
@@ -637,6 +658,13 @@ fn relay_runtime_events(
     });
     tokio::spawn(async move {
         while let Some(event) = runtime_event_rx.recv().await {
+            if matches!(&event, FromAgent::ResponseStart { .. }) {
+                if let Some(host) = &telemetry_host {
+                    if let Some(session_id) = host.hook_session_id().await {
+                        turn_tracker.set_session_id(session_id);
+                    }
+                }
+            }
             if matches!(&event, FromAgent::ModelChanged { .. }) {
                 turn_tracker.set_identity_scope(
                     telemetry_identity_scope
@@ -691,6 +719,7 @@ mod identity_transition_tests {
             &super::NativeAgentConfig::default(),
             "test".to_owned(),
             std::sync::Arc::new(std::sync::RwLock::new(None)),
+            None,
         );
         drop(consumer);
         runtime_tx

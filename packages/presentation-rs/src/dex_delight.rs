@@ -90,19 +90,18 @@ impl DexLook {
     pub fn eyes(self, state: DexCompanionState, motion: bool) -> &'static str {
         // Attention expressions always take precedence over cosmetic reactions.
         if state == DexCompanionState::Failed {
-            return "˙ ˎ";
+            return "⠂ ⠕";
         }
         if state == DexCompanionState::NeedsInput {
             return "• ?";
         }
-        if motion && self.pet_frame.is_some_and(|f| f < 8) {
-            return if self.pet_frame.is_some_and(|f| f < 3) {
-                "o o"
-            } else if self.pet_frame.is_some_and(|f| f < 6) {
-                "− −"
-            } else {
-                "^ −"
-            };
+        // One brief blink, then a smile. No idle loop or change to activity.
+        if let Some(frame) = self.pet_frame.filter(|_| motion) {
+            match frame {
+                0..=1 => return "− −",
+                2..=5 => return "^ ^",
+                _ => {}
+            }
         }
         if self.accessory == DexAccessory::Glasses
             || (state == DexCompanionState::Working && self.activity == DexActivity::Reading)
@@ -112,11 +111,12 @@ impl DexLook {
         match state {
             DexCompanionState::Ready => "• •",
             DexCompanionState::Working if self.activity == DexActivity::Searching => "• O",
+            DexCompanionState::Working if self.activity == DexActivity::Running => "⠶ ⠶",
             DexCompanionState::Working => "¬ ¬",
             DexCompanionState::NeedsInput => "• ?",
             DexCompanionState::Waiting => "− −",
             DexCompanionState::Finished => "^ ^",
-            DexCompanionState::Failed => "˙ ˎ",
+            DexCompanionState::Failed => "⠂ ⠕",
         }
     }
 
@@ -141,7 +141,61 @@ impl DexLook {
     }
 }
 
-/// Exact startup hit area, matching the compact welcome mark.
+/// Exact startup hit area, matching the selected welcome mark.
 pub fn welcome_portrait_area(area: Rect) -> Option<Rect> {
-    (area.width >= 44 && area.height >= 5).then(|| Rect::new(area.x + 1, area.y + 1, 16, 3))
+    (area.width >= 44 && area.height >= 5).then(|| {
+        let height = crate::components::deixic_logo::welcome_logo_height(area.height);
+        Rect::new(
+            area.x + 1,
+            area.y + 1,
+            crate::components::deixic_logo::logo_visual_width(height),
+            crate::components::deixic_logo::logo_line_count(height),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_and_failure_have_static_distinct_eyes() {
+        let running = DexLook {
+            activity: DexActivity::Running,
+            ..Default::default()
+        };
+        assert_eq!(running.eyes(DexCompanionState::Working, false), "⠶ ⠶");
+        assert_ne!(
+            running.eyes(DexCompanionState::Working, false),
+            DexLook::default().eyes(DexCompanionState::Working, false)
+        );
+        assert_eq!(running.eyes(DexCompanionState::Failed, false), "⠂ ⠕");
+    }
+
+    #[test]
+    fn pet_blinks_then_smiles_and_returns_to_observed_state() {
+        for (frame, expected) in [
+            (0, "− −"),
+            (1, "− −"),
+            (2, "^ ^"),
+            (5, "^ ^"),
+            (6, "• •"),
+            (1000, "• •"),
+        ] {
+            let look = DexLook {
+                pet_frame: Some(frame),
+                ..Default::default()
+            };
+            assert_eq!(look.eyes(DexCompanionState::Ready, true), expected);
+            assert_eq!(look.eyes(DexCompanionState::Ready, false), "• •");
+            assert_eq!(look.eyes(DexCompanionState::Failed, true), "⠂ ⠕");
+            assert_eq!(look.eyes(DexCompanionState::NeedsInput, true), "• ?");
+        }
+        let look = DexLook {
+            pet_frame: Some(6),
+            accessory: DexAccessory::Glasses,
+            ..Default::default()
+        };
+        assert_eq!(look.eyes(DexCompanionState::Ready, true), "o-o");
+    }
 }

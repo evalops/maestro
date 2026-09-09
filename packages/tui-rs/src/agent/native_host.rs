@@ -13,9 +13,9 @@ use std::sync::Arc;
 use maestro_runtime::agent::{
     FromAgent, InlineToolApprovalContext, NativeCodexAuth, NativeCodingCompletion,
     NativeExecutionHost, NativeExecutionHostHandle, NativeFirewallVerdict, NativeHookEvent,
-    NativeHookResult, NativeHostFuture, NativeModelRoute, NativeReadOnlyToolCall,
-    NativeResolvedClient, NativeToolAnnotations, NativeToolExecutionOptions, SteerSignal,
-    ToolDefinition, ToolExecution, WorkflowStateSnapshot,
+    NativeHookResult, NativeHostFuture, NativeModelCapabilities, NativeModelRoute,
+    NativeReadOnlyToolCall, NativeResolvedClient, NativeToolAnnotations,
+    NativeToolExecutionOptions, SteerSignal, ToolDefinition, ToolExecution, WorkflowStateSnapshot,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -32,6 +32,7 @@ type ModelResolver = dyn Fn(&str, bool) -> Result<NativeResolvedClient, String> 
 
 /// Concrete TUI owner of the native runtime execution boundary.
 pub struct TuiNativeExecutionHost {
+    pinned_model_capabilities: Option<(String, NativeModelCapabilities)>,
     executor: Arc<ToolExecutor>,
     hooks: Arc<tokio::sync::Mutex<IntegratedHookSystem>>,
     resolve_model: Arc<ModelResolver>,
@@ -53,8 +54,10 @@ impl TuiNativeExecutionHost {
         + Sync
         + 'static,
         model_route: impl Fn(&str) -> NativeModelRoute + Send + Sync + 'static,
+        pinned_model_capabilities: Option<(String, NativeModelCapabilities)>,
     ) -> NativeExecutionHostHandle {
         NativeExecutionHostHandle::new(Arc::new(Self {
+            pinned_model_capabilities,
             executor,
             hooks: Arc::new(tokio::sync::Mutex::new(hooks)),
             resolve_model: Arc::new(resolve_model),
@@ -598,6 +601,13 @@ impl NativeExecutionHost for TuiNativeExecutionHost {
             .map(|model| model.capabilities.context_tokens as u64)
     }
 
+    fn model_capabilities(&self, model: &str) -> NativeModelCapabilities {
+        self.pinned_model_capabilities
+            .as_ref()
+            .filter(|(bound_model, _)| bound_model == model)
+            .map_or_else(|| catalog_model_capabilities(model), |(_, caps)| *caps)
+    }
+
     fn validate_model_transition(&self, from: &str, to: &str) -> Result<(), String> {
         if from == to {
             return Ok(());
@@ -704,6 +714,36 @@ fn native_read_only_batch_config() -> BatchConfig {
         .emit_events(true)
 }
 
+/// Catalog facts shared by execution and provider-prompt receipts.
+pub(crate) fn catalog_model_capabilities(model: &str) -> NativeModelCapabilities {
+    let catalog_model = crate::model_catalog::find_model(model).or_else(|| {
+        let (namespace, underlying) = model.split_once('/')?;
+        if namespace.eq_ignore_ascii_case("evalops")
+            || namespace.eq_ignore_ascii_case("maestro-managed")
+        {
+            // Remove only the managed namespace. Keep provider qualification
+            // so a custom endpoint cannot inherit another provider's facts.
+            crate::model_catalog::find_model(underlying)
+        } else {
+            None
+        }
+    });
+    let Some(model) = catalog_model else {
+        return NativeModelCapabilities::default();
+    };
+    NativeModelCapabilities {
+        vision: Some(model.capabilities.vision),
+        tool_calling: Some(model.capabilities.tools),
+        reasoning: Some(model.capabilities.reasoning),
+        context_tokens: Some(u64::from(model.capabilities.context_tokens))
+            .filter(|tokens| *tokens > 0),
+        output_tokens: model
+            .capabilities
+            .output_tokens
+            .filter(|tokens| *tokens > 0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +827,7 @@ mod tests {
 
         (
             Arc::new(TuiNativeExecutionHost {
+                pinned_model_capabilities: None,
                 executor: Arc::new(ToolExecutor::new("/tmp")),
                 hooks: Arc::new(tokio::sync::Mutex::new(hooks)),
                 resolve_model,
@@ -794,6 +835,59 @@ mod tests {
             }),
             recording,
         )
+    }
+
+    #[test]
+    fn bound_prompt_capabilities_survive_a_different_catalog_snapshot() {
+        let (mut host, _) = test_host();
+        let model = "openai/gpt-4o";
+        let mut bound = catalog_model_capabilities(model);
+        bound.context_tokens = Some(12345);
+        assert_ne!(bound, catalog_model_capabilities(model));
+        Arc::get_mut(&mut host).unwrap().pinned_model_capabilities =
+            Some((model.to_owned(), bound));
+        let receipt_prompt = crate::agent::provider_system_prompt("fixture", model, bound);
+        let provider_prompt = maestro_runtime::agent::runtime_system_prompt(
+            Some("fixture"),
+            None,
+            model,
+            host.model_capabilities(model),
+        )
+        .unwrap();
+        assert_eq!(receipt_prompt, provider_prompt);
+        assert_eq!(
+            host.model_capabilities("unknown/model"),
+            NativeModelCapabilities::default()
+        );
+    }
+
+    #[test]
+    fn model_capabilities_come_from_catalog_and_unknown_models_stay_unknown() {
+        let (host, _) = test_host();
+        let known = host.model_capabilities("openai/gpt-4o");
+        assert_eq!(known.vision, Some(true));
+        assert_eq!(known.tool_calling, Some(true));
+        assert_eq!(known.reasoning, Some(false));
+        assert!(known.context_tokens.is_some_and(|tokens| tokens > 0));
+        assert!(known.output_tokens.is_some_and(|tokens| tokens > 0));
+        for model in [
+            "evalops/gpt-4o",
+            "maestro-managed/openai/gpt-4o",
+            "EVALOPS/openai/gpt-4o",
+        ] {
+            assert_eq!(host.model_capabilities(model), known, "{model}");
+        }
+        for model in [
+            "unknown-provider/unknown-model",
+            "unknown-provider/gpt-4o",
+            "evalops/unknown-model",
+        ] {
+            assert_eq!(
+                host.model_capabilities(model),
+                NativeModelCapabilities::default(),
+                "{model}"
+            );
+        }
     }
 
     #[tokio::test]

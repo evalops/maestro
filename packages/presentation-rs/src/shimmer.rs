@@ -20,8 +20,8 @@ use crate::color_utils::{blend, has_true_color_support};
 /// Deixic solid violet (`--dx-violet-solid` / `--primary` on platform UI).
 pub const DEIXIC_VIOLET: (u8, u8, u8) = (0x68, 0x57, 0xfe);
 
-/// Muted violet for terminal controls; solid brand violet remains unchanged.
-pub const DEIXIC_ACCENT: (u8, u8, u8) = (0xb0, 0xa2, 0xcb);
+/// Accessible violet for dark terminal controls; solid brand violet remains unchanged.
+pub const DEIXIC_ACCENT: (u8, u8, u8) = (0x9c, 0x92, 0xfc);
 
 /// Hover shade of Deixic violet (`--dx-violet-solid-hover` / `#5847e6`).
 pub const DEIXIC_VIOLET_HOVER: (u8, u8, u8) = (0x58, 0x47, 0xe6);
@@ -30,7 +30,7 @@ pub const DEIXIC_VIOLET_HOVER: (u8, u8, u8) = (0x58, 0x47, 0xe6);
 pub const DEIXIC_SOFT: (u8, u8, u8) = (0xef, 0xeb, 0xff);
 
 /// Ink used on the marketing site (`--dx-ink`).
-pub const DEIXIC_INK: (u8, u8, u8) = (0x1b, 0x18, 0x26);
+pub const DEIXIC_INK: (u8, u8, u8) = (0x17, 0x16, 0x24);
 
 /// Resting (dim) tone for logo glyphs — deeper violet-gray.
 pub const DEIXIC_LOGO_BASE: (u8, u8, u8) = (0x4a, 0x42, 0x9a);
@@ -39,16 +39,16 @@ pub const DEIXIC_LOGO_BASE: (u8, u8, u8) = (0x4a, 0x42, 0x9a);
 pub const DEIXIC_LOGO_HILITE: (u8, u8, u8) = (0xef, 0xeb, 0xff);
 
 /// Near-black surface used by the focused Maestro stage.
-pub const DEIXIC_SURFACE: (u8, u8, u8) = (0x1b, 0x1c, 0x1e);
+pub const DEIXIC_SURFACE: (u8, u8, u8) = DEIXIC_INK;
 
 /// Quiet violet-gray border used for structural chrome.
-pub const DEIXIC_BORDER: (u8, u8, u8) = (0x47, 0x48, 0x4d);
+pub const DEIXIC_BORDER: (u8, u8, u8) = (0x49, 0x43, 0x60);
 
 /// Muted lavender for supporting labels and placeholder text.
-pub const DEIXIC_MUTED: (u8, u8, u8) = (0xa0, 0x9f, 0x9c);
+pub const DEIXIC_MUTED: (u8, u8, u8) = (0xad, 0xa6, 0xc2);
 
 /// Soft text color for primary interactive content.
-pub const DEIXIC_TEXT: (u8, u8, u8) = (0xe6, 0xe4, 0xe0);
+pub const DEIXIC_TEXT: (u8, u8, u8) = (0xf2, 0xef, 0xfa);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROCESS CLOCK

@@ -136,6 +136,11 @@ struct OAuthTokenExchange {
     refresh_token: String,
     scope: String,
     organization_id: String,
+    /// Identity returns the caller's workspace alongside the organization.
+    /// Optional so a response without it still parses, which is what every
+    /// token issued before the field existed looks like.
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -752,29 +757,33 @@ async fn login_with_scopes(
     }
     let token: OAuthTokenExchange = serde_json::from_str(&token_response_body)
         .context("parse EvalOps authorization-code exchange")?;
+    let mut metadata = Map::from_iter([
+        ("identityBaseUrl".to_owned(), Value::String(identity)),
+        (
+            "organizationId".to_owned(),
+            Value::String(token.organization_id),
+        ),
+        ("providerRef".to_owned(), provider_ref()),
+        (
+            "scopes".to_owned(),
+            Value::Array(
+                token
+                    .scope
+                    .split_whitespace()
+                    .map(|scope| Value::String(scope.to_owned()))
+                    .collect(),
+            ),
+        ),
+    ]);
+    if let Some(workspace_id) = non_empty(token.workspace_id.as_deref()) {
+        metadata.insert("workspaceId".to_owned(), Value::String(workspace_id));
+    }
     Ok(OAuthCredentials {
         credential_type: "oauth".to_owned(),
         refresh: token.refresh_token,
         access: token.access_token,
         expires: Utc::now().timestamp_millis() + (token.expires_in as i64 * 1_000),
-        metadata: Map::from_iter([
-            ("identityBaseUrl".to_owned(), Value::String(identity)),
-            (
-                "organizationId".to_owned(),
-                Value::String(token.organization_id),
-            ),
-            ("providerRef".to_owned(), provider_ref()),
-            (
-                "scopes".to_owned(),
-                Value::Array(
-                    token
-                        .scope
-                        .split_whitespace()
-                        .map(|scope| Value::String(scope.to_owned()))
-                        .collect(),
-                ),
-            ),
-        ]),
+        metadata,
     })
 }
 
@@ -920,6 +929,11 @@ async fn refresh_credentials(
     );
     if let Some(org) = string_at(&payload, "organization_id") {
         metadata.insert("organizationId".to_owned(), Value::String(org));
+    }
+    // Refresh re-issues the tenant binding. Absent means "unchanged", so the
+    // stored workspace survives a response that omits it.
+    if let Some(workspace) = string_at(&payload, "workspace_id") {
+        metadata.insert("workspaceId".to_owned(), Value::String(workspace));
     }
     if let Some(scope) = payload.get("scope") {
         let scope = scope
@@ -1952,15 +1966,20 @@ fn login_tenant_hint() -> Option<(String, String)> {
         return complete_login_tenant_hint(environment_organization, environment_workspace);
     }
 
-    load_credentials().ok().flatten().and_then(|credentials| {
-        let organization = metadata_string(&credentials.metadata, "organizationId");
-        let workspace = credentials
-            .metadata
-            .get("agentMcp")
-            .and_then(Value::as_object)
-            .and_then(|metadata| metadata_string(metadata, "workspaceId"));
-        complete_login_tenant_hint(organization, workspace)
-    })
+    load_credentials()
+        .ok()
+        .flatten()
+        .and_then(|credentials| stored_login_tenant_hint(&credentials.metadata))
+}
+
+fn stored_login_tenant_hint(metadata: &Map<String, Value>) -> Option<(String, String)> {
+    let organization = metadata_string(metadata, "organizationId");
+    let workspace = metadata
+        .get("agentMcp")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata_string(metadata, "workspaceId"))
+        .or_else(|| metadata_string(metadata, "workspaceId"));
+    complete_login_tenant_hint(organization, workspace)
 }
 
 fn complete_login_tenant_hint(
@@ -2117,6 +2136,10 @@ pub struct EvalOpsCredentialSnapshot {
     pub expires: i64,
     pub email: Option<String>,
     pub organization_id: Option<String>,
+    /// Workspace the issuer bound to this session. Distinct from
+    /// `agent_mcp.workspace_id`, which is recorded by agent registration and is
+    /// absent until `deixic-code init` runs.
+    pub workspace_id: Option<String>,
     pub user_id: Option<String>,
     pub identity_base_url: Option<String>,
     pub provider_ref: Option<Value>,
@@ -2366,6 +2389,7 @@ fn snapshot_from_credentials(credentials: &OAuthCredentials) -> EvalOpsCredentia
         expires: credentials.expires,
         email: authenticated_as(&credentials.metadata),
         organization_id: metadata_string(&credentials.metadata, "organizationId"),
+        workspace_id: metadata_string(&credentials.metadata, "workspaceId"),
         user_id: metadata_string(&credentials.metadata, "userId"),
         identity_base_url: metadata_string(&credentials.metadata, "identityBaseUrl"),
         provider_ref: credentials.metadata.get("providerRef").cloned(),
@@ -2534,6 +2558,7 @@ mod tests {
             expires: 1,
             email: None,
             organization_id: Some("org".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: Some("https://identity.attacker.example".to_owned()),
             provider_ref: None,
@@ -2555,6 +2580,39 @@ mod tests {
         assert!(scopes.contains(&"product_issues:write"));
         assert!(scopes.contains(&"sessions:read"));
         assert!(scopes.contains(&"sessions:write"));
+    }
+
+    #[test]
+    fn stored_login_hint_preserves_login_only_scope_and_registration_precedence() {
+        let mut metadata = json!({
+            "organizationId": "org-1",
+            "workspaceId": "login-workspace"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "login-workspace".to_owned()))
+        );
+        metadata.insert(
+            "agentMcp".to_owned(),
+            json!({"workspaceId": "registered-workspace"}),
+        );
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "registered-workspace".to_owned()))
+        );
+        metadata.insert("agentMcp".to_owned(), json!({"workspaceId": " "}));
+        assert_eq!(
+            stored_login_tenant_hint(&metadata),
+            Some(("org-1".to_owned(), "login-workspace".to_owned()))
+        );
+        metadata.remove("organizationId");
+        assert_eq!(stored_login_tenant_hint(&metadata), None);
+        metadata.insert("organizationId".to_owned(), json!("org-1"));
+        metadata.remove("workspaceId");
+        assert_eq!(stored_login_tenant_hint(&metadata), None);
     }
 
     #[test]
@@ -3094,6 +3152,7 @@ mod tests {
                                     "refresh_token": "refresh-from-stub",
                                     "scope": stub.lock().expect("identity stub").requested_scopes,
                                     "organization_id": "org_from_stub",
+                                    "workspace_id": "workspace_from_stub",
                                 }).to_string(),
                             )
                         }
@@ -3226,6 +3285,12 @@ mod tests {
                 "sessions:write"
             ]))
         );
+        // Identity re-issues the tenant binding on refresh. Dropping it here is
+        // what left `workspaceId` absent from every stored credential.
+        assert_eq!(
+            stored.metadata.get("workspaceId"),
+            Some(&json!("workspace_from_stub"))
+        );
 
         delete_credentials().expect("delete test credentials");
         restore_env("MAESTRO_HOME", previous_home);
@@ -3310,6 +3375,12 @@ mod tests {
         assert_eq!(snapshot.access, "access-from-stub");
         assert_eq!(snapshot.refresh, "refresh-from-stub");
         assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
+        // The workspace Identity returned is stored, so callers no longer have
+        // to recover it from MAESTRO_EVALOPS_WORKSPACE_ID.
+        assert_eq!(
+            stored.metadata.get("workspaceId"),
+            Some(&json!("workspace_from_stub"))
+        );
         let mode = crate::credential_mode::detect_from(
             Some(&snapshot),
             &std::collections::HashMap::from([(

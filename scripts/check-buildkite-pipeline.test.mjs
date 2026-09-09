@@ -317,3 +317,27 @@ console.log('gradle stdin reached EOF');
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("tool bootstrap rejects an installed but unusable actionlint shim", () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maestro-tool-shim-'));
+  try {
+    const bin = join(directory, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'curl'), '#!/bin/sh\necho bootstrap-download-requested\nexit 77\n', { mode: 0o755 });
+    const bootstrap = tooling.slice(0, tooling.indexOf('if ! shellcheck --version'));
+    assert.ok(bootstrap.includes('if ! actionlint --version'));
+    for (const usable of [false, true]) {
+      writeFileSync(join(bin, 'actionlint'), `#!/bin/sh\n[ "$1" = "--version" ] || exit 90\nexit ${usable ? 0 : 1}\n`, { mode: 0o755 });
+      const result = spawnSync('bash', ['-c', bootstrap], {
+        cwd: directory,
+        env: { ...process.env, BUILDKITE_BUILD_CHECKOUT_PATH: directory, PATH: `${bin}:${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, usable ? 0 : 77, result.stderr);
+      assert.equal(result.stdout.includes('bootstrap-download-requested'), !usable);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

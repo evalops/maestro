@@ -114,12 +114,12 @@ impl DexCompanion {
     #[must_use]
     pub const fn face(&self) -> &'static str {
         match self.state {
-            DexCompanionState::Ready => "╰• •╯",
-            DexCompanionState::Working => "╰¬ ¬╯",
-            DexCompanionState::NeedsInput => "╰• ?╯",
-            DexCompanionState::Waiting => "╰− −╯",
-            DexCompanionState::Finished => "╰^ ^╯",
-            DexCompanionState::Failed => "╰˙ ˎ╯",
+            DexCompanionState::Ready => "⠸• •⠇",
+            DexCompanionState::Working => "⠸¬ ¬⠇",
+            DexCompanionState::NeedsInput => "⠸• ?⠇",
+            DexCompanionState::Waiting => "⠸− −⠇",
+            DexCompanionState::Finished => "⠸^ ^⠇",
+            DexCompanionState::Failed => "⠸⠂ ⠕⠇",
         }
     }
 
@@ -140,12 +140,15 @@ impl DexCompanion {
         }
         let y = area.y + if self.hopping() { 0 } else { area.height - 1 };
         let motion = self.animations && self.personality != DexPersonality::Quiet;
-        let face = format!(
-            "╰{}╯{}",
-            self.look.eyes(self.state, motion),
-            self.look.prop()
-        );
         let style = Style::default().fg(self.accent());
+        let face = Line::from(vec![
+            Span::styled("⠸", style),
+            Span::styled(
+                self.look.eyes(self.state, motion),
+                eye_style(self.accent(), self.theme, self.state),
+            ),
+            Span::styled(format!("⠇{}", self.look.prop()), style),
+        ]);
         if !self.hopping() && area.height > 1 {
             Paragraph::new(self.look.cap())
                 .style(style)
@@ -196,33 +199,77 @@ impl Widget for DexCompanion {
         let mut lines = if self.personality == DexPersonality::Quiet {
             Vec::new()
         } else {
-            let eyes = match self.state {
-                DexCompanionState::Ready => "•   •",
-                DexCompanionState::Working => "¬   ¬",
-                DexCompanionState::NeedsInput => "•   ?",
-                DexCompanionState::Waiting => "−   −",
-                DexCompanionState::Finished => "^   ^",
-                DexCompanionState::Failed => "˙   ˎ",
-            };
+            let eyes = self.look.eyes(self.state, self.animations);
             super::deixic_logo::static_logo_lines(area.height.saturating_sub(1))
                 .into_iter()
                 .map(|line| {
-                    Line::styled(
-                        line.to_string()
-                            .replace("•   •", eyes)
-                            .replace("• •", &eyes.replace("   ", " ")),
-                        Style::default().fg(self.accent()),
+                    portrait_line(
+                        &line.to_string(),
+                        eyes,
+                        self.accent(),
+                        self.theme,
+                        self.state,
                     )
                 })
                 .collect()
         };
+        // Center the sprite as one rectangle, not each differently sized row.
+        let width = lines.iter().map(Line::width).max().unwrap_or(0);
+        let inset = usize::from(area.width).saturating_sub(width) / 2;
+        for line in &mut lines {
+            line.spans.insert(0, Span::raw(" ".repeat(inset)));
+        }
         // Preserve the state row even if the shared mark gains a taller tier.
         lines.truncate(usize::from(area.height.saturating_sub(1)));
-        lines.push(self.status_line());
+        lines.push(self.status_line().alignment(Alignment::Center));
         Paragraph::new(lines)
-            .alignment(Alignment::Center)
+            .alignment(Alignment::Left)
             .render(area, buf);
     }
+}
+
+/// Keep the selected hue, gently moving the outline toward its actual surface.
+/// Indexed terminal colors remain untouched because their RGB values are unknown.
+fn portrait_outline(accent: Color, theme: Option<maestro_ui::UiTheme>) -> Color {
+    theme.map_or(accent, maestro_ui::UiTheme::decorative_focus)
+}
+
+fn eye_style(accent: Color, theme: Option<maestro_ui::UiTheme>, state: DexCompanionState) -> Style {
+    let style = Style::default().fg(accent);
+    match state {
+        DexCompanionState::Ready | DexCompanionState::Waiting | DexCompanionState::Finished => {
+            theme.map_or(
+                style.add_modifier(Modifier::DIM),
+                maestro_ui::UiTheme::resting_focus_style,
+            )
+        }
+        DexCompanionState::Failed => theme.map_or(style, |theme| style.fg(theme.error)),
+        DexCompanionState::NeedsInput => theme.map_or(style, |theme| style.fg(theme.attention)),
+        DexCompanionState::Working => style,
+    }
+}
+
+fn portrait_line(
+    template: &str,
+    eyes: &str,
+    accent: Color,
+    theme: Option<maestro_ui::UiTheme>,
+    state: DexCompanionState,
+) -> Line<'static> {
+    let outline = Style::default().fg(portrait_outline(accent, theme));
+    for placeholder in ["⠻⣄   ⣠⠟", "⠳   ⠞", "⠳ ⠞"] {
+        if let Some((left, right)) = template.split_once(placeholder) {
+            return Line::from(vec![
+                Span::styled(left.to_owned(), outline),
+                Span::styled(
+                    super::deixic_logo::portrait_expression(placeholder, eyes),
+                    eye_style(accent, theme, state),
+                ),
+                Span::styled(right.to_owned(), outline),
+            ]);
+        }
+    }
+    Line::styled(template.to_owned(), outline)
 }
 
 /// Apply the production startup portrait to the shared compact welcome mark.
@@ -247,19 +294,29 @@ pub fn render_welcome_portrait_with_theme(
 ) {
     if let Some(mark) = crate::dex_delight::welcome_portrait_area(area) {
         let eyes = look.eyes(state, animations);
-        let face = format!("  ╭─╯ {:5}  ╰╮ ", eyes.replace(' ', "   "));
-        Paragraph::new(face)
-            .style(Style::default().fg(theme.map_or(look.accent.color(), |theme| theme.focus)))
-            .render(Rect::new(mark.x, mark.y + 1, mark.width, 1), buf);
-        for y in mark.y..mark.bottom() {
-            for x in mark.x..mark.right() {
-                buf[(x, y)].set_fg(theme.map_or(look.accent.color(), |theme| theme.focus));
-            }
+        let accent = theme.map_or(look.accent.color(), |theme| theme.focus);
+        let style = Style::default().fg(portrait_outline(accent, theme));
+        let height = super::deixic_logo::welcome_logo_height(area.height);
+        for (row, line) in super::deixic_logo::static_logo_lines(height)
+            .iter()
+            .enumerate()
+        {
+            Paragraph::new(portrait_line(&line.to_string(), eyes, accent, theme, state))
+                .style(style)
+                .render(Rect::new(mark.x, mark.y + row as u16, mark.width, 1), buf);
         }
         if look.accessory != crate::dex_delight::DexAccessory::None {
             Paragraph::new(look.cap())
                 .style(Style::default().fg(theme.map_or(look.accent.color(), |theme| theme.focus)))
-                .render(Rect::new(mark.x + 4, mark.y.saturating_sub(1), 5, 1), buf);
+                .render(
+                    Rect::new(
+                        mark.x + mark.width.saturating_sub(5) / 2,
+                        mark.y.saturating_sub(1),
+                        5,
+                        1,
+                    ),
+                    buf,
+                );
         }
     }
 }
@@ -267,6 +324,116 @@ pub fn render_welcome_portrait_with_theme(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eye_signal_follows_observed_state_without_motion() {
+        for surface in [Color::Rgb(0, 0, 0), Color::Rgb(255, 255, 255)] {
+            let theme = maestro_ui::UiTheme {
+                focus: Color::Rgb(100, 120, 200),
+                surface,
+                ..Default::default()
+            };
+            let resting = eye_style(theme.focus, Some(theme), DexCompanionState::Ready);
+            let active = eye_style(theme.focus, Some(theme), DexCompanionState::Working);
+            assert_ne!(resting.fg, active.fg);
+            assert_eq!(active.fg, Some(theme.focus));
+            for state in [
+                DexCompanionState::Ready,
+                DexCompanionState::Working,
+                DexCompanionState::Waiting,
+                DexCompanionState::Failed,
+                DexCompanionState::NeedsInput,
+            ] {
+                let area = Rect::new(0, 0, 8, 2);
+                let render = |frame| {
+                    let mut buf = Buffer::empty(area);
+                    DexCompanion::new(state)
+                        .theme(Some(theme))
+                        .frame(frame)
+                        .render_face(area, &mut buf);
+                    buf
+                };
+                assert_eq!(render(0), render(99));
+                assert_eq!(
+                    render(0)[(1, 1)].fg,
+                    eye_style(theme.focus, Some(theme), state).fg.unwrap()
+                );
+            }
+            assert_eq!(
+                eye_style(theme.focus, Some(theme), DexCompanionState::Failed).fg,
+                Some(theme.error)
+            );
+            assert_eq!(
+                eye_style(theme.focus, Some(theme), DexCompanionState::NeedsInput).fg,
+                Some(theme.attention)
+            );
+        }
+        assert!(
+            eye_style(Color::Cyan, None, DexCompanionState::Ready)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert!(
+            !eye_style(Color::Cyan, None, DexCompanionState::Working)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn centered_portrait_keeps_a_shared_origin_for_every_row() {
+        for height in [11, 18] {
+            let area = Rect::new(2, 3, 40, height);
+            let mut buf = Buffer::empty(area);
+            DexCompanion::new(DexCompanionState::Ready).render(area, &mut buf);
+            let lines = super::super::deixic_logo::static_logo_lines(height - 1);
+            let width = lines.iter().map(Line::width).max().unwrap();
+            let origin = area.x + (area.width - width as u16) / 2;
+            for (row, line) in lines.iter().enumerate() {
+                for (col, ch) in line.to_string().chars().enumerate() {
+                    if ch != ' ' {
+                        assert_eq!(
+                            buf[(origin + col as u16, area.y + row as u16)].symbol(),
+                            ch.to_string(),
+                            "height {height}, row {row}, col {col}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn portrait_contrast_preserves_cells_in_light_and_dark_themes() {
+        let accent = Color::Rgb(150, 120, 240);
+        for surface in [Color::Rgb(20, 20, 30), Color::Rgb(255, 255, 255)] {
+            let theme = Some(maestro_ui::UiTheme {
+                surface,
+                focus: accent,
+                ..Default::default()
+            });
+            for eyes in ["• •", "− −", "^ ^", "• ?", "⠂ ⠕", "o-o"] {
+                let template =
+                    super::super::deixic_logo::logo_lines(super::super::deixic_logo::LOGO_FULL)[2];
+                let line = portrait_line(template, eyes, accent, theme, DexCompanionState::Working);
+                assert_eq!(
+                    line.to_string(),
+                    super::super::deixic_logo::portrait_expression(template, eyes)
+                );
+                assert_eq!(
+                    line.spans[0].style.fg,
+                    Some(portrait_outline(accent, theme))
+                );
+                assert_eq!(line.spans[1].style.fg, Some(accent));
+                assert_ne!(line.spans[0].style.fg, line.spans[1].style.fg);
+                assert_eq!(
+                    line.width(),
+                    unicode_width::UnicodeWidthStr::width(template)
+                );
+            }
+        }
+        assert_eq!(portrait_outline(Color::Green, None), Color::Green);
+    }
 
     #[test]
     fn active_theme_colors_the_whole_welcome_portrait() {
@@ -459,7 +626,7 @@ mod tests {
         let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
         let mark = super::super::deixic_logo::static_logo_lines(area.height.saturating_sub(1));
         assert!(!mark.is_empty());
-        assert!(text.contains("˙   ˎ"));
+        assert!(text.contains("⠂   ⠕"));
         assert!(text.contains("Dex · failed"));
     }
 }
@@ -485,7 +652,7 @@ mod delight_render_tests {
             .render_face(area, &mut buffer);
         let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
         assert!(text.contains("╭─●─╮"));
-        assert!(text.contains("− −"));
+        assert!(text.contains("^ ^"));
         assert!(text.contains('▤'));
         assert_eq!(buffer[(0, 1)].fg, DexAccent::Mint.color());
         let mut quiet = Buffer::empty(area);

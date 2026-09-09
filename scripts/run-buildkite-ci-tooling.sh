@@ -5,7 +5,7 @@ tool_root="${BUILDKITE_BUILD_CHECKOUT_PATH:-$(pwd)}/.buildkite/cache/ci-tools"
 mkdir -p "$tool_root/bin"
 export PATH="$tool_root/bin:$PATH"
 
-if ! command -v actionlint >/dev/null 2>&1; then
+if ! actionlint --version >/dev/null 2>&1; then
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) actionlint_platform="linux_amd64"; actionlint_sha256="233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4" ;;
     Linux-aarch64 | Linux-arm64) actionlint_platform="linux_arm64"; actionlint_sha256="6b82a3b8c808bf1bcd39a95aced22fc1a026eef08ede410f81e274af8deadbbc" ;;
@@ -29,7 +29,7 @@ if ! command -v actionlint >/dev/null 2>&1; then
   rm -rf "$actionlint_unpack"
 fi
 
-if ! command -v shellcheck >/dev/null 2>&1; then
+if ! shellcheck --version >/dev/null 2>&1; then
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) platform="linux.x86_64" ;;
     Linux-aarch64 | Linux-arm64) platform="linux.aarch64" ;;
@@ -47,7 +47,7 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   cp "$unpack/shellcheck" "$tool_root/bin/shellcheck"
 fi
 
-if ! command -v zizmor >/dev/null 2>&1; then
+if ! zizmor --version >/dev/null 2>&1; then
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) target="x86_64-unknown-linux-gnu" ;;
     Linux-aarch64 | Linux-arm64) target="aarch64-unknown-linux-gnu" ;;

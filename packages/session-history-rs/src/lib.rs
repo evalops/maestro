@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Subcommand, ValueEnum};
 use fs2::FileExt;
@@ -13,11 +13,18 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ureq::Agent;
 
+mod transport;
+use transport::{WireEncoding, compress_body, preferred_encoding};
+mod checkpoint;
+use checkpoint::{CaptureOptions, SourceCheckpoint, read_capture};
+mod compression;
+use compression::{SpoolEncoding, encode_spool, read_segment, verify_segment_storage};
+
 mod proto;
 mod provenance_compat;
 
 use crate::proto as sessions_pb;
-use crate::provenance_compat::{clear_hook_session, redact_text, touch_hook_session};
+use crate::provenance_compat::{Redactor, clear_hook_session, touch_hook_session};
 
 const MANIFEST_VERSION: u32 = 1;
 const REDACTION_POLICY_VERSION: &str = "transcript-redaction-v2";
@@ -25,6 +32,11 @@ const LEGACY_REDACTION_POLICY_VERSION: &str = "transcript-redaction-v1";
 const MAX_SEGMENT_BYTES: usize = 512 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const TRANSCRIPT_METHOD: &str = "sessions.v1.SessionsService/RecordTranscriptSegment";
+const RECEIPT_JOURNAL_FILE: &str = ".receipts.jsonl";
+const WIRE_CAPABILITY_CACHE_FILE: &str = ".wire-capability.json";
+const WIRE_CAPABILITY_TTL_SECS: u64 = 10 * 60;
+const UPLOAD_SCHEDULE_FILE: &str = ".upload-scheduled";
+const UPLOAD_SCHEDULE_STALE_SECS: u64 = 10 * 60;
 
 #[derive(Debug, Args)]
 pub struct TranscriptArgs {
@@ -197,6 +209,8 @@ impl std::fmt::Debug for PushTranscriptArgs {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct TranscriptManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_checkpoint: Option<SourceCheckpoint>,
     version: u32,
     organization_id: String,
     workspace_id: String,
@@ -218,6 +232,17 @@ struct TranscriptManifest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SpoolSegment {
+    // Older manifests cannot distinguish unsent segments from a lost response.
+    // Preserve their frozen descriptor; new segments pin it before first send.
+    #[serde(default = "legacy_upload_started")]
+    upload_started: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stored_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encoding: Option<SpoolEncoding>,
+    /// Freeze descriptor metadata with the immutable bytes for retry/replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<TranscriptMetadata>,
     segment_index: u64,
     first_entry_index: u64,
     last_entry_index: u64,
@@ -229,13 +254,111 @@ struct SpoolSegment {
     upload: Option<UploadReceipt>,
 }
 
+/// A projection of redacted producer records, pinned when a segment is prepared.
+/// Legacy segments have no projection and keep their existing wire descriptor.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+struct TranscriptMetadata {
+    repository_url: String,
+    working_directory: String,
+    branch: String,
+    head_sha: String,
+    pull_request_url: String,
+    title: String,
+    started_at: Option<String>,
+    completeness: TranscriptCompletenessArg,
+}
+
+#[derive(Default)]
+struct CapturedMetadata {
+    first_prompt: Option<String>,
+    session_title: Option<String>,
+    started_at: Option<String>,
+    working_directory: Option<String>,
+}
+
+impl CapturedMetadata {
+    fn observe(&mut self, event: &Value, source_session_id: &str) {
+        if event["type"] == "message"
+            && event["message"]["role"] == "user"
+            && self.first_prompt.is_none()
+        {
+            let content = &event["message"]["content"];
+            let text = content.as_str().map(str::to_string).or_else(|| {
+                content.as_array().map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|block| block["type"] == "text")
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+            });
+            self.first_prompt = text.filter(|text| !text.trim().is_empty());
+        }
+        if event["type"] == "session" && event["id"] == source_session_id {
+            if let Some(timestamp) = event["timestamp"]
+                .as_str()
+                .filter(|value| proto_timestamp(value).is_some())
+            {
+                self.started_at.get_or_insert_with(|| timestamp.to_string());
+            }
+            if let Some(cwd) = event["cwd"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+            {
+                self.working_directory = Some(cwd.trim().to_string());
+            }
+            if let Some(subject) = event["subject"]
+                .as_str()
+                .map(str::trim)
+                .filter(|subject| !subject.is_empty())
+            {
+                self.session_title
+                    .get_or_insert_with(|| subject.chars().take(256).collect());
+            }
+        }
+    }
+
+    fn fallback_title(&self) -> String {
+        self.session_title.clone().unwrap_or_else(|| {
+            self.first_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(256)
+                .collect()
+        })
+    }
+}
+
+fn legacy_upload_started() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct UploadReceipt {
     segment_id: String,
     object_id: String,
     version_id: String,
     replayed: bool,
     recorded_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ReceiptJournalEntry {
+    segment_index: u64,
+    sha256: String,
+    receipt: UploadReceipt,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WireCapabilityCache {
+    endpoint: String,
+    encoding: WireEncoding,
+    expires_at: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -391,7 +514,7 @@ fn capture_hook_payload(
                     "reason": "authenticated organization and workspace identity are required",
                 }));
             };
-            let prepared = prepare_transcript(
+            let prepared = prepare_transcript_with_options(
                 PrepareTranscriptArgs {
                     input: transcript_path,
                     agent: args.agent,
@@ -413,6 +536,7 @@ fn capture_hook_payload(
                     },
                 },
                 state_dir,
+                true,
             )?;
             let manifest = prepared["manifest"]
                 .as_str()
@@ -584,12 +708,253 @@ fn read_locked_manifest(path: &Path) -> Result<TranscriptManifest, TranscriptErr
         TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
     })?;
     let _lock = lock_manifest_directory(directory)?;
-    let manifest: TranscriptManifest = serde_json::from_reader(File::open(path)?)?;
+    Ok(read_manifest_with_receipts(path)?.0)
+}
+
+fn read_manifest_with_receipts(path: &Path) -> Result<(TranscriptManifest, bool), TranscriptError> {
+    let directory = path.parent().ok_or_else(|| {
+        TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
+    })?;
+    let mut manifest: TranscriptManifest = serde_json::from_reader(File::open(path)?)?;
     validate_manifest(&manifest)?;
-    Ok(manifest)
+    let journal_path = directory.join(RECEIPT_JOURNAL_FILE);
+    if !journal_path.is_file() {
+        return Ok((manifest, false));
+    }
+    let mut reader = BufReader::new(File::open(&journal_path)?);
+    let mut line = Vec::new();
+    let mut committed_bytes = 0_u64;
+    let mut line_number = 0;
+    let mut incomplete_tail = false;
+    while reader.read_until(b'\n', &mut line)? > 0 {
+        if !line.ends_with(b"\n") {
+            incomplete_tail = true;
+            break;
+        }
+        committed_bytes += line.len() as u64;
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            line.clear();
+            continue;
+        }
+        let entry: ReceiptJournalEntry = serde_json::from_slice(&line).map_err(|error| {
+            TranscriptError::InvalidInput(format!(
+                "receipt journal line {} is invalid: {error}",
+                line_number
+            ))
+        })?;
+        let index = usize::try_from(entry.segment_index).map_err(|_| {
+            TranscriptError::InvalidInput("receipt journal segment index is too large".to_string())
+        })?;
+        let segment = manifest.segments.get_mut(index).ok_or_else(|| {
+            TranscriptError::InvalidInput(format!(
+                "receipt journal references missing segment {}",
+                entry.segment_index
+            ))
+        })?;
+        if segment.segment_index != entry.segment_index || segment.sha256 != entry.sha256 {
+            return Err(TranscriptError::InvalidInput(format!(
+                "receipt journal does not match segment {}",
+                entry.segment_index
+            )));
+        }
+        if let Some(existing) = &segment.upload {
+            if existing != &entry.receipt {
+                return Err(TranscriptError::InvalidInput(format!(
+                    "receipt journal conflicts with manifest segment {}",
+                    entry.segment_index
+                )));
+            }
+        } else {
+            segment.upload = Some(entry.receipt);
+        }
+        line.clear();
+    }
+    validate_manifest(&manifest)?;
+    if incomplete_tail {
+        // A crash may interrupt write_all before its newline. Keep validated
+        // complete receipts and replay the uncommitted segment idempotently.
+        // Callers hold the manifest lock across recovery and journal appends.
+        let journal = OpenOptions::new().write(true).open(&journal_path)?;
+        journal.set_len(committed_bytes)?;
+        journal.sync_all()?;
+    }
+    Ok((manifest, true))
+}
+
+fn append_receipt_journal(
+    directory: &Path,
+    segment_index: u64,
+    sha256: &str,
+    receipt: &UploadReceipt,
+) -> Result<(), TranscriptError> {
+    let mut options = OpenOptions::new();
+    options.append(true).create(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(directory.join(RECEIPT_JOURNAL_FILE))?;
+    let mut bytes = serde_json::to_vec(&ReceiptJournalEntry {
+        segment_index,
+        sha256: sha256.to_string(),
+        receipt: receipt.clone(),
+    })?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn remove_receipt_journal(directory: &Path) -> Result<(), TranscriptError> {
+    match fs::remove_file(directory.join(RECEIPT_JOURNAL_FILE)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn compact_receipt_journal(
+    manifest_path: &Path,
+    manifest: &TranscriptManifest,
+) -> Result<(), TranscriptError> {
+    let directory = manifest_path.parent().ok_or_else(|| {
+        TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
+    })?;
+    if !directory.join(RECEIPT_JOURNAL_FILE).is_file() {
+        return Ok(());
+    }
+    // Manifest first, journal second: a crash between these operations leaves
+    // a replayable duplicate rather than losing an accepted receipt.
+    write_private_json(manifest_path, manifest)?;
+    remove_receipt_journal(directory)
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn normalized_endpoint(endpoint: &str) -> &str {
+    endpoint.trim_end_matches('/')
+}
+
+fn cached_wire_encoding(directory: &Path, endpoint: &str) -> Option<WireEncoding> {
+    let cache: WireCapabilityCache =
+        serde_json::from_reader(File::open(directory.join(WIRE_CAPABILITY_CACHE_FILE)).ok()?)
+            .ok()?;
+    (cache.endpoint == normalized_endpoint(endpoint) && cache.expires_at > unix_seconds())
+        .then_some(cache.encoding)
+}
+
+fn cache_wire_encoding(
+    directory: &Path,
+    endpoint: &str,
+    encoding: WireEncoding,
+) -> Result<(), TranscriptError> {
+    write_private_json(
+        &directory.join(WIRE_CAPABILITY_CACHE_FILE),
+        &WireCapabilityCache {
+            endpoint: normalized_endpoint(endpoint).to_string(),
+            encoding,
+            expires_at: unix_seconds().saturating_add(WIRE_CAPABILITY_TTL_SECS),
+        },
+    )
+}
+
+fn clear_wire_encoding_cache(directory: &Path) -> Result<(), TranscriptError> {
+    match fs::remove_file(directory.join(WIRE_CAPABILITY_CACHE_FILE)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn claim_upload_schedule(directory: &Path) -> Result<bool, TranscriptError> {
+    let path = directory.join(UPLOAD_SCHEDULE_FILE);
+    for _ in 0..2 {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut marker) => {
+                if let Err(error) = writeln!(marker, "{} {}", std::process::id(), unix_seconds()) {
+                    remove_upload_schedule(directory);
+                    return Err(error.into());
+                }
+                if let Err(error) = marker.sync_all() {
+                    remove_upload_schedule(directory);
+                    return Err(error.into());
+                }
+                return Ok(true);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+                    .is_ok_and(|age| age.as_secs() >= UPLOAD_SCHEDULE_STALE_SECS);
+                if stale {
+                    match fs::remove_file(&path) {
+                        Ok(()) => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
+}
+
+fn remove_upload_schedule(directory: &Path) {
+    let _ = fs::remove_file(directory.join(UPLOAD_SCHEDULE_FILE));
+}
+
+struct UploadScheduleGuard {
+    directory: Option<PathBuf>,
+}
+
+impl UploadScheduleGuard {
+    fn new(directory: &Path) -> Self {
+        Self {
+            directory: Some(directory.to_path_buf()),
+        }
+    }
+
+    fn release(&mut self) -> Result<(), TranscriptError> {
+        if let Some(directory) = &self.directory {
+            match fs::remove_file(directory.join(UPLOAD_SCHEDULE_FILE)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.directory = None;
+        Ok(())
+    }
+}
+
+impl Drop for UploadScheduleGuard {
+    fn drop(&mut self) {
+        if let Some(directory) = &self.directory {
+            remove_upload_schedule(directory);
+        }
+    }
 }
 
 fn lock_manifest_directory(directory: &Path) -> Result<File, TranscriptError> {
+    lock_directory_file(directory, ".manifest.lock")
+}
+
+fn lock_directory_file(directory: &Path, name: &str) -> Result<File, TranscriptError> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
@@ -597,7 +962,7 @@ fn lock_manifest_directory(directory: &Path) -> Result<File, TranscriptError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let lock = options.open(directory.join(".manifest.lock"))?;
+    let lock = options.open(directory.join(name))?;
     lock.lock_exclusive()?;
     Ok(lock)
 }
@@ -607,22 +972,42 @@ fn spawn_background_upload(
     endpoint: &str,
     token: Option<String>,
 ) -> Result<(), TranscriptError> {
+    let manifest_dir = manifest.parent().ok_or_else(|| {
+        TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
+    })?;
+    if !claim_upload_schedule(manifest_dir)? {
+        return Ok(());
+    }
     let manifest = manifest.to_path_buf();
     let endpoint = endpoint.to_string();
     if token.is_some() {
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("transcript-upload".to_string())
             .spawn(move || {
-                let _ = push_transcript(PushTranscriptArgs {
-                    manifest,
+                if let Err(error) = push_transcript(PushTranscriptArgs {
+                    manifest: manifest.clone(),
                     endpoint,
                     token,
-                });
-            })
-            .map_err(TranscriptError::Io)?;
+                }) {
+                    // The caller may own an active TUI or a protocol stream.
+                    // Even a tracing subscriber can target stderr, so retain
+                    // this diagnostic beside the spool instead of printing.
+                    let _ = record_background_upload_error(&manifest, &error);
+                }
+            });
+        if let Err(error) = spawned {
+            remove_upload_schedule(manifest_dir);
+            return Err(error.into());
+        }
         return Ok(());
     }
-    let executable = std::env::current_exe()?;
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            remove_upload_schedule(manifest_dir);
+            return Err(error.into());
+        }
+    };
     let mut command = Command::new(executable);
     command
         .args(["transcript", "push", "--manifest"])
@@ -634,13 +1019,43 @@ fn spawn_background_upload(
     if let Some(token) = platform_token() {
         command.env("PLATFORM_API_TOKEN", token);
     }
-    command.spawn().map_err(TranscriptError::Io)?;
-    Ok(())
+    match command.spawn() {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            remove_upload_schedule(manifest_dir);
+            Err(error.into())
+        }
+    }
+}
+
+fn record_background_upload_error(
+    manifest: &Path,
+    error: &TranscriptError,
+) -> Result<(), TranscriptError> {
+    let directory = manifest.parent().ok_or_else(|| {
+        TranscriptError::InvalidInput("manifest path must have a parent directory".into())
+    })?;
+    let _lock = lock_manifest_directory(directory)?;
+    write_private_json(
+        &directory.join("last-background-upload-error.json"),
+        &serde_json::json!({
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "error": error.to_string().chars().take(1024).collect::<String>(),
+        }),
+    )
 }
 
 fn prepare_transcript(
     args: PrepareTranscriptArgs,
     state_dir: Option<&Path>,
+) -> Result<Value, TranscriptError> {
+    prepare_transcript_with_options(args, state_dir, false)
+}
+
+fn prepare_transcript_with_options(
+    args: PrepareTranscriptArgs,
+    state_dir: Option<&Path>,
+    allow_partial_tail: bool,
 ) -> Result<Value, TranscriptError> {
     validate_identifier("organization", &args.organization, 255)?;
     validate_identifier("workspace", &args.workspace, 255)?;
@@ -669,18 +1084,41 @@ fn prepare_transcript(
     create_private_dir(&spool_root)?;
     let _manifest_lock = lock_manifest_directory(&spool_root)?;
 
-    let entries = read_redacted_entries(&args.input, args.agent, &repo)?;
-    if entries.is_empty() {
+    let manifest_path = spool_root.join("manifest.json");
+    let (existing, receipt_journal_present): (Option<TranscriptManifest>, bool) =
+        if manifest_path.is_file() {
+            let (manifest, journal_present) = read_manifest_with_receipts(&manifest_path)?;
+            (Some(manifest), journal_present)
+        } else {
+            (None, false)
+        };
+    let mut capture = read_capture(CaptureOptions {
+        input: &args.input,
+        agent: args.agent,
+        source_session_id: &args.source_session_id,
+        repo: &repo,
+        spool_root: &spool_root,
+        repository_url: args.repository_url.as_deref(),
+        existing: existing.as_ref(),
+        allow_partial_tail,
+    })?;
+    if capture.parsed_entries == 0 && capture.reused_entries == 0 {
         return Err(TranscriptError::InvalidInput(
             "input contains no JSONL entries".to_string(),
         ));
     }
     let pull_request_url = first_env(&["EVALOPS_PULL_REQUEST_URL", "GITHUB_PULL_REQUEST_URL"])
         .and_then(|value| canonical_pull_request_url(&value, args.repository_url.as_deref()))
-        .or_else(|| detect_pull_request_url(&entries, args.repository_url.as_deref()))
+        .or_else(|| capture.pull_request_url.clone())
+        .or_else(|| {
+            existing
+                .as_ref()
+                .filter(|_| capture.reused_entries > 0)
+                .map(|manifest| manifest.pull_request_url.clone())
+        })
         .unwrap_or_default();
-    let manifest_path = spool_root.join("manifest.json");
     let mut manifest = TranscriptManifest {
+        source_checkpoint: capture.checkpoint.clone(),
         version: MANIFEST_VERSION,
         organization_id: args.organization,
         workspace_id: args.workspace,
@@ -698,44 +1136,81 @@ fn prepare_transcript(
         redaction_policy_version: REDACTION_POLICY_VERSION.to_string(),
         segments: Vec::new(),
     };
-    if manifest_path.is_file() {
-        let existing: TranscriptManifest = serde_json::from_reader(File::open(&manifest_path)?)?;
-        validate_manifest(&existing)?;
+    let mut metadata = transcript_metadata(&manifest, &capture.metadata);
+    if capture.reused_entries > 0
+        && let Some(previous) = existing
+            .as_ref()
+            .and_then(|manifest| manifest.segments.last())
+            .and_then(|segment| segment.metadata.as_ref())
+    {
+        metadata.started_at = metadata.started_at.or_else(|| previous.started_at.clone());
+        metadata.working_directory = previous.working_directory.clone();
+        if manifest.title.is_empty() && !previous.title.is_empty() {
+            metadata.title = previous.title.clone();
+        }
+    }
+    let new_segment_start;
+    if let Some(existing) = existing {
         validate_append_identity(&existing, &manifest)?;
-        let next_entry_index = validate_existing_prefix(&existing, &spool_root, &entries)?;
+        if capture.reused_entries > 0 {
+            for segment in &existing.segments {
+                verify_segment_storage(segment, &spool_root)?;
+            }
+        }
         let mut segments = existing.segments;
         let next_segment_index = segments.len() as u64;
-        segments.extend(write_segments_from(
-            &spool_root,
-            &entries[next_entry_index..],
+        new_segment_start = segments.len();
+        debug_assert_eq!(
             next_segment_index,
-            next_entry_index as u64,
-        )?);
+            capture
+                .segments
+                .first()
+                .map_or(next_segment_index, |segment| segment.segment_index)
+        );
+        segments.extend(capture.segments.iter().cloned());
         manifest.segments = segments;
     } else {
-        manifest.segments = write_segments_from(&spool_root, &entries, 0, 0)?;
+        new_segment_start = 0;
+        manifest.segments = capture.segments.clone();
+    }
+    for segment in &mut manifest.segments[new_segment_start..] {
+        segment.metadata = Some(metadata.clone());
     }
     write_private_json(&manifest_path, &manifest)?;
+    capture.commit();
+    if receipt_journal_present {
+        remove_receipt_journal(&spool_root)?;
+    }
     Ok(json!({
         "operation": "transcript.prepare",
         "session_id": session_id,
         "manifest": manifest_path,
         "segments": manifest.segments.len(),
-        "entries": entries.len(),
+        "entries": capture.parsed_entries + capture.reused_entries,
+        "reused_entries": capture.reused_entries,
         "size_bytes": manifest.segments.iter().map(|segment| segment.size_bytes).sum::<u64>(),
         "redaction_policy_version": REDACTION_POLICY_VERSION,
     }))
 }
 
 fn push_transcript(args: PushTranscriptArgs) -> Result<Value, TranscriptError> {
-    validate_endpoint(&args.endpoint)?;
+    push_transcript_after_unlock(args, || {})
+}
+
+fn push_transcript_after_unlock(
+    args: PushTranscriptArgs,
+    after_unlock: impl FnOnce(),
+) -> Result<Value, TranscriptError> {
     let manifest_path = args.manifest;
     let manifest_dir = manifest_path.parent().ok_or_else(|| {
         TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
     })?;
-    let _manifest_lock = lock_manifest_directory(manifest_dir)?;
-    let mut manifest: TranscriptManifest = serde_json::from_reader(File::open(&manifest_path)?)?;
-    validate_manifest(&manifest)?;
+    let mut schedule_guard = UploadScheduleGuard::new(manifest_dir);
+    validate_endpoint(&args.endpoint)?;
+    // One sender per spool, while preparation uses only the short manifest lock.
+    let _upload_lock = lock_directory_file(manifest_dir, ".upload.lock")?;
+    let mut manifest_lock = Some(lock_manifest_directory(manifest_dir)?);
+    let (mut manifest, mut receipt_journal_present) = read_manifest_with_receipts(&manifest_path)?;
     let http: Agent = Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(5)))
         .timeout_global(Some(Duration::from_secs(30)))
@@ -746,151 +1221,227 @@ fn push_transcript(args: PushTranscriptArgs) -> Result<Value, TranscriptError> {
         args.endpoint.trim_end_matches('/'),
         TRANSCRIPT_METHOD
     );
+    let mut wire_encoding = cached_wire_encoding(manifest_dir, &args.endpoint);
+    let mut wire_bytes = 0_u64;
+    let mut uncompressed_bytes = 0_u64;
+    let mut body = Vec::new();
     let mut uploaded = 0_u64;
     let mut replayed = 0_u64;
     let mut skipped = 0_u64;
-    for index in 0..manifest.segments.len() {
-        if manifest.segments[index].upload.is_some() {
-            skipped += 1;
-            continue;
-        }
-        let request = upload_request(&manifest, &manifest.segments[index], manifest_dir)?;
-        let body = request.encode_to_vec();
-        let mut builder = http
-            .post(&url)
-            .header("Accept", "application/proto")
-            .header("Content-Type", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("X-Organization-ID", &manifest.organization_id)
-            .header("X-Workspace-ID", &manifest.workspace_id);
-        if let Some(token) = args.token.as_deref() {
-            builder = builder.header("Authorization", &format!("Bearer {token}"));
-        }
-        let mut response = builder
-            .send(&body)
+    let mut index = 0;
+    loop {
+        while index < manifest.segments.len() {
+            if manifest.segments[index].upload.is_some() {
+                skipped += 1;
+                index += 1;
+                continue;
+            }
+            let request = upload_request(&manifest, &manifest.segments[index], manifest_dir)?;
+            if !manifest.segments[index].upload_started {
+                if let Some(metadata) = manifest.segments[index].metadata.as_mut() {
+                    metadata.completeness = manifest.completeness;
+                }
+                manifest.segments[index].upload_started = true;
+                // Persist before any network I/O: an accepted request can lose its
+                // response, and the server requires an identical descriptor on retry.
+                write_private_json(&manifest_path, &manifest)?;
+            }
+            // Legacy descriptors derive from mutable manifest fields; retain their
+            // old locking behavior until those historical segments are receipted.
+            if manifest.segments[index].metadata.is_some() {
+                drop(manifest_lock.take());
+            }
+            body.clear();
+            request
+                .encode(&mut body)
+                .map_err(|error| TranscriptError::Upload(error.to_string()))?;
+            let compressed = wire_encoding
+                .map(|encoding| compress_body(&body, encoding))
+                .transpose()?
+                .flatten();
+            let send = |payload: &[u8], encoding: Option<WireEncoding>| {
+                let mut builder = http
+                    .post(&url)
+                    .header("Accept", "application/proto")
+                    .header("Content-Type", "application/proto")
+                    .header("Connect-Protocol-Version", "1")
+                    .header("X-Organization-ID", &manifest.organization_id)
+                    .header("X-Workspace-ID", &manifest.workspace_id);
+                if let Some(token) = args.token.as_deref() {
+                    builder = builder.header("Authorization", &format!("Bearer {token}"));
+                }
+                if let Some(encoding) = encoding {
+                    builder = builder.header("Content-Encoding", encoding.header());
+                }
+                builder.send(payload)
+            };
+            let payload = compressed.as_deref().unwrap_or(&body);
+            wire_bytes += payload.len() as u64;
+            uncompressed_bytes += body.len() as u64;
+            let response = send(payload, wire_encoding.filter(|_| compressed.is_some()));
+            // Rolling deployments can route the next request to an older server.
+            // Canonical replay identity makes one uncompressed retry safe.
+            let mut compression_fallback = false;
+            let mut response = match response {
+                Err(ureq::Error::StatusCode(400 | 415)) if compressed.is_some() => {
+                    compression_fallback = true;
+                    clear_wire_encoding_cache(manifest_dir)?;
+                    wire_bytes += body.len() as u64;
+                    send(&body, None)
+                }
+                response => response,
+            }
             .map_err(|error| map_upload_error(index, error))?;
-        let status = response.status().as_u16();
-        if !(200..300).contains(&status) {
-            return Err(TranscriptError::Upload(format!(
-                "segment {index} returned HTTP {status}"
-            )));
-        }
-        let response_bytes = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_RESPONSE_BYTES)
-            .read_to_vec()
-            .map_err(|error| {
-                TranscriptError::Upload(format!(
-                    "segment {index} returned an invalid or oversized response: {error}"
-                ))
-            })?;
-        let decoded =
-            sessions_pb::RecordTranscriptSegmentResponse::decode(response_bytes.as_slice())
+            let advertised_encoding = if compression_fallback {
+                None
+            } else {
+                preferred_encoding(
+                    response
+                        .headers()
+                        .get("Accept-Encoding")
+                        .and_then(|value| value.to_str().ok()),
+                )
+            };
+            let status = response.status().as_u16();
+            if !(200..300).contains(&status) {
+                return Err(TranscriptError::Upload(format!(
+                    "segment {index} returned HTTP {status}"
+                )));
+            }
+            wire_encoding = advertised_encoding;
+            if let Some(encoding) = advertised_encoding {
+                cache_wire_encoding(manifest_dir, &args.endpoint, encoding)?;
+            }
+            let response_bytes = response
+                .body_mut()
+                .with_config()
+                .limit(MAX_RESPONSE_BYTES)
+                .read_to_vec()
                 .map_err(|error| {
                     TranscriptError::Upload(format!(
-                        "segment {index} returned invalid protobuf: {error}"
+                        "segment {index} returned an invalid or oversized response: {error}"
                     ))
                 })?;
-        let segment = decoded.segment.as_ref().ok_or_else(|| {
-            TranscriptError::Upload(format!("segment {index} response omitted segment metadata"))
-        })?;
-        if segment.sha256 != manifest.segments[index].sha256
-            || segment.segment_index != manifest.segments[index].segment_index
-        {
-            return Err(TranscriptError::Upload(format!(
-                "segment {index} response did not match the spooled digest and index"
-            )));
+            let decoded =
+                sessions_pb::RecordTranscriptSegmentResponse::decode(response_bytes.as_slice())
+                    .map_err(|error| {
+                        TranscriptError::Upload(format!(
+                            "segment {index} returned invalid protobuf: {error}"
+                        ))
+                    })?;
+            let segment = decoded.segment.as_ref().ok_or_else(|| {
+                TranscriptError::Upload(format!(
+                    "segment {index} response omitted segment metadata"
+                ))
+            })?;
+            if segment.sha256 != manifest.segments[index].sha256
+                || segment.segment_index != manifest.segments[index].segment_index
+            {
+                return Err(TranscriptError::Upload(format!(
+                    "segment {index} response did not match the spooled digest and index"
+                )));
+            }
+            if manifest_lock.is_none() {
+                manifest_lock = Some(lock_manifest_directory(manifest_dir)?);
+            }
+            let (latest, _journal_present) = read_manifest_with_receipts(&manifest_path)?;
+            validate_append_identity(&manifest, &latest)?;
+            if latest
+                .segments
+                .get(index)
+                .is_none_or(|current| current.sha256 != request.sha256)
+            {
+                return Err(TranscriptError::InvalidInput(
+                    "spool changed during upload".into(),
+                ));
+            }
+            // Merge the receipt into the latest manifest in an append-only journal,
+            // retaining concurrently appended segments and their source cursor.
+            manifest = latest;
+            let receipt = UploadReceipt {
+                segment_id: segment.segment_id.clone(),
+                object_id: segment.object_id.clone(),
+                version_id: segment.version_id.clone(),
+                replayed: decoded.replayed,
+                recorded_at: segment.recorded_at.clone(),
+            };
+            append_receipt_journal(
+                manifest_dir,
+                manifest.segments[index].segment_index,
+                &manifest.segments[index].sha256,
+                &receipt,
+            )?;
+            receipt_journal_present = true;
+            manifest.segments[index].upload = Some(receipt);
+            if decoded.replayed {
+                replayed += 1;
+            } else {
+                uploaded += 1;
+            }
+            index += 1;
         }
-        manifest.segments[index].upload = Some(UploadReceipt {
-            segment_id: segment.segment_id.clone(),
-            object_id: segment.object_id.clone(),
-            version_id: segment.version_id.clone(),
-            replayed: decoded.replayed,
-            recorded_at: segment.recorded_at.clone(),
-        });
-        if decoded.replayed {
-            replayed += 1;
-        } else {
-            uploaded += 1;
+
+        if manifest_lock.is_none() {
+            manifest_lock = Some(lock_manifest_directory(manifest_dir)?);
         }
-        write_private_json(&manifest_path, &manifest)?;
+        let (latest, journal_present) = read_manifest_with_receipts(&manifest_path)?;
+        receipt_journal_present |= journal_present;
+        validate_append_identity(&manifest, &latest)?;
+        let has_new_pending = latest
+            .segments
+            .iter()
+            .enumerate()
+            .any(|(position, segment)| position >= index && segment.upload.is_none());
+        manifest = latest;
+        if !has_new_pending {
+            break;
+        }
     }
+    if receipt_journal_present {
+        compact_receipt_journal(&manifest_path, &manifest)?;
+    }
+    // Release the marker while the final manifest lock still excludes capture.
+    // A producer admitted after this point must be able to schedule a successor.
+    schedule_guard.release()?;
+    drop(manifest_lock);
+    after_unlock();
     Ok(json!({
         "operation": "transcript.push",
         "session_id": manifest.session_id,
         "manifest": manifest_path,
         "uploaded": uploaded,
+        "wire_bytes": wire_bytes,
+        "uncompressed_bytes": uncompressed_bytes,
         "replayed": replayed,
         "already_receipted": skipped,
         "complete": manifest.segments.iter().all(|segment| segment.upload.is_some()),
     }))
 }
 
-fn read_redacted_entries(
-    input: &Path,
-    agent: TranscriptAgent,
-    repo: &Path,
-) -> Result<Vec<Vec<u8>>, TranscriptError> {
-    let mut entries = Vec::new();
-    for (source_index, line) in BufReader::new(File::open(input)?).lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(&line).map_err(|error| {
-            TranscriptError::InvalidInput(format!(
-                "line {} is not valid JSON: {error}",
-                source_index + 1
-            ))
-        })?;
-        if !value.is_object() {
-            return Err(TranscriptError::InvalidInput(format!(
-                "line {} must be a JSON object",
-                source_index + 1
-            )));
-        }
-        let envelope = json!({
-            "agent": agent.storage_name(),
-            "event": redact_transcript_value(value, repo),
-            "schema": "evalops.session.transcript.v1",
-            "source_index": source_index,
-        });
-        let mut encoded = serde_json::to_vec(&envelope)?;
-        encoded.push(b'\n');
-        if encoded.len() > MAX_SEGMENT_BYTES {
-            return Err(TranscriptError::InvalidInput(format!(
-                "line {} exceeds the 524288-byte segment limit after redaction",
-                source_index + 1
-            )));
-        }
-        entries.push(encoded);
-    }
-    Ok(entries)
+#[cfg(test)]
+fn redact_transcript_value(value: Value, repo: &Path) -> Value {
+    redact_transcript_value_with(value, &Redactor::new(repo).unwrap())
 }
 
-fn redact_transcript_value(value: Value, repo: &Path) -> Value {
-    match value {
-        Value::String(value) => Value::String(redact_text(&value, repo)),
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .map(|value| redact_transcript_value(value, repo))
-                .collect(),
-        ),
-        Value::Object(values) => {
-            let mut redacted = serde_json::Map::new();
-            for (key, value) in values {
-                if is_secret_key(&key) {
-                    redacted.insert(key, Value::String("[redacted]".to_string()));
-                } else {
-                    redacted.insert(key, redact_transcript_value(value, repo));
+fn redact_transcript_value_with(mut value: Value, redactor: &Redactor) -> Value {
+    fn visit(value: &mut Value, redactor: &Redactor) {
+        match value {
+            Value::String(text) => *text = redactor.redact(text),
+            Value::Array(values) => values.iter_mut().for_each(|value| visit(value, redactor)),
+            Value::Object(values) => {
+                for (key, value) in values.iter_mut() {
+                    if is_secret_key(key) {
+                        *value = Value::String("[redacted]".to_string());
+                    } else {
+                        visit(value, redactor);
+                    }
                 }
             }
-            Value::Object(redacted)
+            _ => {}
         }
-        value => value,
     }
+    visit(&mut value, redactor);
+    value
 }
 
 fn is_secret_key(key: &str) -> bool {
@@ -916,42 +1467,6 @@ fn is_secret_key(key: &str) -> bool {
     )
 }
 
-fn write_segments_from(
-    spool_root: &Path,
-    entries: &[Vec<u8>],
-    first_segment_index: u64,
-    first_entry_offset: u64,
-) -> Result<Vec<SpoolSegment>, TranscriptError> {
-    let mut segments = Vec::new();
-    let mut bytes = Vec::new();
-    let mut first_entry_index = first_entry_offset;
-    for (entry_index, entry) in entries.iter().enumerate() {
-        let entry_index = first_entry_offset + entry_index as u64;
-        if !bytes.is_empty() && bytes.len() + entry.len() > MAX_SEGMENT_BYTES {
-            segments.push(write_segment(
-                spool_root,
-                first_segment_index + segments.len() as u64,
-                first_entry_index,
-                entry_index - 1,
-                &bytes,
-            )?);
-            bytes.clear();
-            first_entry_index = entry_index;
-        }
-        bytes.extend_from_slice(entry);
-    }
-    if !bytes.is_empty() {
-        segments.push(write_segment(
-            spool_root,
-            first_segment_index + segments.len() as u64,
-            first_entry_index,
-            first_entry_offset + entries.len() as u64 - 1,
-            &bytes,
-        )?);
-    }
-    Ok(segments)
-}
-
 fn validate_append_identity(
     existing: &TranscriptManifest,
     incoming: &TranscriptManifest,
@@ -974,42 +1489,6 @@ fn validate_append_identity(
     Ok(())
 }
 
-fn validate_existing_prefix(
-    manifest: &TranscriptManifest,
-    manifest_dir: &Path,
-    entries: &[Vec<u8>],
-) -> Result<usize, TranscriptError> {
-    for segment in &manifest.segments {
-        let path = safe_segment_path(manifest_dir, &segment.path)?;
-        let content = fs::read(&path)?;
-        if content.len() as u64 != segment.size_bytes
-            || format!("{:x}", Sha256::digest(&content)) != segment.sha256
-        {
-            return Err(TranscriptError::InvalidInput(format!(
-                "spooled segment failed size or digest verification: {}",
-                path.display()
-            )));
-        }
-        let first = segment.first_entry_index as usize;
-        let last = segment.last_entry_index as usize;
-        let Some(prefix) = entries.get(first..=last) else {
-            return Err(TranscriptError::InvalidInput(
-                "existing transcript prefix was truncated".to_string(),
-            ));
-        };
-        let expected = prefix.concat();
-        if content != expected {
-            return Err(TranscriptError::InvalidInput(
-                "existing transcript prefix changed after it was spooled".to_string(),
-            ));
-        }
-    }
-    Ok(manifest
-        .segments
-        .last()
-        .map_or(0, |segment| segment.last_entry_index as usize + 1))
-}
-
 fn write_segment(
     spool_root: &Path,
     segment_index: u64,
@@ -1017,10 +1496,20 @@ fn write_segment(
     last_entry_index: u64,
     bytes: &[u8],
 ) -> Result<SpoolSegment, TranscriptError> {
-    let filename = format!("segment-{segment_index:020}.jsonl");
+    let (stored, encoding) = encode_spool(bytes)?;
+    let extension = if encoding.is_some() {
+        "jsonl.zst"
+    } else {
+        "jsonl"
+    };
+    let filename = format!("segment-{segment_index:020}.{extension}");
     let path = spool_root.join(&filename);
-    write_private(&path, bytes)?;
+    write_private(&path, &stored)?;
     Ok(SpoolSegment {
+        upload_started: false,
+        stored_sha256: encoding.map(|_| format!("{:x}", Sha256::digest(&stored))),
+        encoding,
+        metadata: None,
         segment_index,
         first_entry_index,
         last_entry_index,
@@ -1037,16 +1526,8 @@ fn upload_request(
     segment: &SpoolSegment,
     manifest_dir: &Path,
 ) -> Result<sessions_pb::RecordTranscriptSegmentRequest, TranscriptError> {
-    let path = safe_segment_path(manifest_dir, &segment.path)?;
-    let content = fs::read(&path)?;
-    if content.len() as u64 != segment.size_bytes
-        || format!("{:x}", Sha256::digest(&content)) != segment.sha256
-    {
-        return Err(TranscriptError::InvalidInput(format!(
-            "spooled segment failed size or digest verification: {}",
-            path.display()
-        )));
-    }
+    let content = read_segment(segment, manifest_dir)?;
+    let metadata = segment.metadata.as_ref();
     Ok(sessions_pb::RecordTranscriptSegmentRequest {
         organization_id: manifest.organization_id.clone(),
         workspace_id: manifest.workspace_id.clone(),
@@ -1055,13 +1536,31 @@ fn upload_request(
             agent_kind: manifest.agent.proto() as i32,
             agent_name: manifest.agent_name.clone(),
             source_session_id: manifest.source_session_id.clone(),
-            repository_url: manifest.repository_url.clone(),
-            working_directory: manifest.working_directory.clone(),
-            branch: manifest.branch.clone(),
-            head_sha: manifest.head_sha.clone(),
-            pull_request_url: manifest.pull_request_url.clone(),
-            title: manifest.title.clone(),
-            completeness: manifest.completeness.proto() as i32,
+            repository_url: metadata.map_or_else(
+                || manifest.repository_url.clone(),
+                |value| value.repository_url.clone(),
+            ),
+            working_directory: metadata.map_or_else(
+                || manifest.working_directory.clone(),
+                |value| value.working_directory.clone(),
+            ),
+            branch: metadata.map_or_else(|| manifest.branch.clone(), |value| value.branch.clone()),
+            head_sha: metadata
+                .map_or_else(|| manifest.head_sha.clone(), |value| value.head_sha.clone()),
+            pull_request_url: metadata.map_or_else(
+                || manifest.pull_request_url.clone(),
+                |value| value.pull_request_url.clone(),
+            ),
+            title: metadata.map_or_else(|| manifest.title.clone(), |value| value.title.clone()),
+            started_at: metadata
+                .and_then(|value| value.started_at.as_deref())
+                .and_then(proto_timestamp),
+            completeness: if segment.upload_started {
+                metadata.map_or(manifest.completeness, |value| value.completeness)
+            } else {
+                manifest.completeness
+            }
+            .proto() as i32,
             ..Default::default()
         }),
         segment_index: segment.segment_index,
@@ -1073,6 +1572,51 @@ fn upload_request(
         redaction_policy_version: manifest.redaction_policy_version.clone(),
         omitted_entry_count: segment.omitted_entry_count,
     })
+}
+
+fn proto_timestamp(value: &str) -> Option<prost_types::Timestamp> {
+    let value = chrono::DateTime::parse_from_rfc3339(value).ok()?;
+    if !(-62_135_596_800..=253_402_300_799).contains(&value.timestamp()) {
+        return None;
+    }
+    Some(prost_types::Timestamp {
+        seconds: value.timestamp(),
+        nanos: value.timestamp_subsec_nanos() as i32,
+    })
+}
+
+fn transcript_metadata(
+    manifest: &TranscriptManifest,
+    captured: &CapturedMetadata,
+) -> TranscriptMetadata {
+    let mut metadata = TranscriptMetadata {
+        // Keep the historical path-based identity in the manifest. A local path
+        // is not a remote repository; do not publish it as one.
+        repository_url: if Path::new(&manifest.repository_url).is_absolute() {
+            String::new()
+        } else {
+            manifest.repository_url.clone()
+        },
+        working_directory: manifest.working_directory.clone(),
+        branch: manifest.branch.clone(),
+        head_sha: manifest.head_sha.clone(),
+        pull_request_url: manifest.pull_request_url.clone(),
+        title: manifest.title.clone(),
+        started_at: None,
+        completeness: manifest.completeness,
+    };
+    if manifest.agent == TranscriptAgent::Maestro {
+        if let Some(started_at) = &captured.started_at {
+            metadata.started_at = Some(started_at.clone());
+        }
+        if let Some(working_directory) = &captured.working_directory {
+            metadata.working_directory = working_directory.clone();
+        }
+        if metadata.title.is_empty() {
+            metadata.title = captured.fallback_title();
+        }
+    }
+    metadata
 }
 
 fn validate_manifest(manifest: &TranscriptManifest) -> Result<(), TranscriptError> {
@@ -1227,18 +1771,16 @@ fn validate_endpoint(value: &str) -> Result<(), TranscriptError> {
     Ok(())
 }
 
-fn detect_pull_request_url(entries: &[Vec<u8>], repository_url: Option<&str>) -> Option<String> {
+fn detect_pull_request_url_bytes(entry: &[u8], repository_url: Option<&str>) -> Option<String> {
     let repository = github_repository_base(repository_url?)?;
     let prefix = format!("{repository}/pull/");
-    entries.iter().find_map(|entry| {
-        let text = String::from_utf8_lossy(entry);
-        let start = text.find(&prefix)? + prefix.len();
-        let number = text[start..]
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>();
-        (!number.is_empty()).then(|| format!("{prefix}{number}"))
-    })
+    let text = String::from_utf8_lossy(entry);
+    let start = text.find(&prefix)? + prefix.len();
+    let number = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    (!number.is_empty()).then(|| format!("{prefix}{number}"))
 }
 
 fn canonical_pull_request_url(value: &str, repository_url: Option<&str>) -> Option<String> {
@@ -1300,6 +1842,216 @@ mod tests {
     use std::thread;
     use tempfile::tempdir;
 
+    fn prepare_native_fixture(input: PathBuf, state: &Path, branch: &str) -> PathBuf {
+        let result = prepare_transcript(
+            PrepareTranscriptArgs {
+                input,
+                agent: TranscriptAgent::Maestro,
+                source_session_id: "maestro-quality-fixture".to_string(),
+                session_id: Some("session-quality-fixture".to_string()),
+                organization: "org-1".to_string(),
+                workspace: "workspace-1".to_string(),
+                repository_url: Some("/workspace/mono".to_string()),
+                working_directory: Some(".".to_string()),
+                branch: Some(branch.to_string()),
+                head_sha: None,
+                title: None,
+                completeness: TranscriptCompletenessArg::InProgress,
+            },
+            Some(state),
+        )
+        .unwrap();
+        PathBuf::from(result["manifest"].as_str().unwrap())
+    }
+
+    #[test]
+    fn background_upload_errors_stay_out_of_terminal() {
+        const CHILD: &str = "MAESTRO_TEST_BACKGROUND_UPLOAD_DIAGNOSTIC";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::background_upload_errors_stay_out_of_terminal",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "background upload wrote to the terminal"
+            );
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let manifest = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        // Fail deterministically before network I/O through the real background sender.
+        spawn_background_upload(&manifest, "ftp://invalid", Some("test-token".into())).unwrap();
+        let diagnostic = manifest
+            .parent()
+            .unwrap()
+            .join("last-background-upload-error.json");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !diagnostic.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let report: Value = serde_json::from_reader(File::open(&diagnostic).unwrap()).unwrap();
+        assert!(!report["error"].as_str().unwrap().is_empty());
+        assert!(!report.to_string().contains("test-token"));
+        assert!(report["occurred_at"].as_str().is_some());
+        let pending = read_locked_manifest(&manifest).unwrap();
+        assert!(
+            pending
+                .segments
+                .iter()
+                .all(|segment| segment.upload.is_none())
+        );
+        assert!(
+            !manifest
+                .parent()
+                .unwrap()
+                .join(UPLOAD_SCHEDULE_FILE)
+                .exists()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(diagnostic).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn native_maestro_records_preserve_content_and_project_available_metadata() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let manifest = read_locked_manifest(&path).unwrap();
+        let request =
+            upload_request(&manifest, &manifest.segments[0], path.parent().unwrap()).unwrap();
+        let session = request.session.unwrap();
+        assert_eq!(
+            session.started_at.unwrap(),
+            prost_types::Timestamp {
+                seconds: 1788854400,
+                nanos: 123_000_000
+            }
+        );
+        assert_eq!(session.title, "Check the workspace");
+        assert_eq!(session.working_directory, "/workspace/mono");
+        assert!(
+            session.repository_url.is_empty(),
+            "a working directory is not a remote repository"
+        );
+        assert!(
+            session.ended_at.is_none(),
+            "capture does not establish task finality"
+        );
+        let records: Vec<Value> = String::from_utf8(request.content)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 5);
+        assert_eq!(
+            records[2]["event"]["message"]["content"][1]["id"],
+            "call-check"
+        );
+        assert_eq!(records[3]["event"]["message"]["toolCallId"], "call-check");
+        assert_eq!(records[3]["event"]["message"]["isError"], false);
+        assert_eq!(records[2]["event"]["message"]["usage"]["input"], 12);
+        assert_eq!(records[4]["source_index"], 4);
+    }
+
+    #[test]
+    fn resumed_capture_freezes_existing_segment_metadata_for_retry() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let state = temp.path().join("state");
+        let path = prepare_native_fixture(input.clone(), &state, "before");
+        let before = read_locked_manifest(&path).unwrap();
+        let request = upload_request(&before, &before.segments[0], path.parent().unwrap()).unwrap();
+        writeln!(
+            OpenOptions::new().append(true).open(&input).unwrap(),
+            "{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"Continue\"}}}}"
+        )
+        .unwrap();
+        prepare_native_fixture(input, &state, "after");
+        let after = read_locked_manifest(&path).unwrap();
+        assert_eq!(after.segments.len(), 2);
+        assert_eq!(
+            request.encode_to_vec(),
+            upload_request(&after, &after.segments[0], path.parent().unwrap())
+                .unwrap()
+                .encode_to_vec()
+        );
+        assert_eq!(
+            upload_request(&after, &after.segments[1], path.parent().unwrap())
+                .unwrap()
+                .session
+                .unwrap()
+                .branch,
+            "after"
+        );
+    }
+
+    #[test]
+    fn metadata_rejects_invalid_header_time_and_falls_back_to_user_text() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        let records = include_str!("../tests/fixtures/maestro.jsonl")
+            .lines()
+            .map(|line| {
+                let mut value: Value = serde_json::from_str(line).unwrap();
+                if value["type"] == "session" {
+                    value.as_object_mut().unwrap().remove("subject");
+                    value["timestamp"] = json!("not-a-timestamp");
+                }
+                serde_json::to_string(&value).unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&input, records).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let manifest = read_locked_manifest(&path).unwrap();
+        let session = upload_request(&manifest, &manifest.segments[0], path.parent().unwrap())
+            .unwrap()
+            .session
+            .unwrap();
+        assert!(session.started_at.is_none());
+        assert_eq!(session.title, "Check the workspace");
+    }
+
+    #[test]
+    fn legacy_spool_remains_readable_without_new_metadata() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let mut value: Value = serde_json::from_reader(File::open(&path).unwrap()).unwrap();
+        value["segments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("metadata");
+        let manifest: TranscriptManifest = serde_json::from_value(value).unwrap();
+        let request =
+            upload_request(&manifest, &manifest.segments[0], path.parent().unwrap()).unwrap();
+        assert!(request.session.as_ref().unwrap().started_at.is_none());
+        assert_eq!(request.session.unwrap().repository_url, "/workspace/mono");
+    }
+
     #[test]
     fn redaction_preserves_output_but_removes_secrets() {
         let value = json!({
@@ -1351,7 +2103,10 @@ mod tests {
             .parent()
             .unwrap()
             .join(&manifest.segments[0].path);
-        let content = fs::read_to_string(segment_path).unwrap();
+        let content = String::from_utf8(
+            read_segment(&manifest.segments[0], segment_path.parent().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert!(content.ends_with('\n'));
         assert!(content.contains("[redacted]"));
         assert!(!content.contains("\"token\":\"secret\""));
@@ -1536,16 +2291,159 @@ mod tests {
     }
 
     #[test]
+    fn completed_sender_preserves_a_successor_scheduled_after_manifest_unlock() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let directory = path.parent().unwrap();
+        let mut saved = read_locked_manifest(&path).unwrap();
+        for segment in &mut saved.segments {
+            segment.upload = Some(UploadReceipt {
+                segment_id: "accepted".into(),
+                object_id: "object".into(),
+                version_id: "version".into(),
+                replayed: false,
+                recorded_at: "now".into(),
+            });
+        }
+        write_private_json(&path, &saved).unwrap();
+        assert!(claim_upload_schedule(directory).unwrap());
+        push_transcript_after_unlock(
+            PushTranscriptArgs {
+                manifest: path.clone(),
+                endpoint: "http://127.0.0.1:1".into(),
+                token: None,
+            },
+            || {
+                let _producer_lock = lock_manifest_directory(directory).unwrap();
+                assert!(
+                    claim_upload_schedule(directory).unwrap(),
+                    "the next producer must schedule a successor"
+                );
+            },
+        )
+        .unwrap();
+        assert!(
+            directory.join(UPLOAD_SCHEDULE_FILE).exists(),
+            "the previous sender must not delete its successor's marker"
+        );
+    }
+
+    #[test]
+    fn receipt_journal_discards_only_an_unterminated_tail_before_replay() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let directory = path.parent().unwrap();
+        let saved = read_locked_manifest(&path).unwrap();
+        let receipt = UploadReceipt {
+            segment_id: "accepted".into(),
+            object_id: "object".into(),
+            version_id: "version".into(),
+            replayed: false,
+            recorded_at: "now".into(),
+        };
+        append_receipt_journal(directory, 0, &saved.segments[0].sha256, &receipt).unwrap();
+        let journal = directory.join(RECEIPT_JOURNAL_FILE);
+        let complete = fs::read(&journal).unwrap();
+        for tail in [b"{\"segment_index\":".as_slice(), b"\xff\xfe".as_slice()] {
+            let mut interrupted = complete.clone();
+            interrupted.extend_from_slice(tail);
+            fs::write(&journal, interrupted).unwrap();
+            let recovered = read_locked_manifest(&path).unwrap();
+            assert_eq!(recovered.segments[0].upload.as_ref(), Some(&receipt));
+            assert_eq!(fs::read(&journal).unwrap(), complete);
+        }
+        append_receipt_journal(directory, 0, &saved.segments[0].sha256, &receipt).unwrap();
+        assert!(read_locked_manifest(&path).is_ok());
+        let mut corrupt = complete;
+        corrupt.extend_from_slice(b"{invalid}\n");
+        fs::write(&journal, &corrupt).unwrap();
+        assert!(
+            read_locked_manifest(&path).is_err(),
+            "terminated corruption must fail closed"
+        );
+        assert_eq!(fs::read(journal).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn receipt_journal_recovers_an_accepted_receipt_before_compaction() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let saved = read_locked_manifest(&path).unwrap();
+        let receipt = UploadReceipt {
+            segment_id: "segment-journal".to_string(),
+            object_id: "object-journal".to_string(),
+            version_id: "version-journal".to_string(),
+            replayed: false,
+            recorded_at: "2026-09-08T00:00:00Z".to_string(),
+        };
+        append_receipt_journal(
+            path.parent().unwrap(),
+            saved.segments[0].segment_index,
+            &saved.segments[0].sha256,
+            &receipt,
+        )
+        .unwrap();
+        let recovered = read_locked_manifest(&path).unwrap();
+        assert_eq!(
+            recovered.segments[0].upload.as_ref().unwrap().object_id,
+            "object-journal"
+        );
+        compact_receipt_journal(&path, &recovered).unwrap();
+        assert!(!path.parent().unwrap().join(RECEIPT_JOURNAL_FILE).exists());
+        let persisted: TranscriptManifest =
+            serde_json::from_reader(File::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.segments[0].upload.as_ref().unwrap().segment_id,
+            "segment-journal"
+        );
+    }
+
+    #[test]
+    fn wire_capability_cache_is_endpoint_scoped_and_removable() {
+        let temp = tempdir().unwrap();
+        cache_wire_encoding(temp.path(), "https://platform.example/", WireEncoding::Gzip).unwrap();
+        assert_eq!(
+            cached_wire_encoding(temp.path(), "https://platform.example"),
+            Some(WireEncoding::Gzip)
+        );
+        assert_eq!(
+            cached_wire_encoding(temp.path(), "https://other.example"),
+            None
+        );
+        clear_wire_encoding_cache(temp.path()).unwrap();
+        assert_eq!(
+            cached_wire_encoding(temp.path(), "https://platform.example"),
+            None
+        );
+    }
+
+    #[test]
+    fn background_upload_schedule_coalesces_duplicate_notifications() {
+        let temp = tempdir().unwrap();
+        assert!(claim_upload_schedule(temp.path()).unwrap());
+        assert!(!claim_upload_schedule(temp.path()).unwrap());
+        remove_upload_schedule(temp.path());
+        assert!(claim_upload_schedule(temp.path()).unwrap());
+        remove_upload_schedule(temp.path());
+    }
+
+    #[test]
     fn push_persists_receipt_and_skips_it_on_retry() {
         let temp = tempdir().unwrap();
         let input = temp.path().join("maestro.jsonl");
-        fs::write(&input, "{\"type\":\"turn\",\"text\":\"done\"}\n").unwrap();
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
         let state = temp.path().join("state");
         let prepared = prepare_transcript(
             PrepareTranscriptArgs {
                 input,
                 agent: TranscriptAgent::Maestro,
-                source_session_id: "maestro-source-1".to_string(),
+                source_session_id: "maestro-quality-fixture".to_string(),
                 session_id: Some("maestro-session-1".to_string()),
                 organization: "org-1".to_string(),
                 workspace: "workspace-1".to_string(),
@@ -1599,6 +2497,11 @@ mod tests {
             )
             .unwrap();
             assert!(request.edge_redacted);
+            assert!(request.session.as_ref().unwrap().started_at.is_some());
+            assert_eq!(request.last_entry_index, 4);
+            let captured = String::from_utf8(request.content.clone()).unwrap();
+            assert!(captured.contains("toolCallId"));
+            assert!(captured.contains("usage"));
             assert_eq!(
                 request.session.as_ref().unwrap().session_id,
                 "maestro-session-1"
@@ -1659,3 +2562,9 @@ mod tests {
         assert_eq!(retry["complete"], true);
     }
 }
+
+#[cfg(test)]
+mod benchmark;
+
+#[cfg(test)]
+mod perf_tests;

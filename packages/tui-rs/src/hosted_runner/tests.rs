@@ -14105,6 +14105,13 @@ async fn replacement_runner_journal_owner_is_persisted_after_restore() {
     let source = SharedRunner::new(source_config.clone());
     {
         let mut state = source.state.lock().expect("source state");
+        state.thread.initial_actions.insert(
+            "turn-initial".to_string(),
+            serde_json::from_value(initial_action_test_payload()).expect("source action receipt"),
+        );
+        source
+            .persist_thread_for_request(&state)
+            .expect("persist source action");
         source.publish_message(
             &mut state,
             FromAgentMessage::ResponseStart {
@@ -14129,6 +14136,18 @@ async fn replacement_runner_journal_owner_is_persisted_after_restore() {
     let manifest: SnapshotManifest =
         serde_json::from_value(body["manifest"].clone()).expect("restore manifest");
     drop(source);
+    let source_restart = SharedRunner::new(source_config.clone());
+    assert_eq!(
+        source_restart
+            .state
+            .lock()
+            .expect("source restart")
+            .thread
+            .initial_actions
+            .len(),
+        1
+    );
+    drop(source_restart);
 
     let mut replacement_config = source_config;
     replacement_config.runner_session_id = "mrs_replacement".to_string();
@@ -14145,6 +14164,22 @@ async fn replacement_runner_journal_owner_is_persisted_after_restore() {
             .kind,
         RuntimeReceiptKind::Restored
     );
+    {
+        let mut state = first_start.state.lock().expect("replacement state");
+        assert!(
+            state.thread.initial_actions.is_empty(),
+            "source receipts must not cross the owner boundary"
+        );
+        let mut replacement_action = initial_action_test_payload();
+        replacement_action["action"]["receiptId"] = json!("receipt-replacement");
+        state.thread.initial_actions.insert(
+            "turn-initial".to_string(),
+            serde_json::from_value(replacement_action).expect("replacement action receipt"),
+        );
+        first_start
+            .persist_thread_for_request(&state)
+            .expect("persist replacement action");
+    }
     drop(first_start);
 
     let restarted = SharedRunner::new_with_message_executor_and_restore(
@@ -14161,6 +14196,15 @@ async fn replacement_runner_journal_owner_is_persisted_after_restore() {
         RuntimeLifecycleState::ExecutionReady
     );
     let state = restarted.state.lock().expect("restarted state");
+    let receipt = serde_json::to_value(
+        state
+            .thread
+            .initial_actions
+            .get("turn-initial")
+            .expect("replacement receipt survives restart"),
+    )
+    .expect("serialize receipt");
+    assert_eq!(receipt["action"]["receiptId"], "receipt-replacement");
     assert!(state.ready);
     assert!(!state.draining);
     assert_eq!(state.last_status.as_deref(), Some("Restored from snapshot"));
@@ -14921,4 +14965,177 @@ async fn executor_drain_recovery_uses_durable_applied_position_past_replay_limit
         )
     }));
     assert!(state.pending_executor_drain_result.is_none());
+}
+
+async fn initial_action_test_runner(
+    workspace: &Path,
+    executor: Arc<PendingThreadExecutor>,
+) -> HostedRunnerHandle {
+    // Supply the already-exchanged workload binding to isolate the HTTP/journal
+    // boundary from the separately tested Identity network exchange.
+    let mut prepared = prepare_hosted_runner(test_config(workspace.to_path_buf()))
+        .await
+        .expect("prepare initial-action runner");
+    prepared.config.workload_identity = Some(HostedRunnerWorkloadIdentityConfig {
+        kubernetes_token_file: workspace.join("unused-token"),
+        identity_tls_ca_file: workspace.join("unused-ca"),
+        identity_exchange_url: "https://identity.example.test/exchange".parse().unwrap(),
+        organization_id: "org_test".into(),
+        workspace_id: "ws_test".into(),
+        sandbox_id: Uuid::nil(),
+        placement_generation: 0,
+    });
+    start_prepared_hosted_runner(prepared, executor).expect("start initial-action runner")
+}
+
+fn initial_action_test_payload() -> serde_json::Value {
+    json!({
+        "protocolVersion": "evalops.maestro.thread.v1",
+        "organizationId": "org_test", "workspaceId": "ws_test",
+        "turnId": "turn-initial", "idempotencyKey": "execution-initial",
+        "action": {
+            "executionId": "execution-initial", "callId": "call-initial",
+            "toolName": "sandbox.write", "readOnly": false, "state": 5,
+            "receiptId": "receipt-initial", "safeSummary": "Write completed.",
+            "assistantDelta": "The file was written.", "safeOutput": {"path": "/workspace/proof.txt"},
+            "evidenceRefs": [], "threadId": "operating-thread", "turnId": "turn-initial",
+            "authorityRevision": 1, "acceptedAt": {"seconds": 1_788_792_900, "nanos": 0}
+        }
+    })
+}
+
+#[tokio::test]
+async fn initial_action_http_delivery_is_durable_scoped_and_never_executes_twice() {
+    let workspace = tempdir().unwrap();
+    let executor = Arc::new(PendingThreadExecutor::default());
+    let handle = initial_action_test_runner(workspace.path(), executor.clone()).await;
+    let client = reqwest::Client::new();
+    let (capability, subscription) =
+        attach_thread_controller(&client, &handle.base_url(), "initial-controller").await;
+    let url = format!(
+        "{}/api/headless/threads/mrs_test/initial-actions",
+        handle.base_url()
+    );
+    let post = |payload: serde_json::Value, generation: &str, cap: &str| {
+        client
+            .post(&url)
+            .header("x-maestro-headless-connection-id", "initial-controller")
+            .header("x-maestro-headless-subscriber-id", &subscription)
+            .header("x-maestro-headless-connection-capability", cap)
+            .header("x-maestro-runtime-generation", generation)
+            .json(&payload)
+            .send()
+    };
+    let payload = initial_action_test_payload();
+    assert!(
+        !post(payload.clone(), "1", &capability)
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    assert!(
+        !post(payload.clone(), "0", "invalid-capability")
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    for field in ["organizationId", "workspaceId"] {
+        let mut wrong = payload.clone();
+        wrong[field] = json!("different-tenant");
+        assert!(
+            !post(wrong, "0", &capability)
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+    }
+    let mut pending = payload.clone();
+    pending["action"]["state"] = json!(4);
+    assert_eq!(
+        post(pending, "0", &capability).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    handle.shared.fail_next_thread_persistences(1);
+    assert_eq!(
+        post(payload.clone(), "0", &capability)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert!(
+        handle
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .thread
+            .initial_actions
+            .is_empty()
+    );
+    for replayed in [false, true] {
+        let ack: serde_json::Value = post(payload.clone(), "0", &capability)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ack["accepted"], true);
+        assert_eq!(ack["replayed"], replayed);
+        assert_eq!(ack["thread_id"], "mrs_test");
+        assert_eq!(ack["execution_id"], "execution-initial");
+    }
+    let mut changed = payload.clone();
+    changed["action"]["safeOutput"] = json!({"different": true});
+    assert_eq!(
+        post(changed, "0", &capability).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    assert!(executor.prompts.lock().unwrap().is_empty());
+    handle.shutdown().await;
+
+    let restored = initial_action_test_runner(workspace.path(), executor.clone()).await;
+    let (capability, subscription) =
+        attach_thread_controller(&client, &restored.base_url(), "restored-controller").await;
+    let request = |suffix: &str, body: serde_json::Value| {
+        client
+            .post(format!(
+                "{}/api/headless/threads/mrs_test/{suffix}",
+                restored.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "restored-controller")
+            .header("x-maestro-headless-subscriber-id", &subscription)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&body)
+            .send()
+    };
+    let replay: serde_json::Value = request("initial-actions", payload)
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(replay["replayed"], true);
+    let turn = json!({"protocolVersion": "evalops.maestro.thread.v1", "turnId": "turn-initial", "kind": "user_message", "content": "Explain the result."});
+    for _ in 0..2 {
+        request("turns", turn.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("execution-initial"));
+    assert!(prompts[0].contains("/workspace/proof.txt"));
+    assert!(prompts[0].starts_with("Explain the result."));
+    restored.shutdown().await;
 }

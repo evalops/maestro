@@ -58,6 +58,26 @@ fn test_identity_scope(organization_id: &str, workspace_id: &str) -> TelemetryId
         .expect("complete test Identity scope")
 }
 
+#[test]
+fn delivery_observations_count_pending_and_rejected_events_in_their_own_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let scope = test_identity_scope("org-a", "workspace-a");
+    let other = test_identity_scope("org-a", "workspace-b");
+    let event =
+        first_party_event(&canonical_event(TurnStatus::Success).external_projection()).unwrap();
+    let rejected = persist_first_party_event(temp.path(), &scope, &event).unwrap();
+    assert!(move_to_dead_letter(temp.path(), &rejected));
+    persist_first_party_event(temp.path(), &scope, &event).unwrap();
+    persist_first_party_event(temp.path(), &other, &event).unwrap();
+    let observation = delivery_snapshot(temp.path(), &scope);
+    assert_eq!(observation.pending_events, 1);
+    assert_eq!(observation.rejected_events, 1);
+    assert_eq!(observation.queue_capacity, OUTBOX_CAPACITY as u32);
+    let other_observation = delivery_snapshot(temp.path(), &other);
+    assert_eq!(other_observation.pending_events, 1);
+    assert_eq!(other_observation.rejected_events, 0);
+}
+
 fn delivery_session(
     access_token: &str,
     identity_scope: TelemetryIdentityScope,
@@ -285,7 +305,8 @@ fn canonical_turn_is_durably_logged_and_queued_without_exporting_content() {
     std::env::set_var("MAESTRO_HOME", temp.path());
     clear_telemetry_env();
 
-    record_canonical_turn_event(&canonical_event(TurnStatus::Error));
+    let canonical = canonical_event(TurnStatus::Error);
+    record_canonical_turn_event(&canonical);
 
     let encoded = fs::read_to_string(telemetry_path).expect("local telemetry log");
     let payload = parse_jsonl_record(&encoded);
@@ -302,7 +323,10 @@ fn canonical_turn_is_durably_logged_and_queued_without_exporting_content() {
     assert_eq!(paths.len(), 1, "first-party delivery must be durable");
     let queued = fs::read_to_string(&paths[0]).expect("queued telemetry event");
     assert!(queued.contains("\"eventId\""));
-    for secret in ["private-session", "/private/path", "token=secret"] {
+    let queued_json: Value = serde_json::from_str(&queued).unwrap();
+    assert_eq!(queued_json["event"]["sessionId"], "private-session");
+    assert_eq!(queued_json["event"]["turnId"], canonical.turn_id);
+    for secret in ["/private/path", "token=secret"] {
         assert!(!queued.contains(secret), "outbox leaked {secret}");
     }
     #[cfg(unix)]
@@ -1003,4 +1027,202 @@ fn stream_open_failure_requires_complete_nullable_coverage_and_bounds() {
         *count = None;
     }
     assert!(measured.is_valid());
+}
+
+#[test]
+fn configured_otlp_export_delivers_content_free_log() {
+    let _lock = crate::config::test_process_env_lock();
+    let _restore = EnvRestore::capture(&[
+        "MAESTRO_TELEMETRY_FORMAT",
+        "MAESTRO_HOME",
+        "MAESTRO_TELEMETRY",
+        "PLAYWRIGHT_TELEMETRY",
+        "MAESTRO_TELEMETRY_FILE",
+        "PLAYWRIGHT_TELEMETRY_FILE",
+        "MAESTRO_TELEMETRY_ENDPOINT",
+        "PLAYWRIGHT_TELEMETRY_ENDPOINT",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ]);
+    let temp = tempfile::tempdir().expect("telemetry tempdir");
+    let (endpoint, requests, server) = loopback_server(vec![202]);
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    clear_telemetry_env();
+    std::env::set_var("MAESTRO_TELEMETRY_ENDPOINT", &endpoint);
+
+    std::env::set_var("MAESTRO_TELEMETRY_FORMAT", "otlp");
+    record_canonical_turn_event(&canonical_event(TurnStatus::Success));
+
+    let request = requests
+        .recv_timeout(Duration::from_secs(3))
+        .expect("custom telemetry request");
+    assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    assert!(request.contains("\"resourceLogs\""));
+    assert!(!request.contains("private-session"));
+    server.join().expect("loopback server");
+}
+
+#[test]
+fn cloud_projection_preserves_receipts_and_only_fully_reported_cost() {
+    let mut external = canonical_event(TurnStatus::Success).external_projection();
+    external.tool_count = 2;
+    external.tool_success_count = 1;
+    external.tool_failure_count = 1;
+    external.tool_outcomes.succeeded = 1;
+    external.tool_outcomes.denied = 1;
+    external.tool_outcomes.measured_execution_count = 1;
+    external.tool_outcomes.execution_duration_ms = 12;
+    external.reported_cost_usd = Some(0.0);
+    let measurements = external.measurements.as_mut().unwrap();
+    measurements.response_count = 2;
+    measurements.responses_with_cost = 2;
+    let projected = first_party_event(&external).unwrap();
+    assert!(projected.is_server_valid());
+    let wire = serde_json::to_value(&projected).unwrap();
+    assert_eq!(wire["toolOutcomes"]["denied"], 1);
+    assert_eq!(wire["toolOutcomes"]["executionDurationMs"], 12);
+    assert_eq!(wire["reportedCostUsd"], 0.0);
+    external.measurements.as_mut().unwrap().responses_with_cost = 1;
+    assert!(
+        first_party_event(&external)
+            .unwrap()
+            .reported_cost_usd
+            .is_none()
+    );
+    external.tool_outcomes.denied = u32::MAX;
+    assert!(
+        first_party_event(&external)
+            .unwrap()
+            .tool_outcomes
+            .is_none()
+    );
+    let mut forbidden = wire;
+    forbidden["toolOutcomes"]["arguments"] = json!("private");
+    assert!(serde_json::from_value::<FirstPartyTurnTelemetryEvent>(forbidden).is_err());
+}
+
+#[tokio::test]
+async fn terminal_flush_waits_for_delivery_but_bounds_a_stalled_worker() {
+    let in_flight = std::sync::Arc::new(AtomicBool::new(true));
+    let worker_flag = in_flight.clone();
+    let worker = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        worker_flag.store(false, Ordering::Release);
+    });
+    wait_for_outbox_worker(&in_flight, Duration::from_secs(1)).await;
+    assert!(!in_flight.load(Ordering::Acquire));
+    worker.await.unwrap();
+    in_flight.store(true, Ordering::Release);
+    let started = Instant::now();
+    wait_for_outbox_worker(&in_flight, Duration::from_millis(25)).await;
+    assert!(in_flight.load(Ordering::Acquire));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn terminal_only_receipts_survive_cloud_projection_without_invented_timing() {
+    use maestro_runtime::{ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails};
+    let mut collector =
+        super::super::TurnCollector::new("fixture", 1, super::super::TailSamplingConfig::default());
+    for (call_id, status) in [
+        ("auto", ExecutionStatus::Succeeded),
+        ("denied", ExecutionStatus::Denied),
+    ] {
+        let receipt = ExecutionReceipt {
+            code_authority: None,
+            call_id: call_id.to_owned(),
+            tool_name: "bash".to_owned(),
+            source: ExecutionSource::Native,
+            status,
+            duration_ms: Some(17),
+            policy: None,
+            details: ToolReceiptDetails::None,
+        };
+        for _ in 0..2 {
+            collector.record_tool_receipt(call_id, Some(&receipt));
+            collector.record_tool_end(call_id, status == ExecutionStatus::Succeeded, None, None);
+        }
+    }
+    let external = collector
+        .complete(
+            TurnStatus::Success,
+            super::super::TokenUsage::default(),
+            0.0,
+            None,
+            None,
+        )
+        .external_projection();
+    assert_eq!(
+        external.tool_duration_ms, 0,
+        "no local start time was observed"
+    );
+    let projected = first_party_event(&external).unwrap();
+    assert_eq!(projected.tool_count, 2);
+    assert_eq!(projected.tool_success_count, 1);
+    assert_eq!(projected.tool_failure_count, 1);
+    assert!(projected.is_server_valid());
+    let outcomes = projected
+        .tool_outcomes
+        .expect("receipt outcomes must reach the cloud");
+    assert_eq!(outcomes.succeeded, 1);
+    assert_eq!(outcomes.denied, 1);
+    assert_eq!(outcomes.measured_execution_count, 1);
+    assert_eq!(outcomes.execution_duration_ms, 17);
+}
+
+#[tokio::test]
+async fn terminal_flush_schedules_and_waits_for_records_queued_during_a_drain() {
+    let in_flight = std::sync::Arc::new(AtomicBool::new(true));
+    let first_flag = in_flight.clone();
+    let first = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        first_flag.store(false, Ordering::Release);
+    });
+    let delivered = std::sync::Arc::new(AtomicBool::new(false));
+    let next_flag = in_flight.clone();
+    let next_delivered = delivered.clone();
+    flush_outbox_worker(&in_flight, Duration::from_secs(1), move || {
+        assert!(!next_flag.swap(true, Ordering::AcqRel));
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            next_delivered.store(true, Ordering::Release);
+            next_flag.store(false, Ordering::Release);
+        });
+    })
+    .await;
+    first.await.unwrap();
+    assert!(delivered.load(Ordering::Acquire));
+    assert!(!in_flight.load(Ordering::Acquire));
+
+    in_flight.store(true, Ordering::Release);
+    flush_outbox_worker(&in_flight, Duration::from_millis(25), || {
+        panic!("a stalled drain must not start another worker");
+    })
+    .await;
+}
+
+#[test]
+fn terminal_delivery_respects_each_existing_telemetry_opt_out() {
+    let _lock = crate::config::test_process_env_lock();
+    let names = [
+        "MAESTRO_TELEMETRY",
+        "PLAYWRIGHT_TELEMETRY",
+        "MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+        "EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+    ];
+    let _restore = EnvRestore::capture(&names);
+    for name in names {
+        std::env::remove_var(name);
+    }
+    assert!(!first_party_telemetry_disabled());
+    for (name, value) in [
+        ("MAESTRO_TELEMETRY", "0"),
+        ("PLAYWRIGHT_TELEMETRY", "0"),
+        ("MAESTRO_INTERNAL_TELEMETRY_DISABLED", "true"),
+        ("EVALOPS_INTERNAL_TELEMETRY_DISABLED", "true"),
+    ] {
+        std::env::set_var(name, value);
+        assert!(first_party_telemetry_disabled(), "{name}");
+        std::env::remove_var(name);
+    }
 }

@@ -788,9 +788,17 @@ impl RotatingLogWriter {
     }
 
     async fn ensure_log_file(&mut self) -> Result<(), String> {
-        ensure_logs_dir()?;
         if self.file.is_some() {
             return Ok(());
+        }
+        if let Some(parent) = self
+            .log_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                format!("Failed to create logs directory {}: {e}", parent.display())
+            })?;
         }
         let file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -1614,6 +1622,40 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("Timed out waiting for log rotation"));
+    }
+
+    #[tokio::test]
+    async fn rotating_writer_creates_its_explicit_parent_and_preserves_rotated_bytes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("custom/nested/rotate.log");
+        let mut writer = RotatingLogWriter::new(log_path.clone(), 10, 1)
+            .await
+            .unwrap();
+        writer.append(b"12345678901").await.unwrap();
+        writer.finish().await;
+        let info = writer
+            .observer()
+            .wait_for_rotation(Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(info.log_path, log_path);
+        assert_eq!(
+            tokio::fs::read(info.archive_path).await.unwrap(),
+            b"1234567890"
+        );
+        assert_eq!(tokio::fs::read(log_path).await.unwrap(), b"1");
+    }
+
+    #[tokio::test]
+    async fn rotating_writer_rejects_a_file_as_its_explicit_parent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let parent = temp_dir.path().join("blocked");
+        tokio::fs::write(&parent, b"retain this file")
+            .await
+            .unwrap();
+        let result = RotatingLogWriter::new(parent.join("rotate.log"), 10, 1).await;
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read(parent).await.unwrap(), b"retain this file");
     }
 
     #[tokio::test]

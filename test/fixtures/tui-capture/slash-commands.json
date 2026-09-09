@@ -1,7 +1,7 @@
 {
   "name": "slash-commands",
   "steps": [
-    { "wait": "(?s)Dex.*GPT-4o.*release-planner" },
+    { "wait": "(?s)Dex.*GPT-6 Astra.*release-planner" },
     { "text": "/" },
     { "wait": "(?s)Commands.*Enter run.*Tab complete" }
   ]

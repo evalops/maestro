@@ -25,6 +25,7 @@ fn test_host(executor: Arc<ToolExecutor>, cwd: &str) -> NativeExecutionHostHandl
         IntegratedHookSystem::new(cwd),
         |_, _| Err("read-only integration test host has no model resolver".to_owned()),
         |_| NativeModelRoute::DirectProvider,
+        None,
     )
 }
 

@@ -2189,6 +2189,7 @@ mod tests {
             crate::hooks::IntegratedHookSystem::new(&cwd),
             |_, _| Err("policy fixture has no model resolver".to_owned()),
             |_| maestro_runtime::agent::NativeModelRoute::DirectProvider,
+            None,
         );
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let runtime = tokio::runtime::Builder::new_current_thread()

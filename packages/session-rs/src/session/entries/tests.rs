@@ -1137,3 +1137,22 @@ fn unknown_fields_are_tolerated_for_forward_compatibility() {
             .is_none()
     );
 }
+
+#[test]
+fn session_history_fixture_matches_native_writer_wire_format() {
+    let fixture = include_str!("../../../../session-history-rs/tests/fixtures/maestro.jsonl");
+    let entries: Vec<SessionEntry> = fixture
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let values: Vec<Value> = entries
+        .iter()
+        .map(|entry| serde_json::to_value(entry).unwrap())
+        .collect();
+    assert_eq!(values[0]["type"], "session");
+    assert_eq!(values[2]["message"]["content"][1]["type"], "toolCall");
+    assert_eq!(values[3]["message"]["role"], "toolResult");
+    assert_eq!(values[3]["message"]["toolCallId"], "call-check");
+    assert_eq!(values[3]["message"]["isError"], false);
+    assert_eq!(values[2]["message"]["usage"]["input"], 12);
+}

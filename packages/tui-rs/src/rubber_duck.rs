@@ -393,6 +393,7 @@ pub async fn run_review(
 /// stdout printing and exit codes.
 async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
     let config = NativeAgentConfig {
+        model_capabilities: None,
         model_dynamics: crate::config::model_dynamics_config(),
         model: model.to_string(),
         max_tokens: crate::model_catalog::default_max_output_tokens(model),

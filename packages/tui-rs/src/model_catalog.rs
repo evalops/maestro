@@ -223,6 +223,7 @@ pub fn available_models() -> Vec<ModelInfo> {
             }
         }
     }
+    append_managed_fireworks_models(&mut models);
     append_builtin_local_models(&mut models);
     mirror_vertex_models(&mut models);
     models
@@ -232,10 +233,68 @@ pub fn available_models() -> Vec<ModelInfo> {
 #[must_use]
 pub fn model_route(model: &ModelInfo) -> String {
     match model.provider.as_str() {
-        "google" | "vertex-ai" | "llamacpp" | "lmstudio" | "ollama" | "openrouter" => {
+        "evalops" | "google" | "vertex-ai" | "llamacpp" | "lmstudio" | "ollama" | "openrouter" => {
             format!("{}/{}", model.provider, model.id)
         }
         _ => model.id.clone(),
+    }
+}
+
+pub(crate) struct ManagedFireworksModel {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
+/// Shipped managed route metadata. Gateway admission and pricing remain server-owned.
+pub(crate) const MANAGED_FIREWORKS_MODELS: &[ManagedFireworksModel] = &[
+    ManagedFireworksModel {
+        id: "accounts/fireworks/models/glm-5p3",
+        name: "GLM-5.3",
+    },
+    ManagedFireworksModel {
+        id: "accounts/fireworks/models/glm-5p3-flash",
+        name: "GLM-5.3 Flash",
+    },
+    ManagedFireworksModel {
+        id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+        name: "DeepSeek V4 Flash 0731",
+    },
+    ManagedFireworksModel {
+        id: "accounts/fireworks/models/kimi-k3",
+        name: "Kimi K3",
+    },
+];
+
+// Managed routes are product-owned typed contracts, independent of community cache refreshes.
+fn append_managed_fireworks_models(models: &mut Vec<ModelInfo>) {
+    for price in MANAGED_FIREWORKS_MODELS {
+        models.retain(|model| !(model.provider == "evalops" && model.id == price.id));
+        models.push(ModelInfo {
+            id: price.id.to_owned(),
+            name: price.name.to_owned(),
+            provider: "evalops".to_owned(),
+            description: "Fireworks · Model credits · Text and tools".to_owned(),
+            capabilities: ModelCapabilities {
+                protocol: ModelProtocol::OpenAiChat,
+                tools: true,
+                // The managed prepaid contract currently admits text and tools only.
+                vision: false,
+                // Reasoning controls are not part of the prepaid request contract.
+                reasoning: false,
+                streaming: true,
+                context_tokens: 1_048_576,
+                // Keep the existing 16k default; the gateway enforces its 32k ceiling.
+                output_tokens: None,
+            },
+            verification: ModelVerification {
+                state: VerificationState::Catalog,
+                source: "managed-fireworks-contract".to_owned(),
+                detail: Some(
+                    "Availability requires a configured managed route and model credits."
+                        .to_owned(),
+                ),
+            },
+        });
     }
 }
 
@@ -1239,6 +1298,24 @@ mod tests {
             fetched_at,
             last_modified: None,
             models,
+        }
+    }
+
+    #[test]
+    fn managed_fireworks_routes_survive_cache_and_preserve_provider_and_limits() {
+        let mut models = Vec::new();
+        append_managed_fireworks_models(&mut models);
+        append_managed_fireworks_models(&mut models);
+        assert_eq!(models.len(), 4);
+        for price in MANAGED_FIREWORKS_MODELS {
+            let route = format!("evalops/{}", price.id);
+            let model = find_model(&route).unwrap();
+            assert_eq!(model_route(&model), route);
+            assert_eq!(model.name, price.name);
+            assert_eq!(default_max_output_tokens(&route), DEFAULT_MAX_OUTPUT_TOKENS);
+            assert!(!model.capabilities.vision);
+            assert!(!model.capabilities.reasoning);
+            assert!(model.capabilities.tools && model.capabilities.streaming);
         }
     }
 

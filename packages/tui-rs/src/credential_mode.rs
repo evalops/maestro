@@ -634,13 +634,21 @@ pub fn platform_session_from(
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
     })?;
-    let workspace_id = env_value(env, WORKSPACE_ID_ENV).or_else(|| {
-        snapshot
-            .and_then(|value| value.agent_mcp.as_ref())
-            .and_then(|meta| meta.workspace_id.clone())
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-    });
+    let workspace_id = env_value(env, WORKSPACE_ID_ENV)
+        .or_else(|| {
+            snapshot
+                .and_then(|value| value.agent_mcp.as_ref())
+                .and_then(|meta| meta.workspace_id.clone())
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            snapshot
+                .and_then(|value| value.workspace_id.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        });
     let provider_ref = snapshot
         .and_then(|value| value.provider_ref.clone())
         .unwrap_or_else(|| default_provider_ref(env, None));
@@ -728,9 +736,17 @@ impl PlatformSession {
         env.insert(ORG_ID_ENV.to_owned(), self.organization_id.clone());
         env.insert(WORKSPACE_ID_ENV.to_owned(), workspace_id.to_owned());
         // Existing Identity snapshots may carry the previous OpenAI default.
-        // Selecting the shipped GLM route selects Fireworks explicitly, while
+        // Selecting a shipped Fireworks route selects Fireworks explicitly, while
         // preserving the authenticated tenant, environment, and team scope.
-        let select_fireworks = model == DEFAULT_MANAGED_MODEL
+        let select_fireworks = model
+            .strip_prefix("evalops/")
+            .or_else(|| model.strip_prefix("maestro-managed/"))
+            .and_then(|model| {
+                crate::model_catalog::MANAGED_FIREWORKS_MODELS
+                    .iter()
+                    .find(|entry| entry.id == model)
+            })
+            .is_some()
             && provider_ref_string(&self.provider_ref, "provider").as_deref() != Some("fireworks");
         let provider = if select_fireworks {
             "fireworks".to_owned()
@@ -1247,15 +1263,17 @@ mod tests {
                 "credential_name": "default"
             }),
         };
-        let model = "evalops/accounts/fireworks/models/glm-5p3";
-        let env = session.managed_env(model, &HashMap::new()).unwrap();
-        assert_eq!(env[PROVIDER_ENV], "fireworks");
-        assert_eq!(env[ORG_ID_ENV], "org-1");
-        assert_eq!(env[WORKSPACE_ID_ENV], "workspace-2");
-        assert_eq!(env[ENVIRONMENT_ENV], "production");
-        assert_eq!(env[CREDENTIAL_NAME_ENV], "deixic-llm-gateway-glm53");
-        assert_eq!(session.managed_model_route(model), model);
-        assert!(!env.contains_key("FIREWORKS_API_KEY"));
+        for price in crate::model_catalog::MANAGED_FIREWORKS_MODELS {
+            let model = format!("evalops/{}", price.id);
+            let env = session.managed_env(&model, &HashMap::new()).unwrap();
+            assert_eq!(env[PROVIDER_ENV], "fireworks");
+            assert_eq!(env[ORG_ID_ENV], "org-1");
+            assert_eq!(env[WORKSPACE_ID_ENV], "workspace-2");
+            assert_eq!(env[ENVIRONMENT_ENV], "production");
+            assert_eq!(env[CREDENTIAL_NAME_ENV], "deixic-llm-gateway-glm53");
+            assert_eq!(session.managed_model_route(&model), model);
+            assert!(!env.contains_key("FIREWORKS_API_KEY"));
+        }
     }
 
     fn snapshot(org: &str, token: &str) -> EvalOpsCredentialSnapshot {
@@ -1265,6 +1283,7 @@ mod tests {
             expires: 1,
             email: Some("user@evalops.dev".to_owned()),
             organization_id: Some(org.to_owned()),
+            workspace_id: None,
             user_id: Some("user_1".to_owned()),
             identity_base_url: Some("https://identity.evalops.dev".to_owned()),
             provider_ref: Some(serde_json::json!({
@@ -1283,6 +1302,48 @@ mod tests {
         let mut snapshot = snapshot(org, token);
         snapshot.agent_mcp = None;
         snapshot
+    }
+
+    #[test]
+    fn issuer_workspace_survives_fresh_oauth_without_agent_metadata() {
+        let mut credential = snapshot_without_workspace("org_1", "tok");
+        credential.workspace_id = Some(" issuer-workspace ".to_owned());
+        let mut env = HashMap::new();
+        assert_eq!(
+            platform_session_from(Some(&credential), &env)
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            Some("issuer-workspace")
+        );
+        credential.agent_mcp = Some(EvalOpsAgentMcpSnapshot {
+            workspace_id: Some("agent-workspace".to_owned()),
+            ..EvalOpsAgentMcpSnapshot::default()
+        });
+        assert_eq!(
+            platform_session_from(Some(&credential), &env)
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            Some("agent-workspace")
+        );
+        env.insert(WORKSPACE_ID_ENV.to_owned(), "env-workspace".to_owned());
+        assert_eq!(
+            platform_session_from(Some(&credential), &env)
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            Some("env-workspace")
+        );
+        env.clear();
+        credential.agent_mcp = None;
+        credential.workspace_id = Some("  ".to_owned());
+        assert!(
+            platform_session_from(Some(&credential), &env)
+                .unwrap()
+                .workspace_id
+                .is_none()
+        );
     }
 
     fn active_introspection(
