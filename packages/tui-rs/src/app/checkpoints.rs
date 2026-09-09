@@ -312,13 +312,19 @@ impl App {
         for (index, checkpoint) in checkpoints.iter().rev().enumerate() {
             let file_count = checkpoint.entries.len();
             msg.push_str(&format!(
-                "{}. `{}` — {} — \"{}\" — {} file{}\n",
+                "{}. `{}` — {} — \"{}\" — {}\n",
                 index + 1,
                 checkpoint.short_id(),
                 checkpoint.created_at,
                 checkpoint.prompt,
-                file_count,
-                if file_count == 1 { "" } else { "s" }
+                self.state.locale.format(
+                    if file_count == 1 {
+                        "{0} file"
+                    } else {
+                        "{0} files"
+                    },
+                    &[file_count.to_string()],
+                )
             ));
         }
         msg.push_str(

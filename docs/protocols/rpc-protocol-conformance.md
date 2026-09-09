@@ -9,7 +9,7 @@ It pins the JSON-over-stdio launch and dispatch contract used by embedded client
 and release E2E smokes after the native cutover:
 
 - CLI `--mode rpc` (and headless) routes to `maestro-tui --headless`
-- native server dispatch in `packages/tui-rs/src/headless_server.rs`
+- native server dispatch in `packages/local-host-rs/src/headless_server.rs`
 - typed client launch via `NativeHeadlessClient` (not the removed TS `RpcClient`)
 - headless protocol message unions in `src/cli/headless-protocol.ts`
 - launcher / runtime tests that keep rpc mode on the native headless path

@@ -81,32 +81,31 @@ impl ContextBreakdown {
         self.system_prompt + self.tool_results + self.tool_schemas + self.conversation + self.other
     }
 
+    /// Canonical category keys keep recommendation selection independent of locale.
+    fn category_values(&self) -> [(&'static str, u64); 5] {
+        [
+            ("System prompt", self.system_prompt),
+            ("Tool schemas", self.tool_schemas),
+            ("Tool results", self.tool_results),
+            ("Conversation", self.conversation),
+            ("Other / overhead", self.other),
+        ]
+    }
+
     /// Category rows in display order: `(label, tokens, share of total in %)`.
     #[must_use]
     pub fn categories(&self) -> Vec<(&'static str, u64, f64)> {
         let total = self.total();
-        [
-            (
-                maestro_ui::localization::tr("System prompt"),
-                self.system_prompt,
-            ),
-            (
-                maestro_ui::localization::tr("Tool schemas"),
-                self.tool_schemas,
-            ),
-            (
-                maestro_ui::localization::tr("Tool results"),
-                self.tool_results,
-            ),
-            (
-                maestro_ui::localization::tr("Conversation"),
-                self.conversation,
-            ),
-            ("Other / overhead", self.other),
-        ]
-        .into_iter()
-        .map(|(label, tokens)| (label, tokens, share(tokens, total)))
-        .collect()
+        self.category_values()
+            .into_iter()
+            .map(|(key, tokens)| {
+                (
+                    maestro_ui::localization::tr(key),
+                    tokens,
+                    share(tokens, total),
+                )
+            })
+            .collect()
     }
 
     /// One suggestion derived from counted categories, never from guessed content.
@@ -115,10 +114,10 @@ impl ContextBreakdown {
         if total == 0 {
             return maestro_ui::localization::tr("No conversation context yet.").into();
         }
-        let (category, _, pct) = self
-            .categories()
+        let (category, tokens) = self
+            .category_values()
             .into_iter()
-            .max_by_key(|(_, tokens, _)| *tokens)
+            .max_by_key(|(_, tokens)| *tokens)
             .expect("fixed categories");
         let pressure = context_window
             .filter(|window| *window > 0)
@@ -148,8 +147,8 @@ impl ContextBreakdown {
         maestro_ui::localization::format(
             "**Next step:** {0} is the largest category ({1}%). {2}{3}",
             &[
-                (category).to_string(),
-                format!("{:.1}", pct),
+                maestro_ui::localization::tr(category).to_string(),
+                format!("{:.1}", share(tokens, total)),
                 (action).to_string(),
                 (unknown).to_string(),
             ],
@@ -199,8 +198,12 @@ impl ContextBreakdown {
         lines.push(maestro_ui::localization::format(
             "**Token count:** {0}",
             &[(match confidence {
-                CountConfidence::Measured => "measured with the model tokenizer",
-                CountConfidence::Estimated => "estimated (model tokenizer unavailable)",
+                CountConfidence::Measured => {
+                    maestro_ui::localization::tr("measured with the model tokenizer")
+                }
+                CountConfidence::Estimated => {
+                    maestro_ui::localization::tr("estimated (model tokenizer unavailable)")
+                }
             })
             .to_string()],
         ));
@@ -226,35 +229,55 @@ impl ContextBreakdown {
             ));
         }
         if let Some(tokens) = response_reserve {
-            lines.push(format!("- **Response reserve:** {}", format_tokens(tokens)));
+            lines.push(maestro_ui::localization::format(
+                "- **Response reserve:** {0}",
+                &[format_tokens(tokens)],
+            ));
         }
         if let Some(tokens) = remaining_headroom {
-            lines.push(format!("- **Remaining:** {}", format_tokens(tokens)));
+            lines.push(maestro_ui::localization::format(
+                "- **Remaining:** {0}",
+                &[format_tokens(tokens)],
+            ));
         }
         lines.push(String::new());
 
         match context_window {
             Some(window) if window > 0 => {
                 let used_pct = token_estimation::usage_percentage(total, window);
-                lines.push(format!(
-                    "**Total:** {} of {} ({used_pct:.1}%)",
-                    format_tokens(total),
-                    format_tokens(window)
+                lines.push(maestro_ui::localization::format(
+                    "**Total:** {0} of {1} ({2}%)",
+                    &[
+                        format_tokens(total),
+                        format_tokens(window),
+                        (format!("{used_pct:.1}")).to_string(),
+                    ],
                 ));
                 if response_reserve.is_some() || remaining_headroom.is_some() {
                     let segments = self.waterfall_segments(response_reserve, remaining_headroom);
-                    lines.push(format!(
-                        "**Waterfall:** {}",
-                        proportional_waterfall(&segments, WATERFALL_WIDTH)
+                    lines.push(maestro_ui::localization::format(
+                        "**Waterfall:** {0}",
+                        &[proportional_waterfall(&segments, WATERFALL_WIDTH)],
                     ));
-                    lines.push("S system · D schemas · R results · C conversation".to_string());
-                    lines.push("O other · P reserve · . remaining".to_string());
+                    lines.push(
+                        maestro_ui::localization::tr(
+                            "S system · D schemas · R results · C conversation",
+                        )
+                        .to_string(),
+                    );
+                    lines.push(
+                        maestro_ui::localization::tr("O other · P reserve · . remaining")
+                            .to_string(),
+                    );
                 } else {
                     lines.push(progress_bar(used_pct / 100.0, WATERFALL_WIDTH));
                 }
             }
             _ => {
-                lines.push(format!("**Total:** {} (estimated)", format_tokens(total)));
+                lines.push(maestro_ui::localization::format(
+                    "**Total:** {0} (estimated)",
+                    &[format_tokens(total)],
+                ));
             }
         }
 
@@ -663,5 +686,34 @@ mod advice_tests {
             ContextBreakdown::default().advice(None),
             "No conversation context yet."
         );
+    }
+    #[test]
+    fn localized_advice_uses_canonical_category_and_preserves_model_identity() {
+        for locale in maestro_ui::localization::Locale::ALL {
+            maestro_ui::localization::with_locale(locale, || {
+                let schemas = ContextBreakdown {
+                    tool_schemas: 900,
+                    ..Default::default()
+                };
+                let system = ContextBreakdown {
+                    system_prompt: 900,
+                    ..Default::default()
+                };
+                assert!(schemas.advice(Some(1000)).contains("`/tools`"));
+                assert!(system.advice(Some(1000)).contains("`/harness list`"));
+                let rendered = schemas.render_with_budget(
+                    Some("model/keep-me"),
+                    Some(1000),
+                    Some(50),
+                    Some(50),
+                );
+                assert!(rendered.contains("model/keep-me"));
+                assert!(rendered.contains(locale.translate("Other / overhead")));
+                assert!(
+                    rendered
+                        .contains(&locale.format("- **Response reserve:** {0}", &["50".into()]))
+                );
+            });
+        }
     }
 }

@@ -52,7 +52,7 @@ exfiltrate data.
 
 - The agent protocol treats wrapped content as data and does not grant it
   authority to change the user's task.
-- `packages/tui-rs/src/safety/firewall.rs` checks tool calls after the model
+- `packages/local-host-rs/src/safety/firewall.rs` checks tool calls after the model
   proposes them.
 - Dangerous shell patterns are blocked or sent to approval by
   `dangerous_patterns.rs` and `bash_analyzer.rs`.
@@ -99,7 +99,7 @@ symlink to a protected path, or uses traversal to reach host data.
 
 **Controls:**
 
-- `packages/tui-rs/src/safety/path_containment.rs` canonicalizes paths where
+- `packages/local-host-rs/src/safety/path_containment.rs` canonicalizes paths where
   possible and checks traversal, workspace/safe-zone containment, and
   protected system paths.
 - The firewall applies these checks to read, write, edit, search, and related

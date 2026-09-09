@@ -492,7 +492,7 @@ impl App {
                     self.state.error = None;
                     self.state
                         .status
-                        .replace(format!("Footer style: {} (saved)", style.as_str()));
+                        .replace(self.state.locale.format("Footer style: {0} (saved)", &[(self.state.locale.translate(style.as_str())).to_string()]));
                 }
             }
             CommandAction::Attach(action) => self.handle_attach_action(action),
@@ -817,12 +817,14 @@ impl App {
                     .saturating_add(maestro_runtime::agent::REQUEST_CONTEXT_SAFETY_TOKENS),
             )
         });
-        let mut report = breakdown.render_with_budget(
-            Some(&report_model),
-            context_window,
-            response_reserve,
-            remaining_headroom,
-        );
+        let mut report = crate::localization::with_locale(self.state.locale, || {
+            breakdown.render_with_budget(
+                Some(&report_model),
+                context_window,
+                response_reserve,
+                remaining_headroom,
+            )
+        });
         report.push_str(&format!("\n\n{basis}"));
         report.push_str(&self.state.locale.format("\n\nPrompt cache estimate: {0} Provider-reported cache usage is shown separately in /usage.", &[(cache_explanation).to_string()]));
         tool_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -1228,9 +1230,12 @@ impl App {
         match self.session_manager.most_recent_session() {
             Ok(Some(session)) => self.apply_resumed_session(&session),
             Ok(None) => {
-                self.state
-                    .status
-                    .replace("No previous session found for this workspace.".to_string());
+                self.state.status.replace(
+                    self.state
+                        .locale
+                        .translate("No previous session found for this workspace.")
+                        .to_string(),
+                );
             }
             Err(err) => {
                 self.state.error = Some(
@@ -1801,16 +1806,13 @@ impl App {
             .count();
         if open_count > 0 {
             return Some(self.state.locale.format(
-                "Plan exit blocked by {0} open review comment{1}. Use `/plan comments`.",
-                &[
-                    (open_count).to_string(),
-                    (if open_count == 1 { "" } else { "s" }).to_string(),
-                ],
+                "Open review comments prevent leaving plan mode: {0}. Use `/plan comments`.",
+                &[open_count.to_string()],
             ));
         }
         let stale = self.stale_plan_review_ids();
         (!stale.is_empty()).then(|| {
-            self.state.locale.format("Plan changed after {0} review comment{1} were created. Recreate stale comments before leaving plan mode.", &[(stale.len()).to_string(), (if stale.len() == 1 { "" } else { "s" }).to_string()])
+            self.state.locale.format("Review comments on an earlier plan: {0}. Recreate stale comments before leaving plan mode.", &[stale.len().to_string()])
         })
     }
 
@@ -3013,14 +3015,17 @@ impl App {
                 self.refresh_skills(true);
                 self.update_agent_system_prompt();
                 if self.skill_load_errors.is_empty() {
-                    self.state
-                        .status
-                        .replace(format!("Loaded {} skill(s)", self.loaded_skills.len()));
+                    self.state.status.replace(self.state.locale.format(
+                        "Loaded {0} skill(s)",
+                        &[(self.loaded_skills.len()).to_string()],
+                    ));
                 } else {
-                    self.state.status.replace(format!(
-                        "Loaded {} skill(s), {} error(s)",
-                        self.loaded_skills.len(),
-                        self.skill_load_errors.len()
+                    self.state.status.replace(self.state.locale.format(
+                        "Loaded {0} skill(s), {1} error(s)",
+                        &[
+                            (self.loaded_skills.len()).to_string(),
+                            (self.skill_load_errors.len()).to_string(),
+                        ],
                     ));
                 }
                 let mut msg = self.state.locale.format(
@@ -3110,7 +3115,9 @@ impl App {
 
         match action {
             PluginsAction::List => {
-                let mut report = self.plugin_registry.list_report();
+                let mut report = crate::localization::with_locale(self.state.locale, || {
+                    self.plugin_registry.list_report()
+                });
                 let cwd = self
                     .state
                     .cwd
@@ -3128,7 +3135,11 @@ impl App {
             }
             PluginsAction::Info(name) => match self.plugin_registry.get(&name) {
                 Some(plugin) => {
-                    self.state.add_system_message(plugin.detail_report());
+                    self.state
+                        .add_system_message(crate::localization::with_locale(
+                            self.state.locale,
+                            || plugin.detail_report(),
+                        ));
                 }
                 None => {
                     self.state.error = Some(self.state.locale.format(
@@ -3146,16 +3157,25 @@ impl App {
                         .locale
                         .format("Discovered {0} plugin(s)", &[(count).to_string()]),
                 );
-                self.state.add_system_message(self.state.locale.format(
-                    "Reloaded plugins from filesystem. Found {0} plugin(s).\n\n{1}",
-                    &[
-                        (count).to_string(),
-                        (self.plugin_registry.list_report()).clone(),
-                    ],
-                ));
+                self.state.add_system_message(
+                    self.state.locale.format(
+                        "Reloaded plugins from filesystem. Found {0} plugin(s).\n\n{1}",
+                        &[
+                            (count).to_string(),
+                            (crate::localization::with_locale(self.state.locale, || {
+                                self.plugin_registry.list_report()
+                            }))
+                            .clone(),
+                        ],
+                    ),
+                );
             }
             PluginsAction::MarketplaceList => {
-                let catalog = crate::plugins::builtin_catalog();
+                let mut catalog = crate::plugins::builtin_catalog();
+                // Only this built-in display copy is translated; third-party manifests stay verbatim.
+                for entry in &mut catalog {
+                    entry.description = self.state.locale.translate(&entry.description).to_owned();
+                }
                 let installed: std::collections::HashSet<String> = self
                     .plugin_registry
                     .plugins()
@@ -3163,7 +3183,10 @@ impl App {
                     .map(|p| p.name.clone())
                     .collect();
                 self.state
-                    .add_system_message(crate::plugins::format_catalog(&catalog, &installed));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || crate::plugins::format_catalog(&catalog, &installed),
+                    ));
             }
             PluginsAction::MarketplaceInstall { id, trust } => {
                 let catalog = crate::plugins::builtin_catalog();
@@ -3320,7 +3343,11 @@ impl App {
         let previous_tools_visible = self.goal_store.tools_visible();
         match action {
             GoalAction::Status => {
-                self.state.add_system_message(self.goal_store.report());
+                self.state
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.goal_store.report(),
+                    ));
             }
             GoalAction::Create {
                 text,
@@ -3376,9 +3403,11 @@ impl App {
             GoalAction::Pause => match self.goal_store.pause() {
                 Ok(goal) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} paused", goal.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} paused", std::slice::from_ref(&goal.id)),
+                    );
                     self.state.add_system_message(
                         self.state
                             .locale
@@ -3390,9 +3419,11 @@ impl App {
             GoalAction::Resume => match self.goal_store.resume() {
                 Ok(goal) => {
                     self.goal_auto_continue_armed = true;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} resumed", goal.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} resumed", std::slice::from_ref(&goal.id)),
+                    );
                     self.state.add_system_message(self.state.locale.format(
                         "Goal {0} resumed (auto-continue on).",
                         std::slice::from_ref(&(goal.id)),
@@ -3421,9 +3452,11 @@ impl App {
             GoalAction::Complete => match self.goal_store.complete() {
                 Ok(done) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} complete", done.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} complete", std::slice::from_ref(&done.id)),
+                    );
                     self.state.add_system_message(self.state.locale.format(
                         "Goal {0} marked complete.\n\n{1}",
                         &[(done.id).clone(), (done.text).clone()],
@@ -3434,9 +3467,11 @@ impl App {
             GoalAction::Clear => match self.goal_store.clear() {
                 Ok(Some(prev)) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} cleared", prev.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} cleared", std::slice::from_ref(&prev.id)),
+                    );
                     self.state.add_system_message(
                         self.state
                             .locale
@@ -3458,9 +3493,11 @@ impl App {
                         } else {
                             self.state.locale.translate("off")
                         };
-                        self.state
-                            .status
-                            .replace(format!("Goal auto-continue {label}"));
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .format("Goal auto-continue {0}", &[(label).to_string()]),
+                        );
                         self.state.add_system_message(self.state.locale.format(
                             "Goal {0} auto-continue: {1}.",
                             &[(goal.id).clone(), (label).to_string()],
@@ -3485,15 +3522,24 @@ impl App {
         match action {
             HarnessAction::Status => {
                 self.state
-                    .add_system_message(self.harness_store.report(workspace, session_id));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.report(workspace, session_id),
+                    ));
             }
             HarnessAction::List => {
                 self.state
-                    .add_system_message(self.harness_store.list_report(workspace, session_id));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.list_report(workspace, session_id),
+                    ));
             }
             HarnessAction::Review => {
                 self.state
-                    .add_system_message(self.harness_store.proposal_report());
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.proposal_report(),
+                    ));
             }
             HarnessAction::Propose {
                 scope,
@@ -3743,7 +3789,11 @@ impl App {
     /// Handle `/rlm` persistent context variable actions.
     pub(super) fn handle_rlm_action(&mut self, action: RlmAction) {
         match action {
-            RlmAction::List => self.state.add_system_message(self.rlm_store.report()),
+            RlmAction::List => self
+                .state
+                .add_system_message(crate::localization::with_locale(self.state.locale, || {
+                    self.rlm_store.report()
+                })),
             RlmAction::Set {
                 name,
                 value,
@@ -3843,7 +3893,10 @@ impl App {
                 let mut recipients = self.tool_executor.subagent_mailbox_recipients();
                 recipients.push(crate::mailbox::local_identity());
                 self.state
-                    .add_system_message(self.mailbox_store.report_for_recipients(&recipients));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.mailbox_store.report_for_recipients(&recipients),
+                    ));
             }
             crate::commands::MailboxAction::Send { recipient, body } => {
                 let sender = crate::mailbox::local_identity();
@@ -4076,17 +4129,19 @@ impl App {
                     .as_ref()
                     .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already processing."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already processing.",
+                        &[(id).to_string()],
+                    ));
                     return;
                 }
                 if self
                     .queued_prompt_inflight
                     .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state.status.replace(format!(
-                        "Queued prompt #{id} is starting; try again if it re-queues."
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is starting; try again if it re-queues.",
+                        &[(id).to_string()],
                     ));
                     return;
                 }
@@ -4095,24 +4150,31 @@ impl App {
                         if let Some(agent) = &self.native_agent {
                             agent.cancel_queued(id);
                         }
-                        self.state.status.replace(format!(
-                            "Removed queued {} #{}.",
-                            removed.kind.label(),
-                            removed.id
+                        self.state.status.replace(self.state.locale.format(
+                            "Removed queued {0} #{1}.",
+                            &[
+                                (self.state.locale.translate(removed.kind.label())).to_string(),
+                                (removed.id).to_string(),
+                            ],
                         ));
                     }
                     None => {
-                        self.state
-                            .status
-                            .replace(format!("No queued prompt found with id #{id}."));
+                        self.state.status.replace(
+                            self.state.locale.format(
+                                "No queued prompt found with id #{0}.",
+                                &[(id).to_string()],
+                            ),
+                        );
                     }
                 }
             }
             QueueAction::Move { id, direction } => {
                 if !self.queued_prompts.iter().any(|prompt| prompt.id == id) {
-                    self.state
-                        .status
-                        .replace(format!("No queued prompt found with id #{id}."));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("No queued prompt found with id #{0}.", &[(id).to_string()]),
+                    );
                     return;
                 }
                 if self
@@ -4123,9 +4185,10 @@ impl App {
                         .queued_prompt_inflight
                         .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already processing."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already processing.",
+                        &[(id).to_string()],
+                    ));
                     return;
                 }
                 if let Some(placement) = self.move_queued_prompt(id, direction) {
@@ -4137,13 +4200,15 @@ impl App {
                         QueueMoveDirection::Down => self.state.locale.translate("moved down"),
                         QueueMoveDirection::Now => self.state.locale.translate("will send next"),
                     };
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} {action}."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} {1}.",
+                        &[(id).to_string(), (action).to_string()],
+                    ));
                 } else {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already in that position."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already in that position.",
+                        &[(id).to_string()],
+                    ));
                 }
             }
             QueueAction::Mode { kind, mode } => {
@@ -4167,9 +4232,10 @@ impl App {
                     self.state.steering_mode,
                     self.state.follow_up_mode,
                 );
-                self.state
-                    .status
-                    .replace(format!("{label} mode: {}", mode.label()));
+                self.state.status.replace(self.state.locale.format(
+                    "{0} mode: {1}",
+                    &[(label).to_string(), (mode.label()).to_string()],
+                ));
             }
         }
     }
@@ -4205,17 +4271,19 @@ impl App {
             match prefix {
                 Ok(Some(cmd)) => {
                     let expanded = expand(&cmd.name.clone());
-                    self.state
-                        .status
-                        .replace(format!("Expanded /{typed_word} → /{}", cmd.name));
+                    self.state.status.replace(self.state.locale.format(
+                        "Expanded /{0} → /{1}",
+                        &[(typed_word).to_string(), (cmd.name).clone()],
+                    ));
                     expanded
                 }
                 Ok(None) => match self.command_registry.resolve_typo(&word) {
                     Ok(Some(cmd)) => {
                         let expanded = expand(&cmd.name.clone());
-                        self.state
-                            .status
-                            .replace(format!("Interpreted /{typed_word} as /{}", cmd.name));
+                        self.state.status.replace(self.state.locale.format(
+                            "Interpreted /{0} as /{1}",
+                            &[(typed_word).to_string(), (cmd.name).clone()],
+                        ));
                         expanded
                     }
                     Ok(None) => input,
@@ -4319,9 +4387,10 @@ impl App {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                self.state
-                    .error
-                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+                self.state.error.replace(self.state.locale.format(
+                    "Failed to scaffold AGENTS.md: {0}",
+                    &[(format!("{error:#}")).to_string()],
+                ));
                 return;
             }
         };
@@ -4361,9 +4430,10 @@ impl App {
                 self.state.add_system_message(self.state.locale.format("AGENTS instructions already exist at {0}.\nPreview the proposed update below, then re-run `{1}` to apply it.\n\n{2}", &[(path.display()).to_string(), (hint).to_string(), (preview).clone()]));
             }
             Err(error) => {
-                self.state
-                    .error
-                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+                self.state.error.replace(self.state.locale.format(
+                    "Failed to scaffold AGENTS.md: {0}",
+                    &[(format!("{error:#}")).to_string()],
+                ));
             }
         }
     }

@@ -2821,7 +2821,7 @@ mod chat_stream_tests {
         managed_gateway_receipt_status, native_chat_acknowledges_peer_messages,
         native_chat_terminal_status,
     };
-    use maestro_tui::agent::FromAgent;
+    use maestro_local_host::agent::FromAgent;
 
     #[test]
     fn managed_gateway_receipt_status_contains_safe_camel_case_fields() {
@@ -2864,7 +2864,7 @@ mod chat_stream_tests {
         ));
         assert!(matches!(
             native_chat_terminal_status(&FromAgent::ProviderError {
-                kind: maestro_tui::ai::ProviderStreamErrorKind::TransientProtocol,
+                kind: maestro_local_host::ai::ProviderStreamErrorKind::TransientProtocol,
                 message: "unexpected eof".to_string(),
             }),
             Some(Err(message)) if message.contains("unexpected eof")
@@ -2881,7 +2881,7 @@ mod chat_stream_tests {
         ));
         assert!(!native_chat_acknowledges_peer_messages(
             &FromAgent::ProviderError {
-                kind: maestro_tui::ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                kind: maestro_local_host::ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
                 message: "authentication failed".to_string(),
             }
         ));

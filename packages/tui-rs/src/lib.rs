@@ -15,29 +15,28 @@
 pub mod agent;
 
 pub mod acp_cli;
-pub mod agents_cli;
-pub mod model_dynamics;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
 /// Lives in the `maestro-ai` crate (packages/ai-rs); re-exported here under
 /// its historical module path so existing `crate::ai::...` call sites are
 /// unaffected.
 pub use maestro_ai as ai;
+pub use maestro_local_host::agents_cli;
+pub use maestro_local_host::model_dynamics;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
 pub use maestro_session::checkpoints;
 pub mod connections_cli;
-pub mod credential_mode;
-pub mod doctor;
+pub use maestro_local_host::credential_mode;
+pub use maestro_local_host::doctor;
+pub use maestro_local_host::local_models;
+pub use maestro_local_host::managed_setup;
+pub use maestro_local_host::model_catalog;
 /// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
 /// for persisted JSON/text state. See module docs for crash-safety vs.
 /// power-loss-safety guarantees.
 pub use maestro_session::fs_atomic;
-pub mod local_models;
-pub mod managed_setup;
-pub mod model_catalog;
 pub mod model_monitor;
-mod native_credentials;
-pub mod orb_connection;
+pub use maestro_local_host::orb_connection;
 pub mod palette_resource;
 pub mod platform_provider_refs;
 
@@ -51,7 +50,7 @@ pub mod components;
 
 /// Configuration loading and management.
 /// Reads from config files, environment variables, and CLI overrides.
-pub mod config;
+pub use maestro_local_host::config;
 
 /// Async-signal-safe crash handler for SIGSEGV/SIGBUS.
 /// Complements the panic hook: records hard crashes and restores the terminal.
@@ -65,25 +64,25 @@ pub mod effects;
 pub mod entrypoint;
 pub use entrypoint::run_cli;
 
+pub(crate) use maestro_local_host::path_utils;
 /// File system operations (search, workspace management).
 /// Handles file listing, fuzzy search, and workspace-relative paths.
 pub use maestro_workspace::files;
-pub(crate) mod path_utils;
 
 /// Inline `@file` mention expansion for the composer.
 pub mod file_mentions;
 
 /// Headless mode communication protocol.
 /// JSON-based IPC protocol for communicating with the native agent.
-pub mod headless;
-pub mod headless_server;
+pub use maestro_local_host::headless;
+pub use maestro_local_host::headless_server;
 
 /// Hosted runner contract primitives for Platform-managed Maestro runtimes.
-pub mod hosted_runner;
-pub mod hosted_runner_conformance;
+pub use maestro_local_host::hosted_runner;
+pub use maestro_local_host::hosted_runner_conformance;
 
 /// Rust hosted runner command-line entrypoints.
-pub mod hosted_runner_cli;
+pub use maestro_local_host::hosted_runner_cli;
 
 /// Message protocol definitions.
 /// Type definitions shared by native terminal consumers.
@@ -94,14 +93,17 @@ pub mod bridge;
 
 /// Live, bounded checks used by guided setup.
 pub mod onboarding_checks;
-pub mod service_connections;
+pub use maestro_local_host::service_connections;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
-pub mod session;
+pub mod session {
+    pub use maestro_local_host::session::*;
+    pub(crate) use maestro_session::{fork_session_prefix, model_history, rewind_boundary};
+}
 pub mod session_transfer;
 pub mod setup_cli;
-pub mod skill_cli;
-pub mod skill_package_cli;
+pub use maestro_local_host::skill_cli;
+pub use maestro_local_host::skill_package_cli;
 
 /// Application state management.
 /// Central state struct that holds all mutable application data.
@@ -113,7 +115,7 @@ pub mod terminal;
 
 /// Tool execution (bash, file operations).
 /// Executes tools requested by the AI agent and returns results.
-pub mod tools;
+pub use maestro_local_host::tools;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FEATURE MODULES
@@ -127,16 +129,16 @@ pub mod tools;
 pub mod clipboard;
 
 /// Interactive goal mode (create / pause / block / complete + auto-continue).
-pub mod goal;
+pub use maestro_local_host::goal;
 
 /// Durable supplemental prompt, memory, skill, and subagent context.
-pub mod harness;
+pub use maestro_local_host::harness;
 
 /// Persistent RLM-style context variables for prompt composition.
-pub mod rlm;
+pub use maestro_local_host::rlm;
 
 /// Durable local messages for parent and delegated agent sessions.
-pub mod mailbox;
+pub use maestro_local_host::mailbox;
 
 mod dex_actions;
 pub mod dex_delight;
@@ -157,7 +159,7 @@ pub use maestro_execpolicy as execpolicy;
 
 /// Hook system for intercepting and modifying agent behavior.
 /// Provides trait-based hooks for tool calls, session events, and overflow handling.
-pub mod hooks;
+pub use maestro_local_host::hooks;
 
 /// Git integration.
 /// Detects git repos, branches, and provides context to the agent.
@@ -189,29 +191,29 @@ pub mod palette;
 pub mod a2a_cli;
 pub mod cli_commands;
 pub use maestro_codex::codex_app_server;
-pub mod codex_auth;
-pub mod codex_cli;
-pub mod codex_identity;
 pub use maestro_codex::codex_session;
+pub use maestro_local_host::codex_auth;
+pub use maestro_local_host::codex_cli;
+pub use maestro_local_host::codex_identity;
 pub mod config_cli;
 pub mod context_cli;
-pub mod evalops_cli;
+pub use maestro_local_host::evalops_cli;
 mod evidence;
 /// Droid-style executable slash commands from `.composer/commands/`.
 pub mod exec_commands;
 pub mod import_claude_cli;
-pub mod init_cli;
+pub use maestro_local_host::init_cli;
 pub mod memory_cli;
-pub mod mission_cli;
-pub mod mission_readiness;
+pub use maestro_local_host::mission_cli;
+pub use maestro_local_host::mission_readiness;
 pub mod mode_cli;
-pub mod openai_cli;
+pub use maestro_local_host::openai_cli;
 pub mod operating_plane_cli;
 pub mod operating_plane_client;
 pub mod operating_plane_summary;
 pub mod orb_cli;
 pub mod painter_cli;
-pub mod plan_mode;
+pub use maestro_local_host::plan_mode;
 pub mod plugins_cli;
 pub mod print_mode;
 /// Pre-main process hardening (core dumps, ptrace, loader-injection env vars).
@@ -228,7 +230,7 @@ pub mod scenario_cli;
 pub mod search_cli;
 pub mod update_cli;
 pub mod value_cli;
-pub mod video;
+pub use maestro_local_host::video;
 
 /// Droid-style session worktrees (`-w` / `--worktree`).
 pub use maestro_workspace::worktree;
@@ -244,11 +246,11 @@ pub use maestro_sandbox as sandbox;
 /// Structured sandbox policy documents and their multi-source merge.
 /// Parses user, repository, and team-admin policies and combines them
 /// monotonically toward restriction.
-pub mod sandbox_policy;
+pub use maestro_local_host::sandbox_policy;
 
 /// Safety and security controls for agent operations.
 /// Includes action firewall, dangerous pattern detection, and path containment.
-pub mod safety;
+pub use maestro_local_host::safety;
 
 /// Syntax highlighting for code blocks.
 /// Uses syntect for highlighting in various languages.
@@ -268,18 +270,18 @@ pub use maestro_ui::wrapping;
 
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
-pub mod mcp;
+pub use maestro_local_host::mcp;
 pub mod mcp_config_cli;
 
 /// LSP diagnostics bridge (optional Node-based CLI integration).
-pub mod lsp;
+pub use maestro_local_host::lsp;
 
-pub mod pending_decisions;
+pub use maestro_local_host::pending_decisions;
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.
-pub mod telemetry;
-pub mod transcript;
-pub mod workflow_runtime;
+pub use maestro_local_host::telemetry;
+pub use maestro_local_host::transcript;
+pub use maestro_local_host::workflow_runtime;
 
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.
@@ -297,10 +299,10 @@ pub mod ui_state;
 /// Watches config files and emits events on changes.
 pub mod config_watcher;
 
+pub use maestro_local_host::tool_output;
 /// Text formatting utilities (truncation, JSON compacting).
 /// Ported from OpenAI Codex CLI (MIT licensed).
 pub use maestro_ui::text_format;
-pub mod tool_output;
 pub mod tool_summary;
 pub mod turn_summary;
 
@@ -314,7 +316,7 @@ pub use maestro_ui::render_utils;
 
 /// Color utilities (blending, perceptual distance, terminal detection).
 /// Includes xterm 256 color palette and best-match color selection.
-pub mod color_utils;
+pub use maestro_local_host::color_utils;
 
 /// Streaming markdown collector for incremental rendering.
 /// Buffers text and commits only complete lines.
@@ -322,7 +324,7 @@ pub mod markdown_stream;
 
 /// Terminal information and detection utilities.
 /// SSH, WSL, and terminal emulator detection.
-pub mod terminal_info;
+pub use maestro_local_host::terminal_info;
 
 /// Paste burst detection for terminals without bracketed paste.
 /// Heuristic-based detection using keystroke timing.
@@ -343,7 +345,7 @@ pub mod ansi_commands;
 /// Control-character sanitization for content that reaches a real terminal
 /// outside ratatui's `Buffer` (which filters it for the TUI chat pane).
 /// Use this at every raw `print!`/`write!`/`queue!(Print(_))` boundary.
-pub mod output_sanitize;
+pub use maestro_local_host::output_sanitize;
 
 /// Synchronized output for flicker-free terminal updates.
 /// Buffers output for atomic display.
@@ -439,10 +441,10 @@ pub use maestro_ui::ascii_animation;
 
 /// Skills system for dynamically activating specialized behaviors.
 /// Skills can modify system prompts, provide tools, and change how the agent approaches tasks.
-pub mod skills;
+pub use maestro_local_host::skills;
 
 /// Grok-style plugin discovery (skills, commands, hooks, MCP packages).
-pub mod plugins;
+pub use maestro_local_host::plugins;
 
 /// Swarm mode for multi-agent task orchestration.
 /// Execute complex tasks across multiple agents in parallel with dependency management.
@@ -1404,11 +1406,11 @@ pub use swarm::{
     validate_plan,     // Validate plan for consistency
 };
 
-pub mod code_authority;
+pub use maestro_local_host::code_authority;
 
 /// Session-backed product issue drafts and the product feedback client.
-pub(crate) mod bug_report;
+pub(crate) use maestro_local_host::bug_report;
 
-pub mod localization;
+pub use maestro_local_host::localization;
 pub mod mcp_catalog;
 pub mod transcript_copy;

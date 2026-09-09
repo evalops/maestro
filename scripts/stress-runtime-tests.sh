@@ -9,6 +9,6 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${script_dir}/.."
 for ((iteration = 1; iteration <= iterations; iteration++)); do
-  cargo test --locked -p maestro-tui --lib tools::process_utils::tests -- --test-threads=32
-  cargo test --locked -p maestro-tui --lib config::tests -- --test-threads=32
+  cargo test --locked -p maestro-local-host --lib tools::process_utils::tests -- --test-threads=32
+  cargo test --locked -p maestro-local-host --lib config::tests -- --test-threads=32
 done

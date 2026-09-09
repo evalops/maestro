@@ -1338,8 +1338,10 @@ mod tests {
 
     #[test]
     fn preferred_models_exist_in_the_bundled_catalog() {
-        let bundled: serde_json::Value =
-            serde_json::from_str(include_str!("../model_catalog_data.json")).unwrap();
+        let bundled: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../local-host-rs/src/model_catalog_data.json"
+        ))
+        .unwrap();
         for &(provider, id) in PREFERRED_MODELS {
             assert!(
                 bundled["models"].as_array().unwrap().iter().any(|model| {

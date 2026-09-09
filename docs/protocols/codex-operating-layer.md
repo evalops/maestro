@@ -58,13 +58,13 @@ npm run check:codex-operating-layer
 | Requirement | Evidence area | Primary artifacts |
 | --- | --- | --- |
 | installed by default | `default-install` | `package.json`, `test/install/native-dependencies.test.ts` |
-| ChatGPT sign-in | `chatgpt-sign-in` | `packages/tui-rs/src/codex_cli.rs`, `packages/codex-rs/src/codex_app_server.rs` |
+| ChatGPT sign-in | `chatgpt-sign-in` | `packages/local-host-rs/src/codex_cli.rs`, `packages/codex-rs/src/codex_app_server.rs` |
 | dynamic tools | `dynamic-tools` | `src/codex/compatibility.ts`, `src/agent/providers/codex-app-server.ts`, `test/codex/compatibility.test.ts`, `test/agent/codex-app-server.test.ts` |
 | durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `src/server/run-reconstruction.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/cli/run-command.test.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/runtime-gateway-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
 | multi-agent work graph | `multi-agent-workgraph` | `docs/protocols/codex-subagent-workgraph-v1.json`, `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/runtime-gateway-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
-| remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/hosted_runner/manifests.rs`, `packages/tui-rs/src/hosted_runner_cli.rs`, `packages/tui-rs/src/headless/messages/state.rs`, `test/server/hosted-runner-drain.test.ts` |
+| remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/local-host-rs/src/hosted_runner.rs`, `packages/local-host-rs/src/hosted_runner/manifests.rs`, `packages/local-host-rs/src/hosted_runner_cli.rs`, `packages/local-host-rs/src/headless/messages/state.rs`, `test/server/hosted-runner-drain.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
 | Rust runtime | `rust-control-plane` | `packages/runtime-gateway-rs/src/model_catalog.rs`, `packages/runtime-gateway-rs/src/main.rs`, `packages/runtime-gateway-rs/src/tests.rs` |

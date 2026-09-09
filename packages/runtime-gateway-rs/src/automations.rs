@@ -9,7 +9,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fs2::FileExt;
 use hmac::{Hmac, KeyInit, Mac};
-use maestro_tui::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
+use maestro_local_host::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

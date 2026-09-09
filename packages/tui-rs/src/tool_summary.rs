@@ -67,7 +67,7 @@ fn short_url_label(raw: &str) -> String {
 fn short_path_label(raw: &str) -> String {
     let normalized = raw.trim().replace('\\', "/");
     if normalized.is_empty() {
-        return "file".to_string();
+        return maestro_ui::localization::tr("file").to_string();
     }
     if normalized.contains("://") {
         return short_url_label(&normalized);
@@ -162,22 +162,39 @@ fn summarize_known_tool(
     match normalized.as_str() {
         "read" => Some(maestro_ui::localization::format(
             "Read {0}",
-            &[short_path_label(file_path.as_deref().unwrap_or("file")).clone()],
+            &[short_path_label(
+                file_path
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("file")),
+            )
+            .clone()],
         )),
         "write" | "append" | "create_file" | "createfile" => Some(format!(
             "{} {}",
             tense("Wrote", "Write"),
-            short_path_label(file_path.as_deref().unwrap_or("file"))
+            short_path_label(
+                file_path
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("file"))
+            )
         )),
         "edit" | "multi_edit" | "str_replace_based_edit" | "apply_patch" => Some(format!(
             "{} {}",
             tense("Edited", "Edit"),
-            short_path_label(file_path.as_deref().unwrap_or("file"))
+            short_path_label(
+                file_path
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("file"))
+            )
         )),
         "delete" | "remove" | "unlink" => Some(format!(
             "{} {}",
             tense("Deleted", "Delete"),
-            short_path_label(file_path.as_deref().unwrap_or("file"))
+            short_path_label(
+                file_path
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("file"))
+            )
         )),
         "list" | "ls" => Some(format!(
             "{} {}",
@@ -186,7 +203,7 @@ fn summarize_known_tool(
                 directory
                     .as_deref()
                     .or(file_path.as_deref())
-                    .unwrap_or("directory")
+                    .unwrap_or(maestro_ui::localization::tr("directory"))
             )
         )),
         "glob" => Some(if let Some(pattern) = pattern {
@@ -199,25 +216,29 @@ fn summarize_known_tool(
             format!(
                 "{} {}",
                 tense("Scanned", "Scan"),
-                short_path_label(directory.as_deref().unwrap_or("workspace"))
+                short_path_label(
+                    directory
+                        .as_deref()
+                        .unwrap_or(maestro_ui::localization::tr("workspace"))
+                )
             )
         }),
         "grep" | "search" | "search_files" => Some(if let Some(pattern) = pattern {
-            format!(
-                "{} for {}",
-                tense("Searched", "Search"),
-                quote_label(&pattern, 32)
+            maestro_ui::localization::format(
+                if completed {
+                    "Searched for {0}"
+                } else {
+                    "Search for {0}"
+                },
+                &[quote_label(&pattern, 32)],
             )
         } else {
-            maestro_ui::localization::format(
-                "{0} files",
-                &[(tense("Searched", "Search")).to_string()],
-            )
+            tense("Searched files", "Search files").to_string()
         }),
         "bash" | "shell" | "exec_command" => Some(if let Some(command) = command {
             format!("{} {}", tense("Ran", "Run"), truncate_label(&command, 52))
         } else {
-            format!("{} command", tense("Ran", "Run"))
+            tense("Ran command", "Run command").to_string()
         }),
         "webfetch" | "fetch" | "open" => Some(format!(
             "{} {}",
@@ -225,7 +246,7 @@ fn summarize_known_tool(
             short_url_label(
                 url.as_deref()
                     .or(file_path.as_deref())
-                    .unwrap_or("resource")
+                    .unwrap_or(maestro_ui::localization::tr("resource"))
             )
         )),
         "websearch" | "search_query" => Some(if let Some(pattern) = pattern {
@@ -237,7 +258,7 @@ fn summarize_known_tool(
                 ],
             )
         } else {
-            format!("{} web", tense("Searched", "Search"))
+            tense("Searched web", "Search web").to_string()
         }),
         "todo" => Some(maestro_ui::localization::format(
             "{0} task list",
@@ -256,12 +277,13 @@ fn summarize_known_tool(
 
             Some(if calls > 0 {
                 maestro_ui::localization::format(
-                    "{0} {1} tool call{2}",
-                    &[
-                        (tense("Ran", "Run")).to_string(),
-                        (calls).to_string(),
-                        (if calls == 1 { "" } else { "s" }).to_string(),
-                    ],
+                    match (completed, calls == 1) {
+                        (true, true) => "Ran {0} tool call",
+                        (true, false) => "Ran {0} tool calls",
+                        (false, true) => "Run {0} tool call",
+                        (false, false) => "Run {0} tool calls",
+                    },
+                    &[calls.to_string()],
                 )
             } else {
                 maestro_ui::localization::format(

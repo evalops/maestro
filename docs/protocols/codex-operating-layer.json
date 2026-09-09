@@ -26,7 +26,7 @@
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/codex_cli.rs",
+			"path": "packages/local-host-rs/src/codex_cli.rs",
 			"anchors": [
 				"maestro codex login",
 				"start_chatgpt_login",
@@ -48,7 +48,7 @@
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/codex_cli.rs",
+			"path": "packages/local-host-rs/src/codex_cli.rs",
 			"anchors": [
 				"runs_browser_chatgpt_sign_in",
 				"supports_chatgpt_device_code_sign_in",
@@ -69,7 +69,7 @@
 		{
 			"area": "dynamic-tools",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/codex_cli.rs",
+			"path": "packages/local-host-rs/src/codex_cli.rs",
 			"anchors": [
 				"compile_codex_dynamic_tool_specs",
 				"CODING_TOOLS_FIXTURE",
@@ -101,7 +101,7 @@
 		{
 			"area": "dynamic-tools",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/codex_cli.rs",
+			"path": "packages/local-host-rs/src/codex_cli.rs",
 			"anchors": [
 				"fixture_loads_live_coding_tools_and_profiles",
 				"compiles_the_curated_codex_default_profile_into_responses_safe_dynamic_tools",
@@ -363,7 +363,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/hosted_runner.rs",
+			"path": "packages/local-host-rs/src/hosted_runner.rs",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
 				"evalops.remote-runner.runtime-continuity.v1"
@@ -372,7 +372,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
+			"path": "packages/local-host-rs/src/hosted_runner/manifests.rs",
 			"anchors": [
 				"RuntimeContinuityManifest",
 				"CodexSubagentContinuityEdge",
@@ -383,7 +383,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/hosted_runner/tests.rs",
+			"path": "packages/local-host-rs/src/hosted_runner/tests.rs",
 			"anchors": [
 				"work_continuity_manifest_extracts_codex_subagent_ids",
 				"work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active",
@@ -393,7 +393,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"path": "packages/local-host-rs/src/hosted_runner_cli.rs",
 			"anchors": [
 				"start_hosted_runner_cli_runtime",
 				"AgentSupervisorHostedRunnerMessageExecutor",
@@ -414,7 +414,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/headless/messages/state.rs",
+			"path": "packages/local-host-rs/src/headless/messages/state.rs",
 			"anchors": [
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
@@ -426,7 +426,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"path": "packages/local-host-rs/src/hosted_runner_cli.rs",
 			"anchors": [
 				"resolves_cli_flags_into_runner_and_supervisor_config",
 				"starts_real_hosted_runner_with_supervised_headless_child"

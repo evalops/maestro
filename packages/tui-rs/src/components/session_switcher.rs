@@ -311,7 +311,10 @@ impl SessionSwitcher {
 
         // Message count
         spans.push(Span::styled(
-            format!("  {} msgs", session.stats.total_messages()),
+            maestro_ui::localization::format(
+                "  {0} msgs",
+                &[(session.stats.total_messages()).to_string()],
+            ),
             Style::default().fg(theme.focus),
         ));
 

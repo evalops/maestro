@@ -3,13 +3,11 @@
 //! When a provider API key environment variable holds an `op://` reference
 //! instead of a literal key, the value is resolved by shelling out to the
 //! 1Password CLI (`op read <reference>`) with a short timeout. Resolved values
-//! are cached for the lifetime of the process. Secret values are never
+//! are resolved afresh for each client. Secret values are never
 //! included in log output or error messages.
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -18,7 +16,7 @@ use wait_timeout::ChildExt;
 pub const OP_REFERENCE_PREFIX: &str = "op://";
 
 #[cfg(not(test))]
-const OP_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const OP_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const OP_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -29,7 +27,7 @@ pub fn is_op_reference(value: &str) -> bool {
 
 /// Resolve a credential value for `env_var`. Literal values are returned
 /// unchanged; `op://` references are resolved through the 1Password CLI and
-/// cached for the process lifetime.
+/// never cached by the resolver, so a new client observes rotation or revocation.
 ///
 /// # Errors
 /// Returns an error mentioning the `op` CLI when the reference cannot be
@@ -40,7 +38,8 @@ pub fn resolve_credential(env_var: &str, value: &str) -> Result<String> {
     if !is_op_reference(value) {
         return Ok(value.to_owned());
     }
-    resolve_op_reference(env_var, value)
+    validate_reference(value)?;
+    read_op_reference(env_var, value)
 }
 
 /// Read the first set variable from `names` and resolve it like
@@ -63,22 +62,21 @@ pub fn env_credential(names: &[&str]) -> Result<String> {
     bail!("{label} environment variable not set")
 }
 
-fn resolve_op_reference(env_var: &str, reference: &str) -> Result<String> {
-    let cache = op_cache();
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(cached) = cache.get(reference) {
-        return Ok(cached.clone());
+/// Validate a single field reference without reading the vault.
+/// Errors intentionally omit the supplied value (it may be a pasted password).
+pub fn validate_reference(reference: &str) -> Result<()> {
+    let Some(path) = reference.strip_prefix(OP_REFERENCE_PREFIX) else {
+        bail!("Use a 1Password secret reference, not a password");
+    };
+    let parts = path.split('/').collect::<Vec<_>>();
+    if !(3..=4).contains(&parts.len())
+        || parts.iter().any(|part| part.trim().is_empty())
+        || reference.chars().any(char::is_control)
+        || reference.contains(['?', '#'])
+    {
+        bail!("Choose one 1Password field: op://vault/item/field or op://vault/item/section/field");
     }
-    let resolved = read_op_reference(env_var, reference)?;
-    cache.insert(reference.to_owned(), resolved.clone());
-    Ok(resolved)
-}
-
-fn op_cache() -> &'static Mutex<HashMap<String, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    Ok(())
 }
 
 fn read_op_reference(env_var: &str, reference: &str) -> Result<String> {
@@ -87,7 +85,7 @@ fn read_op_reference(env_var: &str, reference: &str) -> Result<String> {
         .arg(reference)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| {
             format!("failed to resolve {env_var}: 1Password CLI `op` could not be started (is it installed and on PATH?)")
@@ -96,29 +94,21 @@ fn read_op_reference(env_var: &str, reference: &str) -> Result<String> {
         Ok(Some(status)) if status.success() => {
             let mut stdout = String::new();
             if let Some(mut pipe) = child.stdout.take() {
-                let _ = pipe.read_to_string(&mut stdout);
+                pipe.read_to_string(&mut stdout)
+                    .context("1Password CLI returned unreadable credential data")?;
             }
             let secret = stdout.trim_end_matches(['\r', '\n']).to_owned();
             if secret.is_empty() {
                 bail!(
-                    "failed to resolve {env_var}: 1Password CLI `op read` returned an empty value for {reference}"
+                    "failed to resolve {env_var}: 1Password CLI `op read` returned an empty value"
                 );
             }
             Ok(secret)
         }
-        Ok(Some(status)) => {
-            let mut stderr = String::new();
-            if let Some(mut pipe) = child.stderr.take() {
-                let _ = pipe.read_to_string(&mut stderr);
-            }
-            let stderr = stderr.trim();
-            if stderr.is_empty() {
-                bail!(
-                    "failed to resolve {env_var}: 1Password CLI `op read {reference}` exited with {status}"
-                );
-            }
+        Ok(Some(_)) => {
+            // CLI stderr is untrusted and may contain credential material.
             bail!(
-                "failed to resolve {env_var}: 1Password CLI `op read {reference}` failed: {stderr}"
+                "failed to resolve {env_var}: 1Password CLI `op read` failed; unlock 1Password and check access to the selected item"
             )
         }
         Ok(None) => {
@@ -201,7 +191,7 @@ pub mod test_support {
                 "#!/bin/sh\n\
                  echo call >> \"{dir}/calls\"\n\
                  case \"$2\" in\n\
-                 \x20 *missing*) echo \"[ERROR] item not found\" >&2; exit 1 ;;\n\
+                 \x20 *missing*) echo \"[ERROR] resolved-secret-value op://private/item/password\" >&2; exit 1 ;;\n\
                  \x20 *slow*) sleep 30 ;;\n\
                  \x20 *) printf 'resolved-secret-value\\n' ;;\n\
                  esac\n",
@@ -224,6 +214,22 @@ pub mod test_support {
 mod tests {
     use super::test_support::FakeOp;
     use super::*;
+
+    #[test]
+    fn field_references_are_required_without_echoing_rejected_input() {
+        for value in [
+            "plaintext-sensitive-value",
+            "op://vault/item",
+            "op://vault//field",
+            "op://vault/item/field?reveal=true",
+            "op://vault/item/field\n",
+        ] {
+            let error = validate_reference(value).expect_err("reject invalid reference");
+            assert!(!error.to_string().contains("plaintext-sensitive-value"));
+        }
+        assert!(validate_reference("op://Work/My Service/credential").is_ok());
+        assert!(validate_reference("op://vault/item/section/field").is_ok());
+    }
 
     #[test]
     fn literal_values_pass_through() {
@@ -249,14 +255,18 @@ mod tests {
     }
 
     #[test]
-    fn resolved_values_are_cached_for_process_lifetime() {
+    fn each_client_resolves_again_to_observe_rotation_and_revocation() {
         let fake = FakeOp::install();
         for _ in 0..3 {
             let resolved = resolve_credential("ANTHROPIC_API_KEY", "op://vault/item/cached")
                 .expect("op:// resolution");
             assert_eq!(resolved, "resolved-secret-value");
         }
-        assert_eq!(fake.call_count(), 1, "second resolve must hit the cache");
+        assert_eq!(
+            fake.call_count(),
+            3,
+            "do not retain credentials across clients"
+        );
     }
 
     #[test]
@@ -270,6 +280,8 @@ mod tests {
             "error should mention the op CLI: {message}"
         );
         assert!(message.contains("XAI_API_KEY"));
+        assert!(!message.contains("op://"));
+        assert!(!message.contains("private"));
         assert!(
             !message.contains("resolved-secret-value"),
             "error must not leak secrets: {message}"

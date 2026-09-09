@@ -15,6 +15,7 @@ members = [
     "packages/a2a-ledger-rs",
     "packages/execpolicy-rs",
     "packages/tui-rs",
+    "packages/local-host-rs",
     "packages/sandbox-rs",
     "packages/workspace-rs",
     "packages/codex-rs",
@@ -73,6 +74,7 @@ maestro-context = { path = "packages/context-rs" }
 maestro-session-history = { path = "packages/session-history-rs" }
 maestro-session = { path = "packages/session-rs" }
 maestro-tui = { path = "packages/tui-rs" }
+maestro-local-host = { path = "packages/local-host-rs" }
 maestro-sandbox = { path = "packages/sandbox-rs" }
 maestro-workspace = { path = "packages/workspace-rs" }
 maestro-codex = { path = "packages/codex-rs" }

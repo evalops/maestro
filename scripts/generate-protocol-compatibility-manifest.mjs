@@ -14,20 +14,20 @@ const SCHEMA_VERSION = "evalops.maestro.protocol-compatibility-manifest.v1";
 
 const SOURCE_PATHS = {
 	headlessSchema: "proto/maestro/v1/headless.proto",
-	headlessGenerated: "packages/tui-rs/src/headless/generated_protocol.rs",
-	headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
+	headlessGenerated: "packages/local-host-rs/src/headless/generated_protocol.rs",
+	headlessRuntime: "packages/local-host-rs/src/headless/messages.rs",
 	runtimeProtocol: "packages/runtime-contracts-rs/src/protocol.rs",
 	runtimeFixture: "packages/runtime-contracts-rs/fixtures/headless-protocol-v1.json",
 	runtimeReceipts: "packages/runtime-contracts-rs/src/receipts.rs",
 	runtimeReceiptFixture: "packages/runtime-contracts-rs/fixtures/runtime-receipt-v1.json",
 	runtimeReceiptContractFixture:
 		"packages/runtime-contracts-rs/fixtures/runtime-receipt-contract-v1.json",
-	transcript: "packages/tui-rs/src/transcript.rs",
-	thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+	transcript: "packages/local-host-rs/src/transcript.rs",
+	thread: "packages/local-host-rs/src/hosted_runner/thread_protocol.rs",
 	threadCompatibilityMatrix: "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
-	resident: "packages/tui-rs/src/hosted_runner_cli.rs",
-	hostedRunner: "packages/tui-rs/src/hosted_runner.rs",
-	rendezvous: "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs",
+	resident: "packages/local-host-rs/src/hosted_runner_cli.rs",
+	hostedRunner: "packages/local-host-rs/src/hosted_runner.rs",
+	rendezvous: "packages/local-host-rs/src/hosted_runner/rendezvous_protocol.rs",
 };
 
 const ENUM_EXPORTS = {

@@ -3,18 +3,28 @@ use super::*;
 fn model_palette_resource(
     model: &crate::model_catalog::ModelInfo,
     current_route: Option<&str>,
+    locale: crate::localization::Locale,
 ) -> PaletteResource {
     let route = crate::model_catalog::model_route(model);
-    let mut resource = PaletteResource::from(model).description(maestro_ui::localization::format(
-        "{0} · {1}k context · {2}",
-        &[
-            (model.provider).clone(),
-            (model.capabilities.context_tokens / 1000).to_string(),
-            format!("{:?}", model.verification.state),
-        ],
-    ));
+    let mut resource = PaletteResource::from(model).description(
+        locale.format(
+            "{0} · {1}k context · {2}",
+            &[
+                (model.provider).clone(),
+                (model.capabilities.context_tokens / 1000).to_string(),
+                locale
+                    .translate(match model.verification.state {
+                        crate::model_catalog::VerificationState::Catalog => "Catalog",
+                        crate::model_catalog::VerificationState::Verified => "Verified",
+                        crate::model_catalog::VerificationState::Unavailable => "Unavailable",
+                        crate::model_catalog::VerificationState::Unknown => "Unknown",
+                    })
+                    .to_owned(),
+            ],
+        ),
+    );
     if current_route == Some(route.as_str()) {
-        resource = resource.status(maestro_ui::localization::tr("current"));
+        resource = resource.status(locale.translate("current"));
     }
     resource
 }
@@ -530,12 +540,17 @@ impl App {
                         self.state.set_input("");
                         self.update_slash_state();
                         self.last_esc_at = None;
-                        self.state.status.replace("Input cleared".to_string());
-                    } else {
-                        self.last_esc_at = Some(now);
                         self.state
                             .status
-                            .replace("Press Esc again to clear input".to_string());
+                            .replace(self.state.locale.translate("Input cleared").to_string());
+                    } else {
+                        self.last_esc_at = Some(now);
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Press Esc again to clear input")
+                                .to_string(),
+                        );
                     }
                 } else {
                     let now = Instant::now();
@@ -547,9 +562,12 @@ impl App {
                         self.open_rewind_picker();
                     } else {
                         self.last_esc_at = Some(now);
-                        self.state
-                            .status
-                            .replace("Press Esc again to rewind files".to_string());
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Press Esc again to rewind files")
+                                .to_string(),
+                        );
                     }
                 }
             }
@@ -972,11 +990,9 @@ impl App {
             &self.current_model,
             &models,
         );
-        resources.extend(
-            models
-                .iter()
-                .map(|model| model_palette_resource(model, current_model_route.as_deref())),
-        );
+        resources.extend(models.iter().map(|model| {
+            model_palette_resource(model, current_model_route.as_deref(), self.state.locale)
+        }));
         let current_theme = crate::themes::current_theme_name();
         resources.extend(crate::themes::available_themes().into_iter().map(|theme| {
             let mut resource =
@@ -1167,7 +1183,9 @@ impl App {
                 self.active_modal = ActiveModal::DetailView;
             }
             None => {
-                self.state.status.replace("Nothing to expand".to_string());
+                self.state
+                    .status
+                    .replace(self.state.locale.translate("Nothing to expand").to_string());
             }
         }
     }
@@ -1190,24 +1208,29 @@ impl App {
             }
             if !message.thinking.trim().is_empty() {
                 return Some((
-                    "Thinking".to_string(),
+                    self.state.locale.translate("Thinking").to_string(),
                     message.thinking.clone(),
                     include_evidence,
                 ));
             }
             if !message.content.trim().is_empty() {
                 let title = match message.kind {
-                    MessageKind::System => "System message",
-                    _ if message.role == MessageRole::User => "User message",
-                    _ => "Assistant message",
+                    MessageKind::System => self.state.locale.translate("System message"),
+                    _ if message.role == MessageRole::User => {
+                        self.state.locale.translate("User message")
+                    }
+                    _ => self.state.locale.translate("Assistant message"),
                 };
                 return Some((title.to_string(), message.content.clone(), include_evidence));
             }
         }
-        self.state
-            .error
-            .as_ref()
-            .map(|error| ("Error".to_string(), error.clone(), false))
+        self.state.error.as_ref().map(|error| {
+            (
+                self.state.locale.translate("Error").to_string(),
+                error.clone(),
+                false,
+            )
+        })
     }
 
     /// Handle keys in approval modal
@@ -1772,8 +1795,16 @@ mod model_palette_tests {
         ] {
             let current_route =
                 crate::components::model_selector::canonical_current_route(current, &models);
-            let google_resource = model_palette_resource(google, current_route.as_deref());
-            let vertex_resource = model_palette_resource(vertex, current_route.as_deref());
+            let google_resource = model_palette_resource(
+                google,
+                current_route.as_deref(),
+                crate::localization::Locale::English,
+            );
+            let vertex_resource = model_palette_resource(
+                vertex,
+                current_route.as_deref(),
+                crate::localization::Locale::English,
+            );
 
             assert_eq!(
                 google_resource.status.as_deref(),
@@ -1785,6 +1816,29 @@ mod model_palette_tests {
                 (expected_provider == "vertex-ai").then_some("current"),
                 "current route {current}"
             );
+        }
+    }
+    #[test]
+    fn model_metadata_uses_selected_locale_and_preserves_route() {
+        let mut model = crate::model_catalog::available_models()[0].clone();
+        model.verification.state = crate::model_catalog::VerificationState::Catalog;
+        let route = crate::model_catalog::model_route(&model);
+        for locale in crate::localization::Locale::ALL {
+            let resource =
+                crate::localization::with_locale(crate::localization::Locale::English, || {
+                    model_palette_resource(&model, Some(&route), locale)
+                });
+            assert_eq!(resource.id, route);
+            assert_eq!(
+                resource.status.as_deref(),
+                Some(locale.translate("current"))
+            );
+            let description = resource.description.unwrap();
+            assert!(description.contains(&model.provider));
+            assert!(description.contains(locale.translate("Catalog")));
+            if locale != crate::localization::Locale::English {
+                assert!(!description.contains("k context"));
+            }
         }
     }
 }

@@ -21,7 +21,7 @@ getrandom = "0.4"
 libc.workspace = true
 maestro-a2a-ledger.workspace = true
 maestro-runtime.workspace = true
-maestro-tui.workspace = true
+maestro-local-host.workspace = true
 pdf-extract.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true

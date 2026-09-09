@@ -319,7 +319,10 @@ impl McpManager {
                             " "
                         };
                         lines.push(Line::styled(
-                            format!("{marker} ○ {tool} (disabled)"),
+                            maestro_ui::localization::format(
+                                "{0} ○ {1} (disabled)",
+                                &[(marker).to_string(), (tool).clone()],
+                            ),
                             Style::default().fg(theme.muted),
                         ));
                     }

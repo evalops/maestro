@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
+use maestro_local_host::SandboxPolicy;
+use maestro_local_host::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
+use maestro_local_host::state::ApprovalMode;
+use maestro_local_host::tools::ToolExecutor;
 use maestro_runtime::{ExecutionSource, TokenUsage, ToolResult};
-use maestro_tui::SandboxPolicy;
-use maestro_tui::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
-use maestro_tui::state::ApprovalMode;
-use maestro_tui::tools::ToolExecutor;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env;
@@ -1003,7 +1003,7 @@ mod terminal_tests {
         ));
         assert!(matches!(
             a2a_explicit_terminal(&FromAgent::ProviderError {
-                kind: maestro_tui::ai::ProviderStreamErrorKind::TransientProtocol,
+                kind: maestro_local_host::ai::ProviderStreamErrorKind::TransientProtocol,
                 message: "unexpected eof".to_string(),
             }),
             Some(Err(message)) if message.contains("unexpected eof")

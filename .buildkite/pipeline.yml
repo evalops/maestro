@@ -140,7 +140,7 @@ steps:
           export PATH="$$nextest_dir:$$PATH"
           # This focused contract exercises the offline denial path and
           # child-environment stripping before the full suite.
-          timeout --signal=TERM --kill-after=30s 10m cargo test --locked -p maestro-tui ci_auth_conformance
+          timeout --signal=TERM --kill-after=30s 10m cargo test --locked -p maestro-local-host ci_auth_conformance
           timeout --signal=TERM --kill-after=30s 45m cargo nextest run --profile buildkite --workspace --locked --no-fail-fast
           timeout --signal=TERM --kill-after=30s 20m cargo test --workspace --locked --doc
           export MAESTRO_TUI_BIN="$$CARGO_TARGET_DIR/debug/maestro-tui"

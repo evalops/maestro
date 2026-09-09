@@ -61,6 +61,8 @@
 //! // }
 //! ```
 
+pub use maestro_local_host::ui_prefs::FooterStyle;
+
 use std::collections::HashMap;
 
 /// Result of executing a command
@@ -395,41 +397,6 @@ pub enum AttachAction {
     Clear,
     /// Drop one pending attachment by 1-based index.
     Remove { index: usize },
-}
-
-/// Status bar density presets (Kimi-inspired `/footer`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FooterStyle {
-    /// Model, cwd, git, badges, shortcuts.
-    #[default]
-    Rich,
-    /// Compact: model + goal + key badges only.
-    Solo,
-    /// Hide most chrome; keep alerts and pending approvals.
-    History,
-    /// Status bar empty (zen-adjacent; zen mode still separate).
-    Clear,
-}
-
-impl FooterStyle {
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rich" | "full" | "default" => Some(Self::Rich),
-            "solo" | "compact" | "min" => Some(Self::Solo),
-            "history" | "hist" => Some(Self::History),
-            "clear" | "off" | "none" | "hidden" => Some(Self::Clear),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Rich => "rich",
-            Self::Solo => "solo",
-            Self::History => "history",
-            Self::Clear => "clear",
-        }
-    }
 }
 
 /// Goal-mode slash actions.

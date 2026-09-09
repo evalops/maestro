@@ -1069,7 +1069,7 @@ pub(crate) fn a2a_push_select_pinned_addr(
 /// Returns true if `addr` is private, reserved, or otherwise not a routable
 /// public target for an A2A push notification callback.
 ///
-/// This delegates to `maestro_tui::tools::net_guard::is_blocked_ip`, the one
+/// This delegates to `maestro_local_host::tools::net_guard::is_blocked_ip`, the one
 /// SSRF address policy in this workspace. It used to duplicate the range list
 /// here with a "if you change one, change both" comment, and the two copies
 /// had drifted: this one did not block the 6to4 (`2002::/16`,
@@ -1078,7 +1078,7 @@ pub(crate) fn a2a_push_select_pinned_addr(
 /// `203.0.113.0/24`), site-local (`fec0::/10`), discard-only (`100::/64`), or
 /// IETF protocol assignment (`2001::/23`, including Teredo) ranges.
 pub(crate) fn a2a_push_ip_is_private(addr: IpAddr) -> bool {
-    maestro_tui::tools::net_guard::is_blocked_ip(addr)
+    maestro_local_host::tools::net_guard::is_blocked_ip(addr)
 }
 
 fn a2a_task_with_push_notification_config(task: &Value, config: Value) -> Result<Value, String> {

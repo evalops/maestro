@@ -1703,7 +1703,10 @@ impl Widget for TurnStatusWidget<'_> {
         if area.width >= 64 {
             if let Some(tokens) = self.tokens.filter(|tokens| *tokens > 0) {
                 spans.push(Span::styled(
-                    format!("  ·  {} tok", UsageSummary::format_tokens(tokens)),
+                    maestro_ui::localization::format(
+                        "  ·  {0} tok",
+                        &[UsageSummary::format_tokens(tokens)],
+                    ),
                     dim,
                 ));
             }
@@ -2002,7 +2005,7 @@ impl StatusBarWidget<'_> {
                 ));
                 if let Some(provider) = self.provider {
                     if show_chrome {
-                        spans.push(Span::raw(" via "));
+                        spans.push(Span::raw(maestro_ui::localization::tr(" via ")));
                         spans.push(Span::styled(provider, Style::default().fg(theme.muted)));
                     }
                 }
@@ -2040,7 +2043,7 @@ impl StatusBarWidget<'_> {
                 spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
             }
             spans.push(Span::styled(
-                format!("attach:{}", self.attach_count),
+                maestro_ui::localization::format("attach:{0}", &[(self.attach_count).to_string()]),
                 Style::default().fg(theme.focus),
             ));
         }
@@ -2091,7 +2094,10 @@ impl StatusBarWidget<'_> {
         if history_only {
             if self.pending_approvals > 0 {
                 spans.push(Span::styled(
-                    format!("approvals:{}", self.pending_approvals),
+                    maestro_ui::localization::format(
+                        "approvals:{0}",
+                        &[(self.pending_approvals).to_string()],
+                    ),
                     Style::default().fg(theme.attention),
                 ));
             }

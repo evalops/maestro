@@ -370,7 +370,9 @@ impl ConfigSelector {
             })
             .collect();
         SettingsForm::new(&fields, Some(self.selected), theme)
-            .help("↑ ↓ select  ← → change  Enter confirm  Esc cancel")
+            .help(maestro_ui::localization::tr(
+                "↑ ↓ select  ← → change  Enter confirm  Esc cancel",
+            ))
             .render(frame, inner, &mut self.list_state);
     }
 }

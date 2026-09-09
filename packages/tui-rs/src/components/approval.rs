@@ -1086,7 +1086,10 @@ impl Widget for ApprovalModal<'_> {
                     .add_modifier(Modifier::BOLD),
             ),
             if self.request.is_shell {
-                Span::styled(" (shell)", Style::default().fg(palette.muted))
+                Span::styled(
+                    maestro_ui::localization::tr(" (shell)"),
+                    Style::default().fg(palette.muted),
+                )
             } else {
                 Span::raw("")
             },
@@ -1264,7 +1267,7 @@ impl Widget for BatchedApprovalModal<'_> {
                 let marker = if is_selected { "›" } else { " " };
                 let mut tool = request.tool.clone();
                 if request.is_shell {
-                    tool.push_str(" (shell)");
+                    tool.push_str(maestro_ui::localization::tr(" (shell)"));
                 }
                 let tool_display = format!("{tool:<14.14}");
                 // Rust's formatting precision counts characters, not terminal

@@ -96,7 +96,7 @@ pub(crate) fn extended_api_matches_path(path: &str) -> bool {
     .iter()
     .any(|prefix| path.starts_with(prefix))
 }
-fn managed_policy_response(status: maestro_tui::safety::ManagedPolicyStatus) -> Vec<u8> {
+fn managed_policy_response(status: maestro_local_host::safety::ManagedPolicyStatus) -> Vec<u8> {
     let response_status = if status.configured && !status.valid {
         409
     } else {
@@ -117,10 +117,10 @@ fn managed_policy_audit_event(
     action: &str,
     actor: Option<String>,
     outcome: &str,
-    metadata: Option<maestro_tui::safety::ManagedPolicyMetadata>,
+    metadata: Option<maestro_local_host::safety::ManagedPolicyMetadata>,
     reason: Option<String>,
-) -> maestro_tui::safety::ManagedPolicyAuditEvent {
-    maestro_tui::safety::ManagedPolicyAuditEvent {
+) -> maestro_local_host::safety::ManagedPolicyAuditEvent {
+    maestro_local_host::safety::ManagedPolicyAuditEvent {
         event_id: format!("managed-policy-{}", now_millis()),
         action: action.to_string(),
         actor,
@@ -170,9 +170,9 @@ pub(crate) async fn handle_extended_endpoint(
         let _mcp_config_guard = state.extended_api.lock().await;
         return match head.method.as_str() {
             "GET" => {
-                let config = maestro_tui::mcp::load_mcp_config_with_managed_connections(Some(
-                    &state.config.cwd,
-                ));
+                let config = maestro_local_host::mcp::load_mcp_config_with_managed_connections(
+                    Some(&state.config.cwd),
+                );
                 json_response(
                     200,
                     &serde_json::json!({ "servers": config.servers, "authPresets": [] }),
@@ -194,10 +194,10 @@ pub(crate) async fn handle_extended_endpoint(
     let mut api = state.extended_api.lock().await;
     match (head.method.as_str(), head.path.as_str()) {
         ("GET", "/api/admin/enterprise-policy/status") => {
-            managed_policy_response(maestro_tui::safety::managed_policy_status())
+            managed_policy_response(maestro_local_host::safety::managed_policy_status())
         }
         ("POST", "/api/admin/enterprise-policy/refresh") => {
-            managed_policy_response(maestro_tui::safety::refresh_managed_policy())
+            managed_policy_response(maestro_local_host::safety::refresh_managed_policy())
         }
         ("POST", "/api/admin/enterprise-policy/publish") => {
             let envelope = match body
@@ -205,8 +205,10 @@ pub(crate) async fn handle_extended_endpoint(
                 .cloned()
                 .ok_or_else(|| "publish request must include an envelope".to_string())
                 .and_then(|value| {
-                    serde_json::from_value::<maestro_tui::safety::ManagedPolicyEnvelope>(value)
-                        .map_err(|error| format!("invalid managed policy envelope: {error}"))
+                    serde_json::from_value::<maestro_local_host::safety::ManagedPolicyEnvelope>(
+                        value,
+                    )
+                    .map_err(|error| format!("invalid managed policy envelope: {error}"))
                 }) {
                 Ok(envelope) => envelope,
                 Err(error) => {
@@ -214,7 +216,7 @@ pub(crate) async fn handle_extended_endpoint(
                 }
             };
             let actor = managed_policy_actor(&head, &state.config);
-            match maestro_tui::safety::publish_managed_policy(envelope) {
+            match maestro_local_host::safety::publish_managed_policy(envelope) {
                 Ok(result) => {
                     let event = managed_policy_audit_event(
                         "publish",
@@ -223,7 +225,9 @@ pub(crate) async fn handle_extended_endpoint(
                         result.status.metadata.clone(),
                         result.status.error.clone(),
                     );
-                    if let Err(error) = maestro_tui::safety::record_managed_policy_audit(event) {
+                    if let Err(error) =
+                        maestro_local_host::safety::record_managed_policy_audit(event)
+                    {
                         return json_response(
                             500,
                             &serde_json::json!({ "error": format!("managed policy published but audit failed: {error}") }),
@@ -246,7 +250,7 @@ pub(crate) async fn handle_extended_endpoint(
                         Some(error.clone()),
                     );
                     if let Err(audit_error) =
-                        maestro_tui::safety::record_managed_policy_audit(event)
+                        maestro_local_host::safety::record_managed_policy_audit(event)
                     {
                         return json_response(
                             500,
@@ -267,7 +271,7 @@ pub(crate) async fn handle_extended_endpoint(
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(50)
                 .min(100);
-            match maestro_tui::safety::managed_policy_audit(limit) {
+            match maestro_local_host::safety::managed_policy_audit(limit) {
                 Ok(events) => {
                     json_response(200, &serde_json::json!({ "managedPolicyAudit": events }))
                 }
@@ -562,7 +566,7 @@ pub(crate) async fn handle_extended_endpoint(
         }
         ("POST", "/api/headless/connections") => json_response(
             200,
-            &serde_json::json!({ "connectionId": format!("connection-{}", now_millis()), "protocolVersion": maestro_tui::headless::HEADLESS_PROTOCOL_VERSION }),
+            &serde_json::json!({ "connectionId": format!("connection-{}", now_millis()), "protocolVersion": maestro_local_host::headless::HEADLESS_PROTOCOL_VERSION }),
         ),
         ("POST", "/api/headless/sessions") => {
             let id = format!("headless-{}", now_millis());
@@ -631,7 +635,7 @@ pub(crate) async fn handle_extended_endpoint(
         ),
         ("GET", "/api/lsp") => json_response(
             200,
-            &serde_json::json!({ "enabled": maestro_tui::lsp::is_lsp_enabled(), "servers": [], "diagnostics": [] }),
+            &serde_json::json!({ "enabled": maestro_local_host::lsp::is_lsp_enabled(), "servers": [], "diagnostics": [] }),
         ),
         ("POST", "/api/lsp") => json_response(
             200,
@@ -649,7 +653,7 @@ pub(crate) async fn handle_extended_endpoint(
 }
 
 fn workflow_dashboard_response(cwd: &Path) -> Vec<u8> {
-    let store = maestro_tui::workflow_runtime::WorkflowStore::for_workspace(cwd);
+    let store = maestro_local_host::workflow_runtime::WorkflowStore::for_workspace(cwd);
     match (store.list(), store.dashboard()) {
         (Ok(items), Ok(groups)) => json_response(
             200,
@@ -666,7 +670,7 @@ fn workflow_dashboard_response(cwd: &Path) -> Vec<u8> {
 }
 
 fn workflow_mutation_response(cwd: &Path, body: &Value) -> Vec<u8> {
-    use maestro_tui::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
+    use maestro_local_host::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
 
     let action = body
         .get("action")
@@ -732,7 +736,8 @@ fn workflow_mutation_response(cwd: &Path, body: &Value) -> Vec<u8> {
                     _ => unreachable!(),
                 };
                 if let Err(error) = mutation {
-                    if run.status == maestro_tui::workflow_runtime::WorkflowRunStatus::Failed {
+                    if run.status == maestro_local_host::workflow_runtime::WorkflowRunStatus::Failed
+                    {
                         store.append(&run)?;
                     }
                     return Err(error);
@@ -769,7 +774,7 @@ async fn mutate_mcp_config(cwd: &Path, action: &str, body: &Value) -> Result<Val
             if let Some(server) = server_value.as_object_mut() {
                 server.retain(|_, value| !value.is_null());
             }
-            let mut server: maestro_tui::mcp::McpServerConfig =
+            let mut server: maestro_local_host::mcp::McpServerConfig =
                 serde_json::from_value(server_value)
                     .map_err(|error| (400, format!("invalid MCP server: {error}")))?;
             server.scope = scope;
@@ -815,14 +820,15 @@ async fn mutate_mcp_config(cwd: &Path, action: &str, body: &Value) -> Result<Val
                 return Err((404, format!("MCP server not found: {name}")));
             }
             write_mcp_config_document(&path, &document).await?;
-            let fallback = maestro_tui::mcp::load_mcp_config_with_managed_connections(Some(cwd))
-                .get_server(name)
-                .map(|server| {
-                    serde_json::json!({
-                        "name": server.name,
-                        "scope": mcp_scope_name(server.scope)
-                    })
-                });
+            let fallback =
+                maestro_local_host::mcp::load_mcp_config_with_managed_connections(Some(cwd))
+                    .get_server(name)
+                    .map(|server| {
+                        serde_json::json!({
+                            "name": server.name,
+                            "scope": mcp_scope_name(server.scope)
+                        })
+                    });
             Ok(serde_json::json!({
                 "name": name,
                 "scope": mcp_scope_name(scope),
@@ -836,36 +842,40 @@ async fn mutate_mcp_config(cwd: &Path, action: &str, body: &Value) -> Result<Val
 
 fn writable_mcp_scope(
     scope: Option<&str>,
-) -> Result<maestro_tui::mcp::McpConfigScope, (u16, String)> {
+) -> Result<maestro_local_host::mcp::McpConfigScope, (u16, String)> {
     match scope.unwrap_or("local") {
-        "local" => Ok(maestro_tui::mcp::McpConfigScope::Local),
-        "project" => Ok(maestro_tui::mcp::McpConfigScope::Project),
-        "user" => Ok(maestro_tui::mcp::McpConfigScope::User),
+        "local" => Ok(maestro_local_host::mcp::McpConfigScope::Local),
+        "project" => Ok(maestro_local_host::mcp::McpConfigScope::Project),
+        "user" => Ok(maestro_local_host::mcp::McpConfigScope::User),
         value => Err((400, format!("invalid writable MCP scope: {value}"))),
     }
 }
 
-fn mcp_scope_name(scope: maestro_tui::mcp::McpConfigScope) -> &'static str {
+fn mcp_scope_name(scope: maestro_local_host::mcp::McpConfigScope) -> &'static str {
     match scope {
-        maestro_tui::mcp::McpConfigScope::Managed => "managed",
-        maestro_tui::mcp::McpConfigScope::Local => "local",
-        maestro_tui::mcp::McpConfigScope::Project => "project",
-        maestro_tui::mcp::McpConfigScope::User => "user",
-        maestro_tui::mcp::McpConfigScope::Enterprise => "enterprise",
+        maestro_local_host::mcp::McpConfigScope::Managed => "managed",
+        maestro_local_host::mcp::McpConfigScope::Local => "local",
+        maestro_local_host::mcp::McpConfigScope::Project => "project",
+        maestro_local_host::mcp::McpConfigScope::User => "user",
+        maestro_local_host::mcp::McpConfigScope::Enterprise => "enterprise",
     }
 }
 
 fn writable_mcp_config_path(
     cwd: &Path,
-    scope: maestro_tui::mcp::McpConfigScope,
+    scope: maestro_local_host::mcp::McpConfigScope,
 ) -> Result<PathBuf, (u16, String)> {
     match scope {
-        maestro_tui::mcp::McpConfigScope::Managed => {
+        maestro_local_host::mcp::McpConfigScope::Managed => {
             Err((400, "managed MCP config is read-only".to_string()))
         }
-        maestro_tui::mcp::McpConfigScope::Local => Ok(cwd.join(".composer").join("mcp.local.json")),
-        maestro_tui::mcp::McpConfigScope::Project => Ok(cwd.join(".composer").join("mcp.json")),
-        maestro_tui::mcp::McpConfigScope::User => {
+        maestro_local_host::mcp::McpConfigScope::Local => {
+            Ok(cwd.join(".composer").join("mcp.local.json"))
+        }
+        maestro_local_host::mcp::McpConfigScope::Project => {
+            Ok(cwd.join(".composer").join("mcp.json"))
+        }
+        maestro_local_host::mcp::McpConfigScope::User => {
             if let Some(path) = trimmed_env("MAESTRO_USER_MCP_PATH") {
                 let path = PathBuf::from(path);
                 return Ok(if path.is_absolute() {
@@ -880,7 +890,7 @@ fn writable_mcp_config_path(
                 .ok_or_else(|| (500, "cannot resolve user MCP config path".to_string()))?;
             Ok(home.join("mcp.json"))
         }
-        maestro_tui::mcp::McpConfigScope::Enterprise => {
+        maestro_local_host::mcp::McpConfigScope::Enterprise => {
             Err((400, "enterprise MCP config is read-only".to_string()))
         }
     }
