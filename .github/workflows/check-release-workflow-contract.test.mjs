@@ -79,15 +79,29 @@ jobs:
     environment: npm-release
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: \${{ github.sha }}
           persist-credentials: false
           sparse-checkout: .github/workflows
-      - name: Verify release test Identity session
+      - name: Authenticate to the release-test Secret Manager lane
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: \${{ vars.MAESTRO_RELEASE_TEST_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ vars.MAESTRO_RELEASE_TEST_GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - name: Rotate and verify release-test Identity session
         env:
-          MAESTRO_EVALOPS_ACCESS_TOKEN: \${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
+          MAESTRO_RELEASE_TEST_SESSION_SECRET: \${{ vars.MAESTRO_RELEASE_TEST_SESSION_SECRET }}
+          MAESTRO_RELEASE_TEST_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
+          MAESTRO_RELEASE_TEST_WORKSPACE_ID: \${{ vars.MAESTRO_RELEASE_TEST_WORKSPACE_ID }}
+          MAESTRO_RELEASE_TEST_SUBJECT: \${{ vars.MAESTRO_RELEASE_TEST_SUBJECT }}
+        run: node .github/workflows/refresh-release-identity.mjs
+      - name: Verify release-test Identity session
+        env:
           MAESTRO_EVALOPS_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
         run: node .github/workflows/check-release-identity.mjs
 
@@ -294,17 +308,38 @@ jobs:
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@sha
         with:
           ref: ${releaseSha}
+      - name: Check out protected workflow helpers
+        uses: actions/checkout@sha
+        with:
+          ref: \${{ github.sha }}
+          persist-credentials: false
+          path: .release-workflow
+          sparse-checkout: .github/workflows
       - uses: actions/setup-node@sha
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Authenticate to the release-test Secret Manager lane
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: \${{ vars.MAESTRO_RELEASE_TEST_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ vars.MAESTRO_RELEASE_TEST_GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - name: Rotate release-test Identity session
+        env:
+          MAESTRO_RELEASE_TEST_SESSION_SECRET: \${{ vars.MAESTRO_RELEASE_TEST_SESSION_SECRET }}
+          MAESTRO_RELEASE_TEST_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
+          MAESTRO_RELEASE_TEST_WORKSPACE_ID: \${{ vars.MAESTRO_RELEASE_TEST_WORKSPACE_ID }}
+          MAESTRO_RELEASE_TEST_SUBJECT: \${{ vars.MAESTRO_RELEASE_TEST_SUBJECT }}
+        run: node .release-workflow/.github/workflows/refresh-release-identity.mjs
       - name: Verify published package from npm
         env:
-          MAESTRO_EVALOPS_ACCESS_TOKEN: \${{ secrets.MAESTRO_RELEASE_TEST_ACCESS_TOKEN }}
           MAESTRO_EVALOPS_ORG_ID: \${{ vars.MAESTRO_RELEASE_TEST_ORG_ID }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
