@@ -55,7 +55,13 @@ pub async fn run_operating_plane(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if parsed.subcommand != "status" && parsed.subcommand != "inspect" {
-        eprintln!("Unknown operating-plane command: {}", parsed.subcommand);
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Unknown operating-plane command: {0}",
+                std::slice::from_ref(&(parsed.subcommand))
+            )
+        );
         return Ok(1);
     }
 
@@ -117,7 +123,13 @@ pub fn parse_operating_plane_args(args: &[String]) -> Result<ParsedOperatingPlan
 
         let (flag, inline_value) = split_flag(arg);
         if !VALUE_FLAGS.contains(&flag.as_str()) && !BOOLEAN_FLAGS.contains(&flag.as_str()) {
-            bail!("Unknown operating-plane option: {flag}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown operating-plane option: {0}",
+                    std::slice::from_ref(&(flag))
+                )
+            );
         }
         if let Some(inline) = inline_value {
             flags.insert(flag, FlagValue::String(inline));
@@ -212,7 +224,11 @@ fn flag_boolean(
         Some(FlagValue::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" => Ok(Some(true)),
             "0" | "false" | "no" => Ok(Some(false)),
-            _ => bail!("{name} must be true or false"),
+            _ => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} must be true or false", &[(name).to_string()])
+            ),
         },
     }
 }
@@ -230,25 +246,16 @@ fn flag_non_negative_int(
         .filter(|parsed| parsed.to_string() == value);
     match parsed {
         Some(value) => Ok(Some(value)),
-        None => bail!("{name} must be a non-negative integer"),
+        None => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0} must be a non-negative integer", &[(name).to_string()])
+        ),
     }
 }
 
 fn operating_plane_help_text() -> &'static str {
-    "Usage: maestro operating-plane status [filters]\n\
-\n\
-Filters:\n\
-  --thread-id <id>                  Slack/channel thread id\n\
-  --artifact-id <id>                Runtime artifact ref id\n\
-  --auth-subject <subject>          Gateway-authenticated subject\n\
-  --trace-id <id>                   Trace id\n\
-  --session-id <id>                 Maestro/session id\n\
-  --run-id <id>                     Agent runtime run id\n\
-  --workspace-id <id>               Workspace id\n\
-  --audience <audience>             agent, channel, audit, system, ...\n\
-  --include-gates=<true|false>      Include release/replay gates\n\
-  --limit <n>                       Maximum runs\n\
-  --json                            Emit safe summary JSON"
+    crate::localization::cli_locale().translate("Usage: maestro operating-plane status [filters]\n\nFilters:\n--thread-id <id>                  Slack/channel thread id\n--artifact-id <id>                Runtime artifact ref id\n--auth-subject <subject>          Gateway-authenticated subject\n--trace-id <id>                   Trace id\n--session-id <id>                 Maestro/session id\n--run-id <id>                     Agent runtime run id\n--workspace-id <id>               Workspace id\n--audience <audience>             agent, channel, audit, system, ...\n--include-gates=<true|false>      Include release/replay gates\n--limit <n>                       Maximum runs\n--json                            Emit safe summary JSON")
 }
 
 #[cfg(test)]

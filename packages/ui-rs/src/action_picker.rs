@@ -74,8 +74,8 @@ pub struct PickerHelp<'a> {
 impl Default for PickerHelp<'_> {
     fn default() -> Self {
         Self {
-            navigation: "navigate",
-            confirm: "select",
+            navigation: crate::localization::tr("navigate"),
+            confirm: crate::localization::tr("select"),
             key_separator: ": ",
         }
     }
@@ -90,17 +90,19 @@ impl PickerHelp<'_> {
                 .expect("picker action has a binding")
                 .label()
         };
-        format!(
-            "{}{}{}{} · {}{}{} · {}{}cancel",
-            key("up"),
-            key("down"),
-            self.key_separator,
-            self.navigation,
-            key("confirm"),
-            self.key_separator,
-            self.confirm,
-            key("cancel"),
-            self.key_separator
+        crate::localization::format(
+            "{0}{1}{2}{3} · {4}{5}{6} · {7}{8}cancel",
+            &[
+                (key("up")).to_string(),
+                (key("down")).to_string(),
+                (self.key_separator).to_string(),
+                (self.navigation).to_string(),
+                (key("confirm")).to_string(),
+                (self.key_separator).to_string(),
+                (self.confirm).to_string(),
+                (key("cancel")).to_string(),
+                (self.key_separator).to_string(),
+            ],
         )
     }
     /// Styled bindings, retaining the existing custom wording and key separator.
@@ -115,8 +117,14 @@ impl PickerHelp<'_> {
         let mut line = Line::default();
         for (index, (key, label)) in [
             (format!("{}{}", key("up"), key("down")), self.navigation),
-            (key("confirm").to_owned(), self.confirm),
-            (key("cancel").to_owned(), "cancel"),
+            (
+                key(crate::localization::tr("confirm")).to_owned(),
+                self.confirm,
+            ),
+            (
+                key(crate::localization::tr("cancel")).to_owned(),
+                crate::localization::tr("cancel"),
+            ),
         ]
         .into_iter()
         .enumerate()

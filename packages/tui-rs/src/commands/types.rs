@@ -902,6 +902,12 @@ pub enum ControlPanel {
 
 /// Error from command execution
 ///
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandErrorKind {
+    InvalidInput,
+    UnknownCommand,
+}
+
 /// Rich error type for command failures, including a message and optional hint
 /// for helping the user fix the issue.
 ///
@@ -944,6 +950,7 @@ pub enum ControlPanel {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CommandError {
+    pub kind: CommandErrorKind,
     /// Primary error message
     pub message: String,
     /// Optional hint for resolving the error
@@ -953,9 +960,15 @@ pub struct CommandError {
 impl CommandError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: CommandErrorKind::InvalidInput,
             message: message.into(),
             hint: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: CommandErrorKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -1112,27 +1125,27 @@ impl CommandCategory {
     pub fn label(&self) -> &'static str {
         match self {
             CommandCategory::Ui => "UI",
-            CommandCategory::Session => "Session",
-            CommandCategory::Tools => "Tools",
-            CommandCategory::Safety => "Safety",
-            CommandCategory::Diagnostics => "Diagnostics",
-            CommandCategory::Config => "Config",
-            CommandCategory::Navigation => "Navigation",
-            CommandCategory::Context => "Context",
+            CommandCategory::Session => maestro_ui::localization::tr("Session"),
+            CommandCategory::Tools => maestro_ui::localization::tr("Tools"),
+            CommandCategory::Safety => maestro_ui::localization::tr("Safety"),
+            CommandCategory::Diagnostics => maestro_ui::localization::tr("Diagnostics"),
+            CommandCategory::Config => maestro_ui::localization::tr("Config"),
+            CommandCategory::Navigation => maestro_ui::localization::tr("Navigation"),
+            CommandCategory::Context => maestro_ui::localization::tr("Context"),
         }
     }
 
     #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
-            CommandCategory::Ui => "User interface settings",
-            CommandCategory::Session => "Session management",
-            CommandCategory::Tools => "Tool and MCP management",
-            CommandCategory::Safety => "Safety and approval settings",
-            CommandCategory::Diagnostics => "System diagnostics",
-            CommandCategory::Config => "Configuration options",
-            CommandCategory::Navigation => "Navigation and search",
-            CommandCategory::Context => "Context management",
+            CommandCategory::Ui => maestro_ui::localization::tr("User interface settings"),
+            CommandCategory::Session => maestro_ui::localization::tr("Session management"),
+            CommandCategory::Tools => maestro_ui::localization::tr("Tool and MCP management"),
+            CommandCategory::Safety => maestro_ui::localization::tr("Safety and approval settings"),
+            CommandCategory::Diagnostics => maestro_ui::localization::tr("System diagnostics"),
+            CommandCategory::Config => maestro_ui::localization::tr("Configuration options"),
+            CommandCategory::Navigation => maestro_ui::localization::tr("Navigation and search"),
+            CommandCategory::Context => maestro_ui::localization::tr("Context management"),
         }
     }
 }
@@ -1277,6 +1290,8 @@ impl CommandArgument {
 /// - `&CommandContext`: Immutable reference to execution context
 /// - `CommandResult`: Returns Ok(CommandOutput) or Err(CommandError)
 pub struct Command {
+    /// Only application-owned descriptions are translated.
+    pub localized_description: bool,
     /// Primary browse order; None keeps compatibility/advanced commands searchable only.
     pub browse_order: Option<u16>,
     /// Primary command name (without slash)
@@ -1309,6 +1324,7 @@ impl Command {
     ) -> Self {
         let name = name.into();
         Self {
+            localized_description: false,
             browse_order: None,
             usage: format!("/{name}"),
             name,
@@ -1319,6 +1335,19 @@ impl Command {
             handler,
             is_group: false,
             subcommands: Vec::new(),
+        }
+    }
+
+    pub fn localized(mut self) -> Self {
+        self.localized_description = true;
+        self
+    }
+
+    pub fn display_description(&self) -> &str {
+        if self.localized_description {
+            maestro_ui::localization::tr(&self.description)
+        } else {
+            &self.description
         }
     }
 

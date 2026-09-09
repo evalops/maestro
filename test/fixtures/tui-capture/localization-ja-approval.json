@@ -1,0 +1,32 @@
+{
+  "name": "approval",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language ja"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "表示言語"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "表示言語"
+    },
+    {
+      "text": "Run printf release-ready."
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "操作の承認が必要です"
+    }
+  ]
+}

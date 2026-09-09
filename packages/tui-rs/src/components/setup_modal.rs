@@ -252,7 +252,8 @@ impl SetupModal {
 
     pub fn set_waiting_evalops(&mut self) {
         self.page = SetupPage::WaitingEvalops;
-        self.status = Some("Waiting for the browser callback…".to_owned());
+        self.status =
+            Some(maestro_ui::localization::tr("Waiting for the browser callback…").to_owned());
     }
 
     /// Continue a BYOK setup only after the required Identity login succeeds.
@@ -262,7 +263,10 @@ impl SetupModal {
         }
         self.continue_to_byok_after_identity = false;
         self.page = SetupPage::Provider;
-        self.status = Some("EvalOps Identity verified. Choose a provider.".to_owned());
+        self.status = Some(
+            maestro_ui::localization::tr("EvalOps Identity verified. Choose a provider.")
+                .to_owned(),
+        );
         true
     }
 
@@ -388,7 +392,8 @@ impl SetupModal {
                 None
             }
             SetupPage::Key if self.secret.trim().is_empty() => {
-                self.status = Some("Paste or type an API key.".to_owned());
+                self.status =
+                    Some(maestro_ui::localization::tr("Paste or type an API key.").to_owned());
                 None
             }
             SetupPage::Key => Some(SetupAdvance::SaveKey {
@@ -508,15 +513,18 @@ impl SetupModal {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     if self.page == SetupPage::Welcome {
-                        "Welcome to Deixic Code"
+                        maestro_ui::localization::tr("Welcome to Deixic Code")
                     } else {
-                        "Deixic Code"
+                        maestro_ui::localization::tr("Deixic Code")
                     },
                     Style::default()
                         .fg(theme.focus)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  /  Guided setup", Style::default().fg(theme.muted)),
+                Span::styled(
+                    maestro_ui::localization::tr("  /  Guided setup"),
+                    Style::default().fg(theme.muted),
+                ),
             ])),
             chunks[0],
         );
@@ -615,27 +623,37 @@ impl SetupModal {
         let mut lines: Vec<Line<'static>> = match self.page {
             SetupPage::Welcome => vec![
                 Line::styled(
-                    "Let's get Deixic Code ready for your first run.",
+                    maestro_ui::localization::tr("Let's get Deixic Code ready for your first run."),
                     Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                 ),
                 Line::from(""),
-                Line::from("Dex will help you connect and check that your model and tools work."),
+                Line::from(maestro_ui::localization::tr(
+                    "Dex will help you connect and check that your model and tools work.",
+                )),
                 Line::from(""),
                 Line::styled(
-                    "Make it yours",
+                    maestro_ui::localization::tr("Make it yours"),
                     Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                 ),
-                Line::from("Optional answers help our product team understand your needs."),
-                Line::from(
+                Line::from(maestro_ui::localization::tr(
+                    "Optional answers help our product team understand your needs.",
+                )),
+                Line::from(maestro_ui::localization::tr(
                     "Share setup outcomes, timings, and failure categories. No screens, terminal contents, code, or credentials are collected.",
-                ),
+                )),
                 Line::from(""),
             ],
             SetupPage::Role | SetupPage::UseCase | SetupPage::Workflow => {
                 let prompt = match self.page {
-                    SetupPage::Role => "What is your role? (optional)",
-                    SetupPage::UseCase => "What do you want to do first? (optional)",
-                    _ => "How do you plan to run Deixic Code? (optional)",
+                    SetupPage::Role => {
+                        maestro_ui::localization::tr("What is your role? (optional)")
+                    }
+                    SetupPage::UseCase => {
+                        maestro_ui::localization::tr("What do you want to do first? (optional)")
+                    }
+                    _ => maestro_ui::localization::tr(
+                        "How do you plan to run Deixic Code? (optional)",
+                    ),
                 };
                 let mut lines = vec![Line::from(prompt), Line::from("")];
                 for (i, label) in self.profile_choices().iter().enumerate() {
@@ -659,33 +677,41 @@ impl SetupModal {
                 lines
             }
             SetupPage::Verify => vec![
-                Line::from("Connection saved. Now verify it works."),
-                Line::from(
+                Line::from(maestro_ui::localization::tr(
+                    "Connection saved. Now verify it works.",
+                )),
+                Line::from(maestro_ui::localization::tr(
                     "Checks cover configuration, Identity, model access, workspace access, and a bounded model/tool test.",
-                ),
-                Line::from(
+                )),
+                Line::from(maestro_ui::localization::tr(
                     "The test sends a small fixed request to your selected model and may incur usage charges. It does not send repository contents.",
-                ),
+                )),
                 Line::from(""),
-                Line::from("Enter: run readiness checks"),
+                Line::from(maestro_ui::localization::tr("Enter: run readiness checks")),
             ],
             SetupPage::Checking => vec![
-                Line::from("Checking your actual configuration and runtime…"),
-                Line::from("Dex will report results when the checks finish."),
+                Line::from(maestro_ui::localization::tr(
+                    "Checking your actual configuration and runtime…",
+                )),
+                Line::from(maestro_ui::localization::tr(
+                    "Dex will report results when the checks finish.",
+                )),
             ],
             SetupPage::Results => {
                 let mut lines = vec![
                     Line::from(if self.checks.as_ref().is_some_and(|r| r.ready) {
-                        "Verified: model access and the native read test passed."
+                        maestro_ui::localization::tr(
+                            "Verified: model access and the native read test passed.",
+                        )
                     } else {
-                        "Setup needs attention before your first run."
+                        maestro_ui::localization::tr("Setup needs attention before your first run.")
                     }),
                     Line::from(""),
                 ];
                 if let Some(report) = &self.checks {
-                    lines.push(Line::from(format!(
-                        "Checks took {:.1}s",
-                        report.elapsed_ms as f64 / 1000.0
+                    lines.push(Line::from(maestro_ui::localization::format(
+                        "Checks took {0}s",
+                        &[format!("{:.1}", report.elapsed_ms as f64 / 1000.0)],
                     )));
                     for check in &report.checks {
                         let label = match check.status {
@@ -700,7 +726,10 @@ impl SetupModal {
                             check.summary
                         )));
                         if let Some(repair) = &check.repair {
-                            lines.push(Line::from(format!("  Next: {repair}")));
+                            lines.push(Line::from(maestro_ui::localization::format(
+                                "  Next: {0}",
+                                std::slice::from_ref(repair),
+                            )));
                         }
                     }
                 }
@@ -713,25 +742,27 @@ impl SetupModal {
         }
         if matches!(self.page, SetupPage::Verify | SetupPage::Results) {
             lines.push(Line::from(""));
-            lines.push(Line::from("These checks cover model access and an isolated native read. Session tools, MCP connections, headless automation, and hosted deployment need their own checks."));
+            lines.push(Line::from(maestro_ui::localization::tr("These checks cover model access and an isolated native read. Session tools, MCP connections, headless automation, and hosted deployment need their own checks.")));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "Share setup information: {} (Ctrl+D to change)",
-            if self.share_diagnostics { "on" } else { "off" }
+        lines.push(Line::from(maestro_ui::localization::format(
+            "Share setup information: {0} (Ctrl+D to change)",
+            &[(if self.share_diagnostics { "on" } else { "off" }).to_string()],
         )));
         if let Some(status) = self.collection_status {
             lines.push(Line::from(match status {
                 OnboardingCollectionStatus::Queued => {
-                    "Setup information queued for the product team."
+                    maestro_ui::localization::tr("Setup information queued for the product team.")
                 }
-                OnboardingCollectionStatus::Disabled => "Sharing disabled; setup stays available.",
-                OnboardingCollectionStatus::Unavailable => {
-                    "Product-team collection unavailable; you can continue setup."
+                OnboardingCollectionStatus::Disabled => {
+                    maestro_ui::localization::tr("Sharing disabled; setup stays available.")
                 }
-                OnboardingCollectionStatus::Failed => {
-                    "Could not send setup information; you can continue setup."
-                }
+                OnboardingCollectionStatus::Unavailable => maestro_ui::localization::tr(
+                    "Product-team collection unavailable; you can continue setup.",
+                ),
+                OnboardingCollectionStatus::Failed => maestro_ui::localization::tr(
+                    "Could not send setup information; you can continue setup.",
+                ),
             }));
         }
         lines
@@ -739,31 +770,38 @@ impl SetupModal {
 
     fn mode_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from(Span::raw(
+            Line::from(Span::raw(maestro_ui::localization::tr(
                 "EvalOps Identity is required to use Deixic Code.",
-            )),
+            ))),
             Line::from(""),
         ];
         lines.extend(self.choice(
             0,
             self.mode_index,
-            "Managed inference",
-            "Sign in with EvalOps Identity and use the managed gateway.",
+            maestro_ui::localization::tr("Managed inference"),
+            maestro_ui::localization::tr(
+                "Sign in with EvalOps Identity and use the managed gateway.",
+            ),
             theme,
         ));
         lines.push(Line::from(""));
         lines.extend(self.choice(
             1,
             self.mode_index,
-            "Use your own key",
-            "Sign in with Identity first, then add OpenRouter, Anthropic, OpenAI, or another key.",
+            maestro_ui::localization::tr("Use your own key"),
+            maestro_ui::localization::tr("Sign in with Identity first, then add OpenRouter, Anthropic, OpenAI, or another key."),
             theme,
         ));
         lines
     }
 
     fn provider_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(Span::raw("Choose a provider.")), Line::from("")];
+        let mut lines = vec![
+            Line::from(Span::raw(maestro_ui::localization::tr(
+                "Choose a provider.",
+            ))),
+            Line::from(""),
+        ];
         for (index, provider) in Self::providers().iter().enumerate() {
             let selected = index == self.provider_index;
             let marker = if selected { "▸ " } else { "  " };
@@ -779,7 +817,7 @@ impl SetupModal {
                 Span::styled(marker.to_owned(), style),
                 Span::styled(provider.label.to_owned(), style),
                 Span::styled(
-                    format!("  {}", provider.hint),
+                    format!("  {}", maestro_ui::localization::tr(provider.hint)),
                     Style::default().fg(theme.muted),
                 ),
             ]));
@@ -795,14 +833,22 @@ impl SetupModal {
             "•".repeat(self.secret.chars().count().min(48))
         };
         let mut lines = vec![
-            Line::from(Span::raw(format!("Paste your {} API key.", provider.label))),
+            Line::from(Span::raw(maestro_ui::localization::format(
+                "Paste your {0} API key.",
+                &[(provider.label).to_string()],
+            ))),
             Line::from(Span::styled(
-                "Stored in the OS credential store, not in config.toml.",
+                maestro_ui::localization::tr(
+                    "Stored in the OS credential store, not in config.toml.",
+                ),
                 Style::default().fg(theme.muted),
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Key  ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    maestro_ui::localization::tr("Key  "),
+                    Style::default().fg(theme.muted),
+                ),
                 Span::styled(
                     if masked.is_empty() {
                         " ".to_owned()
@@ -825,18 +871,20 @@ impl SetupModal {
 
     fn waiting_lines(&self, theme: maestro_ui::UiTheme) -> Vec<Line<'static>> {
         vec![
-            Line::from(Span::raw(
+            Line::from(Span::raw(maestro_ui::localization::tr(
                 "A browser window opens for the required EvalOps Identity login.",
-            )),
+            ))),
             Line::from(Span::styled(
-                "This session stays here until the callback finishes.",
+                maestro_ui::localization::tr(
+                    "This session stays here until the callback finishes.",
+                ),
                 Style::default().fg(theme.muted),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                self.status
-                    .clone()
-                    .unwrap_or_else(|| "Waiting for the browser callback…".to_owned()),
+                self.status.clone().unwrap_or_else(|| {
+                    maestro_ui::localization::tr("Waiting for the browser callback…").to_owned()
+                }),
                 Style::default().fg(theme.attention),
             )),
         ]
@@ -874,22 +922,32 @@ impl SetupModal {
 
     fn footer(&self) -> &'static str {
         match self.page {
-            SetupPage::Welcome => "Press Enter to continue…   esc skip   PgUp/PgDn scroll",
+            SetupPage::Welcome => maestro_ui::localization::tr(
+                "Press Enter to continue…   esc skip   PgUp/PgDn scroll",
+            ),
             SetupPage::Role | SetupPage::UseCase | SetupPage::Workflow => {
-                "↑↓ select   enter next   Ctrl+D sharing   esc back"
+                maestro_ui::localization::tr("↑↓ select   enter next   Ctrl+D sharing   esc back")
             }
-            SetupPage::Verify => {
-                "Enter: run checks   esc reconnect\nCtrl+D sharing   PgUp/PgDn scroll"
-            }
-            SetupPage::Checking => "PgUp/PgDn scroll   esc close",
+            SetupPage::Verify => maestro_ui::localization::tr(
+                "Enter: run checks   esc reconnect\nCtrl+D sharing   PgUp/PgDn scroll",
+            ),
+            SetupPage::Checking => maestro_ui::localization::tr("PgUp/PgDn scroll   esc close"),
             SetupPage::Results if self.checks.as_ref().is_some_and(|r| r.ready) => {
-                "enter finish   f feedback   ↑↓ scroll   Ctrl+D sharing"
+                maestro_ui::localization::tr(
+                    "enter finish   f feedback   ↑↓ scroll   Ctrl+D sharing",
+                )
             }
-            SetupPage::Results => "enter retry   f feedback   ↑↓ scroll   esc reconnect",
-            SetupPage::Mode => "↑↓ select   enter continue   esc back",
-            SetupPage::Provider => "↑↓ select   enter next   esc back",
-            SetupPage::Key => "enter save   esc back",
-            SetupPage::WaitingEvalops => "esc close",
+            SetupPage::Results => {
+                maestro_ui::localization::tr("enter retry   f feedback   ↑↓ scroll   esc reconnect")
+            }
+            SetupPage::Mode => {
+                maestro_ui::localization::tr("↑↓ select   enter continue   esc back")
+            }
+            SetupPage::Provider => {
+                maestro_ui::localization::tr("↑↓ select   enter next   esc back")
+            }
+            SetupPage::Key => maestro_ui::localization::tr("enter save   esc back"),
+            SetupPage::WaitingEvalops => maestro_ui::localization::tr("esc close"),
         }
     }
 }

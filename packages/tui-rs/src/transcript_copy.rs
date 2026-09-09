@@ -34,7 +34,10 @@ impl CopyTarget {
         }
     }
     fn usage() -> String {
-        "Usage: /copy [prompt|response|prompts|responses|turns <first-last>|session|all]".into()
+        maestro_ui::localization::tr(
+            "Usage: /copy [prompt|response|prompts|responses|turns <first-last>|session|all]",
+        )
+        .into()
     }
 }
 
@@ -47,7 +50,7 @@ pub fn copy_text(
         return session
             .filter(|id| !id.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| "No saved session to copy".into());
+            .ok_or_else(|| maestro_ui::localization::tr("No saved session to copy").into());
     }
     let regular: Vec<_> = messages
         .iter()
@@ -64,7 +67,7 @@ pub fn copy_text(
             .rev()
             .find(|m| m.role == role && !m.content.is_empty())
             .map(|m| m.content.clone())
-            .ok_or_else(|| "No message to copy".into());
+            .ok_or_else(|| maestro_ui::localization::tr("No message to copy").into());
     }
     let turns = regular
         .iter()
@@ -72,8 +75,9 @@ pub fn copy_text(
         .count();
     if let CopyTarget::Turns { last, .. } = target {
         if *last > turns {
-            return Err(format!(
-                "Only {turns} turns are available in the current transcript"
+            return Err(maestro_ui::localization::format(
+                "Only {0} turns are available in the current transcript",
+                &[(turns).to_string()],
             ));
         }
     }
@@ -92,15 +96,15 @@ pub fn copy_text(
         };
         if include && !message.content.is_empty() {
             let role = if message.role == MessageRole::User {
-                "User"
+                maestro_ui::localization::tr("User")
             } else {
-                "Assistant"
+                maestro_ui::localization::tr("Assistant")
             };
             text.push(format!("{role}:\n{}", message.content));
         }
     }
     if text.is_empty() {
-        Err("No message to copy".into())
+        Err(maestro_ui::localization::tr("No message to copy").into())
     } else {
         Ok(text.join("\n\n"))
     }

@@ -224,7 +224,11 @@ async fn dispatch(cmd: &str, o: &Opts) -> Result<()> {
         "attach-token" => cmd_attach_token(o).await,
         "revoke-token" => cmd_revoke_token(o).await,
         "target" => cmd_target(o).await,
-        other => bail!("Unknown remote command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Unknown remote command: {0}", &[(other).to_string()])
+        ),
     }
 }
 
@@ -277,7 +281,11 @@ async fn cmd_start(o: &Opts) -> Result<()> {
                 );
             }
             if created["replayed"].as_bool() == Some(true) {
-                println!("  replayed:  existing idempotent request");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("  replayed:  existing idempotent request", &[])
+                );
             }
             println!();
             print_attach_instr(
@@ -304,28 +312,34 @@ async fn cmd_start(o: &Opts) -> Result<()> {
         );
     }
     if created["replayed"].as_bool() == Some(true) {
-        println!("  replayed:  existing idempotent request");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  replayed:  existing idempotent request", &[])
+        );
     }
     println!();
-    println!("Attach: deixic-code remote attach {}", session.id);
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Attach: deixic-code remote attach {0}",
+            std::slice::from_ref(&(session.id))
+        )
+    );
     Ok(())
 }
 
 fn start_request(o: &Opts, config: &Config) -> Result<Value> {
     for name in ["workspace-source", "repo", "repo-url", "branch"] {
         if has_flag(o, name) {
-            bail!(
-                "--{name} cannot be used: mutable hydration locators require a signed immutable hydration envelope"
-            );
+            bail!("{}", crate::localization::cli_locale().format("--{0} cannot be used: mutable hydration locators require a signed immutable hydration envelope", &[(name).to_string()]));
         }
     }
     let ttl = parse_minutes(flag(o, &["ttl"]).as_deref(), 90)?;
     let idle = parse_minutes_opt(flag(o, &["idle-ttl", "idle"]))?;
     let workspace_id = trim(flag(o, &["workspace"]).or_else(|| config.workspace_id.clone()))
         .ok_or_else(|| {
-            anyhow!(
-                "Remote runner start requires a workspace id. Pass --workspace or set MAESTRO_REMOTE_RUNNER_WORKSPACE_ID."
-            )
+            anyhow!("{}", crate::localization::cli_locale().format("Remote runner start requires a workspace id. Pass --workspace or set MAESTRO_REMOTE_RUNNER_WORKSPACE_ID.", &[]))
         })?;
     Ok(strip_null(json!({
         "organizationId": config.organization_id,
@@ -370,7 +384,10 @@ async fn cmd_list(o: &Opts) -> Result<()> {
     print_table(&sessions);
     if let Some(n) = first_num(&payload, &["nextOffset", "next_offset"]) {
         if n > 0.0 {
-            println!("next offset: {n}");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("next offset: {0}", &[(n).to_string()])
+            );
         }
     }
     Ok(())
@@ -406,11 +423,13 @@ async fn cmd_status(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_get(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote get <session-id>"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: deixic-code remote get <session-id>", &[])
+        )
+    })?;
     let session = get_session(&id, &client_opts(o)).await?;
     if json_flag(o) {
         print_json(&session)?;
@@ -421,11 +440,13 @@ async fn cmd_get(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_events(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote events <session-id>"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: deixic-code remote events <session-id>", &[])
+        )
+    })?;
     let config = require_config(&client_opts(o))?;
     let body = strip_null(json!({
         "sessionId": id,
@@ -442,7 +463,10 @@ async fn cmd_events(o: &Opts) -> Result<()> {
         return Ok(());
     }
     if events.is_empty() {
-        println!("No remote runner events found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No remote runner events found.", &[])
+        );
         return Ok(());
     }
     for e in events {
@@ -461,10 +485,15 @@ async fn cmd_events(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_stop(o: &Opts) -> Result<()> {
-    let id =
-        o.positionals.first().cloned().ok_or_else(|| {
-            anyhow!("Usage: deixic-code remote stop <session-id> [--reason text]")
-        })?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Usage: deixic-code remote stop <session-id> [--reason text]",
+                &[]
+            )
+        )
+    })?;
     let config = require_config(&client_opts(o))?;
     let reason = flag(o, &["reason"]).unwrap_or_else(|| "deixic-code remote stop".into());
     let payload = post(
@@ -483,13 +512,22 @@ async fn cmd_stop(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_extend(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote extend <session-id> --ttl 2h"))?;
-    let ttl = flag(o, &["ttl", "add-ttl"])
-        .ok_or_else(|| anyhow!("deixic-code remote extend requires --ttl"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Usage: deixic-code remote extend <session-id> --ttl 2h",
+                &[]
+            )
+        )
+    })?;
+    let ttl = flag(o, &["ttl", "add-ttl"]).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("deixic-code remote extend requires --ttl", &[])
+        )
+    })?;
     let config = require_config(&client_opts(o))?;
     let body = strip_null(json!({
         "sessionId": id,
@@ -508,11 +546,13 @@ async fn cmd_extend(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_attach(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote attach <session-id>"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: deixic-code remote attach <session-id>", &[])
+        )
+    })?;
     let roles = role_values(o)?;
     let minted = mint(
         &id,
@@ -557,11 +597,13 @@ async fn cmd_attach(o: &Opts) -> Result<()> {
 }
 
 async fn cmd_attach_token(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote attach-token <session-id>"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: deixic-code remote attach-token <session-id>", &[])
+        )
+    })?;
     let minted = mint(
         &id,
         role_values(o)?,
@@ -578,7 +620,11 @@ async fn cmd_attach_token(o: &Opts) -> Result<()> {
         }))?;
         return Ok(());
     }
-    println!("Attach token for {id}");
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("Attach token for {0}", std::slice::from_ref(&(id)))
+    );
     println!("  gateway: {}", minted.gateway_base_url);
     println!("  token:   {}", minted.token.id);
     println!("  secret:  {}", minted.token_secret);
@@ -594,7 +640,13 @@ async fn cmd_revoke_token(o: &Opts) -> Result<()> {
     let tid = o.positionals.get(1).cloned();
     let (sid, tid) = match (sid, tid) {
         (Some(s), Some(t)) => (s, t),
-        _ => bail!("Usage: deixic-code remote revoke-token <session-id> <token-id>"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Usage: deixic-code remote revoke-token <session-id> <token-id>",
+                &[]
+            )
+        ),
     };
     let config = require_config(&client_opts(o))?;
     let payload = post(
@@ -607,19 +659,33 @@ async fn cmd_revoke_token(o: &Opts) -> Result<()> {
     if json_flag(o) {
         print_json(&json!({"token": token, "event": payload.get("event")}))?;
     } else {
-        println!("Revoked attach token {}", token.id);
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Revoked attach token {0}",
+                std::slice::from_ref(&(token.id))
+            )
+        );
     }
     Ok(())
 }
 
 async fn cmd_target(o: &Opts) -> Result<()> {
-    let id = o
-        .positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("Usage: deixic-code remote target <session-id>"))?;
+    let id = o.positionals.first().cloned().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: deixic-code remote target <session-id>", &[])
+        )
+    })?;
     let config = resolve_config(&client_opts(o))?.ok_or_else(|| {
-        anyhow!("Remote runner target requires EvalOps organization and access token.")
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Remote runner target requires EvalOps organization and access token.",
+                &[]
+            )
+        )
     })?;
     let gw = gateway_url(&config.base_url, &id);
     if json_flag(o) {
@@ -651,8 +717,15 @@ async fn mint(
         "ttlMinutes": ttl,
     }));
     let payload = post(&config, MINT_PATH, body).await?;
-    let secret = first_str(&payload, &["tokenSecret", "token_secret"])
-        .ok_or_else(|| anyhow!("{SERVICE} returned no attach token secret"))?;
+    let secret = first_str(&payload, &["tokenSecret", "token_secret"]).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} returned no attach token secret",
+                &[(SERVICE).to_string()]
+            )
+        )
+    })?;
     Ok(Minted {
         token: require_token(&payload)?,
         token_secret: secret,
@@ -673,7 +746,11 @@ async fn wait_ready(
     poll_ms: u64,
 ) -> Result<(Session, u32, u64)> {
     if timeout_ms < 1 {
-        bail!("Remote runner wait timeout must be at least 1ms");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Remote runner wait timeout must be at least 1ms", &[])
+        );
     }
     let ready = [STATE_RUNNING, STATE_IDLE];
     let terminal = [STATE_STOPPED, STATE_EXPIRED, STATE_FAILED, STATE_LOST];
@@ -694,15 +771,24 @@ async fn wait_ready(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                bail!("Remote runner session {id} entered terminal state {label}: {r}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Remote runner session {0} entered terminal state {1}: {2}",
+                        &[(id).to_string(), (label).clone(), (r).to_string()]
+                    )
+                );
             }
-            bail!("Remote runner session {id} entered terminal state {label}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Remote runner session {0} entered terminal state {1}",
+                    &[(id).to_string(), (label).clone()]
+                )
+            );
         }
         if elapsed >= timeout_ms {
-            bail!(
-                "Timed out after {timeout_ms}ms waiting for remote runner session {id} to become ready (last state: {})",
-                state_label(session.state.as_deref())
-            );
+            bail!("{}", crate::localization::cli_locale().format("Timed out after {0}ms waiting for remote runner session {1} to become ready (last state: {2})", &[(timeout_ms).to_string(), (id).to_string(), state_label(session.state.as_deref()).clone()]));
         }
         let sleep = poll_ms.min(timeout_ms.saturating_sub(elapsed));
         if sleep > 0 {
@@ -747,13 +833,19 @@ async fn verify_attach(minted: &Minted, session_id: &str, take_control: bool) ->
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         bail!(
-            "remote runner headless gateway returned {}: {}",
-            status.as_u16(),
-            if text.trim().is_empty() {
-                status.canonical_reason().unwrap_or("error")
-            } else {
-                text.trim()
-            }
+            "{}",
+            crate::localization::cli_locale().format(
+                "remote runner headless gateway returned {0}: {1}",
+                &[
+                    (status.as_u16()).to_string(),
+                    (if text.trim().is_empty() {
+                        status.canonical_reason().unwrap_or("error")
+                    } else {
+                        text.trim()
+                    })
+                    .to_string()
+                ]
+            )
         );
     }
     let payload: Value = if text.trim().is_empty() {
@@ -823,9 +915,11 @@ fn ensure_verify_disconnect_success(status: StatusCode, body: &str) -> Result<()
         bounded
     };
     bail!(
-        "remote runner headless disconnect returned {}: {}",
-        status.as_u16(),
-        detail
+        "{}",
+        crate::localization::cli_locale().format(
+            "remote runner headless disconnect returned {0}: {1}",
+            &[(status.as_u16()).to_string(), (detail).clone()]
+        )
     )
 }
 
@@ -867,7 +961,11 @@ async fn post(config: &Config, path: &str, body: Value) -> Result<Value> {
                     );
                 }
                 if text.trim().is_empty() {
-                    bail!("{SERVICE} returned empty response");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("{0} returned empty response", &[(SERVICE).to_string()])
+                    );
                 }
                 return serde_json::from_str(&text)
                     .with_context(|| format!("parse {SERVICE} response"));
@@ -879,7 +977,13 @@ async fn post(config: &Config, path: &str, body: Value) -> Result<Value> {
             Err(e) => return Err(e).context(format!("{SERVICE} request failed")),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("{SERVICE} request failed")))
+    Err(last_err.unwrap_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0} request failed", &[(SERVICE).to_string()])
+        )
+    }))
 }
 
 fn retryable(status: StatusCode) -> bool {
@@ -888,9 +992,7 @@ fn retryable(status: StatusCode) -> bool {
 
 fn require_config(o: &ClientOpts) -> Result<Config> {
     resolve_config(o)?.ok_or_else(|| {
-        anyhow!(
-            "Remote runner requires EvalOps organization and access token. Set MAESTRO_REMOTE_RUNNER_ORG_ID/MAESTRO_EVALOPS_ORG_ID and MAESTRO_REMOTE_RUNNER_TOKEN/MAESTRO_EVALOPS_ACCESS_TOKEN, or run EvalOps login."
-        )
+        anyhow!("{}", crate::localization::cli_locale().format("Remote runner requires EvalOps organization and access token. Set MAESTRO_REMOTE_RUNNER_ORG_ID/MAESTRO_EVALOPS_ORG_ID and MAESTRO_REMOTE_RUNNER_TOKEN/MAESTRO_EVALOPS_ACCESS_TOKEN, or run EvalOps login.", &[]))
     })
 }
 
@@ -925,9 +1027,7 @@ fn resolve_config(o: &ClientOpts) -> Result<Option<Config>> {
 fn workspace_required(cli: Option<String>, co: &ClientOpts, verb: &str) -> Result<String> {
     let config = require_config(co)?;
     trim(cli.or(config.workspace_id)).ok_or_else(|| {
-        anyhow!(
-            "Remote runner {verb} requires a workspace id. Pass --workspace or set MAESTRO_REMOTE_RUNNER_WORKSPACE_ID."
-        )
+        anyhow!("{}", crate::localization::cli_locale().format("Remote runner {0} requires a workspace id. Pass --workspace or set MAESTRO_REMOTE_RUNNER_WORKSPACE_ID.", &[(verb).to_string()]))
     })
 }
 
@@ -1052,11 +1152,23 @@ fn int_flag(o: &Opts, name: &str, fallback: Option<u64>) -> Result<Option<u64>> 
     match flag(o, &[name]) {
         None => Ok(fallback),
         Some(raw) => {
-            let p: i64 = raw
-                .parse()
-                .map_err(|_| anyhow!("--{name} must be a non-negative integer"))?;
+            let p: i64 = raw.parse().map_err(|_| {
+                anyhow!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "--{0} must be a non-negative integer",
+                        &[(name).to_string()]
+                    )
+                )
+            })?;
             if p < 0 {
-                bail!("--{name} must be a non-negative integer");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "--{0} must be a non-negative integer",
+                        &[(name).to_string()]
+                    )
+                );
             }
             Ok(Some(p as u64))
         }
@@ -1075,12 +1187,24 @@ fn parse_minutes(raw: Option<&str>, fallback: u64) -> Result<u64> {
     let re =
         regex::Regex::new(r"^(\d+(?:\.\d+)?)(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$")
             .unwrap();
-    let caps = re
-        .captures(&value)
-        .ok_or_else(|| anyhow!("Invalid duration \"{raw}\". Use minutes, 90m, or 2h."))?;
-    let amount: f64 = caps[1]
-        .parse()
-        .map_err(|_| anyhow!("Invalid duration \"{raw}\". Use minutes, 90m, or 2h."))?;
+    let caps = re.captures(&value).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid duration \"{0}\". Use minutes, 90m, or 2h.",
+                &[(raw).to_string()]
+            )
+        )
+    })?;
+    let amount: f64 = caps[1].parse().map_err(|_| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid duration \"{0}\". Use minutes, 90m, or 2h.",
+                &[(raw).to_string()]
+            )
+        )
+    })?;
     let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("m");
     let minutes = if unit.starts_with('h') {
         amount * 60.0
@@ -1088,7 +1212,13 @@ fn parse_minutes(raw: Option<&str>, fallback: u64) -> Result<u64> {
         amount
     };
     if !minutes.is_finite() || minutes <= 0.0 || minutes.fract().abs() > f64::EPSILON {
-        bail!("Invalid duration \"{raw}\". Duration must resolve to whole minutes.");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid duration \"{0}\". Duration must resolve to whole minutes.",
+                &[(raw).to_string()]
+            )
+        );
     }
     Ok(minutes as u64)
 }
@@ -1109,10 +1239,22 @@ fn parse_wait_ms(raw: Option<String>, fallback: u64) -> Result<u64> {
     )
     .unwrap();
     let caps = re.captures(&value).ok_or_else(|| {
-        anyhow!("Invalid wait duration \"{raw}\". Use values like 5s, 30s, 5m, or 1h.")
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid wait duration \"{0}\". Use values like 5s, 30s, 5m, or 1h.",
+                std::slice::from_ref(&(raw))
+            )
+        )
     })?;
     let amount: f64 = caps[1].parse().map_err(|_| {
-        anyhow!("Invalid wait duration \"{raw}\". Use values like 5s, 30s, 5m, or 1h.")
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid wait duration \"{0}\". Use values like 5s, 30s, 5m, or 1h.",
+                std::slice::from_ref(&(raw))
+            )
+        )
     })?;
     let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("s");
     let ms = if unit == "ms" || unit == "msec" || unit.starts_with("millisecond") {
@@ -1125,7 +1267,13 @@ fn parse_wait_ms(raw: Option<String>, fallback: u64) -> Result<u64> {
         amount * 1_000.0
     };
     if !ms.is_finite() || ms < 1.0 {
-        bail!("Invalid wait duration \"{raw}\". Duration must resolve to at least 1ms.");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Invalid wait duration \"{0}\". Duration must resolve to at least 1ms.",
+                std::slice::from_ref(&(raw))
+            )
+        );
     }
     Ok(ms.round() as u64)
 }
@@ -1135,14 +1283,25 @@ fn parse_metadata(values: &[String]) -> Result<Option<Map<String, Value>>> {
     }
     let mut m = Map::new();
     for v in values {
-        let eq = v
-            .find('=')
-            .filter(|i| *i > 0)
-            .ok_or_else(|| anyhow!("--metadata values must be key=value pairs: {v}"))?;
+        let eq = v.find('=').filter(|i| *i > 0).ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "--metadata values must be key=value pairs: {0}",
+                    std::slice::from_ref(v)
+                )
+            )
+        })?;
         let key = v[..eq].trim();
         let raw = v[eq + 1..].trim();
         if key.is_empty() {
-            bail!("--metadata values must include a key: {v}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "--metadata values must include a key: {0}",
+                    std::slice::from_ref(v)
+                )
+            );
         }
         m.insert(key.to_owned(), Value::String(raw.to_owned()));
     }
@@ -1189,7 +1348,11 @@ fn normalize_role(role: &str) -> Result<String> {
         "VIEWER" => ROLE_VIEWER,
         "CONTROLLER" => ROLE_CONTROLLER,
         "ADMIN" => ROLE_ADMIN,
-        _ => bail!("Unknown remote attach role: {role}"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Unknown remote attach role: {0}", &[(role).to_string()])
+        ),
     }
     .to_owned())
 }
@@ -1209,7 +1372,11 @@ fn normalize_state(state: &str) -> Result<String> {
         "EXPIRED" => STATE_EXPIRED,
         "FAILED" => STATE_FAILED,
         "LOST" => STATE_LOST,
-        _ => bail!("Unknown runner session state: {state}"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Unknown runner session state: {0}", &[(state).to_string()])
+        ),
     };
     Ok(matched.to_owned())
 }
@@ -1231,13 +1398,22 @@ fn require_session(payload: &Value) -> Result<Session> {
     payload
         .get("session")
         .and_then(norm_session)
-        .ok_or_else(|| anyhow!("{SERVICE} returned no runner session"))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} returned no runner session", &[(SERVICE).to_string()])
+            )
+        })
 }
 fn require_token(payload: &Value) -> Result<AttachToken> {
-    payload
-        .get("token")
-        .and_then(norm_token)
-        .ok_or_else(|| anyhow!("{SERVICE} returned no attach token"))
+    payload.get("token").and_then(norm_token).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0} returned no attach token", &[(SERVICE).to_string()])
+        )
+    })
 }
 fn norm_session(v: &Value) -> Option<Session> {
     let o = v.as_object()?;
@@ -1320,14 +1496,26 @@ fn first_num_map(m: &Map<String, Value>, names: &[&str]) -> Option<f64> {
 }
 fn ensure_pos(v: u64, field: &str, max: u64) -> Result<u64> {
     if v < 1 || v > max {
-        bail!("{field} must be an integer between 1 and {max}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} must be an integer between 1 and {1}",
+                &[(field).to_string(), (max).to_string()]
+            )
+        );
     }
     Ok(v)
 }
 fn ensure_nonneg(v: Option<u64>, field: &str, max: u64) -> Result<Option<u64>> {
     match v {
         None => Ok(None),
-        Some(x) if x > max => bail!("{field} must be an integer between 0 and {max}"),
+        Some(x) if x > max => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} must be an integer between 0 and {1}",
+                &[(field).to_string(), (max).to_string()]
+            )
+        ),
         Some(x) => Ok(Some(x)),
     }
 }
@@ -1387,7 +1575,10 @@ fn print_session(s: &Session) {
 }
 fn print_table(sessions: &[Session]) {
     if sessions.is_empty() {
-        println!("No remote runner sessions found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No remote runner sessions found.", &[])
+        );
         return;
     }
     let rows: Vec<_> = sessions
@@ -1437,7 +1628,13 @@ fn print_attach_instr(
         }))?;
         return Ok(());
     }
-    println!("Remote runner attach token minted for {session_id}");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Remote runner attach token minted for {0}",
+            &[(session_id).to_string()]
+        )
+    );
     println!("  gateway: {}", minted.gateway_base_url);
     println!("  token:   {}", minted.token.id);
     println!(
@@ -1445,26 +1642,46 @@ fn print_attach_instr(
         minted.token.expires_at.as_deref().unwrap_or("-")
     );
     if verified.is_some() {
-        println!("  headless gateway: verified");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  headless gateway: verified", &[])
+        );
     }
     if show_secret || verified.is_none() {
         println!();
-        println!("Ephemeral remote transport environment:");
         println!(
-            "export MAESTRO_REMOTE_BASE_URL={}",
-            shell_quote(&minted.gateway_base_url)
+            "{}",
+            crate::localization::cli_locale()
+                .format("Ephemeral remote transport environment:", &[])
         );
         println!(
-            "export MAESTRO_REMOTE_API_KEY={}",
-            shell_quote(&minted.token_secret)
+            "{}",
+            crate::localization::cli_locale().format(
+                "export MAESTRO_REMOTE_BASE_URL={0}",
+                &[(shell_quote(&minted.gateway_base_url)).clone()]
+            )
         );
         println!(
-            "export MAESTRO_REMOTE_HEADER_X_EVALOPS_RUNNER_ATTACH_TOKEN_ID={}",
-            shell_quote(&minted.token.id)
+            "{}",
+            crate::localization::cli_locale().format(
+                "export MAESTRO_REMOTE_API_KEY={0}",
+                &[(shell_quote(&minted.token_secret)).clone()]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "export MAESTRO_REMOTE_HEADER_X_EVALOPS_RUNNER_ATTACH_TOKEN_ID={0}",
+                &[(shell_quote(&minted.token.id)).clone()]
+            )
         );
     } else {
         println!(
-            "  token secret hidden; rerun with --show-secret or --json when handoff needs it."
+            "{}",
+            crate::localization::cli_locale().format(
+                "  token secret hidden; rerun with --show-secret or --json when handoff needs it.",
+                &[]
+            )
         );
     }
     Ok(())

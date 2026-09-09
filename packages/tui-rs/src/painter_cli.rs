@@ -28,17 +28,27 @@ pub fn run_painter(args: &[String]) -> Result<i32> {
 }
 
 fn painter_help() -> &'static str {
-    "Usage:\n  maestro painter show <path>   Render an image inline in a capable terminal\n\nRequires iTerm2, WezTerm, or kitty. Run from a plain shell, not inside\nthe full-screen TUI."
+    crate::localization::cli_locale().translate("Usage:\n  maestro painter show <path>   Render an image inline in a capable terminal\n\nRequires iTerm2, WezTerm, or kitty. Run from a plain shell, not inside\nthe full-screen TUI.")
 }
 
 fn show_image(path: Option<&str>) -> Result<i32> {
     let Some(path) = path else {
-        eprintln!("maestro painter show requires an image path.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("maestro painter show requires an image path.", &[])
+        );
         return Ok(1);
     };
     let resolved = resolve_path(path)?;
     let Ok(bytes) = fs::read(&resolved) else {
-        eprintln!("Could not read image: {}", resolved.display());
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Could not read image: {0}",
+                &[(resolved.display()).to_string()]
+            )
+        );
         return Ok(1);
     };
     let support = detect_terminal_image_support(

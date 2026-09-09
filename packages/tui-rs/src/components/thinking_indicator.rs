@@ -51,11 +51,11 @@ impl ThinkingPhase {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Analyzing => "Analyzing",
-            Self::Reasoning => "Reasoning",
-            Self::Synthesizing => "Synthesizing",
-            Self::Verifying => "Verifying",
-            Self::Complete => "Complete",
+            Self::Analyzing => maestro_ui::localization::tr("Analyzing"),
+            Self::Reasoning => maestro_ui::localization::tr("Reasoning"),
+            Self::Synthesizing => maestro_ui::localization::tr("Synthesizing"),
+            Self::Verifying => maestro_ui::localization::tr("Verifying"),
+            Self::Complete => maestro_ui::localization::tr("Complete"),
         }
     }
 
@@ -253,7 +253,10 @@ impl ThinkingIndicator {
         let elapsed = self.elapsed();
         let secs = elapsed.as_secs();
         if secs >= 60 {
-            format!("{}m {}s", secs / 60, secs % 60)
+            maestro_ui::localization::format(
+                "{0}m {1}s",
+                &[(secs / 60).to_string(), (secs % 60).to_string()],
+            )
         } else if secs > 0 {
             format!("{secs}s")
         } else {
@@ -337,7 +340,10 @@ impl ThinkingIndicator {
         let color = self.phase.color();
 
         // Title with spinner and phase
-        let title = format!(" {spinner} Extended Thinking: {label} ");
+        let title = maestro_ui::localization::format(
+            " {0} Extended Thinking: {1} ",
+            &[(spinner).to_string(), (label).to_string()],
+        );
 
         // Budget info for gauge label
         let gauge_label = if self.show_elapsed {

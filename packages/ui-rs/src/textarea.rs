@@ -128,9 +128,9 @@ pub struct PasteFold {
 /// The chip label shown in place of a folded paste.
 fn chip_label(lines: usize) -> String {
     if lines == 1 {
-        "[Pasted: 1 line]".to_string()
+        crate::localization::tr("[Pasted: 1 line]").to_string()
     } else {
-        format!("[Pasted: {lines} lines]")
+        crate::localization::format("[Pasted: {0} lines]", &[(lines).to_string()])
     }
 }
 

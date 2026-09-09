@@ -41,11 +41,18 @@ pub fn active_tool_label(state: &AppState) -> Option<String> {
     calls
         .clone()
         .find(|call| call.status == ToolCallStatus::Running)
-        .map(|call| format!("Running {}", call.tool))
+        .map(|call| {
+            maestro_ui::localization::format("Running {0}", std::slice::from_ref(&(call.tool)))
+        })
         .or_else(|| {
             calls
                 .find(|call| call.status == ToolCallStatus::Pending)
-                .map(|call| format!("Pending {}", call.tool))
+                .map(|call| {
+                    maestro_ui::localization::format(
+                        "Pending {0}",
+                        std::slice::from_ref(&(call.tool)),
+                    )
+                })
         })
 }
 
@@ -67,11 +74,17 @@ pub fn evidence_summary(messages: &[Message], changed_files: Option<usize>) -> S
         })
         .count();
     let changes = changed_files.map_or_else(
-        || "Changes: /diff".to_owned(),
-        |count| format!("{count} recorded file changes · /diff"),
+        || maestro_ui::localization::tr("Changes: /diff").to_owned(),
+        |count| {
+            maestro_ui::localization::format(
+                "{0} recorded file changes · /diff",
+                &[(count).to_string()],
+            )
+        },
     );
-    format!(
-        "Latest recorded checkpoint: {changes}\nMost recent turn: tests not recorded · Tools needing attention: {attention}"
+    maestro_ui::localization::format(
+        "Latest recorded checkpoint: {0}\nMost recent turn: tests not recorded · Tools needing attention: {1}",
+        &[(changes).clone(), (attention).to_string()],
     )
 }
 

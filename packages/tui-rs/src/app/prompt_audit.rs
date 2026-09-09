@@ -112,7 +112,9 @@ impl PromptAssembly {
 
         PromptAuditReport {
             schema_version: PROMPT_AUDIT_SCHEMA_VERSION,
-            model: tokenizer_model.unwrap_or("unknown").to_string(),
+            model: tokenizer_model
+                .unwrap_or(maestro_ui::localization::tr("unknown"))
+                .to_string(),
             token_count_method: method,
             active_skill_ids,
             total_byte_count: prompt.len() as u64,
@@ -255,33 +257,29 @@ impl PromptAuditReport {
     }
 
     pub(super) fn render_markdown(&self) -> String {
-        let mut report = format!(
-            "## Prompt Audit\n\n- Schema: `evalops.maestro.prompt_audit.v{}`\n- Model: `{}`\n- Prompt: {} bytes, {} tokens ({:?})\n- Redacted prompt SHA-256: `{}`\n- Registered tools: {} (`{}`; {} surface; excludes {})\n- Active skills: {}\n\n### Fragments\n",
-            self.schema_version,
-            self.model,
-            self.total_byte_count,
-            self.total_token_count,
-            self.token_count_method,
-            self.prompt_sha256,
-            self.tools.count,
-            self.tools.definitions_sha256,
-            self.tools.completeness,
-            self.tools.excluded_scopes.join(", "),
-            if self.active_skill_ids.is_empty() {
-                "none".to_string()
-            } else {
-                self.active_skill_ids.join(", ")
-            }
+        let mut report = maestro_ui::localization::format(
+            "## Prompt Audit\n\n- Schema: `evalops.maestro.prompt_audit.v{0}`\n- Model: `{1}`\n- Prompt: {2} bytes, {3} tokens ({4})\n- Redacted prompt SHA-256: `{5}`\n- Registered tools: {6} (`{7}`; {8} surface; excludes {9})\n- Active skills: {10}\n\n### Fragments\n",
+            &[
+                (self.schema_version).to_string(),
+                (self.model).clone(),
+                (self.total_byte_count).to_string(),
+                (self.total_token_count).to_string(),
+                format!("{:?}", self.token_count_method),
+                (self.prompt_sha256).clone(),
+                (self.tools.count).to_string(),
+                (self.tools.definitions_sha256).clone(),
+                (self.tools.completeness).clone(),
+                (self.tools.excluded_scopes.join(", ")).clone(),
+                (if self.active_skill_ids.is_empty() {
+                    "none".to_string()
+                } else {
+                    self.active_skill_ids.join(", ")
+                })
+                .clone(),
+            ],
         );
         if let Some(effective) = &self.effective {
-            report.push_str(&format!(
-                "- Runner-effective prompt: revision {}, `{}` ({})\n- Runner-effective tools: {} (`{}`)\n\n",
-                effective.prompt_revision,
-                effective.prompt_sha256,
-                if effective.prompt_matches_desired { "matches desired" } else { "drifted" },
-                effective.tools.count,
-                effective.tools.definitions_sha256,
-            ));
+            report.push_str(&maestro_ui::localization::format("- Runner-effective prompt: revision {0}, `{1}` ({2})\n- Runner-effective tools: {3} (`{4}`)\n\n", &[(effective.prompt_revision).to_string(), (effective.prompt_sha256).clone(), (if effective.prompt_matches_desired { "matches desired" } else { "drifted" }).to_string(), (effective.tools.count).to_string(), (effective.tools.definitions_sha256).clone()]));
         }
         for fragment in &self.fragments {
             report.push_str(&format!(
@@ -296,7 +294,7 @@ impl PromptAuditReport {
         }
         report.push_str("\n### Findings\n");
         if self.findings.is_empty() {
-            report.push_str("No deterministic findings.\n");
+            report.push_str(maestro_ui::localization::tr("No deterministic findings.\n"));
         } else {
             for finding in &self.findings {
                 report.push_str(&format!(

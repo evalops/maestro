@@ -112,7 +112,7 @@ fn replace_tool_separators(value: &str) -> String {
 fn humanize_tool_name(tool_name: &str) -> String {
     let trimmed = tool_name.trim();
     if trimmed.is_empty() {
-        return "tool".to_string();
+        return maestro_ui::localization::tr("tool").to_string();
     }
 
     let mcp_parts = trimmed
@@ -139,7 +139,9 @@ fn summarize_known_tool(
     args: &Map<String, Value>,
     completed: bool,
 ) -> Option<String> {
-    let tense = |past: &'static str, present: &'static str| if completed { past } else { present };
+    let tense = |past: &'static str, present: &'static str| {
+        maestro_ui::localization::tr(if completed { past } else { present })
+    };
     let normalized = tool_name.trim().to_lowercase();
     let file_path = get_string_arg(
         args,
@@ -158,9 +160,9 @@ fn summarize_known_tool(
     let url = get_string_arg(args, &["url", "uri"]);
 
     match normalized.as_str() {
-        "read" => Some(format!(
-            "Read {}",
-            short_path_label(file_path.as_deref().unwrap_or("file"))
+        "read" => Some(maestro_ui::localization::format(
+            "Read {0}",
+            &[short_path_label(file_path.as_deref().unwrap_or("file")).clone()],
         )),
         "write" | "append" | "create_file" | "createfile" => Some(format!(
             "{} {}",
@@ -207,7 +209,10 @@ fn summarize_known_tool(
                 quote_label(&pattern, 32)
             )
         } else {
-            format!("{} files", tense("Searched", "Search"))
+            maestro_ui::localization::format(
+                "{0} files",
+                &[(tense("Searched", "Search")).to_string()],
+            )
         }),
         "bash" | "shell" | "exec_command" => Some(if let Some(command) = command {
             format!("{} {}", tense("Ran", "Run"), truncate_label(&command, 52))
@@ -224,15 +229,20 @@ fn summarize_known_tool(
             )
         )),
         "websearch" | "search_query" => Some(if let Some(pattern) = pattern {
-            format!(
-                "{} web for {}",
-                tense("Searched", "Search"),
-                quote_label(&pattern, 32)
+            maestro_ui::localization::format(
+                "{0} web for {1}",
+                &[
+                    (tense("Searched", "Search")).to_string(),
+                    (quote_label(&pattern, 32)).clone(),
+                ],
             )
         } else {
             format!("{} web", tense("Searched", "Search"))
         }),
-        "todo" => Some(format!("{} task list", tense("Updated", "Update"))),
+        "todo" => Some(maestro_ui::localization::format(
+            "{0} task list",
+            &[(tense("Updated", "Update")).to_string()],
+        )),
         "batch" => {
             let calls = args
                 .get("tool_uses")
@@ -245,23 +255,44 @@ fn summarize_known_tool(
                 );
 
             Some(if calls > 0 {
-                format!(
-                    "{} {calls} tool call{}",
-                    tense("Ran", "Run"),
-                    if calls == 1 { "" } else { "s" }
+                maestro_ui::localization::format(
+                    "{0} {1} tool call{2}",
+                    &[
+                        (tense("Ran", "Run")).to_string(),
+                        (calls).to_string(),
+                        (if calls == 1 { "" } else { "s" }).to_string(),
+                    ],
                 )
             } else {
-                format!("{} tool batch", tense("Ran", "Run"))
+                maestro_ui::localization::format(
+                    "{0} tool batch",
+                    &[(tense("Ran", "Run")).to_string()],
+                )
             })
         }
         "background_tasks" => {
             let action = get_string_arg(args, &["action"]);
             Some(match action.as_deref() {
-                Some("start") => format!("{} background task", tense("Started", "Start")),
-                Some("stop") => format!("{} background task", tense("Stopped", "Stop")),
-                Some("logs") => format!("{} background logs", tense("Viewed", "View")),
-                Some("list") => format!("{} background tasks", tense("Listed", "List")),
-                _ => format!("{} background tasks", tense("Checked", "Check")),
+                Some("start") => maestro_ui::localization::format(
+                    "{0} background task",
+                    &[(tense("Started", "Start")).to_string()],
+                ),
+                Some("stop") => maestro_ui::localization::format(
+                    "{0} background task",
+                    &[(tense("Stopped", "Stop")).to_string()],
+                ),
+                Some("logs") => maestro_ui::localization::format(
+                    "{0} background logs",
+                    &[(tense("Viewed", "View")).to_string()],
+                ),
+                Some("list") => maestro_ui::localization::format(
+                    "{0} background tasks",
+                    &[(tense("Listed", "List")).to_string()],
+                ),
+                _ => maestro_ui::localization::format(
+                    "{0} background tasks",
+                    &[(tense("Checked", "Check")).to_string()],
+                ),
             })
         }
         _ => None,
@@ -276,9 +307,9 @@ pub fn summarize_tool_use(tool_name: &str, args: &Value) -> String {
         }
     }
 
-    sentence_case(&format!(
-        "Ran {}",
-        truncate_label(&humanize_tool_name(tool_name), 40)
+    sentence_case(&maestro_ui::localization::format(
+        "Ran {0}",
+        &[truncate_label(&humanize_tool_name(tool_name), 40).clone()],
     ))
 }
 
@@ -290,7 +321,10 @@ pub fn summarize_tool_intent(tool_name: &str, args: &Value) -> String {
             return sentence_case(&known);
         }
     }
-    format!("Run {}", truncate_label(&humanize_tool_name(tool_name), 40))
+    maestro_ui::localization::format(
+        "Run {0}",
+        &[truncate_label(&humanize_tool_name(tool_name), 40).clone()],
+    )
 }
 
 #[cfg(test)]

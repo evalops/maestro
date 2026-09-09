@@ -533,14 +533,20 @@ impl ApprovalRequest {
         self.command = Some(command.as_str().unwrap_or("***").to_string());
         let source_path = normalize_inline_source_display(&source_path.to_string());
         let source_label = normalize_inline_source_display(source_label);
-        let mut source = format!("Inline tool defined in {source_path} ({source_label})");
+        let mut source = maestro_ui::localization::format(
+            "Inline tool defined in {0} ({1})",
+            &[(source_path).clone(), (source_label).clone()],
+        );
         self.command_source_fields.push(ApprovalContextField {
             label: "src".to_string(),
             value: format!("{source_path} ({source_label})"),
         });
         if let Some(cwd) = cwd {
             let cwd = normalize_inline_source_display(cwd);
-            source.push_str(&format!("; runs in {cwd}"));
+            source.push_str(&maestro_ui::localization::format(
+                "; runs in {0}",
+                std::slice::from_ref(&(cwd)),
+            ));
             self.command_source_fields.push(ApprovalContextField {
                 label: "cwd".to_string(),
                 value: cwd,
@@ -978,11 +984,15 @@ impl Widget for ApprovalModal<'_> {
             .saturating_add(command_rows);
         let modal_height = wanted_height.max(10).min(area.height);
 
-        let inner = Modal::new("Action Approval Required", modal_width, modal_height)
-            .theme(palette)
-            .border_style(Style::default().fg(palette.attention))
-            .margin(0)
-            .render_buffer(area, buf);
+        let inner = Modal::new(
+            maestro_ui::localization::tr("Action Approval Required"),
+            modal_width,
+            modal_height,
+        )
+        .theme(palette)
+        .border_style(Style::default().fg(palette.attention))
+        .margin(0)
+        .render_buffer(area, buf);
 
         // Reason / source section content, built before the layout so its
         // row budget can be sized to what it actually needs: a fixed
@@ -999,17 +1009,31 @@ impl Widget for ApprovalModal<'_> {
         let mut reason_section_rows: u16 = 0;
         if let Some(ref reason) = self.request.reason {
             reason_lines.push(Line::from(vec![
-                Span::styled("Reason: ", Style::default().fg(palette.muted)),
+                Span::styled(
+                    maestro_ui::localization::tr("Reason: "),
+                    Style::default().fg(palette.muted),
+                ),
                 Span::raw(reason.as_str()),
             ]));
-            reason_section_rows += estimate_wrapped_rows("Reason: ", reason, inner.width);
+            reason_section_rows += estimate_wrapped_rows(
+                maestro_ui::localization::tr("Reason: "),
+                reason,
+                inner.width,
+            );
         }
         if let Some(ref source) = self.request.command_source {
             reason_lines.push(Line::from(vec![
-                Span::styled("Source: ", Style::default().fg(palette.muted)),
+                Span::styled(
+                    maestro_ui::localization::tr("Source: "),
+                    Style::default().fg(palette.muted),
+                ),
                 Span::raw(source.as_str()),
             ]));
-            reason_section_rows += estimate_wrapped_rows("Source: ", source, inner.width);
+            reason_section_rows += estimate_wrapped_rows(
+                maestro_ui::localization::tr("Source: "),
+                source,
+                inner.width,
+            );
         }
         // Budget this section against the modal's own inner height. Reserve
         // the command's computed requirement, not merely its four-row
@@ -1051,7 +1075,10 @@ impl Widget for ApprovalModal<'_> {
 
         // Tool section
         let tool_line = Line::from(vec![
-            Span::styled("Tool: ", Style::default().fg(palette.muted)),
+            Span::styled(
+                maestro_ui::localization::tr("Tool: "),
+                Style::default().fg(palette.muted),
+            ),
             Span::styled(
                 &self.request.tool,
                 Style::default()
@@ -1080,7 +1107,7 @@ impl Widget for ApprovalModal<'_> {
         let command_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette.muted))
-            .title(" Command ");
+            .title(maestro_ui::localization::tr(" Command "));
 
         let command_inner = command_block.inner(chunks[2]);
         command_block.render(chunks[2], buf);
@@ -1091,10 +1118,13 @@ impl Widget for ApprovalModal<'_> {
         // Queue status
         if self.queue_size > 0 {
             let queue_line = Line::from(vec![Span::styled(
-                format!(
-                    "{} more action{} awaiting approval",
-                    self.queue_size,
-                    if self.queue_size == 1 { "" } else { "s" }
+                maestro_ui::localization::format(
+                    if self.queue_size == 1 {
+                        "{0} more action awaiting approval"
+                    } else {
+                        "{0} more actions awaiting approval"
+                    },
+                    &[self.queue_size.to_string()],
                 ),
                 Style::default().fg(palette.muted),
             )]);
@@ -1103,13 +1133,16 @@ impl Widget for ApprovalModal<'_> {
                 .render(chunks[3], buf);
         }
         let mut bindings = vec![
-            KeyHint::new("y", "approve"),
-            KeyHint::new("n", "deny"),
-            KeyHint::new("Esc", "cancel"),
-            KeyHint::new("Ctrl+E", "details"),
+            KeyHint::new("y", maestro_ui::localization::tr("approve")),
+            KeyHint::new("n", maestro_ui::localization::tr("deny")),
+            KeyHint::new("Esc", maestro_ui::localization::tr("cancel")),
+            KeyHint::new("Ctrl+E", maestro_ui::localization::tr("details")),
         ];
         if crate::mcp::McpClient::is_mcp_tool(&self.request.tool) {
-            bindings.extend([KeyHint::new("s", "session"), KeyHint::new("w", "always")]);
+            bindings.extend([
+                KeyHint::new("s", maestro_ui::localization::tr("session")),
+                KeyHint::new("w", maestro_ui::localization::tr("always")),
+            ]);
         }
         let hints = key_hints(&bindings, palette);
         Paragraph::new(hints)
@@ -1176,7 +1209,10 @@ impl Widget for BatchedApprovalModal<'_> {
         let wanted_height = (self.requests.len().min(u16::MAX as usize) as u16).saturating_add(6);
         let modal_height = wanted_height.max(10).min(area.height.min(24));
         let inner = Modal::new(
-            format!("{} Actions Require Approval", self.requests.len()),
+            maestro_ui::localization::format(
+                "{0} Actions Require Approval",
+                &[(self.requests.len()).to_string()],
+            ),
             modal_width,
             modal_height,
         )
@@ -1196,10 +1232,12 @@ impl Widget for BatchedApprovalModal<'_> {
 
         // Status line
         let status = Line::from(vec![Span::styled(
-            format!(
-                "Selected {} of {}",
-                (self.selected + 1).min(self.requests.len().max(1)),
-                self.requests.len()
+            maestro_ui::localization::format(
+                "Selected {0} of {1}",
+                &[
+                    ((self.selected + 1).min(self.requests.len().max(1))).to_string(),
+                    (self.requests.len()).to_string(),
+                ],
             ),
             Style::default().fg(palette.muted),
         )]);
@@ -1251,19 +1289,22 @@ impl Widget for BatchedApprovalModal<'_> {
             .collect();
         Paragraph::new(rows).render(list_area, buf);
         let mut bindings = vec![
-            KeyHint::new("y", "approve"),
-            KeyHint::new("n", "deny"),
-            KeyHint::new("a", "approve all"),
-            KeyHint::new("d", "deny all"),
-            KeyHint::new("↑↓", "select"),
-            KeyHint::new("Ctrl+E", "details"),
+            KeyHint::new("y", maestro_ui::localization::tr("approve")),
+            KeyHint::new("n", maestro_ui::localization::tr("deny")),
+            KeyHint::new("a", maestro_ui::localization::tr("approve all")),
+            KeyHint::new("d", maestro_ui::localization::tr("deny all")),
+            KeyHint::new("↑↓", maestro_ui::localization::tr("select")),
+            KeyHint::new("Ctrl+E", maestro_ui::localization::tr("details")),
         ];
         if self
             .requests
             .get(self.selected)
             .is_some_and(|request| crate::mcp::McpClient::is_mcp_tool(&request.tool))
         {
-            bindings.extend([KeyHint::new("s", "session"), KeyHint::new("w", "always")]);
+            bindings.extend([
+                KeyHint::new("s", maestro_ui::localization::tr("session")),
+                KeyHint::new("w", maestro_ui::localization::tr("always")),
+            ]);
         }
         let hints = key_hints(&bindings, palette);
         Paragraph::new(hints)
@@ -2908,5 +2949,53 @@ mod tests {
     fn wrapped_row_estimate_accounts_for_word_boundary_wraps() {
         let body = vec!["x".repeat(40); 5].join(" ");
         assert_eq!(estimate_wrapped_rows("", &body, 70), 6);
+    }
+}
+
+#[cfg(test)]
+mod localization_render_tests {
+    use super::*;
+    use crate::localization::{Locale, with_locale};
+
+    #[test]
+    fn translated_approval_preserves_the_command_and_decisions() {
+        let command = "printf 'Search {0}'";
+        let request = ApprovalRequest::new(
+            "call-localized",
+            "bash",
+            serde_json::json!({"command": command}),
+        )
+        .with_command(command)
+        .shell();
+        for locale in Locale::ALL {
+            with_locale(locale, || {
+                let area = Rect::new(0, 0, 100, 30);
+                let mut buffer = Buffer::empty(area);
+                ApprovalModal::new(&request).render(area, &mut buffer);
+                let text = buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    text.split_whitespace().collect::<String>().contains(
+                        &locale
+                            .translate("Action Approval Required")
+                            .split_whitespace()
+                            .collect::<String>()
+                    ),
+                    "{locale:?}: {text}"
+                );
+                assert!(text.contains(command), "{locale:?}: {text}");
+                assert_eq!(
+                    ApprovalModal::handle_key(KeyCode::Char('y')),
+                    Some(ApprovalDecision::Approve)
+                );
+                assert_eq!(
+                    ApprovalModal::handle_key(KeyCode::Char('n')),
+                    Some(ApprovalDecision::Deny)
+                );
+            });
+        }
     }
 }

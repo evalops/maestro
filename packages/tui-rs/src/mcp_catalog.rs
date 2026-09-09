@@ -38,6 +38,21 @@ impl McpCatalogEntry {
             CatalogConnection::Stdio { command, args } => format!("{command} {}", args.join(" ")),
         }
     }
+    pub fn matches_in(&self, locale: crate::localization::Locale, query: &str) -> bool {
+        let text = format!(
+            "{} {} {} {} {}",
+            self.id,
+            self.description,
+            self.category,
+            locale.translate(self.description),
+            locale.translate(self.category)
+        )
+        .to_lowercase();
+        query
+            .split_whitespace()
+            .all(|word| text.contains(&word.to_lowercase()))
+    }
+
     pub fn matches(&self, query: &str) -> bool {
         let text = format!("{} {} {}", self.id, self.description, self.category).to_lowercase();
         query
@@ -443,5 +458,23 @@ mod tests {
         let linear = catalog_entries().iter().find(|e| e.id == "linear").unwrap();
         assert!(linear.matches("LINEAR issues"));
         assert!(!linear.matches("linear database"));
+    }
+}
+
+#[cfg(test)]
+mod localized_search_tests {
+    use super::*;
+    use crate::localization::Locale;
+    #[test]
+    fn translated_catalog_search_does_not_change_connection_configuration() {
+        for entry in catalog_entries() {
+            let config = entry.configuration();
+            for locale in Locale::ALL {
+                assert!(
+                    entry.matches_in(locale, &locale.translate(entry.description).to_uppercase())
+                );
+                assert_eq!(entry.configuration(), config);
+            }
+        }
     }
 }

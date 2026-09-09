@@ -232,7 +232,13 @@ pub fn sanitize_mission_id(mission_id: &str) -> Result<String> {
     }
     let safe = safe.trim_matches('-').to_string();
     if safe.is_empty() || !safe.chars().any(|c| c.is_ascii_alphanumeric()) {
-        bail!("missionId must include at least one alphanumeric character");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "missionId must include at least one alphanumeric character",
+                &[]
+            )
+        );
     }
     Ok(safe)
 }
@@ -240,7 +246,10 @@ pub fn sanitize_mission_id(mission_id: &str) -> Result<String> {
 fn normalize_mission_id_input(mission_id: &str) -> Result<String> {
     let trimmed = mission_id.trim();
     if trimmed.is_empty() {
-        bail!("missionId is required");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("missionId is required", &[])
+        );
     }
     Ok(trimmed.to_string())
 }
@@ -753,7 +762,13 @@ fn merge_features(
             }
             continue;
         }
-        bail!("mission feature {id} changed concurrently; reload before saving");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "mission feature {0} changed concurrently; reload before saving",
+                std::slice::from_ref(&(id))
+            )
+        );
     }
     Ok(merged)
 }
@@ -820,9 +835,7 @@ fn preserve_coding_contracts(
         if replacement.and_then(|feature| feature.get(CODING_ACCEPTANCE_METADATA_KEY))
             != Some(contract)
         {
-            bail!(
-                "An admitted coding contract cannot be removed or replaced through mission features"
-            );
+            bail!("{}", crate::localization::cli_locale().format("An admitted coding contract cannot be removed or replaced through mission features", &[]));
         }
     }
     Ok(())
@@ -843,7 +856,13 @@ fn validate_coding_completion(
             .context("Invalid admitted coding acceptance contract")?;
         contract.validate().map_err(|error| anyhow!(error))?;
         if feature.get("id").and_then(Value::as_str) != Some(contract.task_id.as_str()) {
-            bail!("Coding contract task does not match its mission feature");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Coding contract task does not match its mission feature",
+                    &[]
+                )
+            );
         }
         if snapshot.state != MissionState::Completed
             && feature.get("status").and_then(Value::as_str) != Some("passed")
@@ -856,15 +875,22 @@ fn validate_coding_completion(
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "Coding task {} has no completion submission",
-                        contract.task_id
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Coding task {0} has no completion submission",
+                            std::slice::from_ref(&(contract.task_id))
+                        )
                     )
                 })?,
         )
         .context("Invalid coding completion submission")?;
-        let workflow = feature
-            .get("codingWorkflow")
-            .ok_or_else(|| anyhow!("Coding completion requires native workflow identity"))?;
+        let workflow = feature.get("codingWorkflow").ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Coding completion requires native workflow identity", &[])
+            )
+        })?;
         for (key, expected) in [
             ("workId", submission.work_id.as_str()),
             (
@@ -875,7 +901,13 @@ fn validate_coding_completion(
             ("contractDigest", submission.contract_digest.as_str()),
         ] {
             if workflow.get(key).and_then(Value::as_str) != Some(expected) {
-                bail!("Coding completion does not match workflow {key}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Coding completion does not match workflow {0}",
+                        &[(key).to_string()]
+                    )
+                );
             }
         }
         let children: Vec<CodingAcceptanceChildRecord> = serde_json::from_value(
@@ -894,24 +926,50 @@ fn validate_coding_completion(
         let decision = evaluate_coding_acceptance(&contract, Some(&submission), &scope, &children);
         if !decision.accepted {
             bail!(
-                "Coding task {} is not accepted: {}",
-                contract.task_id,
-                decision.reasons.join("; ")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Coding task {0} is not accepted: {1}",
+                    &[
+                        (contract.task_id).clone(),
+                        (decision.reasons.join("; ")).clone()
+                    ]
+                )
             );
         }
         if check_live_head {
             let root = workflow
                 .get("repositoryRoot")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("Coding completion requires its repository root"))?;
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("Coding completion requires its repository root", &[])
+                    )
+                })?;
             let root = Path::new(root);
             if !root.is_absolute() {
-                bail!("Coding repository root must be absolute");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Coding repository root must be absolute", &[])
+                );
             }
-            let actual_root = crate::git::repo_root(root)
-                .ok_or_else(|| anyhow!("Cannot inspect coding repository root"))?;
+            let actual_root = crate::git::repo_root(root).ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Cannot inspect coding repository root", &[])
+                )
+            })?;
             if dunce::canonicalize(root)? != dunce::canonicalize(actual_root)? {
-                bail!("Coding repository root does not match the actual checkout");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Coding repository root does not match the actual checkout",
+                        &[]
+                    )
+                );
             }
             let output = std::process::Command::new("git")
                 .args(["rev-parse", "--verify", "HEAD"])
@@ -921,7 +979,13 @@ fn validate_coding_completion(
             if !output.status.success()
                 || String::from_utf8_lossy(&output.stdout).trim() != submission.revision
             {
-                bail!("Coding completion revision is stale; rerun validation at current HEAD");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Coding completion revision is stale; rerun validation at current HEAD",
+                        &[]
+                    )
+                );
             }
         }
     }
@@ -1150,8 +1214,11 @@ fn with_mission_state_lock<T>(path: &Path, operation: impl FnOnce() -> Result<T>
                 }
                 if started.elapsed() > MISSION_STATE_LOCK_TIMEOUT {
                     bail!(
-                        "timed out waiting for mission state lock: {}",
-                        path.display()
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "timed out waiting for mission state lock: {0}",
+                            &[(path.display()).to_string()]
+                        )
                     );
                 }
                 thread::sleep(Duration::from_millis(25));
@@ -1219,7 +1286,13 @@ impl MissionStore {
     pub fn load(mission_id: &str, config: MissionStoreConfig) -> Result<Self> {
         let path = get_mission_state_path(mission_id, config.root_dir.as_deref())?;
         if !path.exists() {
-            bail!("mission not found: {}", sanitize_mission_id(mission_id)?);
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "mission not found: {0}",
+                    &[sanitize_mission_id(mission_id)?.clone()]
+                )
+            );
         }
         let requested_id = normalize_mission_id_input(mission_id)?;
         let value = read_json_value(&path)?;
@@ -1231,7 +1304,13 @@ impl MissionStore {
             .filter(|s| !s.is_empty())
         {
             if source != requested_id && snapshot.mission_id != requested_id {
-                bail!("missionId \"{requested_id}\" collides with existing mission \"{source}\"");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "missionId \"{0}\" collides with existing mission \"{1}\"",
+                        &[(requested_id).clone(), (source).clone()]
+                    )
+                );
             }
         }
         snapshot = apply_artifact_features_to_snapshot(snapshot, config.root_dir.as_deref())?;
@@ -1305,9 +1384,14 @@ impl MissionStore {
         if self.snapshot.state.is_terminal() {
             if self.snapshot.state != state {
                 bail!(
-                    "mission {} is already {}",
-                    self.snapshot.mission_id,
-                    self.snapshot.state.as_str()
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "mission {0} is already {1}",
+                        &[
+                            (self.snapshot.mission_id).clone(),
+                            (self.snapshot.state.as_str()).to_string()
+                        ]
+                    )
                 );
             }
             return self.get_snapshot();
@@ -1422,7 +1506,13 @@ fn assert_no_mission_id_collision(path: &Path, snapshot: &MissionStoreSnapshot) 
         return Ok(());
     };
     if existing_source != snapshot_source {
-        bail!("missionId collision: {snapshot_source} maps to existing mission {existing_source}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "missionId collision: {0} maps to existing mission {1}",
+                &[(snapshot_source).clone(), (existing_source).clone()]
+            )
+        );
     }
     Ok(())
 }
@@ -1440,12 +1530,21 @@ fn assert_mission_create_target_available(mission_id: &str, root_dir: Option<&Pa
             .filter(|s| !s.is_empty())
         {
             if source != requested_id {
-                bail!("missionId \"{requested_id}\" collides with existing mission \"{source}\"");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "missionId \"{0}\" collides with existing mission \"{1}\"",
+                        &[(requested_id).clone(), (source).clone()]
+                    )
+                );
             }
         }
         bail!(
-            "mission already exists: {}",
-            sanitize_mission_id(mission_id)?
+            "{}",
+            crate::localization::cli_locale().format(
+                "mission already exists: {0}",
+                &[sanitize_mission_id(mission_id)?.clone()]
+            )
         );
     }
     let mission_dir = get_mission_dir(mission_id, root_dir)?;
@@ -1453,8 +1552,11 @@ fn assert_mission_create_target_available(mission_id: &str, root_dir: Option<&Pa
         let nonempty = fs::read_dir(&mission_dir)?.next().is_some();
         if nonempty {
             bail!(
-                "mission already exists without durable state: {}",
-                sanitize_mission_id(mission_id)?
+                "{}",
+                crate::localization::cli_locale().format(
+                    "mission already exists without durable state: {0}",
+                    &[sanitize_mission_id(mission_id)?.clone()]
+                )
             );
         }
     }
@@ -1626,43 +1728,83 @@ struct ValidateResult {
 }
 
 fn validate_features_json(value: &Value, expected_mission_id: &str) -> Result<()> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| anyhow!("features.json must be a JSON object"))?;
+    let obj = value.as_object().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format("features.json must be a JSON object", &[])
+        )
+    })?;
     if !obj.get("version").is_some_and(Value::is_number) {
-        bail!("features.json requires numeric version");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("features.json requires numeric version", &[])
+        );
     }
     let mission_id = obj
         .get("missionId")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| anyhow!("features.json requires missionId"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale().format("features.json requires missionId", &[])
+            )
+        })?;
     if sanitize_mission_id(mission_id)? != expected_mission_id {
         bail!(
-            "features.json missionId {mission_id} does not match mission directory {expected_mission_id}"
+            "{}",
+            crate::localization::cli_locale().format(
+                "features.json missionId {0} does not match mission directory {1}",
+                &[(mission_id).to_string(), (expected_mission_id).to_string()]
+            )
         );
     }
     if !is_valid_iso(obj.get("updatedAt")) {
-        bail!("features.json requires valid updatedAt");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("features.json requires valid updatedAt", &[])
+        );
     }
     let features = obj
         .get("features")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("features.json requires features array"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("features.json requires features array", &[])
+            )
+        })?;
     let mut ids = HashSet::new();
     for (index, feature) in features.iter().enumerate() {
         if !feature.is_object() {
-            bail!("feature {index} must be an object");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("feature {0} must be an object", &[(index).to_string()])
+            );
         }
         if !is_mission_feature(feature) {
-            bail!("feature {index} must match MissionFeature schema");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "feature {0} must match MissionFeature schema",
+                    &[(index).to_string()]
+                )
+            );
         }
         let feature_id = feature
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default();
         if !ids.insert(feature_id.to_string()) {
-            bail!("features.json contains duplicate feature id {feature_id}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "features.json contains duplicate feature id {0}",
+                    &[(feature_id).to_string()]
+                )
+            );
         }
     }
     Ok(())
@@ -1729,32 +1871,61 @@ fn is_mission_token_usage_value(value: &Value) -> bool {
 }
 
 fn validate_mission_state_json(value: &Value, expected_mission_id: &str) -> Result<()> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| anyhow!("state.json must be a JSON object"))?;
+    let obj = value.as_object().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale().format("state.json must be a JSON object", &[])
+        )
+    })?;
     if obj.get("schemaVersion").and_then(Value::as_str) != Some(MISSION_STORE_SCHEMA) {
-        bail!("state.json requires mission store schemaVersion");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("state.json requires mission store schemaVersion", &[])
+        );
     }
     let mission_id = obj
         .get("missionId")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| anyhow!("state.json requires missionId"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale().format("state.json requires missionId", &[])
+            )
+        })?;
     if sanitize_mission_id(mission_id)? != expected_mission_id {
         bail!(
-            "state.json missionId {mission_id} does not match mission directory {expected_mission_id}"
+            "{}",
+            crate::localization::cli_locale().format(
+                "state.json missionId {0} does not match mission directory {1}",
+                &[(mission_id).to_string(), (expected_mission_id).to_string()]
+            )
         );
     }
     let state = obj.get("state").and_then(Value::as_str);
     if state.and_then(MissionState::parse).is_none() {
-        bail!("state.json requires valid state");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("state.json requires valid state", &[])
+        );
     }
     let features = obj
         .get("features")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("state.json requires valid features array"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("state.json requires valid features array", &[])
+            )
+        })?;
     if !features.iter().all(is_mission_feature) {
-        bail!("state.json requires valid features array");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("state.json requires valid features array", &[])
+        );
     }
     let mut ids = HashSet::new();
     for feature in features {
@@ -1763,41 +1934,85 @@ fn validate_mission_state_json(value: &Value, expected_mission_id: &str) -> Resu
             .and_then(Value::as_str)
             .unwrap_or_default();
         if !ids.insert(id.to_string()) {
-            bail!("state.json contains duplicate feature id {id}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "state.json contains duplicate feature id {0}",
+                    &[(id).to_string()]
+                )
+            );
         }
     }
     let progress = obj
         .get("progressLog")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("state.json requires progressLog array"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("state.json requires progressLog array", &[])
+            )
+        })?;
     for (index, entry) in progress.iter().enumerate() {
         if !is_mission_progress_entry_value(entry) {
-            bail!("state.json progressLog {index} must be valid");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "state.json progressLog {0} must be valid",
+                    &[(index).to_string()]
+                )
+            );
         }
     }
     if !obj.get("workerSessionIds").is_some_and(Value::is_array) {
-        bail!("state.json requires workerSessionIds array");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("state.json requires workerSessionIds array", &[])
+        );
     }
     if !obj.get("workerStates").is_some_and(Value::is_object) {
-        bail!("state.json requires workerStates object");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("state.json requires workerStates object", &[])
+        );
     }
     let token_map = obj
         .get("tokenUsageBySessionId")
         .and_then(Value::as_object)
-        .ok_or_else(|| anyhow!("state.json requires tokenUsageBySessionId object"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("state.json requires tokenUsageBySessionId object", &[])
+            )
+        })?;
     for (session_id, usage) in token_map {
         if !is_mission_token_usage_value(usage) {
-            bail!("state.json tokenUsageBySessionId {session_id} must be valid");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "state.json tokenUsageBySessionId {0} must be valid",
+                    std::slice::from_ref(session_id)
+                )
+            );
         }
     }
     if obj
         .get("tokenUsage")
         .is_some_and(|v| !is_mission_token_usage_value(v))
     {
-        bail!("state.json tokenUsage must be valid");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("state.json tokenUsage must be valid", &[])
+        );
     }
     if !is_valid_iso(obj.get("createdAt")) || !is_valid_iso(obj.get("updatedAt")) {
-        bail!("state.json requires valid timestamps");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("state.json requires valid timestamps", &[])
+        );
     }
     Ok(())
 }
@@ -2071,9 +2286,7 @@ pub fn run_mission_sync(args: &[String]) -> Result<i32> {
         "set-state" => handle_mission_set_state(&parsed.positionals, parsed.json),
         "validate" => handle_mission_validate(&parsed.positionals, parsed.json),
         other => {
-            bail!(
-                "Unknown mission subcommand: {other}. Use init, status, record, set-state, or validate."
-            );
+            bail!("{}", crate::localization::cli_locale().format("Unknown mission subcommand: {0}. Use init, status, record, set-state, or validate.", &[(other).to_string()]));
         }
     }
 }
@@ -2102,7 +2315,12 @@ fn handle_mission_init(args: &[String], json: bool) -> Result<i32> {
         .first()
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("mission init requires a mission id"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale().format("mission init requires a mission id", &[])
+            )
+        })?;
     let title = {
         let joined = args[1..].join(" ");
         let trimmed = joined.trim();
@@ -2118,9 +2336,7 @@ fn handle_mission_init(args: &[String], json: bool) -> Result<i32> {
         && layout.mission_dir.exists()
         && fs::read_dir(&layout.mission_dir)?.next().is_some()
     {
-        bail!(
-            "mission state missing for existing mission: {mission_id}. Restore state.json instead of re-running init."
-        );
+        bail!("{}", crate::localization::cli_locale().format("mission state missing for existing mission: {0}. Restore state.json instead of re-running init.", &[(mission_id).to_string()]));
     }
     let state_exists = state_path.exists();
     let snapshot = if state_exists {
@@ -2131,7 +2347,13 @@ fn handle_mission_init(args: &[String], json: bool) -> Result<i32> {
     if let Some(source) = snapshot.source_mission_id.as_ref() {
         let requested = mission_id.trim();
         if source != requested && snapshot.mission_id != requested {
-            bail!("missionId \"{requested}\" collides with existing mission \"{source}\"");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "missionId \"{0}\" collides with existing mission \"{1}\"",
+                    &[(requested).to_string(), (source).clone()]
+                )
+            );
         }
     }
     let should_seed =
@@ -2159,7 +2381,10 @@ fn handle_mission_init(args: &[String], json: bool) -> Result<i32> {
             }))?
         );
     } else {
-        println!("Mission initialized");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Mission initialized", &[])
+        );
         println!("id: {}", snapshot.mission_id);
         println!("dir: {}", initialized_layout.mission_dir.display());
     }
@@ -2183,7 +2408,10 @@ fn handle_mission_status(args: &[String], json: bool) -> Result<i32> {
         return Ok(0);
     }
     if snapshots.is_empty() {
-        println!("No missions found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No missions found.", &[])
+        );
         return Ok(0);
     }
     for (index, snapshot) in snapshots.iter().enumerate() {
@@ -2200,11 +2428,20 @@ fn handle_mission_record(args: &[String], json: bool) -> Result<i32> {
         .first()
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("mission record requires a mission id"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("mission record requires a mission id", &[])
+            )
+        })?;
     let message = args[1..].join(" ");
     let message = message.trim();
     if message.is_empty() {
-        bail!("mission record requires a message");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("mission record requires a message", &[])
+        );
     }
     let mut store = MissionStore::load(mission_id, MissionStoreConfig::default())?;
     let snapshot = store.append_progress(MissionProgressEntry {
@@ -2218,7 +2455,13 @@ fn handle_mission_record(args: &[String], json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
     } else {
-        println!("Recorded mission note for {}.", snapshot.mission_id);
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Recorded mission note for {0}.",
+                std::slice::from_ref(&(snapshot.mission_id))
+            )
+        );
     }
     Ok(0)
 }
@@ -2227,10 +2470,18 @@ fn handle_mission_set_state(args: &[String], json: bool) -> Result<i32> {
     let mission_id = args.first().map(String::as_str).filter(|s| !s.is_empty());
     let state_raw = args.get(1).map(String::as_str);
     let (Some(mission_id), Some(state_raw)) = (mission_id, state_raw) else {
-        bail!("mission set-state requires <mission-id> <state>");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("mission set-state requires <mission-id> <state>", &[])
+        );
     };
     let Some(state) = MissionState::parse(state_raw) else {
-        bail!("invalid mission state: {state_raw}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("invalid mission state: {0}", &[(state_raw).to_string()])
+        );
     };
     let message = {
         let joined = args[2..].join(" ");
@@ -2247,9 +2498,14 @@ fn handle_mission_set_state(args: &[String], json: bool) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
     } else {
         println!(
-            "Mission {} is now {}.",
-            snapshot.mission_id,
-            snapshot.state.as_str()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Mission {0} is now {1}.",
+                &[
+                    (snapshot.mission_id).clone(),
+                    (snapshot.state.as_str()).to_string()
+                ]
+            )
         );
     }
     Ok(0)
@@ -2260,7 +2516,13 @@ fn handle_mission_validate(args: &[String], json: bool) -> Result<i32> {
         .first()
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("mission validate requires a mission id"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("mission validate requires a mission id", &[])
+            )
+        })?;
     let layout = get_mission_artifact_layout(mission_id, None)?;
     let required = [
         layout.features_json.clone(),
@@ -2298,7 +2560,13 @@ fn handle_mission_validate(args: &[String], json: bool) -> Result<i32> {
         return Ok(exit);
     }
     if failed.is_empty() {
-        println!("Mission {mission_id} artifacts are valid.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Mission {0} artifacts are valid.",
+                &[(mission_id).to_string()]
+            )
+        );
     } else {
         for result in failed {
             let message = result.message.as_deref().unwrap_or("invalid");

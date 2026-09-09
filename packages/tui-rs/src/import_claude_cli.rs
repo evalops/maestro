@@ -67,10 +67,26 @@ pub fn run_import_claude(args: &[String]) -> Result<i32> {
         match arg.as_str() {
             "--dry-run" | "-n" => dry_run = true,
             "help" | "--help" | "-h" => {
-                println!("Usage: maestro import-claude [--dry-run]");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Usage: maestro import-claude [--dry-run]", &[])
+                );
                 println!();
-                println!("Import Claude Code configuration (MCP servers and permission rules)");
-                println!("into maestro's ~/.composer/config.toml and ~/.composer/execpolicy.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Import Claude Code configuration (MCP servers and permission rules)",
+                        &[]
+                    )
+                );
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "into maestro's ~/.composer/config.toml and ~/.composer/execpolicy.",
+                        &[]
+                    )
+                );
                 return Ok(0);
             }
             other => anyhow::bail!("unknown import-claude flag: {other}"),
@@ -91,59 +107,103 @@ pub fn run_import_claude(args: &[String]) -> Result<i32> {
 
 fn print_report(report: &ImportReport, dry_run: bool) {
     if dry_run {
-        println!("Import Claude Code configuration (dry run — no files changed)");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Import Claude Code configuration (dry run — no files changed)",
+                &[]
+            )
+        );
     } else {
-        println!("Import Claude Code configuration");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Import Claude Code configuration", &[])
+        );
     }
     println!();
     println!(
-        "MCP servers: {} imported, {} already present, {} skipped",
-        report.mcp_imported.len(),
-        report.mcp_duplicates.len(),
-        report.mcp_conflicts.len() + report.mcp_skipped.len()
+        "{}",
+        crate::localization::cli_locale().format(
+            "MCP servers: {0} imported, {1} already present, {2} skipped",
+            &[
+                (report.mcp_imported.len()).to_string(),
+                (report.mcp_duplicates.len()).to_string(),
+                (report.mcp_conflicts.len() + report.mcp_skipped.len()).to_string()
+            ]
+        )
     );
     for name in &report.mcp_imported {
         println!("  + {name}");
     }
     for name in &report.mcp_duplicates {
-        println!("  = {name} (already present)");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  = {0} (already present)", std::slice::from_ref(name))
+        );
     }
     for entry in report.mcp_conflicts.iter().chain(&report.mcp_skipped) {
         println!("  ! {} ({})", entry.name, entry.reason);
     }
     println!();
     println!(
-        "Permission rules: {} imported, {} already present, {} skipped",
-        report.rules_imported.len(),
-        report.rules_duplicates.len(),
-        report.rules_conflicts.len() + report.rules_skipped.len()
+        "{}",
+        crate::localization::cli_locale().format(
+            "Permission rules: {0} imported, {1} already present, {2} skipped",
+            &[
+                (report.rules_imported.len()).to_string(),
+                (report.rules_duplicates.len()).to_string(),
+                (report.rules_conflicts.len() + report.rules_skipped.len()).to_string()
+            ]
+        )
     );
     for rule in &report.rules_imported {
         println!("  + {rule}");
     }
     for rule in &report.rules_duplicates {
-        println!("  = {rule} (already present)");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  = {0} (already present)", std::slice::from_ref(rule))
+        );
     }
     for entry in report.rules_conflicts.iter().chain(&report.rules_skipped) {
         println!("  ! {} ({})", entry.name, entry.reason);
     }
     if !report.warnings.is_empty() {
         println!();
-        println!("Warnings:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Warnings:", &[])
+        );
         for warning in &report.warnings {
             println!("  - {warning}");
         }
     }
     println!();
     if dry_run {
-        println!("Dry run: no files changed.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Dry run: no files changed.", &[])
+        );
     } else if report.mcp_imported.is_empty() && report.rules_imported.is_empty() {
-        println!("Nothing to write; all entries already present or skipped.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Nothing to write; all entries already present or skipped.",
+                &[]
+            )
+        );
     } else {
         println!(
-            "Updated {} and {}.",
-            report.config_path.display(),
-            report.execpolicy_path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Updated {0} and {1}.",
+                &[
+                    (report.config_path.display()).to_string(),
+                    (report.execpolicy_path.display()).to_string()
+                ]
+            )
         );
     }
 }

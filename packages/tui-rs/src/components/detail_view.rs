@@ -146,11 +146,11 @@ impl Widget for &DetailView {
 /// Footer with a position indicator and key hints.
 fn footer_line(scroll: usize, total_lines: usize, visible_lines: usize) -> Line<'static> {
     let position = if total_lines <= visible_lines {
-        "All".to_string()
+        maestro_ui::localization::tr("All").to_string()
     } else if scroll == 0 {
-        "Top".to_string()
+        maestro_ui::localization::tr("Top").to_string()
     } else if scroll + visible_lines >= total_lines {
-        "End".to_string()
+        maestro_ui::localization::tr("End").to_string()
     } else {
         let percent = (scroll * 100) / total_lines.max(1);
         format!("{percent}%")
@@ -163,7 +163,7 @@ fn footer_line(scroll: usize, total_lines: usize, visible_lines: usize) -> Line<
             &[
                 KeyHint::new("↑↓", "scroll"),
                 KeyHint::new("PgUp/Dn", "page"),
-                KeyHint::new("Esc", "close"),
+                KeyHint::new("Esc", maestro_ui::localization::tr("close")),
             ],
             theme,
         )

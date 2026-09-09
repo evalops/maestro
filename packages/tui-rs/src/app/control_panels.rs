@@ -28,13 +28,20 @@ impl App {
         let mut prefs = crate::ui_prefs::UiPrefs::load_default();
         prefs.set_output_detail(detail);
         if let Err(error) = prefs.save_default() {
-            self.state.error = Some(format!("Could not save output detail: {error}"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Could not save output detail: {0}", &[(error).to_string()]),
+            );
             return;
         }
         self.state.set_output_detail(detail);
         self.ui_prefs = prefs;
         self.state.error = None;
-        self.state.status = Some(format!("Output detail: {} (saved)", detail.as_str()));
+        self.state.status = Some(self.state.locale.format(
+            "Output detail: {0} (saved)",
+            &[(detail.as_str()).to_string()],
+        ));
     }
 
     pub(super) fn show_control_panel(&mut self, panel: ControlPanel) {
@@ -66,83 +73,147 @@ impl App {
             ControlPanel::Settings => {
                 add(
                     "settings account",
-                    "Account and inference",
-                    "Sign-in, workspace, model, usage".into(),
+                    self.state.locale.translate("Account and inference"),
+                    self.state
+                        .locale
+                        .translate("Sign-in, workspace, model, usage")
+                        .into(),
                 );
                 add(
                     "settings permissions",
-                    "Permissions",
-                    self.state.approval_mode.label().into(),
+                    self.state.locale.translate("Permissions"),
+                    self.state
+                        .locale
+                        .translate(self.state.approval_mode.label())
+                        .into(),
                 );
                 add(
                     "settings capabilities",
-                    "Connections and capabilities",
-                    "Tools, skills, plugins, hooks".into(),
+                    self.state.locale.translate("Connections and capabilities"),
+                    self.state
+                        .locale
+                        .translate("Tools, skills, plugins, hooks")
+                        .into(),
                 );
                 add(
                     "settings appearance",
                     locale.text(TextKey::Appearance),
-                    format!("Output: {}", self.state.output_detail().as_str()),
+                    self.state.locale.format(
+                        "Output: {0}",
+                        &[self
+                            .state
+                            .locale
+                            .translate(self.state.output_detail().as_str())
+                            .to_string()],
+                    ),
                 );
                 add(
                     "settings advanced",
-                    "Advanced",
-                    "Diagnostics and runtime limits".into(),
+                    self.state.locale.translate("Advanced"),
+                    self.state
+                        .locale
+                        .translate("Diagnostics and runtime limits")
+                        .into(),
                 );
                 locale.text(TextKey::Settings).into()
             }
             ControlPanel::Account => {
                 add(
                     "setup",
-                    "Sign-in and inference",
-                    "Manage account and provider setup".into(),
+                    self.state.locale.translate("Sign-in and inference"),
+                    self.state
+                        .locale
+                        .translate("Manage account and provider setup")
+                        .into(),
                 );
-                add("model", "Model and effort", self.current_model.clone());
-                add("cost", "Usage", "Recorded tokens and cost".into());
+                add(
+                    "model",
+                    self.state.locale.translate("Model and effort"),
+                    self.current_model.clone(),
+                );
+                add(
+                    "cost",
+                    self.state.locale.translate("Usage"),
+                    self.state
+                        .locale
+                        .translate("Recorded tokens and cost")
+                        .into(),
+                );
                 add(
                     "status",
-                    "Connection status",
-                    "Effective session configuration".into(),
+                    self.state.locale.translate("Connection status"),
+                    self.state
+                        .locale
+                        .translate("Effective session configuration")
+                        .into(),
                 );
-                "Account and inference".into()
+                self.state.locale.translate("Account and inference").into()
             }
             ControlPanel::Permissions => {
                 add(
                     "approvals safe",
-                    "Apply: ask for every tool",
-                    "Session approval policy".into(),
+                    self.state.locale.translate("Apply: ask for every tool"),
+                    self.state
+                        .locale
+                        .translate("Session approval policy")
+                        .into(),
                 );
                 add(
                     "approvals selective",
-                    "Apply: ask for risky tools",
-                    "Session approval policy".into(),
+                    self.state.locale.translate("Apply: ask for risky tools"),
+                    self.state
+                        .locale
+                        .translate("Session approval policy")
+                        .into(),
                 );
                 add(
                     "approvals yolo",
-                    "Apply: auto-approve tools",
-                    "Tools run without approval prompts".into(),
+                    self.state.locale.translate("Apply: auto-approve tools"),
+                    self.state
+                        .locale
+                        .translate("Tools run without approval prompts")
+                        .into(),
                 );
                 add(
                     "sandbox",
-                    "Sandbox policy",
-                    "Inspect effective execution restrictions".into(),
+                    self.state.locale.translate("Sandbox policy"),
+                    self.state
+                        .locale
+                        .translate("Inspect effective execution restrictions")
+                        .into(),
                 );
                 add(
                     "trust status",
-                    "Workspace trust",
-                    "Inspect the workspace and admitted extensions".into(),
+                    self.state.locale.translate("Workspace trust"),
+                    self.state
+                        .locale
+                        .translate("Inspect the workspace and admitted extensions")
+                        .into(),
                 );
                 add(
                     "trust grant",
-                    "Grant workspace trust",
-                    "Allow this workspace's skills, plugins, and hooks".into(),
+                    self.state.locale.translate("Grant workspace trust"),
+                    self.state
+                        .locale
+                        .translate("Allow this workspace's skills, plugins, and hooks")
+                        .into(),
                 );
                 add(
                     "trust revoke",
-                    "Revoke workspace trust",
-                    "Stop admitting workspace extensions".into(),
+                    self.state.locale.translate("Revoke workspace trust"),
+                    self.state
+                        .locale
+                        .translate("Stop admitting workspace extensions")
+                        .into(),
                 );
-                format!("Permissions · {}", self.state.approval_mode.label())
+                self.state.locale.format(
+                    "Permissions · {0}",
+                    &[self
+                        .state
+                        .locale
+                        .translate(self.state.approval_mode.label())
+                        .to_string()],
+                )
             }
             ControlPanel::Appearance => {
                 add(
@@ -152,34 +223,60 @@ impl App {
                 );
                 add(
                     "settings output",
-                    "Output detail",
-                    format!("{} · saved preference", self.state.output_detail().as_str()),
+                    self.state.locale.translate("Output detail"),
+                    self.state.locale.format(
+                        "{0} · saved preference",
+                        &[self
+                            .state
+                            .locale
+                            .translate(self.state.output_detail().as_str())
+                            .to_string()],
+                    ),
                 );
-                add("theme", "Theme", "Preview and select a color theme".into());
+                add(
+                    "theme",
+                    self.state.locale.translate("Theme"),
+                    self.state
+                        .locale
+                        .translate("Preview and select a color theme")
+                        .into(),
+                );
                 add(
                     "zen",
-                    "Toggle minimal layout",
-                    format!(
-                        "{} · this session",
-                        if self.state.zen_mode { "On" } else { "Off" }
+                    self.state.locale.translate("Toggle minimal layout"),
+                    self.state.locale.format(
+                        "{0} · this session",
+                        &[(if self.state.zen_mode { "On" } else { "Off" }).to_string()],
                     ),
                 );
                 add(
                     "settings footer",
-                    "Status bar",
-                    format!("{} · saved preference", self.footer_style.as_str()),
+                    self.state.locale.translate("Status bar"),
+                    self.state.locale.format(
+                        "{0} · saved preference",
+                        &[(self.footer_style.as_str()).to_string()],
+                    ),
                 );
                 add(
                     "dex appearance",
-                    "Dex appearance",
-                    "Avatar, accent, and reactions".into(),
+                    self.state.locale.translate("Dex appearance"),
+                    self.state
+                        .locale
+                        .translate("Avatar, accent, and reactions")
+                        .into(),
                 );
                 add(
                     "hotkeys",
-                    "Keyboard shortcuts",
-                    "Effective bindings and customization".into(),
+                    self.state.locale.translate("Keyboard shortcuts"),
+                    self.state
+                        .locale
+                        .translate("Effective bindings and customization")
+                        .into(),
                 );
-                "Appearance and keyboard".into()
+                self.state
+                    .locale
+                    .translate("Appearance and keyboard")
+                    .into()
             }
             ControlPanel::Output => {
                 for detail in [
@@ -188,21 +285,36 @@ impl App {
                     OutputDetail::Expanded,
                 ] {
                     let command = format!("output {}", detail.as_str());
-                    let label = format!("Apply: {}", detail.as_str());
+                    let label = self
+                        .state
+                        .locale
+                        .format("Apply: {0}", &[(detail.as_str()).to_string()]);
                     add(
                         &command,
                         &label,
                         match detail {
-                            OutputDetail::Summary => "Summarize tool turns; expand individually",
-                            OutputDetail::Compact => "Fold individual tool output",
-                            OutputDetail::Expanded => "Show tool output; leave summary mode",
+                            OutputDetail::Summary => self
+                                .state
+                                .locale
+                                .translate("Summarize tool turns; expand individually"),
+                            OutputDetail::Compact => {
+                                self.state.locale.translate("Fold individual tool output")
+                            }
+                            OutputDetail::Expanded => self
+                                .state
+                                .locale
+                                .translate("Show tool output; leave summary mode"),
                         }
                         .into(),
                     );
                 }
-                format!(
-                    "Output · {} · saved preference",
-                    self.state.output_detail().as_str()
+                self.state.locale.format(
+                    "Output · {0} · saved preference",
+                    &[self
+                        .state
+                        .locale
+                        .translate(self.state.output_detail().as_str())
+                        .to_string()],
                 )
             }
             ControlPanel::Footer => {
@@ -215,201 +327,328 @@ impl App {
                     let style = style.as_str();
                     add(
                         &format!("footer {style}"),
-                        &format!("Apply: {style}"),
-                        "Saved status-bar preference".into(),
+                        &self
+                            .state
+                            .locale
+                            .format("Apply: {0}", &[(style).to_string()]),
+                        self.state
+                            .locale
+                            .translate("Saved status-bar preference")
+                            .into(),
                     );
                 }
-                format!("Status bar · {}", self.footer_style.as_str())
+                self.state.locale.format(
+                    "Status bar · {0}",
+                    &[(self.footer_style.as_str()).to_string()],
+                )
             }
             ControlPanel::Capabilities => {
                 add(
                     "mcp",
-                    "Connections",
-                    "Connected systems, authentication, and tools".into(),
+                    self.state.locale.translate("Connections"),
+                    self.state
+                        .locale
+                        .translate("Connected systems, authentication, and tools")
+                        .into(),
                 );
                 add(
                     "tools",
-                    "Effective tools",
-                    "Built-in and connected capabilities".into(),
+                    self.state.locale.translate("Effective tools"),
+                    self.state
+                        .locale
+                        .translate("Built-in and connected capabilities")
+                        .into(),
                 );
                 add(
                     "skills",
-                    "Skills",
-                    "Inspect and manage specialized instructions".into(),
+                    self.state.locale.translate("Skills"),
+                    self.state
+                        .locale
+                        .translate("Inspect and manage specialized instructions")
+                        .into(),
                 );
                 add(
                     "plugins",
-                    "Plugins",
-                    "Inspect installed extensions and catalog".into(),
+                    self.state.locale.translate("Plugins"),
+                    self.state
+                        .locale
+                        .translate("Inspect installed extensions and catalog")
+                        .into(),
                 );
-                add("hooks", "Hooks", "Advanced extension configuration".into());
+                add(
+                    "hooks",
+                    self.state.locale.translate("Hooks"),
+                    self.state
+                        .locale
+                        .translate("Advanced extension configuration")
+                        .into(),
+                );
                 add(
                     "a2a peers",
-                    "Agent connections",
-                    "Inspect paired peers".into(),
+                    self.state.locale.translate("Agent connections"),
+                    self.state.locale.translate("Inspect paired peers").into(),
                 );
-                "Connections and capabilities".into()
+                self.state
+                    .locale
+                    .translate("Connections and capabilities")
+                    .into()
             }
             ControlPanel::Advanced => {
                 add(
                     "diag",
-                    "Diagnostics",
-                    "Session health and configuration".into(),
+                    self.state.locale.translate("Diagnostics"),
+                    self.state
+                        .locale
+                        .translate("Session health and configuration")
+                        .into(),
                 );
-                add("alerts", "Errors", "Recorded agent and API errors".into());
+                add(
+                    "alerts",
+                    self.state.locale.translate("Errors"),
+                    self.state
+                        .locale
+                        .translate("Recorded agent and API errors")
+                        .into(),
+                );
                 add(
                     "limits",
-                    "Runtime limits",
-                    "Effective values; environment changes require restart".into(),
+                    self.state.locale.translate("Runtime limits"),
+                    self.state
+                        .locale
+                        .translate("Effective values; environment changes require restart")
+                        .into(),
                 );
                 add(
                     "context audit",
-                    "Prompt provenance",
-                    "Inspect context sources and effective tools".into(),
+                    self.state.locale.translate("Prompt provenance"),
+                    self.state
+                        .locale
+                        .translate("Inspect context sources and effective tools")
+                        .into(),
                 );
                 add(
                     "about",
-                    "Build information",
-                    "Version and environment".into(),
+                    self.state.locale.translate("Build information"),
+                    self.state
+                        .locale
+                        .translate("Version and environment")
+                        .into(),
                 );
-                "Advanced".into()
+                self.state.locale.translate("Advanced").into()
             }
             ControlPanel::Tasks => {
                 add(
                     "operations",
-                    "Activity",
-                    "Persisted tool executions and approvals".into(),
+                    self.state.locale.translate("Activity"),
+                    self.state
+                        .locale
+                        .translate("Persisted tool executions and approvals")
+                        .into(),
                 );
                 add(
                     "workers",
-                    "Workers",
-                    "Inspect, redirect, cancel, or resume existing work".into(),
+                    self.state.locale.translate("Workers"),
+                    self.state
+                        .locale
+                        .translate("Inspect, redirect, cancel, or resume existing work")
+                        .into(),
                 );
                 add(
                     "queue",
-                    "Queued prompts",
-                    format!("{} pending", self.queued_prompts.len()),
+                    self.state.locale.translate("Queued prompts"),
+                    self.state
+                        .locale
+                        .format("{0} pending", &[(self.queued_prompts.len()).to_string()]),
                 );
                 add(
                     "decision",
-                    "Pending decisions",
-                    "Answer or cancel background decisions".into(),
+                    self.state.locale.translate("Pending decisions"),
+                    self.state
+                        .locale
+                        .translate("Answer or cancel background decisions")
+                        .into(),
                 );
                 add(
                     "goal",
-                    "Objective and budget",
-                    "Inspect explicit goals and continuation bounds".into(),
+                    self.state.locale.translate("Objective and budget"),
+                    self.state
+                        .locale
+                        .translate("Inspect explicit goals and continuation bounds")
+                        .into(),
                 );
                 add(
                     "workflow",
-                    "Workflows",
-                    "Durable runs and their controls".into(),
+                    self.state.locale.translate("Workflows"),
+                    self.state
+                        .locale
+                        .translate("Durable runs and their controls")
+                        .into(),
                 );
                 add(
                     "loop",
-                    "Schedules",
-                    "Inspect recurring prompts; creation stays explicit".into(),
+                    self.state.locale.translate("Schedules"),
+                    self.state
+                        .locale
+                        .translate("Inspect recurring prompts; creation stays explicit")
+                        .into(),
                 );
                 add(
                     "monitor",
-                    "Background output",
-                    "Inspect existing task monitors".into(),
+                    self.state.locale.translate("Background output"),
+                    self.state
+                        .locale
+                        .translate("Inspect existing task monitors")
+                        .into(),
                 );
                 add(
                     "computer",
-                    "Computer tasks",
-                    "Inspect hosted work and availability".into(),
+                    self.state.locale.translate("Computer tasks"),
+                    self.state
+                        .locale
+                        .translate("Inspect hosted work and availability")
+                        .into(),
                 );
                 add(
                     "a2a tasks",
-                    "Delegated tasks",
-                    "Inspect work accepted by connected peers".into(),
+                    self.state.locale.translate("Delegated tasks"),
+                    self.state
+                        .locale
+                        .translate("Inspect work accepted by connected peers")
+                        .into(),
                 );
                 add(
                     "mailbox",
-                    "Task messages",
-                    "Inspect pending inter-agent messages".into(),
+                    self.state.locale.translate("Task messages"),
+                    self.state
+                        .locale
+                        .translate("Inspect pending inter-agent messages")
+                        .into(),
                 );
                 add(
                     "settings session",
-                    "Session actions",
-                    "Fork, recover, summarize, and export".into(),
+                    self.state.locale.translate("Session actions"),
+                    self.state
+                        .locale
+                        .translate("Fork, recover, summarize, and export")
+                        .into(),
                 );
-                "Tasks".into()
+                self.state.locale.translate("Tasks").into()
             }
             ControlPanel::Context => {
                 add(
                     "context usage",
-                    "Included context",
-                    "Token budget, sources, and tools".into(),
+                    self.state.locale.translate("Included context"),
+                    self.state
+                        .locale
+                        .translate("Token budget, sources, and tools")
+                        .into(),
                 );
                 add(
                     "context audit",
-                    "Provenance",
-                    "Inspect effective prompt sources".into(),
+                    self.state.locale.translate("Provenance"),
+                    self.state
+                        .locale
+                        .translate("Inspect effective prompt sources")
+                        .into(),
                 );
                 add(
                     "memory",
-                    "Memory",
-                    "Review, save, edit, or forget notes explicitly".into(),
+                    self.state.locale.translate("Memory"),
+                    self.state
+                        .locale
+                        .translate("Review, save, edit, or forget notes explicitly")
+                        .into(),
                 );
                 add(
                     "harness review",
-                    "Instruction proposals",
-                    "Review before applying durable changes".into(),
+                    self.state.locale.translate("Instruction proposals"),
+                    self.state
+                        .locale
+                        .translate("Review before applying durable changes")
+                        .into(),
                 );
                 add(
                     "harness",
-                    "Instructions",
-                    "Inspect revisions and rollback controls".into(),
+                    self.state.locale.translate("Instructions"),
+                    self.state
+                        .locale
+                        .translate("Inspect revisions and rollback controls")
+                        .into(),
                 );
                 add(
                     "rlm",
-                    "Advanced variables",
-                    "Inspect named context values".into(),
+                    self.state.locale.translate("Advanced variables"),
+                    self.state
+                        .locale
+                        .translate("Inspect named context values")
+                        .into(),
                 );
                 add(
                     "compact",
-                    "Compact now",
-                    "Manual override; automatic compaction remains enabled".into(),
+                    self.state.locale.translate("Compact now"),
+                    self.state
+                        .locale
+                        .translate("Manual override; automatic compaction remains enabled")
+                        .into(),
                 );
-                "Context".into()
+                self.state.locale.translate("Context").into()
             }
             ControlPanel::Model => {
                 add(
                     "model select",
-                    "Choose model",
-                    format!("{} · this session", self.current_model),
+                    self.state.locale.translate("Choose model"),
+                    self.state.locale.format(
+                        "{0} · this session",
+                        std::slice::from_ref(&(self.current_model)),
+                    ),
                 );
                 add(
                     "thinking",
-                    "Effort",
-                    format!("{} · this session", self.current_thinking_level.label()),
+                    self.state.locale.translate("Effort"),
+                    self.state.locale.format(
+                        "{0} · this session",
+                        &[(self.current_thinking_level.label()).to_string()],
+                    ),
                 );
                 add(
                     "boost",
-                    "Boost this task",
-                    "One-task intelligence override".into(),
+                    self.state.locale.translate("Boost this task"),
+                    self.state
+                        .locale
+                        .translate("One-task intelligence override")
+                        .into(),
                 );
                 add(
                     &format!("model default {}", self.current_model),
-                    "Save current as default",
-                    "Applies to new sessions".into(),
+                    self.state.locale.translate("Save current as default"),
+                    self.state
+                        .locale
+                        .translate("Applies to new sessions")
+                        .into(),
                 );
                 add(
                     "setup",
-                    "Account and provider setup",
-                    "Configure an available inference route".into(),
+                    self.state.locale.translate("Account and provider setup"),
+                    self.state
+                        .locale
+                        .translate("Configure an available inference route")
+                        .into(),
                 );
-                "Model and effort".into()
+                self.state.locale.translate("Model and effort").into()
             }
             ControlPanel::Effort => {
                 for level in supported_efforts(&self.current_model) {
                     let name = level.label().to_lowercase();
                     add(
                         &format!("thinking {name}"),
-                        &format!("Apply: {name}"),
-                        "This session; next model request".into(),
+                        &self
+                            .state
+                            .locale
+                            .format("Apply: {0}", std::slice::from_ref(&(name))),
+                        self.state
+                            .locale
+                            .translate("This session; next model request")
+                            .into(),
                     );
                 }
                 format!(
@@ -421,85 +660,149 @@ impl App {
             ControlPanel::Review => {
                 add(
                     "git review",
-                    "Changes",
-                    "Git status and staged/worktree summary".into(),
+                    self.state.locale.translate("Changes"),
+                    self.state
+                        .locale
+                        .translate("Git status and staged/worktree summary")
+                        .into(),
                 );
-                add("diff", "Diff", "Inspect the working tree diff".into());
+                add(
+                    "diff",
+                    self.state.locale.translate("Diff"),
+                    self.state
+                        .locale
+                        .translate("Inspect the working tree diff")
+                        .into(),
+                );
                 add(
                     "rubber-duck",
-                    "Request second opinion",
-                    "Run model review of uncommitted changes".into(),
+                    self.state.locale.translate("Request second opinion"),
+                    self.state
+                        .locale
+                        .translate("Run model review of uncommitted changes")
+                        .into(),
                 );
-                "Review".into()
+                self.state.locale.translate("Review").into()
             }
             ControlPanel::Help => {
                 add(
                     "help commands",
-                    "Commands",
-                    "Generated command help and usage".into(),
+                    self.state.locale.translate("Commands"),
+                    self.state
+                        .locale
+                        .translate("Generated command help and usage")
+                        .into(),
                 );
                 add(
                     "hotkeys",
-                    "Keyboard shortcuts",
-                    "Effective keybindings".into(),
+                    self.state.locale.translate("Keyboard shortcuts"),
+                    self.state.locale.translate("Effective keybindings").into(),
                 );
                 add(
                     "settings advanced",
-                    "Diagnostics",
-                    "Errors, limits, and build information".into(),
+                    self.state.locale.translate("Diagnostics"),
+                    self.state
+                        .locale
+                        .translate("Errors, limits, and build information")
+                        .into(),
                 );
-                add("cost", "Usage", "Recorded tokens and cost".into());
+                add(
+                    "cost",
+                    self.state.locale.translate("Usage"),
+                    self.state
+                        .locale
+                        .translate("Recorded tokens and cost")
+                        .into(),
+                );
                 add(
                     "bug",
-                    "Report a bug",
-                    "Draft and review before sending".into(),
+                    self.state.locale.translate("Report a bug"),
+                    self.state
+                        .locale
+                        .translate("Draft and review before sending")
+                        .into(),
                 );
                 add(
                     "settings session",
-                    "Session actions",
-                    "History, recovery, and export".into(),
+                    self.state.locale.translate("Session actions"),
+                    self.state
+                        .locale
+                        .translate("History, recovery, and export")
+                        .into(),
                 );
-                "Help".into()
+                self.state.locale.translate("Help").into()
             }
             ControlPanel::Session => {
                 add(
                     "session",
-                    "Session details",
-                    "Workspace, model, and permission state".into(),
+                    self.state.locale.translate("Session details"),
+                    self.state
+                        .locale
+                        .translate("Workspace, model, and permission state")
+                        .into(),
                 );
                 add(
                     "resume",
-                    "Resume a session",
-                    "Browse saved conversations".into(),
+                    self.state.locale.translate("Resume a session"),
+                    self.state
+                        .locale
+                        .translate("Browse saved conversations")
+                        .into(),
                 );
                 add(
                     "continue",
-                    "Continue most recent",
-                    "Most recent conversation in this workspace".into(),
+                    self.state.locale.translate("Continue most recent"),
+                    self.state
+                        .locale
+                        .translate("Most recent conversation in this workspace")
+                        .into(),
                 );
                 add(
                     "fork",
-                    "Fork conversation",
-                    "Create a separate conversation branch".into(),
+                    self.state.locale.translate("Fork conversation"),
+                    self.state
+                        .locale
+                        .translate("Create a separate conversation branch")
+                        .into(),
                 );
                 add(
                     "rewind",
-                    "Rewind",
-                    "Preview conversation or file recovery".into(),
+                    self.state.locale.translate("Rewind"),
+                    self.state
+                        .locale
+                        .translate("Preview conversation or file recovery")
+                        .into(),
                 );
                 add(
                     "summarize",
-                    "Summarize selected turns",
-                    "Create a saved conversation".into(),
+                    self.state.locale.translate("Summarize selected turns"),
+                    self.state
+                        .locale
+                        .translate("Create a saved conversation")
+                        .into(),
                 );
-                add("export", "Export", "Choose a format and destination".into());
+                add(
+                    "export",
+                    self.state.locale.translate("Export"),
+                    self.state
+                        .locale
+                        .translate("Choose a format and destination")
+                        .into(),
+                );
                 add(
                     "history",
-                    "Prompt history",
-                    "Search previous prompts".into(),
+                    self.state.locale.translate("Prompt history"),
+                    self.state
+                        .locale
+                        .translate("Search previous prompts")
+                        .into(),
                 );
-                add("view-plan", "View plan", "Current plan artifact".into());
-                "Session actions".into()
+                add(
+                    "view-plan",
+                    self.state.locale.translate("View plan"),
+                    self.state.locale.translate("Current plan artifact").into(),
+                );
+                self.state.locale.translate("Session actions").into()
             }
         };
         self.command_palette.show_panel(title, rows);

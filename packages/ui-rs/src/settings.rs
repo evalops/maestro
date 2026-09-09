@@ -83,7 +83,7 @@ impl<'a> SettingsForm<'a> {
         state.select(selected_row);
         if rows.is_empty() {
             frame.render_widget(
-                Paragraph::new("No settings available")
+                Paragraph::new(crate::localization::tr("No settings available"))
                     .style(Style::default().fg(self.theme.muted)),
                 chunks[0],
             );

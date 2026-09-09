@@ -214,7 +214,7 @@ impl<'a> SearchField<'a> {
             query,
             placeholder,
             block: Block::default()
-                .title(" Search ")
+                .title(crate::localization::tr(" Search "))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
             text_style: Style::default().fg(Color::White),
@@ -305,3 +305,6 @@ impl Widget for SearchField<'_> {
 
 /// Unicode-aware editor state and rendering, without a terminal or event loop.
 pub mod textarea;
+
+pub mod localization;
+mod translations;

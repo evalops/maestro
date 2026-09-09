@@ -194,14 +194,10 @@ pub fn run(args: &[String]) -> Result<Outcome> {
             Ok(Outcome::Exit(0))
         }
         "help" | "--help" | "-h" => {
-            println!(
-                "Usage: maestro agents [init [path] [--force]|profile <list|show|create|delete>]"
-            );
+            println!("{}", crate::localization::cli_locale().format("Usage: maestro agents [init [path] [--force]|profile <list|show|create|delete>]", &[]));
             Ok(Outcome::Exit(0))
         }
-        value => bail!(
-            "Unknown agents subcommand: {value}. Try \"maestro agents init\" or \"maestro agents profile list\""
-        ),
+        value => bail!("{}", crate::localization::cli_locale().format("Unknown agents subcommand: {0}. Try \"maestro agents init\" or \"maestro agents profile list\"", &[(value).to_string()])),
     }
 }
 
@@ -294,7 +290,11 @@ pub enum InitWorkspaceResult {
 
 fn init(args: &[String], force: bool) -> Result<Outcome> {
     if args.len() > 1 {
-        bail!("agents init accepts at most one target path");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("agents init accepts at most one target path", &[])
+        );
     }
     let cwd = std::env::current_dir()?;
     match init_workspace(&cwd, args.first().map(String::as_str), force)? {
@@ -303,7 +303,13 @@ fn init(args: &[String], force: bool) -> Result<Outcome> {
             target: path,
         }),
         InitWorkspaceResult::Updated { path } => {
-            println!("Updated AGENTS instructions at {}.", path.display());
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Updated AGENTS instructions at {0}.",
+                    &[(path.display()).to_string()]
+                )
+            );
             Ok(Outcome::Exit(0))
         }
         InitWorkspaceResult::Exists {
@@ -311,11 +317,7 @@ fn init(args: &[String], force: bool) -> Result<Outcome> {
             preview,
             rerun,
         } => {
-            println!(
-                "AGENTS instructions already exist at {}.\nPreview the proposed update below, then re-run with `{rerun}` to apply it.\n\n{}",
-                path.display(),
-                preview
-            );
+            println!("{}", crate::localization::cli_locale().format("AGENTS instructions already exist at {0}.\nPreview the proposed update below, then re-run with `{1}` to apply it.\n\n{2}", &[(path.display()).to_string(), (rerun).clone(), (preview).clone()]));
             Ok(Outcome::Exit(0))
         }
     }
@@ -593,12 +595,8 @@ fn shell_quote(value: &str) -> String {
 fn profile(args: &[String], json: bool, force: bool) -> Result<()> {
     match args.first().map(String::as_str).unwrap_or("list") {
         "help" | "--help" | "-h" => {
-            println!(
-                "Usage: maestro specialists [list|show <name>|create <name> [--scope project|user] [--model <id>] [--tools <names>] <instructions>|delete <name>]"
-            );
-            println!(
-                "Run: maestro exec --specialist <name> <task>. Existing agents profile commands use the same store."
-            );
+            println!("{}", crate::localization::cli_locale().format("Usage: maestro specialists [list|show <name>|create <name> [--scope project|user] [--model <id>] [--tools <names>] <instructions>|delete <name>]", &[]));
+            println!("{}", crate::localization::cli_locale().format("Run: maestro exec --specialist <name> <task>. Existing agents profile commands use the same store.", &[]));
             Ok(())
         }
         "list" => profile_list(json),
@@ -606,7 +604,13 @@ fn profile(args: &[String], json: bool, force: bool) -> Result<()> {
         "create" => profile_create(&args[1..], json, force),
         "delete" => profile_delete(&args[1..], json),
         action => {
-            bail!("Unknown agents profile action: {action}. Use list, show, create, or delete.")
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown agents profile action: {0}. Use list, show, create, or delete.",
+                    &[(action).to_string()]
+                )
+            )
         }
     }
 }
@@ -616,7 +620,10 @@ fn profile_list(json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&profiles)?);
     } else if profiles.is_empty() {
-        println!("No specialist profiles found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No specialist profiles found.", &[])
+        );
     } else {
         for p in profiles {
             println!(
@@ -645,10 +652,15 @@ fn profile_show(name: Option<&String>, json: bool) -> Result<()> {
             println!("\n{description}");
         }
         println!(
-            "\nScope: {}\nPath: {}\n\n{}",
-            scope_name(p.scope),
-            p.path.display(),
-            p.prompt
+            "{}",
+            crate::localization::cli_locale().format(
+                "\nScope: {0}\nPath: {1}\n\n{2}",
+                &[
+                    (scope_name(p.scope)).to_string(),
+                    (p.path.display()).to_string(),
+                    (p.prompt).clone()
+                ]
+            )
         );
     }
     Ok(())
@@ -683,11 +695,21 @@ fn profile_create(args: &[String], json: bool, force: bool) -> Result<()> {
     }
     let prompt = prompt.join(" ").trim().to_string();
     if prompt.is_empty() {
-        bail!("agents profile create requires prompt text");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("agents profile create requires prompt text", &[])
+        );
     }
     let path = profile_path(&name, scope)?;
     if path.exists() && !force {
-        bail!("specialist profile already exists: {name}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "specialist profile already exists: {0}",
+                std::slice::from_ref(&(name))
+            )
+        );
     }
     fs::create_dir_all(path.parent().context("profile path has no parent")?)?;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -724,9 +746,11 @@ fn profile_create(args: &[String], json: bool, force: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
         println!(
-            "Created specialist profile {} at {}.",
-            p.name,
-            p.path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Created specialist profile {0} at {1}.",
+                &[(p.name).clone(), (p.path.display()).to_string()]
+            )
         );
     }
     Ok(())
@@ -745,7 +769,13 @@ fn profile_delete(args: &[String], json: bool) -> Result<()> {
         } else if let Some(value) = args[index].strip_prefix("--scope=") {
             scope = parse_scope(value)?;
         } else {
-            bail!("unexpected agents profile delete argument: {}", args[index]);
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "unexpected agents profile delete argument: {0}",
+                    &[args[index].clone()]
+                )
+            );
         }
         index += 1;
     }
@@ -763,13 +793,19 @@ fn profile_delete(args: &[String], json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else if deleted {
         println!(
-            "Deleted specialist profile {raw_name} ({}).",
-            scope_name(scope)
+            "{}",
+            crate::localization::cli_locale().format(
+                "Deleted specialist profile {0} ({1}).",
+                &[(raw_name).clone(), (scope_name(scope)).to_string()]
+            )
         );
     } else {
         println!(
-            "No specialist profile {raw_name} found in {} scope.",
-            scope_name(scope)
+            "{}",
+            crate::localization::cli_locale().format(
+                "No specialist profile {0} found in {1} scope.",
+                &[(raw_name).clone(), (scope_name(scope)).to_string()]
+            )
         );
     }
     Ok(())
@@ -900,7 +936,13 @@ pub(crate) fn profiles_for_delegation(
 
 pub(crate) fn read_profile(path: &Path, scope: Scope) -> Result<Profile> {
     if scope == Scope::Builtin {
-        bail!("built-in specialist profiles must come from compiled instructions");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "built-in specialist profiles must come from compiled instructions",
+                &[]
+            )
+        );
     }
     let content = fs::read_to_string(path)?;
     let (meta, body) = if let Some(rest) = content.strip_prefix("---\n") {
@@ -972,7 +1014,13 @@ fn normalize_name(value: &str) -> Result<String> {
     }
     let name = name.trim_matches('-').to_string();
     if name.is_empty() || name.len() > 64 {
-        bail!("profile name must be 1-64 lowercase letters, numbers, or hyphens");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "profile name must be 1-64 lowercase letters, numbers, or hyphens",
+                &[]
+            )
+        );
     }
     Ok(name)
 }
@@ -980,7 +1028,11 @@ fn parse_scope(value: &str) -> Result<Scope> {
     match value {
         "project" => Ok(Scope::Project),
         "user" => Ok(Scope::User),
-        _ => bail!("invalid profile scope: {value}"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("invalid profile scope: {0}", &[(value).to_string()])
+        ),
     }
 }
 fn scope_name(scope: Scope) -> &'static str {
@@ -996,7 +1048,13 @@ fn profile_dir(scope: Scope) -> Result<PathBuf> {
 
 fn profile_dir_for(cwd: &Path, scope: Scope) -> Result<PathBuf> {
     match scope {
-        Scope::Builtin => bail!("built-in specialist profiles have no writable directory"),
+        Scope::Builtin => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "built-in specialist profiles have no writable directory",
+                &[]
+            )
+        ),
         Scope::Project => Ok(cwd.join(".maestro/agent-profiles")),
         Scope::User => crate::path_utils::maestro_home_dir()
             .map(|p| p.join("agent-profiles"))

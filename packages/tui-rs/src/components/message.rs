@@ -440,22 +440,21 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
         ("●", semantic_color("success", Color::Green))
     };
 
-    let mut parts = vec![format!(
-        "{} tool{}",
-        message.tool_calls.len(),
+    let mut parts = vec![maestro_ui::localization::format(
         if message.tool_calls.len() == 1 {
-            ""
+            "{0} tool"
         } else {
-            "s"
-        }
+            "{0} tools"
+        },
+        &[message.tool_calls.len().to_string()],
     )];
     for (count, label) in [
-        (completed, "completed"),
-        (failed, "failed"),
-        (running, "running"),
-        (pending, "pending"),
-        (cancelled, "cancelled"),
-        (blocked, "blocked"),
+        (completed, maestro_ui::localization::tr("completed")),
+        (failed, maestro_ui::localization::tr("failed")),
+        (running, maestro_ui::localization::tr("running")),
+        (pending, maestro_ui::localization::tr("pending")),
+        (cancelled, maestro_ui::localization::tr("cancelled")),
+        (blocked, maestro_ui::localization::tr("blocked")),
     ] {
         if count > 0 {
             parts.push(format!("{count} {label}"));
@@ -486,7 +485,7 @@ fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
         .find(|tool_call| tool_call.status == ToolCallStatus::Running)
     {
         spans.push(Span::styled(
-            " · Live: ",
+            maestro_ui::localization::tr(" · Live: "),
             Style::default().fg(semantic_color("muted", Color::DarkGray)),
         ));
         spans.push(Span::styled(
@@ -719,7 +718,7 @@ impl Widget for MessageWidget<'_> {
                         .add_modifier(Modifier::DIM),
                 ),
                 Span::styled(
-                    "Conversation compacted",
+                    maestro_ui::localization::tr("Conversation compacted"),
                     Style::default()
                         .fg(semantic_color("muted", Color::DarkGray))
                         .add_modifier(Modifier::DIM),
@@ -777,7 +776,7 @@ impl Widget for MessageWidget<'_> {
                     let (label, color) = if self.message.kind == MessageKind::SideQuestion {
                         ("BTW", brand_muted())
                     } else {
-                        ("You", brand_text())
+                        (maestro_ui::localization::tr("You"), brand_text())
                     };
                     header_spans.push(Span::styled(
                         "› ",
@@ -792,9 +791,11 @@ impl Widget for MessageWidget<'_> {
                 }
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
-                        MessageKind::System => {
-                            ("• ", "System", semantic_color("warning", Color::Yellow))
-                        }
+                        MessageKind::System => (
+                            "• ",
+                            maestro_ui::localization::tr("System"),
+                            semantic_color("warning", Color::Yellow),
+                        ),
                         MessageKind::SideAnswer => ("• ", "Dex (side)", brand_muted()),
                         _ => ("• ", "Dex", brand_violet()),
                     };
@@ -841,9 +842,15 @@ impl Widget for MessageWidget<'_> {
                     Style::default().fg(semantic_color("muted", Color::DarkGray)),
                 ),
                 Span::styled("◆ ", Style::default().fg(brand_violet())),
-                Span::styled("Thinking", Style::default().fg(brand_violet())),
                 Span::styled(
-                    format!(" ({} chars) ", self.message.thinking.len()),
+                    maestro_ui::localization::tr("Thinking"),
+                    Style::default().fg(brand_violet()),
+                ),
+                Span::styled(
+                    maestro_ui::localization::format(
+                        " ({0} chars) ",
+                        &[(self.message.thinking.len()).to_string()],
+                    ),
                     Style::default().fg(semantic_color("muted", Color::DarkGray)),
                 ),
                 Span::styled(
@@ -1147,12 +1154,22 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     if elapsed_secs < 3600 {
         let minutes = elapsed_secs / 60;
         let seconds = elapsed_secs % 60;
-        return format!("{minutes}m {seconds:02}s");
+        return maestro_ui::localization::format(
+            "{0}m {1}s",
+            &[(minutes).to_string(), format!("{:02}", seconds)],
+        );
     }
     let hours = elapsed_secs / 3600;
     let minutes = (elapsed_secs % 3600) / 60;
     let seconds = elapsed_secs % 60;
-    format!("{hours}h {minutes:02}m {seconds:02}s")
+    maestro_ui::localization::format(
+        "{0}h {1}m {2}s",
+        &[
+            (hours).to_string(),
+            format!("{:02}", minutes),
+            format!("{:02}", seconds),
+        ],
+    )
 }
 
 /// A stateless widget for rendering the chat input box.
@@ -1302,7 +1319,7 @@ impl PendingInputPreview {
                 &mut lines,
                 width,
                 &Self::section_title(
-                    "Queued steering after next tool boundary",
+                    maestro_ui::localization::tr("Queued steering after next tool boundary"),
                     self.steering.len(),
                     self.steering_mode,
                 ),
@@ -1311,7 +1328,10 @@ impl PendingInputPreview {
             );
             lines.extend(word_wrap_lines(
                 &[Line::from(Span::styled(
-                    format!("  {INTERRUPT_STEERING_DESCRIPTION}"),
+                    format!(
+                        "  {}",
+                        maestro_ui::localization::tr(INTERRUPT_STEERING_DESCRIPTION)
+                    ),
                     dim_style,
                 ))],
                 RtOptions::new(width as usize)
@@ -1327,7 +1347,7 @@ impl PendingInputPreview {
                 &mut lines,
                 width,
                 &Self::section_title(
-                    "Queued follow-ups after turn end",
+                    maestro_ui::localization::tr("Queued follow-ups after turn end"),
                     self.follow_up.len(),
                     self.follow_up_mode,
                 ),
@@ -1337,8 +1357,9 @@ impl PendingInputPreview {
             lines.extend(word_wrap_lines(
                 &[Line::from(Span::styled(
                     format!(
-                        "  {} {EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION}",
-                        self.follow_up_edit_binding_label
+                        "  {} {}",
+                        self.follow_up_edit_binding_label,
+                        maestro_ui::localization::tr(EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION)
                     ),
                     dim_style,
                 ))],
@@ -1355,8 +1376,12 @@ impl PendingInputPreview {
             return base.to_string();
         }
         let note = match mode {
-            QueueMode::All => format!("next batch: all {count}"),
-            QueueMode::One => format!("next batch: 1 of {count}"),
+            QueueMode::All => {
+                maestro_ui::localization::format("next batch: all {0}", &[(count).to_string()])
+            }
+            QueueMode::One => {
+                maestro_ui::localization::format("next batch: 1 of {0}", &[(count).to_string()])
+            }
         };
         format!("{base} ({note})")
     }
@@ -1446,7 +1471,7 @@ impl<'a> ChatInputWidget<'a> {
         if thinking_level != ThinkingLevel::Off {
             context.push_str(&format!(
                 " ({})",
-                thinking_level.label().to_ascii_lowercase()
+                maestro_ui::localization::tr(&thinking_level.label().to_ascii_lowercase())
             ));
         }
         self.runtime_footer = Some(context);
@@ -1456,13 +1481,14 @@ impl<'a> ChatInputWidget<'a> {
 
     fn footer_for_width(&self, width: u16) -> Option<String> {
         let mode = self.interaction_mode?;
-        let mut footer = format!(
-            "Mode: {}",
-            match mode {
-                InteractionMode::Normal => "Act",
-                InteractionMode::Plan => "Plan",
-                InteractionMode::AlwaysApprove => "Auto-approve",
-            }
+        let mut footer = maestro_ui::localization::format(
+            "Mode: {0}",
+            &[(match mode {
+                InteractionMode::Normal => maestro_ui::localization::tr("Act"),
+                InteractionMode::Plan => maestro_ui::localization::tr("Plan"),
+                InteractionMode::AlwaysApprove => maestro_ui::localization::tr("Auto-approve"),
+            })
+            .to_string()],
         );
         let available = usize::from(width.saturating_sub(2));
         if let Some(model) = &self.runtime_footer {
@@ -1472,8 +1498,8 @@ impl<'a> ChatInputWidget<'a> {
             }
         }
         let hint = match mode {
-            InteractionMode::Plan => " · /plan off to act",
-            InteractionMode::Normal => " · /plan to plan",
+            InteractionMode::Plan => maestro_ui::localization::tr(" · /plan off to act"),
+            InteractionMode::Normal => maestro_ui::localization::tr(" · /plan to plan"),
             InteractionMode::AlwaysApprove => "",
         };
         if footer.width() + hint.width() <= available {
@@ -1635,7 +1661,9 @@ impl Widget for TurnStatusWidget<'_> {
             return;
         }
 
-        let activity = self.activity.unwrap_or("Working");
+        let activity = self
+            .activity
+            .unwrap_or(maestro_ui::localization::tr("Working"));
         let activity = if activity.chars().count() > 30 {
             format!("{}…", activity.chars().take(29).collect::<String>())
         } else {
@@ -1665,7 +1693,10 @@ impl Widget for TurnStatusWidget<'_> {
 
         if area.width >= 48 && !self.queue.is_empty() {
             spans.push(Span::styled(
-                format!("  ·  {} queued", self.queue.total),
+                maestro_ui::localization::format(
+                    "  ·  {0} queued",
+                    &[(self.queue.total).to_string()],
+                ),
                 Style::default().fg(semantic_color("warning", Color::Yellow)),
             ));
         }
@@ -1678,7 +1709,10 @@ impl Widget for TurnStatusWidget<'_> {
             }
         }
         if area.width >= 84 && self.can_queue_follow_up {
-            spans.push(Span::styled("  ·  Tab queue", dim));
+            spans.push(Span::styled(
+                maestro_ui::localization::tr("  ·  Tab queue"),
+                dim,
+            ));
         }
         // Cancellation hints live in the contextual footer.
 
@@ -1937,21 +1971,21 @@ impl StatusBarWidget<'_> {
                 spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
             }
             let hints = if self.pending_approvals > 0 {
-                "Respond to the approval above"
+                maestro_ui::localization::tr("Respond to the approval above")
             } else if self.input_busy {
                 if self.input_has_text {
-                    "Enter steer · Alt+Enter queue · Ctrl+C cancel"
+                    maestro_ui::localization::tr("Enter steer · Alt+Enter queue · Ctrl+C cancel")
                 } else {
-                    "Ctrl+C cancel"
+                    maestro_ui::localization::tr("Ctrl+C cancel")
                 }
             } else if self.input_has_text {
                 if area.width >= 60 {
-                    "Enter send · Shift+Enter newline"
+                    maestro_ui::localization::tr("Enter send · Shift+Enter newline")
                 } else {
-                    "Enter send"
+                    maestro_ui::localization::tr("Enter send")
                 }
             } else {
-                "? search · / commands"
+                maestro_ui::localization::tr("? search · / commands")
             };
             spans.push(Span::styled(hints, Style::default().fg(theme.muted)));
         }
@@ -2034,7 +2068,7 @@ impl StatusBarWidget<'_> {
                     spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
-                    format!("hooks:{count}"),
+                    maestro_ui::localization::format("hooks:{0}", &[(count).to_string()]),
                     Style::default().fg(theme.muted),
                 ));
             }
@@ -2066,7 +2100,10 @@ impl StatusBarWidget<'_> {
                     spans.push(Span::styled("  ·  ", Style::default().fg(theme.border)));
                 }
                 spans.push(Span::styled(
-                    format!("alerts:{}", self.alert_count),
+                    maestro_ui::localization::format(
+                        "alerts:{0}",
+                        &[(self.alert_count).to_string()],
+                    ),
                     Style::default().fg(theme.error),
                 ));
             }
@@ -2112,16 +2149,25 @@ impl StatusBarWidget<'_> {
             // available through /about and the detailed footer surfaces.
             let mut notices = Vec::new();
             if self.approval_mode == Some(ApprovalMode::Yolo) {
-                notices.push("Always approve".to_string());
+                notices.push(maestro_ui::localization::tr("Always approve").to_string());
             }
             if self.pending_approvals > 0 {
-                notices.push(format!("{} pending", self.pending_approvals));
+                notices.push(maestro_ui::localization::format(
+                    "{0} pending",
+                    &[(self.pending_approvals).to_string()],
+                ));
             }
             if self.alert_count > 0 {
-                notices.push(format!("{} alerts", self.alert_count));
+                notices.push(maestro_ui::localization::format(
+                    "{0} alerts",
+                    &[(self.alert_count).to_string()],
+                ));
             }
             if self.mcp_failed > 0 {
-                notices.push(format!("{} connections failed", self.mcp_failed));
+                notices.push(maestro_ui::localization::format(
+                    "{0} connections failed",
+                    &[(self.mcp_failed).to_string()],
+                ));
             }
             (!notices.is_empty()).then(|| notices.join(" · "))
         } else {
@@ -2391,13 +2437,16 @@ impl<'a> ChatView<'a> {
             .rev()
             .find_map(|message| message.tool_calls.last())?;
         let action = if self.state.is_tool_call_expanded(&call.call_id) {
-            "collapse"
+            maestro_ui::localization::tr("collapse")
         } else {
-            "expand"
+            maestro_ui::localization::tr("expand")
         };
         let toggle = format!("{} {action}", binding.display());
         let details = crate::key_hints::ctrl(crossterm::event::KeyCode::Char('e')).display();
-        let detailed = format!("{toggle} · {details} details");
+        let detailed = format!(
+            "{toggle} · {details} {}",
+            maestro_ui::localization::tr("details")
+        );
         [detailed, toggle]
             .into_iter()
             .find(|hint| hint.width() <= width)
@@ -2526,7 +2575,9 @@ impl Widget for ChatView<'_> {
             }
         }
         let suggestion_tip = if self.dex_tip.is_some() && self.dex_suggestion.is_some() {
-            Some("→ accept suggestion · /dex suggestions-off")
+            Some(maestro_ui::localization::tr(
+                "→ accept suggestion · /dex suggestions-off",
+            ))
         } else {
             None
         };
@@ -2549,8 +2600,12 @@ impl Widget for ChatView<'_> {
             let activity = super::activity::active_tool_label(self.state);
             let activity = match (self.dex_state, activity.as_deref()) {
                 (Some(state), Some(tool)) => format!("Dex {} · {tool}", state.label()),
-                (Some(state), None) => format!("Dex {}", state.label()),
-                (None, tool) => tool.unwrap_or("Working").to_owned(),
+                (Some(state), None) => {
+                    maestro_ui::localization::format("Dex {0}", &[(state.label()).to_string()])
+                }
+                (None, tool) => tool
+                    .unwrap_or(maestro_ui::localization::tr("Working"))
+                    .to_owned(),
             };
             let activity =
                 if self.dex_personality == super::dex_companion::DexPersonality::Expressive {
@@ -2632,11 +2687,12 @@ impl Widget for ChatView<'_> {
 
             let alert_count = self.state.unseen_alerts;
 
-            let paste_note = self
-                .state
-                .textarea
-                .folded_paste_lines()
-                .map(|lines| format!("pasted {lines} lines (folded)"));
+            let paste_note = self.state.textarea.folded_paste_lines().map(|lines| {
+                maestro_ui::localization::format(
+                    "pasted {0} lines (folded)",
+                    &[(lines).to_string()],
+                )
+            });
 
             // Model + mode already sit on the composer border. Passing them
             // here reprints `GPT-5.5 via openai-codex` on the next row.
@@ -2713,7 +2769,9 @@ impl ChatView<'_> {
                 .model
                 .as_deref()
                 .map(chrome_model_label)
-                .unwrap_or_else(|| "Sign in to choose a model".to_string());
+                .unwrap_or_else(|| {
+                    maestro_ui::localization::tr("Sign in to choose a model").to_string()
+                });
             let location = format_session_location(
                 self.state.cwd.as_deref(),
                 self.state.git_branch.as_deref(),
@@ -2884,7 +2942,7 @@ impl ChatView<'_> {
 
         // Jump-to-latest indicator
         if self.state.scroll_offset > 0 {
-            let hint = "Jump to latest (G)";
+            let hint = maestro_ui::localization::tr("Jump to latest (G)");
             let hx = area
                 .x
                 .saturating_add(area.width.saturating_sub(hint.len() as u16 + 2));
