@@ -1130,6 +1130,7 @@ async fn native_agent_projects_managed_gateway_receipt_without_signed_payload() 
         NativeAgent::new_with_test_client(config, client).expect("hosted agent");
     let authorization = serde_json::json!({
         "claims": {
+            "endpoint": "chat.completions",
             "lineage_id": "lineage-native",
             "session_id": "session-native",
             "thread_id": "thread-native",

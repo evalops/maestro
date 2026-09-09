@@ -1400,6 +1400,27 @@ impl OpenAiClient {
         }
     }
 
+    fn authorized_responses_api_for(&self, model: &str) -> Result<bool> {
+        let Some(encoded) = self.managed_inference_authorization.as_deref() else {
+            return Ok(self.uses_responses_api_for(model));
+        };
+        anyhow::ensure!(
+            self.managed_gateway,
+            "managed inference authorization requires a managed Gateway"
+        );
+        let (authorization, _) = parse_managed_inference_authorization(encoded)?;
+        let claims = authorization.get("claims").unwrap_or(&authorization);
+        // Select the request shape from the authorization without modifying it.
+        // Gateway remains responsible for signature and exact endpoint verification.
+        match claims.get("endpoint").and_then(serde_json::Value::as_str) {
+            Some("responses") => Ok(true),
+            Some("chat.completions") => Ok(false),
+            _ => anyhow::bail!(
+                "managed inference authorization has an unsupported or missing endpoint"
+            ),
+        }
+    }
+
     fn uses_responses_api_for(&self, model: &str) -> bool {
         uses_responses_api(self.route_provider.as_deref(), model)
     }
@@ -1865,12 +1886,26 @@ impl OpenAiClient {
     }
 
     /// Build the appropriate request body based on model
+    #[cfg(test)]
     fn build_request_body(
         &self,
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        let mut body = if self.uses_responses_api_for(&config.model) {
+        self.build_request_body_for_api(
+            messages,
+            config,
+            self.uses_responses_api_for(&config.model),
+        )
+    }
+
+    fn build_request_body_for_api(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+        responses: bool,
+    ) -> serde_json::Value {
+        let mut body = if responses {
             self.build_responses_request_body(messages, config)
         } else {
             self.build_chat_request_body(messages, config)
@@ -1896,17 +1931,30 @@ impl OpenAiClient {
     /// OpenAI host. We append the OpenAI-compatible path (`/chat/completions` or
     /// `/responses`) to the configured base. Without a custom base, fall back to
     /// the OpenAI defaults.
+    #[cfg(test)]
     fn request_url(&self, model: &str) -> String {
+        self.request_url_for_api(model, self.uses_responses_api_for(model))
+    }
+
+    fn request_url_for_api(&self, model: &str, responses: bool) -> String {
         match &self.base_url {
             Some(base) => {
                 let trimmed = base.trim_end_matches('/');
-                if self.uses_responses_api_for(model) {
+                if responses {
                     format!("{trimmed}/responses")
                 } else {
                     format!("{trimmed}/chat/completions")
                 }
             }
-            None => api_url_for_model(model).to_string(),
+            None if self.managed_inference_authorization.is_none() => {
+                api_url_for_model(model).to_string()
+            }
+            None => if responses {
+                "https://api.openai.com/v1/responses"
+            } else {
+                "https://api.openai.com/v1/chat/completions"
+            }
+            .to_string(),
         }
     }
 }
@@ -1920,11 +1968,28 @@ impl OpenAiClient {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
-        let body = self.managed_request(self.build_request_body(messages, config))?;
+        let is_responses_api = self.authorized_responses_api_for(&config.model)?;
+        let body = self.managed_request(self.build_request_body_for_api(
+            messages,
+            config,
+            is_responses_api,
+        ))?;
+
+        if self.managed_inference_authorization.is_some() {
+            let (required, forbidden) = if is_responses_api {
+                ("input", "messages")
+            } else {
+                ("messages", "input")
+            };
+            anyhow::ensure!(
+                body.get(required).is_some() && body.get(forbidden).is_none(),
+                "managed inference request body does not match authorized endpoint"
+            );
+        }
 
         // Get the appropriate API URL for this model, honoring any custom
         // provider base URL (Mistral/Groq/DeepSeek/Moonshot/DashScope/etc.).
-        let api_url = self.request_url(&config.model);
+        let api_url = self.request_url_for_api(&config.model, is_responses_api);
 
         // Make request
         let request = self
@@ -2000,7 +2065,6 @@ impl OpenAiClient {
 
         // Spawn task to process SSE stream
         let model = config.model.clone();
-        let is_responses_api = self.uses_responses_api_for(&config.model);
 
         let producer = if is_responses_api {
             // Use eventsource-stream for proper SSE parsing (Responses API)
@@ -3249,6 +3313,7 @@ mod tests {
     fn managed_authorization_fixture(lineage_id: &str) -> String {
         serde_json::json!({
             "claims": {
+                "endpoint": "responses",
                 "schema_version": 1,
                 "authorization_id": "auth-1",
                 "key_id": "key-1",
@@ -3463,6 +3528,147 @@ mod tests {
 data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
 
 "#;
+
+    #[tokio::test]
+    async fn managed_endpoint_selects_url_body_and_stream_parser_over_catalog() {
+        for (endpoint, model, sse, path, field) in [
+            (
+                "responses",
+                "gemini-3.6-flash",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+                "/v1/responses",
+                "input",
+            ),
+            (
+                "chat.completions",
+                "gpt-5.6",
+                "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-5.6\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+                "/v1/chat/completions",
+                "messages",
+            ),
+        ] {
+            let (mut client, request_rx) =
+                managed_gateway_test_client(sse, &managed_receipt_headers());
+            let mut authorization: serde_json::Value =
+                serde_json::from_str(&managed_authorization_fixture("lineage-receipt")).unwrap();
+            authorization["claims"]["endpoint"] = endpoint.into();
+            client.set_managed_inference_authorization(Some(authorization.to_string()));
+            let stream = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: model.into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let events = collect_stream_events(stream).await;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, StreamEvent::ProviderError { .. })),
+                "{events:?}"
+            );
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, StreamEvent::TextDelta { text, .. } if text == "ok")
+                ),
+                "authorized parser did not emit content: {events:?}"
+            );
+            let request = request_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(
+                request.starts_with(&format!("POST {path} ")),
+                "wrong authorized endpoint"
+            );
+            let body = captured_request_body(&request);
+            assert!(body[field].is_array());
+            assert!(
+                body.get(if field == "input" {
+                    "messages"
+                } else {
+                    "input"
+                })
+                .is_none()
+            );
+            assert_eq!(body["managed_inference_authorization"], authorization);
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_endpoint_rejects_unsupported_or_missing_scope_before_network() {
+        for endpoint in [
+            serde_json::Value::Null,
+            "embeddings".into(),
+            " responses".into(),
+            "chat/completions".into(),
+        ] {
+            let mut client = OpenAiClient::with_base_url("test", "http://127.0.0.1:1/v1")
+                .unwrap()
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({"provider":"openai","environment":"production"}),
+                )
+                .unwrap();
+            let mut authorization: serde_json::Value =
+                serde_json::from_str(&managed_authorization_fixture("lineage-receipt")).unwrap();
+            authorization["claims"]["endpoint"] = endpoint;
+            client.set_managed_inference_authorization(Some(authorization.to_string()));
+            let error = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "gpt-5.6".into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect_err("reject endpoint");
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported or missing endpoint"),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_endpoint_rejects_conflicting_body_extension_before_network() {
+        let mut client = OpenAiClient::with_base_url("test", "http://127.0.0.1:1/v1")
+            .unwrap()
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({"provider":"openai","environment":"production"}),
+            )
+            .unwrap();
+        client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+            "lineage-receipt",
+        )));
+        client
+            .request_extensions
+            .insert("messages".into(), serde_json::json!([]));
+        let error = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "gemini-3.6-flash".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("reject mismatched shape");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match authorized endpoint"),
+            "{error}"
+        );
+    }
 
     #[tokio::test]
     async fn managed_request_sends_authorization_and_workspace_scope() {
