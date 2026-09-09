@@ -108,8 +108,10 @@ impl Widget for Composer<'_> {
         if queued > 0 {
             let mut lines = self.queued[..usize::from(queued)].to_vec();
             if self.queued.len() > usize::from(queued) {
-                lines[usize::from(queued) - 1] =
-                    Line::styled("… more queued input", Style::default().fg(theme.muted));
+                lines[usize::from(queued) - 1] = Line::styled(
+                    maestro_ui::localization::tr("… more queued input"),
+                    Style::default().fg(theme.muted),
+                );
             }
             Paragraph::new(lines).render(
                 Rect {

@@ -384,9 +384,9 @@ pub fn render_welcome_with_theme(
                     }
                     Line::styled(
                         if ready {
-                            "Ready when you are."
+                            maestro_ui::localization::tr("Ready when you are.")
                         } else {
-                            "Getting ready…"
+                            maestro_ui::localization::tr("Getting ready…")
                         },
                         Style::default().fg(Color::Rgb(
                             DEIXIC_MUTED.0,

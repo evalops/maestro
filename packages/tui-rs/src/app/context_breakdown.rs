@@ -84,10 +84,22 @@ impl ContextBreakdown {
     pub fn categories(&self) -> Vec<(&'static str, u64, f64)> {
         let total = self.total();
         [
-            ("System prompt", self.system_prompt),
-            ("Tool schemas", self.tool_schemas),
-            ("Tool results", self.tool_results),
-            ("Conversation", self.conversation),
+            (
+                maestro_ui::localization::tr("System prompt"),
+                self.system_prompt,
+            ),
+            (
+                maestro_ui::localization::tr("Tool schemas"),
+                self.tool_schemas,
+            ),
+            (
+                maestro_ui::localization::tr("Tool results"),
+                self.tool_results,
+            ),
+            (
+                maestro_ui::localization::tr("Conversation"),
+                self.conversation,
+            ),
             ("Other / overhead", self.other),
         ]
         .into_iter()
@@ -99,7 +111,7 @@ impl ContextBreakdown {
     pub fn advice(&self, context_window: Option<u64>) -> String {
         let total = self.total();
         if total == 0 {
-            return "No conversation context yet.".into();
+            return maestro_ui::localization::tr("No conversation context yet.").into();
         }
         let (category, _, pct) = self
             .categories()
@@ -110,22 +122,36 @@ impl ContextBreakdown {
             .filter(|window| *window > 0)
             .is_some_and(|window| token_estimation::usage_percentage(total, window) >= 70.0);
         let action = match category {
-            "Tool schemas" => "Use `/tools` to review the enabled tool surface.",
-            "System prompt" => "Use `/harness list` to review supplemental instructions.",
-            _ if pressure => {
-                "Use `/compact` to shorten older history while retaining recent turns."
+            "Tool schemas" => {
+                maestro_ui::localization::tr("Use `/tools` to review the enabled tool surface.")
             }
-            _ if context_window.is_none_or(|window| window == 0) => {
-                "Keep future tool output bounded until context capacity is known."
-            }
-            _ => "There is no need to compact now; keep future tool output bounded.",
+            "System prompt" => maestro_ui::localization::tr(
+                "Use `/harness list` to review supplemental instructions.",
+            ),
+            _ if pressure => maestro_ui::localization::tr(
+                "Use `/compact` to shorten older history while retaining recent turns.",
+            ),
+            _ if context_window.is_none_or(|window| window == 0) => maestro_ui::localization::tr(
+                "Keep future tool output bounded until context capacity is known.",
+            ),
+            _ => maestro_ui::localization::tr(
+                "There is no need to compact now; keep future tool output bounded.",
+            ),
         };
         let unknown = if context_window.is_none_or(|window| window == 0) {
-            " Context capacity is unknown."
+            maestro_ui::localization::tr(" Context capacity is unknown.")
         } else {
             ""
         };
-        format!("**Next step:** {category} is the largest category ({pct:.1}%). {action}{unknown}")
+        maestro_ui::localization::format(
+            "**Next step:** {0} is the largest category ({1}%). {2}{3}",
+            &[
+                (category).to_string(),
+                format!("{:.1}", pct),
+                (action).to_string(),
+                (unknown).to_string(),
+            ],
+        )
     }
 
     /// Render the breakdown as a chat message with counts, percentages, and a
@@ -133,26 +159,38 @@ impl ContextBreakdown {
     #[must_use]
     pub fn render(&self, model: Option<&str>, context_window: Option<u64>) -> String {
         let total = self.total();
-        let mut lines = vec!["## Context Breakdown".to_string(), String::new()];
+        let mut lines = vec![
+            maestro_ui::localization::tr("## Context Breakdown").to_string(),
+            String::new(),
+        ];
 
         if let Some(model) = model {
-            lines.push(format!("**Model:** {model}"));
+            lines.push(maestro_ui::localization::format(
+                "**Model:** {0}",
+                &[(model).to_string()],
+            ));
         }
         let confidence = token_counting::count_tokens_with_metadata("", model).confidence;
-        lines.push(format!(
-            "**Token count:** {}",
-            match confidence {
+        lines.push(maestro_ui::localization::format(
+            "**Token count:** {0}",
+            &[(match confidence {
                 CountConfidence::Measured => "measured with the model tokenizer",
                 CountConfidence::Estimated => "estimated (model tokenizer unavailable)",
-            }
+            })
+            .to_string()],
         ));
         lines.push(
-            "**Prompt cache:** reuse requires the same model, system prompt, thinking level, and skills; provider caches may expire after long idle periods."
+            maestro_ui::localization::tr("**Prompt cache:** reuse requires the same model, system prompt, thinking level, and skills; provider caches may expire after long idle periods.")
                 .to_string(),
         );
         match context_window {
-            Some(window) => lines.push(format!("**Context window:** {}", format_tokens(window))),
-            None => lines.push("**Context window:** unknown".to_string()),
+            Some(window) => lines.push(maestro_ui::localization::format(
+                "**Context window:** {0}",
+                &[(format_tokens(window)).clone()],
+            )),
+            None => {
+                lines.push(maestro_ui::localization::tr("**Context window:** unknown").to_string());
+            }
         }
         lines.push(String::new());
 

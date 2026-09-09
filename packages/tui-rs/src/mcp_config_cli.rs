@@ -35,13 +35,22 @@ async fn apply_mcp_config_async_with_output(args: &[String], announce_url: bool)
     let config = crate::mcp::load_mcp_config_with_managed_connections(Some(&cwd));
     let server = config
         .get_server(name)
-        .with_context(|| format!("MCP server {name} is not configured"))?
+        .with_context(|| {
+            crate::localization::cli_locale()
+                .format("MCP server {0} is not configured", &[name.to_string()])
+        })?
         .clone();
     if matches!(
         server.scope,
         crate::mcp::McpConfigScope::Managed | crate::mcp::McpConfigScope::Enterprise
     ) {
-        bail!("managed and enterprise MCP authentication is controlled by its policy owner");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "managed and enterprise MCP authentication is controlled by its policy owner",
+                &[]
+            )
+        );
     }
     let scopes = option_values(args, "--oauth-scope");
     if announce_url {
@@ -51,8 +60,9 @@ async fn apply_mcp_config_async_with_output(args: &[String], announce_url: bool)
     }
     let path = path_for_scope(server.scope, &cwd)?;
     set_server_field(&path, name, "authPreset", json!("oauth"))?;
-    Ok(format!(
-        "Authenticated MCP server {name}; token stored in the OS credential store."
+    Ok(crate::localization::cli_locale().format(
+        "Authenticated MCP server {0}; token stored in the OS credential store.",
+        &[name.to_string()],
     ))
 }
 
@@ -65,14 +75,20 @@ async fn print_runtime_status(args: &[String]) -> Result<()> {
         return Ok(());
     }
     if statuses.is_empty() {
-        println!("No MCP servers configured.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No MCP servers configured.", &[])
+        );
         return Ok(());
     }
     let tool_filter = (args.first().map(String::as_str) == Some("tools"))
         .then(|| args.get(1).map(String::as_str))
         .flatten();
     if args.first().map(String::as_str) != Some("tools") {
-        println!("Configured MCP servers:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Configured MCP servers:", &[])
+        );
     }
     for status in statuses {
         if tool_filter.is_some_and(|name| name != status.name) {
@@ -84,10 +100,17 @@ async fn print_runtime_status(args: &[String]) -> Result<()> {
                 println!("  {tool}");
             }
             for tool in &status.disabled_tools {
-                println!("  {tool}  disabled");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("  {0}  disabled", std::slice::from_ref(tool))
+                );
             }
             if status.tools.is_empty() && status.disabled_tools.is_empty() {
-                println!("  No tools available.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format("  No tools available.", &[])
+                );
             }
         } else {
             println!(
@@ -121,9 +144,7 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             let (path, scope) = target_path(args, &cwd)?;
             let (command_args, env) = stdio_options(&args[3..])?;
             if scope != "user" && !env.is_empty() {
-                bail!(
-                    "environment bindings are user-scope only; project configs cannot read secrets"
-                );
+                bail!("{}", crate::localization::cli_locale().format("environment bindings are user-scope only; project configs cannot read secrets", &[]));
             }
             reject_literal_secrets(&command_args)?;
             mutate_server(
@@ -131,9 +152,9 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
                 name,
                 Some(json!({"command": executable, "args": command_args, "env":env})),
             )?;
-            Ok(format!(
-                "Configured stdio MCP server {name} in {}",
-                path.display()
+            Ok(crate::localization::cli_locale().format(
+                "Configured stdio MCP server {0} in {1}",
+                &[name.to_string(), path.display().to_string()],
             ))
         }
         "add-http" => {
@@ -144,7 +165,11 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             if args.iter().any(|value| value == "--bearer-token-env")
                 && option_value(args, "--bearer-token-env").is_none()
             {
-                bail!("--bearer-token-env requires a variable");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("--bearer-token-env requires a variable", &[])
+                );
             }
             if let Some(variable) = option_value(args, "--bearer-token-env") {
                 validate_env_name(variable)?;
@@ -152,35 +177,35 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             }
             let (path, scope) = target_path(args, &cwd)?;
             if scope != "user" && server.get("headers").is_some() {
-                bail!(
-                    "bearer-token bindings are user-scope only; project configs cannot read secrets"
-                );
+                bail!("{}", crate::localization::cli_locale().format("bearer-token bindings are user-scope only; project configs cannot read secrets", &[]));
             }
             mutate_server(&path, name, Some(server))?;
-            Ok(format!(
-                "Configured HTTP MCP server {name} in {}",
-                path.display()
+            Ok(crate::localization::cli_locale().format(
+                "Configured HTTP MCP server {0} in {1}",
+                &[name.to_string(), path.display().to_string()],
             ))
         }
         "remove" => {
             let name = required(args, 1, "server name")?;
             let (path, _) = target_path(args, &cwd)?;
             mutate_server(&path, name, None)?;
-            Ok(format!("Removed MCP server {name} from {}", path.display()))
+            Ok(crate::localization::cli_locale().format(
+                "Removed MCP server {0} from {1}",
+                &[name.to_string(), path.display().to_string()],
+            ))
         }
         "enable" | "disable" => {
             let name = required(args, 1, "server name")?;
             let (path, _) = target_path(args, &cwd)?;
             set_server_field(&path, name, "enabled", json!(command == "enable"))?;
             set_server_field(&path, name, "disabled", json!(command == "disable"))?;
-            Ok(format!(
-                "{} MCP server {name} in {}",
+            Ok(crate::localization::cli_locale().format(
                 if command == "enable" {
-                    "Enabled"
+                    "Enabled MCP server {0} in {1}"
                 } else {
-                    "Disabled"
+                    "Disabled MCP server {0} in {1}"
                 },
-                path.display()
+                &[name.to_string(), path.display().to_string()],
             ))
         }
         "tool" => {
@@ -190,13 +215,20 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             let enabled = match setting {
                 "on" | "enable" | "enabled" => true,
                 "off" | "disable" | "disabled" => false,
-                _ => bail!("tool state must be on or off"),
+                _ => bail!(
+                    "{}",
+                    crate::localization::cli_locale().format("tool state must be on or off", &[])
+                ),
             };
             let (path, _) = target_path(args, &cwd)?;
             set_tool_enabled(&path, name, tool, enabled)?;
-            Ok(format!(
-                "{} tool {tool} on MCP server {name}",
-                if enabled { "Enabled" } else { "Disabled" }
+            Ok(crate::localization::cli_locale().format(
+                if enabled {
+                    "Enabled tool {0} on MCP server {1}"
+                } else {
+                    "Disabled tool {0} on MCP server {1}"
+                },
+                &[tool.to_string(), name.to_string()],
             ))
         }
         "permissions" => permissions_command(&args[1..]),
@@ -205,13 +237,23 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             let name = required(args, 1, "server name")?;
             let removed = crate::mcp::clear_oauth(name)?;
             Ok(if removed {
-                format!("Cleared OAuth credentials for MCP server {name}")
+                crate::localization::cli_locale().format(
+                    "Cleared OAuth credentials for MCP server {0}",
+                    &[name.to_string()],
+                )
             } else {
-                format!("No OAuth credentials stored for MCP server {name}")
+                crate::localization::cli_locale().format(
+                    "No OAuth credentials stored for MCP server {0}",
+                    &[name.to_string()],
+                )
             })
         }
         "help" | "--help" | "-h" => Ok(help_text().to_string()),
-        other => bail!("unknown mcp command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("unknown mcp command: {0}", &[(other).to_string()])
+        ),
     }
 }
 
@@ -346,7 +388,13 @@ fn registry_command(args: &[String], cwd: &Path) -> Result<String> {
     match args.first().map(String::as_str).unwrap_or("list") {
         "list" => Ok(catalog_entries()
             .iter()
-            .map(|entry| format!("{:<14} {}", entry.id, entry.description))
+            .map(|entry| {
+                format!(
+                    "{:<14} {}",
+                    entry.id,
+                    crate::localization::cli_locale().translate(entry.description)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")),
         "add" => {
@@ -354,16 +402,22 @@ fn registry_command(args: &[String], cwd: &Path) -> Result<String> {
             let entry = catalog_entries()
                 .iter()
                 .find(|entry| entry.id == id)
-                .with_context(|| format!("unknown MCP catalog entry: {id}"))?;
+                .with_context(|| {
+                    crate::localization::cli_locale()
+                        .format("unknown MCP catalog entry: {0}", &[id.to_string()])
+                })?;
             let (path, _) = target_path(args, cwd)?;
             insert_catalog_entry(&path, entry)?;
-            Ok(format!(
-                "Added {} from the MCP registry in {}",
-                entry.id,
-                path.display()
+            Ok(crate::localization::cli_locale().format(
+                "Added {0} from the MCP registry in {1}",
+                &[entry.id.to_string(), path.display().to_string()],
             ))
         }
-        other => bail!("unknown MCP registry command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("unknown MCP registry command: {0}", &[(other).to_string()])
+        ),
     }
 }
 
@@ -379,7 +433,9 @@ fn permissions_command(args: &[String]) -> Result<String> {
                 return Ok(serde_json::to_string_pretty(&grants)?);
             }
             if grants.is_empty() {
-                return Ok("No persistent MCP permissions.".to_string());
+                return Ok(
+                    crate::localization::cli_locale().format("No persistent MCP permissions.", &[])
+                );
             }
             Ok(grants
                 .into_iter()
@@ -399,27 +455,45 @@ fn permissions_command(args: &[String]) -> Result<String> {
             let server = required(args, 1, "server name")?;
             if let Some(tool) = args.get(2) {
                 if crate::mcp::revoke_permission(server, tool)? {
-                    Ok(format!("Revoked MCP permission for {server} {tool}"))
+                    Ok(crate::localization::cli_locale().format(
+                        "Revoked MCP permission for {0} {1}",
+                        &[server.to_string(), tool.clone()],
+                    ))
                 } else {
-                    Ok(format!(
-                        "No persistent MCP permission matched {server} {tool}"
+                    Ok(crate::localization::cli_locale().format(
+                        "No persistent MCP permission matched {0} {1}",
+                        &[server.to_string(), tool.clone()],
                     ))
                 }
             } else {
                 let count = crate::mcp::revoke_server_permissions(server)?;
-                Ok(format!(
-                    "Revoked {count} persistent MCP permission(s) for {server}"
+                Ok(crate::localization::cli_locale().format(
+                    "Persistent MCP permissions revoked for {0}: {1}",
+                    &[server.to_string(), count.to_string()],
                 ))
             }
         }
         "clear" => {
             if !args.iter().any(|arg| arg == "--confirm") {
-                bail!("clearing all MCP permissions requires --confirm");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("clearing all MCP permissions requires --confirm", &[])
+                );
             }
             let count = crate::mcp::clear_permissions()?;
-            Ok(format!("Cleared {count} persistent MCP permission(s)"))
+            Ok(crate::localization::cli_locale().format(
+                "Persistent MCP permissions cleared: {0}",
+                &[count.to_string()],
+            ))
         }
-        other => bail!("unknown MCP permissions command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unknown MCP permissions command: {0}",
+                &[(other).to_string()]
+            )
+        ),
     }
 }
 
@@ -438,9 +512,7 @@ fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
             let (path, scope) = target_path(args, cwd)?;
             let (command_args, env) = stdio_options(&args[3..])?;
             if scope != "user" && !env.is_empty() {
-                bail!(
-                    "environment bindings are user-scope only; project configs cannot read secrets"
-                );
+                bail!("{}", crate::localization::cli_locale().format("environment bindings are user-scope only; project configs cannot read secrets", &[]));
             }
             reject_literal_secrets(&command_args)?;
             mutate_server(
@@ -450,9 +522,9 @@ fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
                     json!({"transport":"stdio", "command":target, "args":command_args, "env":env}),
                 ),
             )?;
-            Ok(format!(
-                "Configured stdio MCP server {name} in {}",
-                path.display()
+            Ok(crate::localization::cli_locale().format(
+                "Configured stdio MCP server {0} in {1}",
+                &[name.to_string(), path.display().to_string()],
             ))
         }
         "http" | "sse" => {
@@ -463,9 +535,7 @@ fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
             if let Some(variable) = option_value(args, "--bearer-token-env") {
                 validate_env_name(variable)?;
                 if scope != "user" {
-                    bail!(
-                        "bearer-token bindings are user-scope only; project configs cannot read secrets"
-                    );
+                    bail!("{}", crate::localization::cli_locale().format("bearer-token bindings are user-scope only; project configs cannot read secrets", &[]));
                 }
                 headers.insert(
                     "Authorization".to_string(),
@@ -477,9 +547,7 @@ fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
                     is_secret_key(name) || value.as_str().is_some_and(|value| value.contains("${"))
                 })
             {
-                bail!(
-                    "secret or environment-backed headers are user-scope only; project configs cannot read secrets"
-                );
+                bail!("{}", crate::localization::cli_locale().format("secret or environment-backed headers are user-scope only; project configs cannot read secrets", &[]));
             }
             if !headers.is_empty() {
                 server["headers"] = Value::Object(headers);
@@ -488,12 +556,20 @@ fn add_unified(args: &[String], cwd: &Path) -> Result<String> {
                 server["authPreset"] = json!("none");
             }
             mutate_server(&path, name, Some(server))?;
-            Ok(format!(
-                "Configured {transport} MCP server {name} in {}",
-                path.display()
+            Ok(crate::localization::cli_locale().format(
+                "Configured {0} MCP server {1} in {2}",
+                &[
+                    transport.to_string(),
+                    name.to_string(),
+                    path.display().to_string(),
+                ],
             ))
         }
-        other => bail!("unknown MCP transport: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("unknown MCP transport: {0}", &[(other).to_string()])
+        ),
     }
 }
 
@@ -536,7 +612,10 @@ fn option_values(args: &[String], key: &str) -> Vec<String> {
 fn target_path(args: &[String], cwd: &Path) -> Result<(PathBuf, &'static str)> {
     let args = args.split(|value| value == "--").next().unwrap_or(args);
     if args.iter().any(|value| value == "--scope") && option_value(args, "--scope").is_none() {
-        bail!("--scope requires a value");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("--scope requires a value", &[])
+        );
     }
     match option_value(args, "--scope").unwrap_or("user") {
         "user" => {
@@ -546,7 +625,11 @@ fn target_path(args: &[String], cwd: &Path) -> Result<(PathBuf, &'static str)> {
         }
         "project" => Ok((cwd.join(".maestro").join("mcp.json"), "project")),
         "local" => Ok((cwd.join(".maestro").join("mcp.local.json"), "local")),
-        other => bail!("unknown MCP config scope: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("unknown MCP config scope: {0}", &[(other).to_string()])
+        ),
     }
 }
 
@@ -557,7 +640,10 @@ fn path_for_scope(scope: crate::mcp::McpConfigScope, cwd: &Path) -> Result<PathB
         crate::mcp::McpConfigScope::Project => Ok(cwd.join(".maestro").join("mcp.json")),
         crate::mcp::McpConfigScope::Local => Ok(cwd.join(".maestro").join("mcp.local.json")),
         crate::mcp::McpConfigScope::Managed | crate::mcp::McpConfigScope::Enterprise => {
-            bail!("this MCP scope is read-only")
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format("this MCP scope is read-only", &[])
+            )
         }
     }
 }
@@ -568,7 +654,11 @@ fn validate_env_name(value: &str) -> Result<()> {
             .chars()
             .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
     {
-        bail!("environment variable names must use A-Z, 0-9, and _");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("environment variable names must use A-Z, 0-9, and _", &[])
+        );
     }
     Ok(())
 }
@@ -577,13 +667,29 @@ fn validate_http_url(value: &str) -> Result<()> {
     let url = url::Url::parse(value).context("invalid HTTP MCP URL")?;
     let localhost = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
     if url.scheme() != "https" && !(url.scheme() == "http" && localhost) {
-        bail!("HTTP MCP URLs must use HTTPS (loopback HTTP is allowed)");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "HTTP MCP URLs must use HTTPS (loopback HTTP is allowed)",
+                &[]
+            )
+        );
     }
     if !url.username().is_empty() || url.password().is_some() {
-        bail!("credentials may not be embedded in MCP URLs");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("credentials may not be embedded in MCP URLs", &[])
+        );
     }
     if url.query_pairs().any(|(key, _)| is_secret_key(&key)) {
-        bail!("credential query parameters are not allowed; use --bearer-token-env");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "credential query parameters are not allowed; use --bearer-token-env",
+                &[]
+            )
+        );
     }
     Ok(())
 }
@@ -603,7 +709,13 @@ fn http_headers(args: &[String]) -> Result<Map<String, Value>> {
         if is_secret_key(name)
             && authorization_header_has_literal_credential(&format!("{name}: {value}"))
         {
-            bail!("literal header secrets are not allowed; use an environment reference");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "literal header secrets are not allowed; use an environment reference",
+                    &[]
+                )
+            );
         }
         headers.insert(name.to_string(), Value::String(value.to_string()));
     }
@@ -625,7 +737,10 @@ fn stdio_options(args: &[String]) -> Result<(Vec<String>, Map<String, Value>)> {
                     .get(index + 1)
                     .is_none_or(|value| value.starts_with('-'))
                 {
-                    bail!("--scope requires a value");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale().format("--scope requires a value", &[])
+                    );
                 }
                 index += 2;
             }
@@ -675,10 +790,18 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
     let mut secret_value_follows = false;
     for argument in args {
         if authorization_header_has_literal_credential(argument) {
-            bail!("literal secrets are not allowed; use --env VAR");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("literal secrets are not allowed; use --env VAR", &[])
+            );
         }
         if secret_value_follows && !is_plain_env_reference(argument) {
-            bail!("literal secrets are not allowed; use --env VAR");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("literal secrets are not allowed; use --env VAR", &[])
+            );
         }
         if let Some(inline_value) = credential_flag(argument) {
             secret_value_follows = !inline_value;
@@ -687,7 +810,11 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
                     .split_once('=')
                     .is_some_and(|(_, value)| is_plain_env_reference(value))
             {
-                bail!("literal secrets are not allowed; use --env VAR");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("literal secrets are not allowed; use --env VAR", &[])
+                );
             }
         } else {
             secret_value_follows = false;
@@ -799,7 +926,11 @@ fn mutate_server_with_replace(
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
     {
-        bail!("server names must be alphanumeric with - or _");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("server names must be alphanumeric with - or _", &[])
+        );
     }
     let mut root = match fs::read_to_string(path) {
         Ok(text) => serde_json::from_str::<Value>(&text)
@@ -818,7 +949,13 @@ fn mutate_server_with_replace(
     match value {
         Some(value) => {
             if !replace && servers.contains_key(name) {
-                bail!("MCP server {name} already exists; its configuration was kept");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "MCP server {0} already exists; its configuration was kept",
+                        &[(name).to_string()]
+                    )
+                );
             }
             servers.insert(name.to_string(), value);
         }

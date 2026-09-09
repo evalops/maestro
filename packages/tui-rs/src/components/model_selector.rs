@@ -208,7 +208,10 @@ fn uncatalogued_model(route: &str) -> Option<ModelInfo> {
         id: model_id.to_owned(),
         name: model_id.to_owned(),
         provider: descriptor.id.to_owned(),
-        description: format!("Active route {route}; capabilities are not in the catalog"),
+        description: maestro_ui::localization::format(
+            "Active route {0}; capabilities are not in the catalog",
+            &[(route).to_string()],
+        ),
         capabilities: crate::model_catalog::ModelCapabilities {
             protocol,
             tools: false,
@@ -221,7 +224,9 @@ fn uncatalogued_model(route: &str) -> Option<ModelInfo> {
         verification: ModelVerification {
             state: crate::model_catalog::VerificationState::Unknown,
             source: ACTIVE_ROUTE_SOURCE.to_owned(),
-            detail: Some("Capabilities are not in the catalog".to_owned()),
+            detail: Some(
+                maestro_ui::localization::tr("Capabilities are not in the catalog").to_owned(),
+            ),
         },
     })
 }
@@ -390,7 +395,9 @@ impl ModelSelector {
             if !active_is_still_discovered {
                 active_model.verification.state =
                     crate::model_catalog::VerificationState::Unavailable;
-                let unavailable_detail = "Not reported by the local runtime on the latest refresh";
+                let unavailable_detail = maestro_ui::localization::tr(
+                    "Not reported by the local runtime on the latest refresh",
+                );
                 match active_model.verification.detail.as_mut() {
                     Some(detail) if !detail.contains(unavailable_detail) => {
                         detail.push_str("; ");
@@ -617,9 +624,11 @@ impl ModelSelector {
         }
         self.picker.set_status(PickerStatus::Ready);
         if let Err(error) = self.picker.replace_items(rows) {
-            self.picker.set_status(PickerStatus::Error(format!(
-                "Could not update models: {error}"
-            )));
+            self.picker
+                .set_status(PickerStatus::Error(maestro_ui::localization::format(
+                    "Could not update models: {0}",
+                    &[(error).to_string()],
+                )));
         }
     }
 
@@ -726,9 +735,12 @@ impl ModelSelector {
         }
 
         let theme = crate::themes::current_ui_theme();
-        let inner = Modal::sized("Select Model", ModalSize::Standard)
-            .theme(theme)
-            .render(frame, area);
+        let inner = Modal::sized(
+            maestro_ui::localization::tr("Select Model"),
+            ModalSize::Standard,
+        )
+        .theme(theme)
+        .render(frame, area);
 
         // Model list
         let canonical_current = self
@@ -742,11 +754,11 @@ impl ModelSelector {
             inner,
             theme,
             PickerOptions {
-                placeholder: "Type to filter models...",
-                empty: "No matching models",
+                placeholder: maestro_ui::localization::tr("Type to filter models..."),
+                empty: maestro_ui::localization::tr("No matching models"),
                 hints: Some(&[
-                    KeyHint::new("Enter", "select"),
-                    KeyHint::new("Esc", "cancel"),
+                    KeyHint::new("Enter", maestro_ui::localization::tr("select")),
+                    KeyHint::new("Esc", maestro_ui::localization::tr("cancel")),
                     KeyHint::new("Tab", "all"),
                     KeyHint::new("Ctrl+D", "default"),
                 ]),
@@ -755,7 +767,10 @@ impl ModelSelector {
             |row| {
                 let Some(index) = row.model_index else {
                     return ListItem::new(Line::from(Span::styled(
-                        format!("… show all {} models (Tab)", models.len()),
+                        maestro_ui::localization::format(
+                            "… show all {0} models (Tab)",
+                            &[(models.len()).to_string()],
+                        ),
                         Style::default().fg(theme.focus),
                     )));
                 };
@@ -798,11 +813,11 @@ impl ModelSelector {
 /// otherwise.
 fn format_context_window(context_tokens: u32) -> String {
     if context_tokens == 0 {
-        "unknown ctx".to_owned()
+        maestro_ui::localization::tr("unknown ctx").to_owned()
     } else if context_tokens >= 1_000_000 && context_tokens.is_multiple_of(1_000_000) {
-        format!("{}M ctx", context_tokens / 1_000_000)
+        maestro_ui::localization::format("{0}M ctx", &[(context_tokens / 1_000_000).to_string()])
     } else {
-        format!("{}k ctx", context_tokens / 1000)
+        maestro_ui::localization::format("{0}k ctx", &[(context_tokens / 1000).to_string()])
     }
 }
 
@@ -815,7 +830,7 @@ fn model_status_summary(model: &ModelInfo) -> &'static str {
         (ACTIVE_ROUTE_SOURCE, VerificationState::Unknown) => "Active · uncataloged",
         (_, VerificationState::Unavailable) => "Catalog · unavailable",
         // Provider authentication alone does not prove model availability.
-        _ => "Catalog · availability unchecked",
+        _ => maestro_ui::localization::tr("Catalog · availability unchecked"),
     }
 }
 
@@ -826,14 +841,16 @@ fn capability_summary(model: &ModelInfo) -> String {
         .as_deref()
         .is_some_and(|detail| detail.contains("not in the catalog"));
     if unknown {
-        return "Capabilities: unknown (not in catalog)".to_owned();
+        return maestro_ui::localization::tr("Capabilities: unknown (not in catalog)").to_owned();
     }
     let supported = |value| if value { "yes" } else { "no" };
-    format!(
-        "Tools: {} · Images: {} · Reasoning: {}",
-        supported(model.capabilities.tools),
-        supported(model.capabilities.vision),
-        supported(model.capabilities.reasoning),
+    maestro_ui::localization::format(
+        "Tools: {0} · Images: {1} · Reasoning: {2}",
+        &[
+            (supported(model.capabilities.tools)).to_string(),
+            (supported(model.capabilities.vision)).to_string(),
+            (supported(model.capabilities.reasoning)).to_string(),
+        ],
     )
 }
 

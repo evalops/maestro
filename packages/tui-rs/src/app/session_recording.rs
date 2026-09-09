@@ -76,8 +76,12 @@ impl App {
 
     pub(super) fn ensure_session_started(&mut self) -> Result<()> {
         if self.session_resume_failed {
-            self.state.error =
-                Some("Session resume failed; use /new to start a new session.".to_string());
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .translate("Session resume failed; use /new to start a new session.")
+                    .to_string(),
+            );
             bail!("Session resume failed");
         }
 
@@ -95,7 +99,7 @@ impl App {
             self.state
                 .model
                 .clone()
-                .unwrap_or_else(|| "unknown".to_string())
+                .unwrap_or_else(|| self.state.locale.translate("unknown").to_string())
         };
         if self.current_model.is_empty() {
             self.current_model = model.clone();
@@ -137,7 +141,7 @@ impl App {
 
         if let Err(error) = self.session_manager.start_session(header) {
             self.state.error = Some(super::format_session_persistence_error(
-                "start the session",
+                self.state.locale.translate("start the session"),
                 &error,
             ));
             return Err(anyhow::Error::new(error).context("Failed to start session"));
@@ -215,7 +219,7 @@ impl App {
         };
         if let Some(err) = error {
             self.state.error = Some(super::format_session_persistence_error(
-                "persist session data",
+                self.state.locale.translate("persist session data"),
                 err,
             ));
             return false;
@@ -226,7 +230,7 @@ impl App {
     pub(super) fn flush_session(&mut self) -> bool {
         if let Err(err) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(
-                "flush the session transcript",
+                self.state.locale.translate("flush the session transcript"),
                 err,
             ));
             return false;
@@ -253,7 +257,11 @@ impl App {
         }
         let Some(session_path) = self.session_manager.current_session_path() else {
             self.state.error = Some(
-                "Failed to persist subagent lifecycle application: no active session path"
+                self.state
+                    .locale
+                    .translate(
+                        "Failed to persist subagent lifecycle application: no active session path",
+                    )
                     .to_string(),
             );
             return None;
@@ -262,7 +270,9 @@ impl App {
             Ok(found) => Some(found),
             Err(error) => {
                 self.state.error = Some(super::format_session_persistence_error(
-                    "check subagent lifecycle application",
+                    self.state
+                        .locale
+                        .translate("check subagent lifecycle application"),
                     error,
                 ));
                 None
@@ -306,14 +316,18 @@ impl App {
             .and_then(|writer| writer.write_entry(entry).err());
         if let Some(error) = write_error {
             self.state.error = Some(super::format_session_persistence_error(
-                "persist subagent lifecycle application",
+                self.state
+                    .locale
+                    .translate("persist subagent lifecycle application"),
                 error,
             ));
             return false;
         }
         if let Err(error) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(
-                "flush subagent lifecycle application",
+                self.state
+                    .locale
+                    .translate("flush subagent lifecycle application"),
                 error,
             ));
             return false;
@@ -340,7 +354,7 @@ impl App {
         });
         let Some(writer) = self.session_manager.writer() else {
             self.state.error = Some(
-                "Failed to persist subagent lifecycle agent-note delivery: no active session writer"
+                self.state.locale.translate("Failed to persist subagent lifecycle agent-note delivery: no active session writer")
                     .to_string(),
             );
             return false;
@@ -348,14 +362,18 @@ impl App {
         let write_error = writer.write_entry(entry).err();
         if let Some(error) = write_error {
             self.state.error = Some(super::format_session_persistence_error(
-                "persist subagent lifecycle agent-note delivery",
+                self.state
+                    .locale
+                    .translate("persist subagent lifecycle agent-note delivery"),
                 error,
             ));
             return false;
         }
         if let Err(error) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(
-                "flush subagent lifecycle agent-note delivery",
+                self.state
+                    .locale
+                    .translate("flush subagent lifecycle agent-note delivery"),
                 error,
             ));
             return false;
@@ -382,7 +400,7 @@ impl App {
         });
         let Some(writer) = self.session_manager.writer() else {
             self.state.error = Some(
-                "Failed to persist subagent lifecycle agent-note consumption: no active session writer"
+                self.state.locale.translate("Failed to persist subagent lifecycle agent-note consumption: no active session writer")
                     .to_string(),
             );
             return false;
@@ -390,14 +408,18 @@ impl App {
         let write_error = writer.write_entry(entry).err();
         if let Some(error) = write_error {
             self.state.error = Some(super::format_session_persistence_error(
-                "persist subagent lifecycle agent-note consumption",
+                self.state
+                    .locale
+                    .translate("persist subagent lifecycle agent-note consumption"),
                 error,
             ));
             return false;
         }
         if let Err(error) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(
-                "flush subagent lifecycle agent-note consumption",
+                self.state
+                    .locale
+                    .translate("flush subagent lifecycle agent-note consumption"),
                 error,
             ));
             return false;

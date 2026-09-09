@@ -93,7 +93,11 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
                             .parse::<usize>()
                             .context("--limit must be an integer from 1 to 100")?;
                         if !(1..=100).contains(&limit) {
-                            bail!("--limit must be an integer from 1 to 100");
+                            bail!(
+                                "{}",
+                                crate::localization::cli_locale()
+                                    .format("--limit must be an integer from 1 to 100", &[])
+                            );
                         }
                         parsed.limit = Some(limit);
                     }
@@ -101,7 +105,11 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
                     "--description" => parsed.description = Some(value.clone()),
                     "--scope" => {
                         if !matches!(value.as_str(), "local" | "project" | "user") {
-                            bail!("--scope must be local, project, or user");
+                            bail!(
+                                "{}",
+                                crate::localization::cli_locale()
+                                    .format("--scope must be local, project, or user", &[])
+                            );
                         }
                         parsed.scope = Some(value.clone());
                     }
@@ -110,7 +118,13 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
                 }
                 index += 1;
             }
-            value if value.starts_with('-') => bail!("Unknown deixic-code skill option: {value}"),
+            value if value.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown deixic-code skill option: {0}",
+                    &[(value).to_string()]
+                )
+            ),
             value if parsed.command.is_none() => parsed.command = Some(value.to_owned()),
             value => parsed.positionals.push(value.to_owned()),
         }
@@ -120,9 +134,7 @@ fn parse_args(args: &[String]) -> Result<SkillArgs> {
 }
 
 fn print_help() {
-    println!(
-        "deixic-code skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  search <query>               Find skills without loading their instructions\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --limit <1..100>             Maximum search matches (default: 8)\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help"
-    );
+    println!("{}", crate::localization::cli_locale().format("deixic-code skill <command> [options]\n\nCommands:\n  list                         List available system, user, and project skills\n  search <query>               Find skills without loading their instructions\n  inspect <name>               Print one skill package manifest\n  install <source>             Validate and install an OSS skill package\n  publish-check <source>       Validate an OSS skill package before publishing\n  lint [path...]               Validate skill packages\n  eval [path...]               Score skill packages against Agent Core constraints\n  new <name>                   Scaffold a skill package\n\nOptions:\n  --limit <1..100>             Maximum search matches (default: 8)\n  --json                       Emit machine-readable JSON\n  --scope <local|project|user> Install scope for 'install' (default: local)\n  --dir <path>                 Base directory for 'new' (default: .maestro/skills)\n  --description <text>         Description for 'new'\n  --force                      Allow 'new' to overwrite an existing directory\n  --describe-toolbox           Eval/publish-check run describe; lint ignores it\n  --help, -h                   Show this help", &[]));
 }
 
 fn skill_load_issue(error: &SkillLoadError) -> SkillLoadIssue {
@@ -581,7 +593,10 @@ fn list_skills(json: bool) -> Result<i32> {
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else if skills.is_empty() {
-        println!("No skills found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No skills found.", &[])
+        );
     } else {
         for skill in &skills {
             println!(
@@ -590,7 +605,13 @@ fn list_skills(json: bool) -> Result<i32> {
             );
         }
         if !errors.is_empty() {
-            eprintln!("\n{} skill load warning(s).", errors.len());
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "\n{0} skill load warning(s).",
+                    &[(errors.len()).to_string()]
+                )
+            );
         }
     }
     Ok(0)
@@ -606,7 +627,11 @@ fn skill_search_payload(
     let query = query.trim().to_lowercase();
     let terms = query.split_whitespace().collect::<Vec<_>>();
     if terms.is_empty() {
-        bail!("deixic-code skill search requires a non-empty query");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("deixic-code skill search requires a non-empty query", &[])
+        );
     }
     let mut matches = skills
         .iter()
@@ -656,9 +681,19 @@ fn search_skills(query: &str, limit: usize, json: bool) -> Result<i32> {
                 skill["path"].as_str().unwrap_or_default()
             );
         }
-        println!("{} matching skill(s).", payload["totalMatches"]);
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} matching skill(s).",
+                &[(payload["totalMatches"]).to_string()]
+            )
+        );
         if !errors.is_empty() {
-            eprintln!("{} skill load warning(s).", errors.len());
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} skill load warning(s).", &[(errors.len()).to_string()])
+            );
         }
     }
     Ok(0)
@@ -1303,7 +1338,13 @@ fn scaffold(name: Option<&str>, args: &SkillArgs) -> Result<i32> {
                     .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
         });
     if !valid {
-        bail!("Skill name must use lowercase letters, numbers, and single hyphens.");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Skill name must use lowercase letters, numbers, and single hyphens.",
+                &[]
+            )
+        );
     }
     let cwd = env::current_dir()?;
     let base = args
@@ -1317,7 +1358,13 @@ fn scaffold(name: Option<&str>, args: &SkillArgs) -> Result<i32> {
     };
     let directory = base.join(name);
     if directory.exists() && !args.force {
-        bail!("Skill already exists at {}", directory.display());
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Skill already exists at {0}",
+                &[(directory.display()).to_string()]
+            )
+        );
     }
     let description = args.description.clone().unwrap_or_else(|| {
         format!(
@@ -1370,7 +1417,10 @@ fn scaffold(name: Option<&str>, args: &SkillArgs) -> Result<i32> {
             }))?
         );
     } else {
-        println!("Created skill {name}");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Created skill {0}", &[(name).to_string()])
+        );
         println!("{}", directory.display());
         for file in file_names {
             println!("  {file}");
@@ -1410,7 +1460,13 @@ pub async fn run_skill(args: &[String]) -> Result<i32> {
             parsed.json,
             parsed.describe_toolbox,
         ),
-        other => bail!("Unknown deixic-code skill command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Unknown deixic-code skill command: {0}",
+                &[(other).to_string()]
+            )
+        ),
     }
 }
 

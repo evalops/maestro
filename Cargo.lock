@@ -3719,6 +3719,7 @@ name = "maestro-scenario"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "dunce",
  "serde",
  "serde_json",

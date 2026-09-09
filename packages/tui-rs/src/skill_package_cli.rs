@@ -81,7 +81,11 @@ fn parse_source(spec: &str, cwd: &Path) -> Result<PackageSource> {
     {
         return parse_npm(spec);
     }
-    bail!("Invalid package source format: {spec}")
+    bail!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("Invalid package source format: {0}", &[(spec).to_string()])
+    )
 }
 
 fn resolve_from(cwd: &Path, value: &str) -> PathBuf {
@@ -95,7 +99,10 @@ fn resolve_from(cwd: &Path, value: &str) -> PathBuf {
 
 fn parse_npm(value: &str) -> Result<PackageSource> {
     if value.trim().is_empty() {
-        bail!("Invalid npm package source");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("Invalid npm package source", &[])
+        );
     }
     let split = value.rfind('@').filter(|index| *index > 0);
     let (name, version) = split.map_or((value, None), |index| {
@@ -109,7 +116,10 @@ fn parse_npm(value: &str) -> Result<PackageSource> {
 
 fn parse_git(value: &str) -> Result<PackageSource> {
     if value.trim().is_empty() {
-        bail!("Invalid git package source");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("Invalid git package source", &[])
+        );
     }
     let split = value.rfind('@').filter(|index| {
         *index > 0
@@ -133,7 +143,13 @@ fn parse_git(value: &str) -> Result<PackageSource> {
                     )
             });
         if !safe {
-            bail!("Invalid git package ref in source: {value}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Invalid git package ref in source: {0}",
+                    &[(value).to_string()]
+                )
+            );
         }
     }
     Ok(PackageSource::Git {
@@ -242,7 +258,13 @@ fn clone_git_source(clone_url: &str, reference: Option<&str>, path: &Path) -> Re
         if path.exists() {
             fs::remove_dir_all(path)?;
         }
-        bail!("git clone or checkout failed for {clone_url}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "git clone or checkout failed for {0}",
+                &[(clone_url).to_string()]
+            )
+        );
     }
     Ok(())
 }
@@ -306,7 +328,11 @@ fn resolve_source(source: &PackageSource) -> Result<PathBuf> {
                 if cache.exists() {
                     fs::remove_dir_all(&cache)?;
                 }
-                bail!("npm install failed for {spec}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("npm install failed for {0}", std::slice::from_ref(&(spec)))
+                );
             }
             Ok(package)
         }
@@ -461,18 +487,37 @@ fn print_contract(contract: &serde_json::Value) {
     let version = contract["package"]["version"]
         .as_str()
         .map_or(String::new(), |version| format!("@{version}"));
-    println!("Skill package: {package}{version}");
     println!(
-        "Source: {}",
-        contract["resolvedSource"].as_str().unwrap_or("unknown")
+        "{}",
+        crate::localization::cli_locale().format(
+            "Skill package: {0}{1}",
+            &[(package).to_string(), (version).clone()]
+        )
     );
     println!(
-        "Skills: {}",
-        contract["resources"]["skills"]
-            .as_array()
-            .map_or(0, Vec::len)
+        "{}",
+        crate::localization::cli_locale().format(
+            "Source: {0}",
+            &[contract["resolvedSource"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string()]
+        )
     );
-    println!("Install:");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Skills: {0}",
+            &[(contract["resources"]["skills"]
+                .as_array()
+                .map_or(0, Vec::len))
+            .to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Install:", &[])
+    );
     println!(
         "  {}",
         contract["install"]["source"]
@@ -483,7 +528,10 @@ fn print_contract(contract: &serde_json::Value) {
         .as_array()
         .filter(|issues| !issues.is_empty())
     {
-        println!("\nIssues:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("\nIssues:", &[])
+        );
         for issue in issues {
             println!(
                 "- {}: {}",
@@ -492,7 +540,11 @@ fn print_contract(contract: &serde_json::Value) {
             );
         }
     } else {
-        println!("\nResult: publish/install contract passed.");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("\nResult: publish/install contract passed.", &[])
+        );
     }
 }
 
@@ -621,9 +673,7 @@ fn workspace_trusted(cwd: &Path) -> bool {
 
 fn ensure_workspace_trusted(cwd: &Path, scope: &str) -> Result<()> {
     if scope != "user" && !workspace_trusted(cwd) {
-        bail!(
-            "deixic-code skill install --scope {scope} requires a trusted workspace because {scope} package config is ignored until trust is granted. Use --scope user or trust this workspace in global config."
-        );
+        bail!("{}", crate::localization::cli_locale().format("deixic-code skill install --scope {0} requires a trusted workspace because {1} package config is ignored until trust is granted. Use --scope user or trust this workspace in global config.", &[(scope).to_string(), (scope).to_string()]));
     }
     Ok(())
 }
@@ -828,7 +878,13 @@ fn store_package(source_spec: &str, scope: &str) -> Result<(PathBuf, String)> {
         source => format_source(&source),
     };
     if packages.iter().any(|value| value.as_str() == Some(&stored)) {
-        bail!("Package \"{stored}\" already exists in {}.", path.display());
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Package \"{0}\" already exists in {1}.",
+                &[(stored).clone(), (path.display()).to_string()]
+            )
+        );
     }
     packages.push(toml::Value::String(stored.clone()));
     crate::skill_cli::write_atomic(&path, &toml::to_string_pretty(&value)?)?;
@@ -867,7 +923,11 @@ pub fn install(source: Option<&str>, json: bool, scope: &str) -> Result<i32> {
             );
         } else {
             print_contract(&contract);
-            eprintln!("Skill package install blocked by contract issues.");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Skill package install blocked by contract issues.", &[])
+            );
         }
         return Ok(1);
     }
@@ -883,12 +943,22 @@ pub fn install(source: Option<&str>, json: bool, scope: &str) -> Result<i32> {
         );
     } else {
         println!(
-            "Installed skill package {}",
-            contract["package"]["name"].as_str().unwrap_or(source)
+            "{}",
+            crate::localization::cli_locale().format(
+                "Installed skill package {0}",
+                &[contract["package"]["name"]
+                    .as_str()
+                    .unwrap_or(source)
+                    .to_string()]
+            )
         );
         println!("scope: {scope}");
         println!("config: {}", path.display());
-        println!("Run `deixic-code skill list` to see loaded skills.");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Run `deixic-code skill list` to see loaded skills.", &[])
+        );
     }
     Ok(0)
 }

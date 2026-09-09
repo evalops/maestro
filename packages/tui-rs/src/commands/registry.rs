@@ -76,10 +76,10 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, A2aComputerHandoffSelection, ArgumentValue, AttachAction, BackgroundMonitorAction,
     Command, CommandAction, CommandArgument, CommandCategory, CommandContext, CommandError,
-    CommandOutput, CommandResult, ControlPanel, ExportAction, FooterStyle, GoalAction,
-    HarnessAction, HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction, ModalType,
-    OrbAction, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection,
-    RlmAction, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    CommandErrorKind, CommandOutput, CommandResult, ControlPanel, ExportAction, FooterStyle,
+    GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction, MailboxAction, McpAction,
+    ModalType, OrbAction, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind,
+    QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -445,7 +445,9 @@ impl CommandRegistry {
 
         // Must start with /
         if !input.starts_with('/') {
-            return Err(CommandError::new("Commands must start with /"));
+            return Err(CommandError::new(maestro_ui::localization::tr(
+                "Commands must start with /",
+            )));
         }
 
         // Tolerate accidental double-slash from completion bugs (`//help`) or paste.
@@ -458,8 +460,14 @@ impl CommandRegistry {
 
         // Find the command
         let command = self.get(&command_name).ok_or_else(|| {
-            CommandError::new(format!("Unknown command: /{command_name}"))
-                .with_hint("Type /help to see available commands")
+            CommandError::new(maestro_ui::localization::format(
+                "Unknown command: /{0}",
+                std::slice::from_ref(&(command_name)),
+            ))
+            .with_kind(CommandErrorKind::UnknownCommand)
+            .with_hint(maestro_ui::localization::tr(
+                "Type /help to see available commands",
+            ))
         })?;
 
         if command.name == "help" && raw_args == "commands" {
@@ -494,10 +502,19 @@ impl CommandRegistry {
             .unwrap_or(query)
             .trim_start_matches('/');
         let command = self.get(name).ok_or_else(|| {
-            CommandError::new(format!("No help available for /{name}"))
-                .with_hint("Type /help to see available commands")
+            CommandError::new(maestro_ui::localization::format(
+                "No help available for /{0}",
+                &[(name).to_string()],
+            ))
+            .with_hint(maestro_ui::localization::tr(
+                "Type /help to see available commands",
+            ))
         })?;
-        let mut lines = vec![format!("/{} — {}", command.name, command.description)];
+        let mut lines = vec![format!(
+            "/{} — {}",
+            command.name,
+            command.display_description()
+        )];
         if !command.aliases.is_empty() {
             let aliases = command
                 .aliases
@@ -505,13 +522,22 @@ impl CommandRegistry {
                 .map(|alias| format!("/{alias}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            lines.push(format!("Aliases: {aliases}"));
+            lines.push(maestro_ui::localization::format(
+                "Aliases: {0}",
+                std::slice::from_ref(&(aliases)),
+            ));
         }
         if !command.usage.is_empty() {
-            lines.push(format!("Usage: {}", command.usage));
+            lines.push(maestro_ui::localization::format(
+                "Usage: {0}",
+                std::slice::from_ref(&(command.usage)),
+            ));
         }
         if !command.subcommands.is_empty() {
-            lines.push(format!("Subcommands: {}", command.subcommands.join(", ")));
+            lines.push(maestro_ui::localization::format(
+                "Subcommands: {0}",
+                &[(command.subcommands.join(", ")).clone()],
+            ));
         }
         Ok(CommandOutput::Message(lines.join("\n")))
     }
@@ -646,17 +672,22 @@ fn parse_arguments(
                 }
                 super::types::CommandArgumentType::Int => {
                     let i = value.parse::<i64>().map_err(|_| {
-                        CommandError::new(format!("Expected integer for '{}'", def.name))
+                        CommandError::new(maestro_ui::localization::format(
+                            "Expected integer for '{0}'",
+                            std::slice::from_ref(&(def.name)),
+                        ))
                     })?;
                     ArgumentValue::Int(i)
                 }
                 super::types::CommandArgumentType::Choice(choices) => {
                     if !choices.contains(&(*value).to_string()) {
-                        return Err(CommandError::new(format!(
-                            "Invalid value '{}' for '{}'. Expected one of: {}",
-                            value,
-                            def.name,
-                            choices.join(", ")
+                        return Err(CommandError::new(maestro_ui::localization::format(
+                            "Invalid value '{0}' for '{1}'. Expected one of: {2}",
+                            &[
+                                (value).to_string(),
+                                (def.name).clone(),
+                                (choices.join(", ")).clone(),
+                            ],
                         )));
                     }
                     ArgumentValue::String((*value).to_string())
@@ -668,9 +699,9 @@ fn parse_arguments(
             };
             result.insert(def.name.clone(), parsed);
         } else if def.required {
-            return Err(CommandError::new(format!(
-                "Missing required argument: {}",
-                def.name
+            return Err(CommandError::new(maestro_ui::localization::format(
+                "Missing required argument: {0}",
+                std::slice::from_ref(&(def.name)),
             )));
         }
     }
@@ -691,20 +722,42 @@ fn parse_orb_action(raw: &str) -> Result<OrbAction, CommandError> {
     match subcommand.as_str() {
         "list" | "ls" => {
             if tokens.len() > 1 {
-                return Err(CommandError::new("Usage: /computer list"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /computer list",
+                )));
             }
             Ok(OrbAction::List)
         }
-        "status" => parse_orb_id(&tokens, OrbAction::Status, "/computer status <task-id>"),
-        "pause" => parse_orb_id(&tokens, OrbAction::Pause, "/computer pause <task-id>"),
-        "resume" => parse_orb_id(&tokens, OrbAction::Resume, "/computer resume <task-id>"),
-        "cancel" => parse_orb_id(&tokens, OrbAction::Cancel, "/computer cancel <task-id>"),
-        "collect" => parse_orb_id(&tokens, OrbAction::Collect, "/computer collect <task-id>"),
+        "status" => parse_orb_id(
+            &tokens,
+            OrbAction::Status,
+            maestro_ui::localization::tr("/computer status <task-id>"),
+        ),
+        "pause" => parse_orb_id(
+            &tokens,
+            OrbAction::Pause,
+            maestro_ui::localization::tr("/computer pause <task-id>"),
+        ),
+        "resume" => parse_orb_id(
+            &tokens,
+            OrbAction::Resume,
+            maestro_ui::localization::tr("/computer resume <task-id>"),
+        ),
+        "cancel" => parse_orb_id(
+            &tokens,
+            OrbAction::Cancel,
+            maestro_ui::localization::tr("/computer cancel <task-id>"),
+        ),
+        "collect" => parse_orb_id(
+            &tokens,
+            OrbAction::Collect,
+            maestro_ui::localization::tr("/computer collect <task-id>"),
+        ),
         "followup" | "follow-up" => {
             if tokens.len() < 3 {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /computer followup <task-id> <prompt>",
-                ));
+                )));
             }
             Ok(OrbAction::Followup {
                 id: tokens[1].clone(),
@@ -712,11 +765,12 @@ fn parse_orb_action(raw: &str) -> Result<OrbAction, CommandError> {
             })
         }
         "handoff" => parse_orb_handoff_action(&tokens[1..]),
-        "help" | "?" => Err(CommandError::new(
+        "help" | "?" => Err(CommandError::new(maestro_ui::localization::tr(
             "Usage: /computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>|handoff create|list|read ...]",
-        )),
-        other => Err(CommandError::new(format!(
-            "Unknown Computer subcommand: {other}"
+        ))),
+        other => Err(CommandError::new(maestro_ui::localization::format(
+            "Unknown Computer subcommand: {0}",
+            &[(other).to_string()],
         ))),
     }
 }
@@ -727,23 +781,26 @@ fn parse_orb_id<T>(
     usage: &str,
 ) -> Result<T, CommandError> {
     if tokens.len() != 2 || tokens[1].trim().is_empty() {
-        return Err(CommandError::new(format!("Usage: {usage}")));
+        return Err(CommandError::new(maestro_ui::localization::format(
+            "Usage: {0}",
+            &[(usage).to_string()],
+        )));
     }
     Ok(constructor(tokens[1].clone()))
 }
 
 fn parse_orb_handoff_action(tokens: &[String]) -> Result<OrbAction, CommandError> {
     let Some(operation) = tokens.first().map(|value| value.to_ascii_lowercase()) else {
-        return Err(CommandError::new(
+        return Err(CommandError::new(maestro_ui::localization::tr(
             "Usage: /computer handoff create|list|read ...",
-        ));
+        )));
     };
     match operation.as_str() {
         "list" | "ls" => {
             if tokens.len() != 2 || tokens[1].trim().is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /computer handoff list <target-thread-id>",
-                ));
+                )));
             }
             Ok(OrbAction::HandoffList {
                 target_thread_id: tokens[1].clone(),
@@ -751,9 +808,9 @@ fn parse_orb_handoff_action(tokens: &[String]) -> Result<OrbAction, CommandError
         }
         "read" => {
             if tokens.len() != 3 || tokens[1].trim().is_empty() || tokens[2].trim().is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /computer handoff read <target-thread-id> <package-id>",
-                ));
+                )));
             }
             Ok(OrbAction::HandoffRead {
                 target_thread_id: tokens[1].clone(),
@@ -761,14 +818,17 @@ fn parse_orb_handoff_action(tokens: &[String]) -> Result<OrbAction, CommandError
             })
         }
         "create" | "capture" => parse_orb_handoff_create(&tokens[1..]),
-        other => Err(CommandError::new(format!(
-            "Unknown handoff subcommand: {other}"
+        other => Err(CommandError::new(maestro_ui::localization::format(
+            "Unknown handoff subcommand: {0}",
+            &[(other).to_string()],
         ))),
     }
 }
 
 fn parse_orb_handoff_create(tokens: &[String]) -> Result<OrbAction, CommandError> {
-    let usage = "Usage: /computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]";
+    let usage = maestro_ui::localization::tr(
+        "Usage: /computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]",
+    );
     if tokens.len() < 2 || tokens[0].trim().is_empty() || tokens[1].trim().is_empty() {
         return Err(CommandError::new(usage));
     }
@@ -787,7 +847,10 @@ fn parse_orb_handoff_create(tokens: &[String]) -> Result<OrbAction, CommandError
                 .get(index + 1)
                 .filter(|value| !value.trim().is_empty())
             else {
-                return Err(CommandError::new(format!("{token} requires a value")));
+                return Err(CommandError::new(maestro_ui::localization::format(
+                    "{0} requires a value",
+                    std::slice::from_ref(token),
+                )));
             };
             if token == "--file" {
                 files.push(value.clone());
@@ -797,25 +860,30 @@ fn parse_orb_handoff_create(tokens: &[String]) -> Result<OrbAction, CommandError
             index += 1;
         } else if let Some(value) = token.strip_prefix("--file=") {
             if value.trim().is_empty() {
-                return Err(CommandError::new("--file requires a value"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "--file requires a value",
+                )));
             }
             files.push(value.to_string());
         } else if let Some(value) = token.strip_prefix("--artifact=") {
             if value.trim().is_empty() {
-                return Err(CommandError::new("--artifact requires a value"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "--artifact requires a value",
+                )));
             }
             artifact_ids.push(value.to_string());
         } else {
-            return Err(CommandError::new(format!(
-                "Unknown handoff create argument '{token}'"
+            return Err(CommandError::new(maestro_ui::localization::format(
+                "Unknown handoff create argument '{0}'",
+                std::slice::from_ref(token),
             )));
         }
         index += 1;
     }
     if files.is_empty() && artifact_ids.is_empty() && !include_diff {
-        return Err(CommandError::new(
+        return Err(CommandError::new(maestro_ui::localization::tr(
             "handoff create requires --file, --artifact, or --include-diff",
-        ));
+        )));
     }
     Ok(OrbAction::HandoffCreate {
         source_id,
@@ -842,14 +910,14 @@ fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
 
     for token in tokens.iter().skip(3) {
         let Some((key, value)) = token.split_once('=') else {
-            return Err(CommandError::new(
+            return Err(CommandError::new(maestro_ui::localization::tr(
                 "Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-            ));
+            )));
         };
         if key.trim().is_empty() {
-            return Err(CommandError::new(
+            return Err(CommandError::new(maestro_ui::localization::tr(
                 "Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-            ));
+            )));
         }
         arguments.insert(key.trim().to_string(), value.to_string());
     }
@@ -911,7 +979,7 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         "accept" => {
             let code = tokens
                 .get(1)
-                .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
+                .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /a2a accept <pairing-code>")))?;
             Ok(A2aAction::Accept { code: code.clone() })
         }
         "register" | "publish" => Ok(A2aAction::Register {
@@ -923,10 +991,10 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         "delegate" => {
             let peer = tokens
                 .get(1)
-                .ok_or_else(|| CommandError::new("Usage: /a2a delegate <peer> <text>"))?;
+                .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /a2a delegate <peer> <text>")))?;
             let text = tokens.get(2..).unwrap_or(&[]).join(" ");
             if text.trim().is_empty() {
-                return Err(CommandError::new("Usage: /a2a delegate <peer> <text>"));
+                return Err(CommandError::new(maestro_ui::localization::tr("Usage: /a2a delegate <peer> <text>")));
             }
             Ok(A2aAction::Delegate {
                 peer: peer.clone(),
@@ -936,13 +1004,13 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         "reply" | "continue" => {
             let peer = tokens
                 .get(1)
-                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+                .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /a2a reply <peer> <task-id> <text>")))?;
             let task_id = tokens
                 .get(2)
-                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+                .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /a2a reply <peer> <task-id> <text>")))?;
             let text = tokens.get(3..).unwrap_or(&[]).join(" ");
             if text.trim().is_empty() {
-                return Err(CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"));
+                return Err(CommandError::new(maestro_ui::localization::tr("Usage: /a2a reply <peer> <task-id> <text>")));
             }
             Ok(A2aAction::Reply {
                 peer: peer.clone(),
@@ -953,18 +1021,18 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         "send" => {
             let peer = tokens
                 .get(1)
-                .ok_or_else(|| CommandError::new("Usage: /a2a send <peer> <text>"))?;
+                .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /a2a send <peer> <text>")))?;
             let text = tokens.get(2..).unwrap_or(&[]).join(" ");
             if text.trim().is_empty() {
-                return Err(CommandError::new("Usage: /a2a send <peer> <text>"));
+                return Err(CommandError::new(maestro_ui::localization::tr("Usage: /a2a send <peer> <text>")));
             }
             Ok(A2aAction::Send {
                 peer: peer.clone(),
                 text,
             })
         }
-        _ => Err(CommandError::new(format!("Unknown A2A subcommand: {subcommand}")).with_hint(
-            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
+        _ => Err(CommandError::new(maestro_ui::localization::format("Unknown A2A subcommand: {0}", std::slice::from_ref(&(subcommand)))).with_hint(
+            maestro_ui::localization::tr("Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
         )),
     }
 }
@@ -1004,19 +1072,29 @@ fn parse_handoff_action(raw: &str) -> Result<A2aAction, CommandError> {
             flag,
             "--peer" | "--source-task" | "--target-thread" | "--file" | "--artifact"
         ) {
-            return Err(
-                CommandError::new(format!("Unknown /handoff argument '{token}'")).with_hint(USAGE),
-            );
+            return Err(CommandError::new(maestro_ui::localization::format(
+                "Unknown /handoff argument '{0}'",
+                std::slice::from_ref(token),
+            ))
+            .with_hint(USAGE));
         }
         let value = match inline_value {
             Some(value) if !value.trim().is_empty() => value.to_string(),
-            Some(_) => return Err(CommandError::new(format!("{flag} requires a value"))),
+            Some(_) => {
+                return Err(CommandError::new(maestro_ui::localization::format(
+                    "{0} requires a value",
+                    &[(flag).to_string()],
+                )));
+            }
             None => {
                 let Some(value) = tokens
                     .get(index + 1)
                     .filter(|value| !value.trim().is_empty() && !value.starts_with("--"))
                 else {
-                    return Err(CommandError::new(format!("{flag} requires a value")));
+                    return Err(CommandError::new(maestro_ui::localization::format(
+                        "{0} requires a value",
+                        &[(flag).to_string()],
+                    )));
                 };
                 index += 1;
                 value.clone()
@@ -1048,21 +1126,21 @@ fn parse_handoff_action(raw: &str) -> Result<A2aAction, CommandError> {
         || include_diff;
     let computer_package = if has_package_argument {
         let Some(source_task_id) = source_task_id else {
-            return Err(
-                CommandError::new("Computer package handoff requires --source-task")
-                    .with_hint(USAGE),
-            );
+            return Err(CommandError::new(maestro_ui::localization::tr(
+                "Computer package handoff requires --source-task",
+            ))
+            .with_hint(USAGE));
         };
         let Some(target_thread_id) = target_thread_id else {
-            return Err(
-                CommandError::new("Computer package handoff requires --target-thread")
-                    .with_hint(USAGE),
-            );
+            return Err(CommandError::new(maestro_ui::localization::tr(
+                "Computer package handoff requires --target-thread",
+            ))
+            .with_hint(USAGE));
         };
         if files.is_empty() && artifact_ids.is_empty() && !include_diff {
-            return Err(CommandError::new(
+            return Err(CommandError::new(maestro_ui::localization::tr(
                 "Computer package handoff requires --file, --artifact, or --include-diff",
-            )
+            ))
             .with_hint(USAGE));
         }
         Some(A2aComputerHandoffSelection {
@@ -1178,7 +1256,9 @@ fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandErr
     }
     let turns = turns.unwrap_or(1);
     if turns == 0 {
-        return Err(CommandError::new("Rewind count must be >= 1"));
+        return Err(CommandError::new(maestro_ui::localization::tr(
+            "Rewind count must be >= 1",
+        )));
     }
     Ok(if both {
         SessionAction::RewindBoth { turns, dry_run }
@@ -1192,16 +1272,20 @@ fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
         .split_once('-')
         .or_else(|| raw.split_once(':'))
         .unwrap_or((raw, raw));
-    let start = start
-        .parse::<usize>()
-        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
-    let end = end
-        .parse::<usize>()
-        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
+    let start = start.parse::<usize>().map_err(|_| {
+        CommandError::new(maestro_ui::localization::tr(
+            "Plan comment range must be LINE or START-END",
+        ))
+    })?;
+    let end = end.parse::<usize>().map_err(|_| {
+        CommandError::new(maestro_ui::localization::tr(
+            "Plan comment range must be LINE or START-END",
+        ))
+    })?;
     if start == 0 || end < start {
-        return Err(CommandError::new(
+        return Err(CommandError::new(maestro_ui::localization::tr(
             "Plan comment range must be positive and ordered",
-        ));
+        )));
     }
     Ok((start, end))
 }
@@ -1255,9 +1339,13 @@ fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
 /// ```
 #[must_use]
 pub fn build_command_registry() -> CommandRegistry {
+    crate::localization::with_locale(crate::localization::Locale::English, build_builtin_registry)
+}
+
+fn build_builtin_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 
-    registry.register(Command::new("settings", "Account, permissions, connections, and appearance", CommandCategory::Config,
+    registry.register(Command::new("settings", maestro_ui::localization::tr("Account, permissions, connections, and appearance"), CommandCategory::Config,
         Box::new(|ctx| {
             let panel = match ctx.raw_args.trim() {
                 "" => ControlPanel::Settings,
@@ -1269,14 +1357,14 @@ pub fn build_command_registry() -> CommandRegistry {
                 "capabilities" => ControlPanel::Capabilities,
                 "advanced" => ControlPanel::Advanced,
                 "session" => ControlPanel::Session,
-                _ => return Err(CommandError::new("Usage: /settings [account|permissions|appearance|output|footer|capabilities|advanced|session]")),
+                _ => return Err(CommandError::new(maestro_ui::localization::tr("Usage: /settings [account|permissions|appearance|output|footer|capabilities|advanced|session]"))),
             };
             Ok(CommandOutput::Action(CommandAction::OpenPanel(panel)))
-        })).primary(8));
+        })).localized().primary(8));
     registry.register(
         Command::new(
             "tasks",
-            "Work, workers, queues, decisions, and schedules",
+            maestro_ui::localization::tr("Work, workers, queues, decisions, and schedules"),
             CommandCategory::Tools,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::OpenPanel(
@@ -1284,12 +1372,13 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .primary(7),
     );
     registry.register(
         Command::new(
             "output",
-            "Choose summary, compact, or expanded tool output",
+            maestro_ui::localization::tr("Choose summary, compact, or expanded tool output"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 if ctx.raw_args.trim().is_empty() {
@@ -1299,13 +1388,16 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
                 let detail =
                     crate::state::OutputDetail::parse(ctx.raw_args.trim()).ok_or_else(|| {
-                        CommandError::new("Usage: /output [summary|compact|expanded]")
+                        CommandError::new(maestro_ui::localization::tr(
+                            "Usage: /output [summary|compact|expanded]",
+                        ))
                     })?;
                 Ok(CommandOutput::Action(CommandAction::SetOutputDetail(
                     detail,
                 )))
             }),
         )
+        .localized()
         .usage("/output [summary|compact|expanded]"),
     );
 
@@ -1313,7 +1405,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "help",
-            "Show available commands",
+            maestro_ui::localization::tr("Show available commands"),
             CommandCategory::Navigation,
             Box::new(|_| {
                 // `/help [command]` is handled in `CommandRegistry::execute` so
@@ -1323,11 +1415,12 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .alias("h")
         .alias("?")
         .arg(CommandArgument::string(
             "command",
-            "Command to get help for",
+            maestro_ui::localization::tr("Command to get help for"),
         ))
         .usage("/help [command]")
         .primary(10),
@@ -1337,7 +1430,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "hotkeys",
-            "Show or manage keyboard shortcuts",
+            maestro_ui::localization::tr("Show or manage keyboard shortcuts"),
             CommandCategory::Config,
             Box::new(|ctx| {
                 let args = ctx.raw_args.trim();
@@ -1353,46 +1446,31 @@ pub fn build_command_registry() -> CommandRegistry {
                     }
                     "path" | "where" | "file" => {
                         let path = keybindings_config_path();
-                        Ok(CommandOutput::Message(format!(
-                            "Keyboard shortcuts config:\n  Path: {}\n  Status: {}",
-                            path.display(),
-                            if path.exists() { "present" } else { "missing" }
-                        )))
+                        Ok(CommandOutput::Message(maestro_ui::localization::format("Keyboard shortcuts config:\n  Path: {0}\n  Status: {1}", &[(path.display()).to_string(), (if path.exists() { "present" } else { "missing" }).to_string()])))
                     }
                     "init" | "create" | "setup" => {
                         let force = parts.iter().skip(1).any(|arg| *arg == "--force");
                         match initialize_keybindings_file(force) {
-                            Ok(result) if result.created => Ok(CommandOutput::Message(format!(
-                                "Created keyboard shortcuts config at {}\nRun /hotkeys validate to verify the file after editing.",
-                                result.path.display()
-                            ))),
+                            Ok(result) if result.created => Ok(CommandOutput::Message(maestro_ui::localization::format("Created keyboard shortcuts config at {0}\nRun /hotkeys validate to verify the file after editing.", &[(result.path.display()).to_string()]))),
                             Ok(result) => Err(
-                                CommandError::new(format!(
-                                    "Keybindings config already exists at {}.",
-                                    result.path.display()
-                                ))
+                                CommandError::new(maestro_ui::localization::format("Keybindings config already exists at {0}.", &[(result.path.display()).to_string()]))
                                 .with_hint(
-                                    "Re-run with /hotkeys init --force to overwrite it.",
+                                    maestro_ui::localization::tr("Re-run with /hotkeys init --force to overwrite it."),
                                 ),
                             ),
-                            Err(err) => Err(CommandError::new(format!(
-                                "Failed to create keybindings config: {err}"
-                            ))),
+                            Err(err) => Err(CommandError::new(maestro_ui::localization::format("Failed to create keybindings config: {0}", std::slice::from_ref(&(err))))),
                         }
                     }
                     "validate" | "check" | "doctor" | "status" => {
                         Ok(CommandOutput::Message(format_keybindings_config_report()))
                     }
                     _ => Err(
-                        CommandError::new(format!(
-                            "Unknown hotkeys subcommand: {}",
-                            subcommand
-                        ))
-                        .with_hint("Usage: /hotkeys [show|path|init|validate]"),
+                        CommandError::new(maestro_ui::localization::format("Unknown hotkeys subcommand: {0}", std::slice::from_ref(&(subcommand))))
+                        .with_hint(maestro_ui::localization::tr("Usage: /hotkeys [show|path|init|validate]")),
                     ),
                 }
             }),
-        )
+        ).localized()
         .alias("keys")
         .alias("shortcuts")
         .usage("/hotkeys [show|path|init|validate]"),
@@ -1402,7 +1480,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "new",
-            "Start a new conversation",
+            maestro_ui::localization::tr("Start a new conversation"),
             CommandCategory::Session,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::Session(
@@ -1410,6 +1488,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .alias("cls")
         .alias("clear")
         .primary(0),
@@ -1419,7 +1498,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "fork",
-            "Fork the conversation into a new session branch",
+            maestro_ui::localization::tr("Fork the conversation into a new session branch"),
             CommandCategory::Session,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::Session(
@@ -1427,6 +1506,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .usage("/fork")
         .primary(2),
     );
@@ -1435,17 +1515,17 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "rewind",
-            "Remove the last N user turns, or restore files from a checkpoint",
+            maestro_ui::localization::tr("Remove the last N user turns, or restore files from a checkpoint"),
             CommandCategory::Session,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Session(
                     parse_rewind_args(
                         &ctx.raw_args,
-                        "Usage: /rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints",
+                        maestro_ui::localization::tr("Usage: /rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints"),
                     )?,
                 )))
             }),
-        )
+        ).localized()
         .alias("undo")
         .usage("/rewind [n] [--dry-run] [--files] | /rewind files | /rewind checkpoints").primary(3)
     );
@@ -1453,25 +1533,28 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "btw",
-            "Ask a tool-free side question outside main history",
+            maestro_ui::localization::tr("Ask a tool-free side question outside main history"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 let question = ctx.raw_args.trim();
                 if question.is_empty() {
-                    return Err(CommandError::new("Usage: /btw <question>"));
+                    return Err(CommandError::new(maestro_ui::localization::tr(
+                        "Usage: /btw <question>",
+                    )));
                 }
                 Ok(CommandOutput::Action(CommandAction::SideQuestion(
                     question.to_string(),
                 )))
             }),
         )
+        .localized()
         .usage("/btw <question>"),
     );
 
     registry.register(
         Command::new(
             "workflow",
-            "Run and control durable budgeted workflows",
+            maestro_ui::localization::tr("Run and control durable budgeted workflows"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 use crate::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
@@ -1481,7 +1564,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 let action = parts.next().unwrap_or("list");
                 let render = |runs: Vec<WorkflowRun>| {
                     if runs.is_empty() {
-                        return "No workflow runs.".to_string();
+                        return maestro_ui::localization::tr("No workflow runs.").to_string();
                     }
                     runs.into_iter()
                         .map(|run| {
@@ -1507,27 +1590,38 @@ pub fn build_command_registry() -> CommandRegistry {
                         .map(CommandOutput::Message)
                         .map_err(CommandError::new),
                     "run" | "start" => {
-                        let path = parts
-                            .next()
-                            .ok_or_else(|| CommandError::new("Usage: /workflow run <spec.json>"))?;
+                        let path = parts.next().ok_or_else(|| {
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /workflow run <spec.json>",
+                            ))
+                        })?;
                         let bytes = std::fs::read(path).map_err(|error| {
-                            CommandError::new(format!("Failed to read workflow spec: {error}"))
+                            CommandError::new(maestro_ui::localization::format(
+                                "Failed to read workflow spec: {0}",
+                                &[(error).to_string()],
+                            ))
                         })?;
                         let spec: WorkflowSpec =
                             serde_json::from_slice(&bytes).map_err(|error| {
-                                CommandError::new(format!("Invalid workflow spec: {error}"))
+                                CommandError::new(maestro_ui::localization::format(
+                                    "Invalid workflow spec: {0}",
+                                    &[(error).to_string()],
+                                ))
                             })?;
                         let run = WorkflowRun::start(spec, serde_json::json!({}))
                             .map_err(CommandError::new)?;
                         store.append(&run).map_err(CommandError::new)?;
-                        Ok(CommandOutput::Message(format!(
-                            "Started workflow {} ({})",
-                            run.spec.name, run.id
+                        Ok(CommandOutput::Message(maestro_ui::localization::format(
+                            "Started workflow {0} ({1})",
+                            &[(run.spec.name).clone(), (run.id).clone()],
                         )))
                     }
                     "pause" | "resume" | "stop" => {
                         let id = parts.next().ok_or_else(|| {
-                            CommandError::new(format!("Usage: /workflow {action} <run-id>"))
+                            CommandError::new(maestro_ui::localization::format(
+                                "Usage: /workflow {0} <run-id>",
+                                &[(action).to_string()],
+                            ))
                         })?;
                         let mut run = store.get(id).map_err(CommandError::new)?;
                         match action {
@@ -1537,22 +1631,25 @@ pub fn build_command_registry() -> CommandRegistry {
                                 let args = run.args.clone();
                                 run.resume(&sha, &args)
                             }
-                            "stop" => run.stop(Some("stopped from TUI".to_string())),
+                            "stop" => run.stop(Some(
+                                maestro_ui::localization::tr("stopped from TUI").to_string(),
+                            )),
                             _ => unreachable!(),
                         }
                         .map_err(CommandError::new)?;
                         store.append(&run).map_err(CommandError::new)?;
-                        Ok(CommandOutput::Message(format!(
-                            "Workflow {} is {:?}",
-                            run.id, run.status
+                        Ok(CommandOutput::Message(maestro_ui::localization::format(
+                            "Workflow {0} is {1}",
+                            &[(run.id).clone(), format!("{:?}", run.status)],
                         )))
                     }
-                    _ => Err(CommandError::new(
+                    _ => Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]",
-                    )),
+                    ))),
                 }
             }),
         )
+        .localized()
         .alias("workflows")
         .usage("/workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]"),
     );
@@ -1560,7 +1657,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "decision",
-            "List, answer, or cancel background decisions",
+            maestro_ui::localization::tr("List, answer, or cancel background decisions"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 use crate::pending_decisions::PendingDecisionStore;
@@ -1576,7 +1673,8 @@ pub fn build_command_registry() -> CommandRegistry {
                         let decisions = store.list().map_err(CommandError::new)?;
                         if decisions.is_empty() {
                             return Ok(CommandOutput::Message(
-                                "No background decisions.".to_string(),
+                                maestro_ui::localization::tr("No background decisions.")
+                                    .to_string(),
                             ));
                         }
                         Ok(CommandOutput::Message(
@@ -1600,39 +1698,48 @@ pub fn build_command_registry() -> CommandRegistry {
                     }
                     "answer" => {
                         let id = fields.next().ok_or_else(|| {
-                            CommandError::new("Usage: /decision answer <id> <answer>")
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /decision answer <id> <answer>",
+                            ))
                         })?;
                         let answer = fields.next().ok_or_else(|| {
-                            CommandError::new("Usage: /decision answer <id> <answer>")
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /decision answer <id> <answer>",
+                            ))
                         })?;
                         let mut decision = store.get(id).map_err(CommandError::new)?;
                         decision
                             .answer(answer.to_string())
                             .map_err(CommandError::new)?;
                         store.append(&decision).map_err(CommandError::new)?;
-                        Ok(CommandOutput::Action(CommandAction::Steer(format!(
-                            "Background decision {} was answered: {}",
-                            decision.id, answer
-                        ))))
+                        Ok(CommandOutput::Action(CommandAction::Steer(
+                            maestro_ui::localization::format(
+                                "Background decision {0} was answered: {1}",
+                                &[(decision.id).clone(), (answer).to_string()],
+                            ),
+                        )))
                     }
                     "cancel" => {
-                        let id = fields
-                            .next()
-                            .ok_or_else(|| CommandError::new("Usage: /decision cancel <id>"))?;
+                        let id = fields.next().ok_or_else(|| {
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /decision cancel <id>",
+                            ))
+                        })?;
                         let mut decision = store.get(id).map_err(CommandError::new)?;
                         decision.cancel().map_err(CommandError::new)?;
                         store.append(&decision).map_err(CommandError::new)?;
-                        Ok(CommandOutput::Message(format!(
-                            "Cancelled background decision {}",
-                            decision.id
+                        Ok(CommandOutput::Message(maestro_ui::localization::format(
+                            "Cancelled background decision {0}",
+                            &[(decision.id).clone()],
                         )))
                     }
-                    _ => Err(CommandError::new(
+                    _ => Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /decision [list|answer <id> <answer>|cancel <id>]",
-                    )),
+                    ))),
                 }
             }),
         )
+        .localized()
         .alias("decisions")
         .usage("/decision [list|answer <id> <answer>|cancel <id>]"),
     );
@@ -1641,28 +1748,32 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "quit",
-            "Quit the application",
+            maestro_ui::localization::tr("Quit the application"),
             CommandCategory::Navigation,
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::Quit))),
         )
+        .localized()
         .alias("exit")
         .alias("q")
         .primary(11),
     );
 
     // Zen mode command
-    registry.register(Command::new(
-        "zen",
-        "Toggle zen mode (minimal UI)",
-        CommandCategory::Ui,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ToggleZenMode))),
-    ));
+    registry.register(
+        Command::new(
+            "zen",
+            maestro_ui::localization::tr("Toggle zen mode (minimal UI)"),
+            CommandCategory::Ui,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ToggleZenMode))),
+        )
+        .localized(),
+    );
 
     // Tool output compact mode
     registry.register(
         Command::new(
             "compact-tools",
-            "Toggle tool output folding",
+            maestro_ui::localization::tr("Toggle tool output folding"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let arg = ctx.raw_args.trim().to_lowercase();
@@ -1673,26 +1784,32 @@ pub fn build_command_registry() -> CommandRegistry {
                 } else if arg == "off" || arg == "false" {
                     Some(false)
                 } else {
-                    return Err(CommandError::new("Usage: /compact-tools [on|off|toggle]"));
+                    return Err(CommandError::new(maestro_ui::localization::tr(
+                        "Usage: /compact-tools [on|off|toggle]",
+                    )));
                 };
                 Ok(CommandOutput::Action(CommandAction::SetCompactTools(mode)))
             }),
         )
+        .localized()
         .usage("/compact-tools [on|off|toggle]"),
     );
 
     // Refresh command
-    registry.register(Command::new(
-        "refresh",
-        "Refresh workspace files",
-        CommandCategory::Navigation,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::RefreshWorkspace))),
-    ));
+    registry.register(
+        Command::new(
+            "refresh",
+            maestro_ui::localization::tr("Refresh workspace files"),
+            CommandCategory::Navigation,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::RefreshWorkspace))),
+        )
+        .localized(),
+    );
 
     registry.register(
         Command::new(
             "language",
-            "Choose the display language",
+            maestro_ui::localization::tr("Choose the display language"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 if ctx.raw_args.trim().is_empty() {
@@ -1709,40 +1826,44 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Action(CommandAction::SetLanguage(locale)))
             }),
         )
+        .localized()
         .usage("/language [en|es|fr|de|ja|ko|zh-CN]"),
     );
 
     // Copy command
-    registry.register(Command::new(
-        "copy",
-        "Copy a response, prompts, turns, or the session ID",
-        CommandCategory::Ui,
-        Box::new(|ctx| {
-            let target = crate::transcript_copy::CopyTarget::parse(ctx.raw_args.trim())
-                .map_err(CommandError::new)?;
-            Ok(CommandOutput::Action(CommandAction::CopyTranscript(target)))
-        }),
-    ));
+    registry.register(
+        Command::new(
+            "copy",
+            maestro_ui::localization::tr("Copy a response, prompts, turns, or the session ID"),
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let target = crate::transcript_copy::CopyTarget::parse(ctx.raw_args.trim())
+                    .map_err(CommandError::new)?;
+                Ok(CommandOutput::Action(CommandAction::CopyTranscript(target)))
+            }),
+        )
+        .localized(),
+    );
 
     // A2A peer pairing command
     registry.register(
         Command::new(
             "a2a",
-            "Pair, inspect, and delegate to A2A peer agents",
+            maestro_ui::localization::tr("Pair, inspect, and delegate to A2A peer agents"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::A2a(parse_a2a_action(
                     &ctx.raw_args,
                 )?)))
             }),
-        )
+        ).localized()
         .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
     );
 
     registry.register(
         Command::new(
             "handoff",
-            "Hand work to the default peer and follow its response",
+            maestro_ui::localization::tr("Hand work to the default peer and follow its response"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::A2a(
@@ -1750,6 +1871,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .usage("/handoff <prompt> (use --peer <name> to override the default)"),
     );
 
@@ -1757,7 +1879,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "queue",
-            "Manage queued prompts",
+            maestro_ui::localization::tr("Manage queued prompts"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let args = ctx.raw_args.trim();
@@ -1772,10 +1894,10 @@ pub fn build_command_registry() -> CommandRegistry {
                 if action.eq_ignore_ascii_case("cancel") {
                     let raw_id = parts
                         .next()
-                        .ok_or_else(|| CommandError::new("Usage: /queue cancel <id>"))?;
+                        .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /queue cancel <id>")))?;
                     let trimmed = raw_id.trim_start_matches('#');
                     let id = trimmed.parse::<u64>().map_err(|_| {
-                        CommandError::new("Queue id must be a number (e.g. /queue cancel 12)")
+                        CommandError::new(maestro_ui::localization::tr("Queue id must be a number (e.g. /queue cancel 12)"))
                     })?;
                     return Ok(CommandOutput::Action(CommandAction::Queue(
                         QueueAction::Cancel { id },
@@ -1785,14 +1907,14 @@ pub fn build_command_registry() -> CommandRegistry {
                 if action.eq_ignore_ascii_case("move") || action.eq_ignore_ascii_case("send") {
                     let raw_id = parts.next().ok_or_else(|| {
                         if action.eq_ignore_ascii_case("send") {
-                            CommandError::new("Usage: /queue send <id>")
+                            CommandError::new(maestro_ui::localization::tr("Usage: /queue send <id>"))
                         } else {
-                            CommandError::new("Usage: /queue move <id> <up|down>")
+                            CommandError::new(maestro_ui::localization::tr("Usage: /queue move <id> <up|down>"))
                         }
                     })?;
                     let trimmed = raw_id.trim_start_matches('#');
                     let id = trimmed.parse::<u64>().map_err(|_| {
-                        CommandError::new("Queue id must be a number (e.g. /queue send 12)")
+                        CommandError::new(maestro_ui::localization::tr("Queue id must be a number (e.g. /queue send 12)"))
                     })?;
                     let direction = if action.eq_ignore_ascii_case("send") {
                         QueueMoveDirection::Now
@@ -1802,7 +1924,7 @@ pub fn build_command_registry() -> CommandRegistry {
                             Some("down") => QueueMoveDirection::Down,
                             _ => {
                                 return Err(CommandError::new(
-                                    "Usage: /queue move <id> <up|down>",
+                                    maestro_ui::localization::tr("Usage: /queue move <id> <up|down>"),
                                 ));
                             }
                         }
@@ -1814,7 +1936,7 @@ pub fn build_command_registry() -> CommandRegistry {
 
                 if action != "mode" {
                     return Err(CommandError::new(
-                        "Usage: /queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]",
+                        maestro_ui::localization::tr("Usage: /queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]"),
                     ));
                 }
 
@@ -1823,7 +1945,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 let (kind, mode) = match (scope, value) {
                     (None, _) => {
                         return Err(CommandError::new(
-                            "Usage: /queue mode [steer|followup] <one|all>",
+                            maestro_ui::localization::tr("Usage: /queue mode [steer|followup] <one|all>"),
                         ));
                     }
                     (Some(scope), None) => {
@@ -1831,7 +1953,7 @@ pub fn build_command_registry() -> CommandRegistry {
                             (QueueModeKind::FollowUp, mode)
                         } else {
                             return Err(CommandError::new(
-                                "Usage: /queue mode [steer|followup] <one|all>",
+                                maestro_ui::localization::tr("Usage: /queue mode [steer|followup] <one|all>"),
                             ));
                         }
                     }
@@ -1841,12 +1963,12 @@ pub fn build_command_registry() -> CommandRegistry {
                             "followup" | "follow-up" => QueueModeKind::FollowUp,
                             _ => {
                                 return Err(CommandError::new(
-                                    "Usage: /queue mode [steer|followup] <one|all>",
+                                    maestro_ui::localization::tr("Usage: /queue mode [steer|followup] <one|all>"),
                                 ));
                             }
                         };
                         let Some(mode) = QueueMode::parse(value) else {
-                            return Err(CommandError::new("Mode must be \"one\" or \"all\"."));
+                            return Err(CommandError::new(maestro_ui::localization::tr("Mode must be \"one\" or \"all\".")));
                         };
                         (kind, mode)
                     }
@@ -1856,7 +1978,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     QueueAction::Mode { kind, mode },
                 )))
             }),
-        )
+        ).localized()
         .usage("/queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]"),
     );
 
@@ -1864,18 +1986,21 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "steer",
-            "Send a steering message",
+            maestro_ui::localization::tr("Send a steering message"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let text = ctx.raw_args.trim();
                 if text.is_empty() {
-                    return Err(CommandError::new("Usage: /steer <message>"));
+                    return Err(CommandError::new(maestro_ui::localization::tr(
+                        "Usage: /steer <message>",
+                    )));
                 }
                 Ok(CommandOutput::Action(CommandAction::Steer(
                     text.to_string(),
                 )))
             }),
         )
+        .localized()
         .usage("/steer <message>"),
     );
 
@@ -1883,7 +2008,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "theme",
-            "Change color theme",
+            maestro_ui::localization::tr("Change color theme"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 if ctx.raw_args.is_empty() {
@@ -1895,7 +2020,11 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
             }),
         )
-        .arg(CommandArgument::string("name", "Theme name"))
+        .localized()
+        .arg(CommandArgument::string(
+            "name",
+            maestro_ui::localization::tr("Theme name"),
+        ))
         .usage("/theme [name]"),
     );
 
@@ -1903,7 +2032,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "model",
-            "Change AI model",
+            maestro_ui::localization::tr("Change AI model"),
             CommandCategory::Config,
             Box::new(|ctx| {
                 let mut parts = ctx.raw_args.split_whitespace();
@@ -1917,17 +2046,21 @@ pub fn build_command_registry() -> CommandRegistry {
                     (Some("default"), Some(model)) => Ok(CommandOutput::Action(
                         CommandAction::SetDefaultModel(model.to_string()),
                     )),
-                    (Some("default"), None) => {
-                        Err(CommandError::new("Usage: /model default <name>"))
-                    }
+                    (Some("default"), None) => Err(CommandError::new(
+                        maestro_ui::localization::tr("Usage: /model default <name>"),
+                    )),
                     _ => Ok(CommandOutput::Action(CommandAction::SetModel(
                         ctx.raw_args.clone(),
                     ))),
                 }
             }),
         )
+        .localized()
         .alias("m")
-        .arg(CommandArgument::string("name", "Model name"))
+        .arg(CommandArgument::string(
+            "name",
+            maestro_ui::localization::tr("Model name"),
+        ))
         .usage("/model [select | name | default <name>]")
         .primary(4),
     );
@@ -1936,7 +2069,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "rubber-duck",
-            "Review uncommitted changes with a different model (second opinion)",
+            maestro_ui::localization::tr(
+                "Review uncommitted changes with a different model (second opinion)",
+            ),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let model = ctx.raw_args.trim();
@@ -1949,10 +2084,13 @@ pub fn build_command_registry() -> CommandRegistry {
                 }))
             }),
         )
+        .localized()
         .alias("duck")
         .arg(CommandArgument::string(
             "model",
-            "Model to review with (defaults to another provider's model)",
+            maestro_ui::localization::tr(
+                "Model to review with (defaults to another provider's model)",
+            ),
         ))
         .usage("/rubber-duck [model]"),
     );
@@ -1961,7 +2099,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "session",
-            "Session information",
+            maestro_ui::localization::tr("Session information"),
             CommandCategory::Session,
             Box::new(|ctx| {
                 let sub = ctx
@@ -1986,7 +2124,7 @@ pub fn build_command_registry() -> CommandRegistry {
                                 .strip_prefix(ctx.raw_args.split_whitespace().next().unwrap_or(""))
                                 .unwrap_or("")
                                 .trim(),
-                            "Usage: /session rewind [n] [--dry-run] [--files] | /session rewind files | /session rewind checkpoints",
+                            maestro_ui::localization::tr("Usage: /session rewind [n] [--dry-run] [--files] | /session rewind files | /session rewind checkpoints"),
                         )?,
                     ))),
                     "info" | "status" | "" => {
@@ -1995,11 +2133,11 @@ pub fn build_command_registry() -> CommandRegistry {
                         )))
                     }
                     _ => Ok(CommandOutput::Message(
-                        "Usage: /session [status|info|new|clear|fork|rewind|cleanup]".to_string(),
+                        maestro_ui::localization::tr("Usage: /session [status|info|new|clear|fork|rewind|cleanup]").to_string(),
                     )),
                 }
             }),
-        )
+        ).localized()
         .alias("ss")
         .usage("/session [status|info|new|clear|list|load|export|cleanup|fork|rewind]")
         .group(vec![
@@ -2012,7 +2150,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "trust",
-            "Grant or revoke trust so project skills/plugins/hooks can load",
+            maestro_ui::localization::tr(
+                "Grant or revoke trust so project skills/plugins/hooks can load",
+            ),
             CommandCategory::Safety,
             Box::new(|ctx| {
                 let sub = ctx
@@ -2027,13 +2167,15 @@ pub fn build_command_registry() -> CommandRegistry {
                     "revoke" | "off" | "no" | "false" => crate::commands::TrustAction::Revoke,
                     _ => {
                         return Ok(CommandOutput::Message(
-                            "Usage: /trust [status|grant|revoke]".to_string(),
+                            maestro_ui::localization::tr("Usage: /trust [status|grant|revoke]")
+                                .to_string(),
                         ));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::Trust(action)))
             }),
         )
+        .localized()
         .usage("/trust [status|grant|revoke]"),
     );
 
@@ -2041,31 +2183,38 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "sandbox",
-            "Show the interactive sandbox policy for this session",
+            maestro_ui::localization::tr("Show the interactive sandbox policy for this session"),
             CommandCategory::Safety,
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowSandbox))),
         )
+        .localized()
         .usage("/sandbox"),
     );
 
-    registry.register(Command::new(
-        "sessions",
-        "List and manage sessions",
-        CommandCategory::Session,
-        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
-    ));
+    registry.register(
+        Command::new(
+            "sessions",
+            maestro_ui::localization::tr("List and manage sessions"),
+            CommandCategory::Session,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
+        )
+        .localized(),
+    );
 
-    registry.register(Command::new(
-        "operations",
-        "Inspect recent persisted tool executions",
-        CommandCategory::Diagnostics,
-        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Operations))),
-    ));
+    registry.register(
+        Command::new(
+            "operations",
+            maestro_ui::localization::tr("Inspect recent persisted tool executions"),
+            CommandCategory::Diagnostics,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Operations))),
+        )
+        .localized(),
+    );
 
     registry.register(
         Command::new(
             "monitor",
-            "Monitor output from an existing background task",
+            maestro_ui::localization::tr("Monitor output from an existing background task"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2079,7 +2228,9 @@ pub fn build_command_registry() -> CommandRegistry {
                     "add" => {
                         let (task_id, pattern) =
                             rest.split_once(char::is_whitespace).ok_or_else(|| {
-                                CommandError::new("Usage: /monitor add <task-id> <regex>")
+                                CommandError::new(maestro_ui::localization::tr(
+                                    "Usage: /monitor add <task-id> <regex>",
+                                ))
                             })?;
                         Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
                             BackgroundMonitorAction::Add {
@@ -2090,7 +2241,9 @@ pub fn build_command_registry() -> CommandRegistry {
                     }
                     "remove" | "rm" => {
                         if rest.is_empty() {
-                            return Err(CommandError::new("Usage: /monitor remove <monitor-id>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /monitor remove <monitor-id>",
+                            )));
                         }
                         Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
                             BackgroundMonitorAction::Remove {
@@ -2098,81 +2251,100 @@ pub fn build_command_registry() -> CommandRegistry {
                             },
                         )))
                     }
-                    _ => Err(CommandError::new(
+                    _ => Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /monitor [list|add <task-id> <regex>|remove <monitor-id>]",
-                    )),
+                    ))),
                 }
             }),
         )
+        .localized()
         .usage("/monitor [list|add <task-id> <regex>|remove <monitor-id>]")
-        .group(vec!["list", "add", "remove"]),
+        .group(vec!["list", "add", maestro_ui::localization::tr("remove")]),
     );
 
     registry.register(
         Command::new(
             "loop",
-            "Re-run a prompt on an interval",
+            maestro_ui::localization::tr("Re-run a prompt on an interval"),
             CommandCategory::Session,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
                 if raw.is_empty() {
-                    return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Status)));
+                    return Ok(CommandOutput::Action(CommandAction::Loop(
+                        LoopAction::Status,
+                    )));
                 }
                 if raw == "stop" {
                     return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Stop)));
                 }
-                let (interval_text, prompt) = raw
-                    .split_once(char::is_whitespace)
-                    .ok_or_else(|| {
-                        CommandError::new("Usage: /loop [stop|<interval> <prompt>]")
+                let (interval_text, prompt) =
+                    raw.split_once(char::is_whitespace).ok_or_else(|| {
+                        CommandError::new(maestro_ui::localization::tr(
+                            "Usage: /loop [stop|<interval> <prompt>]",
+                        ))
                     })?;
                 let prompt = prompt.trim();
                 if prompt.is_empty() {
-                    return Err(CommandError::new(
+                    return Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /loop [stop|<interval> <prompt>]",
-                    ));
+                    )));
                 }
                 let interval_secs = parse_loop_interval(interval_text).ok_or_else(|| {
-                    CommandError::new(format!(
-                        "Invalid interval '{interval_text}' (try 30s, 5m, 1h, or minutes as a bare number)"
+                    CommandError::new(maestro_ui::localization::format(
+                        "Invalid interval '{0}' (try 30s, 5m, 1h, or minutes as a bare number)",
+                        &[(interval_text).to_string()],
                     ))
                 })?;
-                Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Start {
-                    interval_secs,
-                    prompt: prompt.to_string(),
-                })))
+                Ok(CommandOutput::Action(CommandAction::Loop(
+                    LoopAction::Start {
+                        interval_secs,
+                        prompt: prompt.to_string(),
+                    },
+                )))
             }),
         )
+        .localized()
         .usage("/loop [stop|<interval> <prompt>]")
         .group(vec!["stop"]),
     );
 
-    registry.register(Command::new(
-        "files",
-        "Search workspace files",
-        CommandCategory::Navigation,
-        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::FileSearch))),
-    ));
+    registry.register(
+        Command::new(
+            "files",
+            maestro_ui::localization::tr("Search workspace files"),
+            CommandCategory::Navigation,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::FileSearch))),
+        )
+        .localized(),
+    );
 
-    registry.register(Command::new(
-        "commands",
-        "Open command palette",
-        CommandCategory::Navigation,
-        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::CommandPalette))),
-    ));
+    registry.register(
+        Command::new(
+            "commands",
+            maestro_ui::localization::tr("Open command palette"),
+            CommandCategory::Navigation,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::CommandPalette))),
+        )
+        .localized(),
+    );
 
-    registry.register(Command::new(
-        "summarize",
-        "Summarize from or through a chosen turn into a saved conversation",
-        CommandCategory::Context,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::SummarizeConversation))),
-    ));
+    registry.register(
+        Command::new(
+            "summarize",
+            maestro_ui::localization::tr(
+                "Summarize from or through a chosen turn into a saved conversation",
+            ),
+            CommandCategory::Context,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::SummarizeConversation))),
+        )
+        .localized(),
+    );
 
     // Compact command
     registry.register(
         Command::new(
             "compact",
-            "Compact conversation history to reduce context size",
+            maestro_ui::localization::tr("Compact conversation history to reduce context size"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 let instructions = if ctx.raw_args.is_empty() {
@@ -2185,9 +2357,10 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .arg(CommandArgument::string(
             "instructions",
-            "Custom compaction instructions",
+            maestro_ui::localization::tr("Custom compaction instructions"),
         ))
         .usage("/compact [instructions]"),
     );
@@ -2196,7 +2369,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "approvals",
-            "Set approval mode",
+            maestro_ui::localization::tr("Set approval mode"),
             CommandCategory::Safety,
             Box::new(|ctx| {
                 let mode = ctx.raw_args.trim().to_string();
@@ -2209,9 +2382,10 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
             }),
         )
+        .localized()
         .arg(CommandArgument::choice(
             "mode",
-            "Approval mode",
+            maestro_ui::localization::tr("Approval mode"),
             vec!["yolo", "selective", "safe"],
         ))
         .usage("/approvals [yolo|selective|safe]"),
@@ -2220,10 +2394,11 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "boost",
-            "Give this task more intelligence",
+            maestro_ui::localization::tr("Give this task more intelligence"),
             CommandCategory::Config,
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::Boost))),
         )
+        .localized()
         .alias("b")
         .usage("/boost"),
     );
@@ -2232,7 +2407,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "thinking",
-            "Set extended thinking level",
+            maestro_ui::localization::tr("Set extended thinking level"),
             CommandCategory::Config,
             Box::new(|ctx| {
                 let level = ctx.raw_args.trim().to_string();
@@ -2247,9 +2422,10 @@ pub fn build_command_registry() -> CommandRegistry {
                 }
             }),
         )
+        .localized()
         .arg(CommandArgument::choice(
             "level",
-            "Thinking level",
+            maestro_ui::localization::tr("Thinking level"),
             vec!["off", "minimal", "low", "medium", "high", "max"],
         ))
         .usage("/thinking <level>"),
@@ -2259,10 +2435,11 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "about",
-            "Show build and environment info",
+            maestro_ui::localization::tr("Show build and environment info"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| Ok(CommandOutput::Message(build_diag_about(ctx)))),
         )
+        .localized()
         .usage("/about"),
     );
 
@@ -2270,7 +2447,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "context",
-            "Show context usage or audit the effective prompt surface",
+            maestro_ui::localization::tr(
+                "Show context usage or audit the effective prompt surface",
+            ),
             CommandCategory::Context,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2298,12 +2477,13 @@ pub fn build_command_registry() -> CommandRegistry {
                             json: true,
                         }))
                     }
-                    _ => Err(CommandError::new(
+                    _ => Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /context [audit [--json] | exclude TOOL | include TOOL]",
-                    )),
+                    ))),
                 }
             }),
         )
+        .localized()
         .usage("/context [audit [--json] | exclude TOOL | include TOOL]")
         .primary(9),
     );
@@ -2311,37 +2491,47 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "focus",
-            "Collapse tool-heavy turns into one live summary",
+            maestro_ui::localization::tr("Collapse tool-heavy turns into one live summary"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let value = match ctx.raw_args.trim().to_ascii_lowercase().as_str() {
                     "" | "toggle" => None,
                     "on" => Some(true),
                     "off" => Some(false),
-                    _ => return Err(CommandError::new("Usage: /focus [on|off|toggle]")),
+                    _ => {
+                        return Err(CommandError::new(maestro_ui::localization::tr(
+                            "Usage: /focus [on|off|toggle]",
+                        )));
+                    }
                 };
                 Ok(CommandOutput::Action(CommandAction::SetFocus(value)))
             }),
         )
+        .localized()
         .usage("/focus [on|off|toggle]"),
     );
 
     registry.register(
         Command::new(
             "prompt-audit",
-            "Audit prompt provenance without exposing prompt content",
+            maestro_ui::localization::tr("Audit prompt provenance without exposing prompt content"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let json = match ctx.raw_args.trim() {
                     "" => false,
                     "--json" | "-j" => true,
-                    _ => return Err(CommandError::new("Usage: /prompt-audit [--json]")),
+                    _ => {
+                        return Err(CommandError::new(maestro_ui::localization::tr(
+                            "Usage: /prompt-audit [--json]",
+                        )));
+                    }
                 };
                 Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
                     json,
                 }))
             }),
         )
+        .localized()
         .usage("/prompt-audit [--json]"),
     );
 
@@ -2349,7 +2539,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "limits",
-            "Show configurable runtime limits",
+            maestro_ui::localization::tr("Show configurable runtime limits"),
             CommandCategory::Config,
             Box::new(|ctx| {
                 let subcommand = ctx
@@ -2360,7 +2550,8 @@ pub fn build_command_registry() -> CommandRegistry {
                     .to_lowercase();
                 if matches!(subcommand.as_str(), "help" | "?" | "-h" | "--help") {
                     return Ok(CommandOutput::Message(
-                        "Usage: /limits [all|tool|lsp|help]".to_string(),
+                        maestro_ui::localization::tr("Usage: /limits [all|tool|lsp|help]")
+                            .to_string(),
                     ));
                 }
 
@@ -2369,7 +2560,7 @@ pub fn build_command_registry() -> CommandRegistry {
 
                 let mut sections: Vec<(&str, Vec<String>)> = Vec::new();
                 sections.push((
-                    "Tool output (TUI):",
+                    maestro_ui::localization::tr("Tool output (TUI):"),
                     vec![
                         format!(
                             "  TUI_TOOL_MAX_CHARS: {} (env: MAESTRO_TUI_TOOL_MAX_CHARS)",
@@ -2382,7 +2573,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     ],
                 ));
                 sections.push((
-                    "LSP diagnostics:",
+                    maestro_ui::localization::tr("LSP diagnostics:"),
                     vec![format!(
                         "  MAX_DIAGNOSTICS_PER_FILE: {} (env: MAESTRO_LSP_MAX_DIAGNOSTICS)",
                         lsp_limit
@@ -2402,11 +2593,16 @@ pub fn build_command_registry() -> CommandRegistry {
                         .into_iter()
                         .collect(),
                     _ => {
-                        return Err(CommandError::new("Usage: /limits [all|tool|lsp|help]"));
+                        return Err(CommandError::new(maestro_ui::localization::tr(
+                            "Usage: /limits [all|tool|lsp|help]",
+                        )));
                     }
                 };
 
-                let mut lines = vec!["Limits (restart after changing env vars):".to_string()];
+                let mut lines = vec![
+                    maestro_ui::localization::tr("Limits (restart after changing env vars):")
+                        .to_string(),
+                ];
                 for (title, entries) in selected {
                     lines.push(String::new());
                     lines.push(title.to_string());
@@ -2416,6 +2612,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Message(lines.join("\n")))
             }),
         )
+        .localized()
         .usage("/limits [all|tool|lsp|help]"),
     );
 
@@ -2423,7 +2620,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "diff",
-            "Show git diff for working tree or a path",
+            maestro_ui::localization::tr("Show git diff for working tree or a path"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let path = ctx.raw_args.trim();
@@ -2433,7 +2630,11 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .arg(CommandArgument::string("path", "Optional path to diff"))
+        .localized()
+        .arg(CommandArgument::string(
+            "path",
+            maestro_ui::localization::tr("Optional path to diff"),
+        ))
         .usage("/diff [path]"),
     );
 
@@ -2441,7 +2642,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "review",
-            "Inspect changes, diffs, or request a second opinion",
+            maestro_ui::localization::tr("Inspect changes, diffs, or request a second opinion"),
             CommandCategory::Diagnostics,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::OpenPanel(
@@ -2449,6 +2650,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .usage("/review")
         .primary(6),
     );
@@ -2457,7 +2659,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "git",
-            "Git operations: status, diff, review",
+            maestro_ui::localization::tr("Git operations: status, diff, review"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let mut parts = ctx.raw_args.split_whitespace();
@@ -2476,7 +2678,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     "help" | "?" | "-h" | "--help" => git_help_message(),
                     _ => {
                         let mut msg = String::new();
-                        msg.push_str("Unknown git subcommand.\n\n");
+                        msg.push_str(maestro_ui::localization::tr("Unknown git subcommand.\n\n"));
                         msg.push_str(&git_help_message());
                         msg
                     }
@@ -2485,33 +2687,38 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Message(message))
             }),
         )
+        .localized()
         .usage("/git [status|diff <path>|review]"),
     );
 
     registry.register(
         Command::new(
             "setup",
-            "Sign in to EvalOps or add a local API key",
+            maestro_ui::localization::tr("Sign in to EvalOps or add a local API key"),
             CommandCategory::Config,
             Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Setup))),
         )
+        .localized()
         .usage("/setup"),
     );
 
     registry.register(
         Command::new(
             "init",
-            "Scaffold AGENTS.md for this project",
+            maestro_ui::localization::tr("Scaffold AGENTS.md for this project"),
             CommandCategory::Config,
             Box::new(|ctx| {
                 let tokens: Vec<&str> = ctx.raw_args.split_whitespace().collect();
                 let force = tokens.iter().any(|arg| *arg == "--force" || *arg == "-f");
                 if !tokens.iter().all(|arg| *arg == "--force" || *arg == "-f") {
-                    return Err(CommandError::new("Usage: /init [--force]"));
+                    return Err(CommandError::new(maestro_ui::localization::tr(
+                        "Usage: /init [--force]",
+                    )));
                 }
                 Ok(CommandOutput::Action(CommandAction::Init { force }))
             }),
         )
+        .localized()
         .usage("/init [--force]"),
     );
 
@@ -2519,39 +2726,46 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "status",
-            "Show system health overview",
+            maestro_ui::localization::tr("Show system health overview"),
             CommandCategory::Diagnostics,
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
         )
+        .localized()
         .alias("health"),
     );
 
     // Alerts command
-    registry.register(Command::new(
-        "alerts",
-        "List recorded alerts (agent/API errors)",
-        CommandCategory::Diagnostics,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowAlerts))),
-    ));
+    registry.register(
+        Command::new(
+            "alerts",
+            maestro_ui::localization::tr("List recorded alerts (agent/API errors)"),
+            CommandCategory::Diagnostics,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowAlerts))),
+        )
+        .localized(),
+    );
 
     // Stats command
-    registry.register(Command::new(
-        "stats",
-        "Show combined status and usage summary",
-        CommandCategory::Diagnostics,
-        Box::new(|_| {
-            Ok(CommandOutput::Multi(vec![
-                CommandOutput::Action(CommandAction::ShowDiagnostics),
-                CommandOutput::Action(CommandAction::ShowUsage(UsageAction::Summary)),
-            ]))
-        }),
-    ));
+    registry.register(
+        Command::new(
+            "stats",
+            maestro_ui::localization::tr("Show combined status and usage summary"),
+            CommandCategory::Diagnostics,
+            Box::new(|_| {
+                Ok(CommandOutput::Multi(vec![
+                    CommandOutput::Action(CommandAction::ShowDiagnostics),
+                    CommandOutput::Action(CommandAction::ShowUsage(UsageAction::Summary)),
+                ]))
+            }),
+        )
+        .localized(),
+    );
 
     // Diagnostics command
     registry.register(
         Command::new(
             "diag",
-            "System diagnostics",
+            maestro_ui::localization::tr("System diagnostics"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let subcommand = ctx
@@ -2570,17 +2784,24 @@ pub fn build_command_registry() -> CommandRegistry {
                     ])),
                     "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
                     "help" | "?" | "-h" | "--help" => Ok(CommandOutput::Message(
-                        "Usage: /diag [status|stats|about|context|mcp|help]".to_string(),
+                        maestro_ui::localization::tr(
+                            "Usage: /diag [status|stats|about|context|mcp|help]",
+                        )
+                        .to_string(),
                     )),
                     "about" => Ok(CommandOutput::Message(build_diag_about(ctx))),
                     "context" => Ok(CommandOutput::Message(build_diag_context(ctx))),
                     "lsp" => Ok(CommandOutput::Message(
-                        "LSP diagnostics are not supported in the Rust TUI yet.".to_string(),
+                        maestro_ui::localization::tr(
+                            "LSP diagnostics are not supported in the Rust TUI yet.",
+                        )
+                        .to_string(),
                     )),
                     _ => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
                 }
             }),
         )
+        .localized()
         .group(vec!["status", "stats", "about", "context", "mcp"]),
     );
 
@@ -2588,7 +2809,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "magic-trace",
-            "Fire magic-trace stop indicator or toggle slow-frame snapshots",
+            maestro_ui::localization::tr(
+                "Fire magic-trace stop indicator or toggle slow-frame snapshots",
+            ),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let sub = ctx
@@ -2603,14 +2826,15 @@ pub fn build_command_registry() -> CommandRegistry {
                     "off" | "disable" => crate::commands::MagicTraceAction::DisableSlowFrame,
                     "status" | "help" | "?" => crate::commands::MagicTraceAction::Status,
                     _ => {
-                        return Err(CommandError::new(
+                        return Err(CommandError::new(maestro_ui::localization::tr(
                             "Usage: /magic-trace [stop|on|off|status]",
-                        ));
+                        )));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::MagicTrace(action)))
             }),
         )
+        .localized()
         .alias("mt")
         .usage("/magic-trace [stop|on|off|status]"),
     );
@@ -2619,7 +2843,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "tools",
-            "List built-in tools (and MCP via /mcp)",
+            maestro_ui::localization::tr("List built-in tools (and MCP via /mcp)"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let sub = ctx
@@ -2632,13 +2856,13 @@ pub fn build_command_registry() -> CommandRegistry {
                     "list" | "" => Ok(CommandOutput::Action(CommandAction::ShowTools)),
                     "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
                     "lsp" => Ok(CommandOutput::Message(
-                        "LSP: set lsp.enabled in config; diagnostics can surface on write tools."
+                        maestro_ui::localization::tr("LSP: set lsp.enabled in config; diagnostics can surface on write tools.")
                             .to_string(),
                     )),
-                    _ => Err(CommandError::new("Usage: /tools [list|mcp|lsp]")),
+                    _ => Err(CommandError::new(maestro_ui::localization::tr("Usage: /tools [list|mcp|lsp]"))),
                 }
             }),
-        )
+        ).localized()
         .group(vec!["list", "mcp", "lsp"])
         .usage("/tools [list|mcp|lsp]"),
     );
@@ -2646,82 +2870,91 @@ pub fn build_command_registry() -> CommandRegistry {
     // Hosted Computer command. `/orb` remains a compatibility alias.
     registry.register(Command::new(
         "computer",
-        "Control durable hosted Computer tasks without exposing MCP internals",
+        maestro_ui::localization::tr("Control durable hosted Computer tasks without exposing MCP internals"),
         CommandCategory::Tools,
         Box::new(|ctx| {
             Ok(CommandOutput::Action(CommandAction::Orb(parse_orb_action(
                 &ctx.raw_args,
             )?)))
         }),
-    ).alias("orb").group(vec![
-        "list", "status", "followup", "pause", "resume", "cancel", "collect",
+    ).localized().alias("orb").group(vec![
+        "list", "status", "followup", "pause", "resume", maestro_ui::localization::tr("cancel"), "collect",
     ]).usage(
         "/computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>]",
     ));
 
     // MCP command
-    registry.register(Command::new(
-        "mcp",
-        "Open the MCP server manager",
-        CommandCategory::Tools,
-        Box::new(|ctx| {
-            let raw = ctx.raw_args.trim();
-            let tokens = tokenize_command_args(raw);
-            let subcommand = tokens
-                .first()
-                .map(|token| token.to_lowercase())
-                .unwrap_or_default();
+    registry.register(
+        Command::new(
+            "mcp",
+            maestro_ui::localization::tr("Open the MCP server manager"),
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                let tokens = tokenize_command_args(raw);
+                let subcommand = tokens
+                    .first()
+                    .map(|token| token.to_lowercase())
+                    .unwrap_or_default();
 
-            let action = match subcommand.as_str() {
-                "" => McpAction::Status,
-                "config" => McpAction::Configure {
-                    args: tokens.into_iter().skip(1).collect(),
-                },
-                "resources" => {
-                    let server = tokens.get(1).cloned();
-                    let uri = if server.is_some() {
-                        let rest = tokens.iter().skip(2).cloned().collect::<Vec<_>>().join(" ");
-                        if rest.is_empty() { None } else { Some(rest) }
-                    } else {
-                        None
-                    };
-                    McpAction::Resources { server, uri }
+                let action = match subcommand.as_str() {
+                    "" => McpAction::Status,
+                    "config" => McpAction::Configure {
+                        args: tokens.into_iter().skip(1).collect(),
+                    },
+                    "resources" => {
+                        let server = tokens.get(1).cloned();
+                        let uri = if server.is_some() {
+                            let rest = tokens.iter().skip(2).cloned().collect::<Vec<_>>().join(" ");
+                            if rest.is_empty() { None } else { Some(rest) }
+                        } else {
+                            None
+                        };
+                        McpAction::Resources { server, uri }
+                    }
+                    "prompts" => parse_mcp_prompts_action(raw)?,
+                    other => {
+                        return Err(CommandError::new(maestro_ui::localization::format(
+                            "Unknown mcp subcommand: {0}",
+                            &[(other).to_string()],
+                        ))
+                        .with_hint(maestro_ui::localization::tr(
+                            "Available: config, resources, prompts",
+                        )));
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::Mcp(action)))
+            }),
+        )
+        .localized(),
+    );
+
+    registry.register(
+        Command::new(
+            "mcp-config",
+            maestro_ui::localization::tr("Open or script the MCP server manager"),
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() || raw.eq_ignore_ascii_case("wizard") {
+                    return Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status)));
                 }
-                "prompts" => parse_mcp_prompts_action(raw)?,
-                other => {
-                    return Err(
-                        CommandError::new(format!("Unknown mcp subcommand: {other}"))
-                            .with_hint("Available: config, resources, prompts"),
-                    );
-                }
-            };
-
-            Ok(CommandOutput::Action(CommandAction::Mcp(action)))
-        }),
-    ));
-
-    registry.register(Command::new(
-        "mcp-config",
-        "Open or script the MCP server manager",
-        CommandCategory::Tools,
-        Box::new(|ctx| {
-            let raw = ctx.raw_args.trim();
-            if raw.is_empty() || raw.eq_ignore_ascii_case("wizard") {
-                return Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status)));
-            }
-            Ok(CommandOutput::Action(CommandAction::Mcp(
-                McpAction::Configure {
-                    args: tokenize_command_args(raw),
-                },
-            )))
-        }),
-    ));
+                Ok(CommandOutput::Action(CommandAction::Mcp(
+                    McpAction::Configure {
+                        args: tokenize_command_args(raw),
+                    },
+                )))
+            }),
+        )
+        .localized(),
+    );
 
     // Hooks command
     registry.register(
         Command::new(
             "hooks",
-            "Manage the hook system (list, toggle, reload, metrics)",
+            maestro_ui::localization::tr("Manage the hook system (list, toggle, reload, metrics)"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let subcommand = ctx.raw_args.trim().to_lowercase();
@@ -2733,24 +2966,40 @@ pub fn build_command_registry() -> CommandRegistry {
                     "enable" | "on" => HooksAction::Enable,
                     "disable" | "off" => HooksAction::Disable,
                     other => {
-                        return Err(CommandError::new(format!(
-                            "Unknown hooks subcommand: {other}"
+                        return Err(CommandError::new(maestro_ui::localization::format(
+                            "Unknown hooks subcommand: {0}",
+                            &[(other).to_string()],
                         ))
-                        .with_hint("Available: list, toggle, reload, metrics, enable, disable"));
+                        .with_hint(maestro_ui::localization::tr(
+                            "Available: list, toggle, reload, metrics, enable, disable",
+                        )));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::HooksManage(action)))
             }),
         )
+        .localized()
         .alias("hook")
         .arg(CommandArgument::choice(
             "action",
-            "Hook management action",
-            vec!["list", "toggle", "reload", "metrics", "enable", "disable"],
+            maestro_ui::localization::tr("Hook management action"),
+            vec![
+                "list",
+                maestro_ui::localization::tr("toggle"),
+                "reload",
+                "metrics",
+                "enable",
+                "disable",
+            ],
         ))
         .usage("/hooks [list|toggle|reload|metrics|enable|disable]")
         .group(vec![
-            "list", "toggle", "reload", "metrics", "enable", "disable",
+            "list",
+            maestro_ui::localization::tr("toggle"),
+            "reload",
+            "metrics",
+            "enable",
+            "disable",
         ]),
     );
 
@@ -2758,22 +3007,23 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "version",
-            "Show version information",
+            maestro_ui::localization::tr("Show version information"),
             CommandCategory::Diagnostics,
             Box::new(|_| {
-                Ok(CommandOutput::Message(format!(
-                    "Deixic Code v{}",
-                    env!("CARGO_PKG_VERSION")
+                Ok(CommandOutput::Message(maestro_ui::localization::format(
+                    "Deixic Code v{0}",
+                    &[env!("CARGO_PKG_VERSION").to_string()],
                 )))
             }),
         )
+        .localized()
         .alias("v"),
     );
 
     registry.register(
         Command::new(
             "dex",
-            "Dex appearance, reactions, recap, and preferences",
+            maestro_ui::localization::tr("Dex appearance, reactions, recap, and preferences"),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let setting = ctx.get_string("setting").unwrap_or(ctx.raw_args.trim());
@@ -2782,10 +3032,13 @@ pub fn build_command_registry() -> CommandRegistry {
                         setting.to_owned(),
                     )))
                 } else {
-                    Err(CommandError::new("Unknown Dex action; use /dex for help"))
+                    Err(CommandError::new(maestro_ui::localization::tr(
+                        "Unknown Dex action; use /dex for help",
+                    )))
                 }
             }),
         )
+        .localized()
         .arg(CommandArgument::choice(
             "setting",
             crate::dex_actions::help(),
@@ -2801,7 +3054,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "footer",
-            "Change status-bar footer style (rich|solo|history|clear)",
+            maestro_ui::localization::tr(
+                "Change status-bar footer style (rich|solo|history|clear)",
+            ),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 if ctx.raw_args.trim().is_empty() {
@@ -2818,16 +3073,18 @@ pub fn build_command_registry() -> CommandRegistry {
                     })
                     .unwrap_or_else(|| "rich".to_string());
                 let style = FooterStyle::parse(&raw).ok_or_else(|| {
-                    CommandError::new(format!(
-                        "Unknown footer style '{raw}'. Use: rich, solo, history, clear"
+                    CommandError::new(maestro_ui::localization::format(
+                        "Unknown footer style '{0}'. Use: rich, solo, history, clear",
+                        std::slice::from_ref(&(raw)),
                     ))
                 })?;
                 Ok(CommandOutput::Action(CommandAction::SetFooterStyle(style)))
             }),
         )
+        .localized()
         .arg(CommandArgument::choice(
             "style",
-            "Footer style",
+            maestro_ui::localization::tr("Footer style"),
             vec!["rich", "solo", "history", "clear"],
         ))
         .usage("/footer [rich|solo|history|clear]"),
@@ -2837,14 +3094,14 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "goal",
-            "Structured goal mode: create, pause, block, complete, auto-continue",
+            maestro_ui::localization::tr("Structured goal mode: create, pause, block, complete, auto-continue"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Goal(parse_goal_action(
                     &ctx.raw_args,
                 )?)))
             }),
-        )
+        ).localized()
         .usage(
             "/goal [status|create [--max-turns N] [--token-budget N] [--max-duration-secs N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
         ),
@@ -2854,14 +3111,14 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "harness",
-            "Manage durable prompt, memory, skill, and subagent context",
+            maestro_ui::localization::tr("Manage durable prompt, memory, skill, and subagent context"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Harness(
                     parse_harness_action(&ctx.raw_args)?,
                 )))
             }),
-        )
+        ).localized()
         .alias("refine")
         .usage(
             "/harness [status|list|review|propose <scope> <kind> <name> <content> --evidence <text>|add <scope> <kind> <name> <content> [--evidence <text>]|update <id> <content>|delete <id>|apply <proposal-id>|reject <proposal-id> [note]|rollback <revision>]",
@@ -2872,14 +3129,14 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "rlm",
-            "Compose prompts from persistent named context variables",
+            maestro_ui::localization::tr("Compose prompts from persistent named context variables"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Rlm(parse_rlm_action(
                     &ctx.raw_args,
                 )?)))
             }),
-        )
+        ).localized()
         .usage("/rlm [list|set <name> <value> [--description <text>]|append <name> <value>|render <template>|clear <name>]"),
     );
 
@@ -2887,7 +3144,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "mailbox",
-            "Send and acknowledge durable messages between agent sessions",
+            maestro_ui::localization::tr(
+                "Send and acknowledge durable messages between agent sessions",
+            ),
             CommandCategory::Session,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Mailbox(
@@ -2895,6 +3154,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .usage(
             "/mailbox [list|send <recipient> <message>|read <id>|ack <id>|approve <id>|compact]",
         ),
@@ -2904,7 +3164,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "attach",
-            "Queue local files for the next prompt (add|list|clear|remove)",
+            maestro_ui::localization::tr(
+                "Queue local files for the next prompt (add|list|clear|remove)",
+            ),
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2930,9 +3192,17 @@ pub fn build_command_registry() -> CommandRegistry {
                 {
                     let index = parts
                         .next()
-                        .ok_or_else(|| CommandError::new("Usage: /attach remove <1-based-index>"))?
+                        .ok_or_else(|| {
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /attach remove <1-based-index>",
+                            ))
+                        })?
                         .parse::<usize>()
-                        .map_err(|_| CommandError::new("Usage: /attach remove <1-based-index>"))?;
+                        .map_err(|_| {
+                            CommandError::new(maestro_ui::localization::tr(
+                                "Usage: /attach remove <1-based-index>",
+                            ))
+                        })?;
                     return Ok(CommandOutput::Action(CommandAction::Attach(
                         AttachAction::Remove { index },
                     )));
@@ -2943,20 +3213,21 @@ pub fn build_command_registry() -> CommandRegistry {
                     .unwrap_or(raw)
                     .trim();
                 if path.is_empty() {
-                    return Err(CommandError::new(
+                    return Err(CommandError::new(maestro_ui::localization::tr(
                         "Usage: /attach <path> | /attach list | /attach clear | /attach remove <n>",
-                    ));
+                    )));
                 }
                 Ok(CommandOutput::Action(CommandAction::Attach(
                     AttachAction::Add(path.to_string()),
                 )))
             }),
         )
+        .localized()
         .usage("/attach <path|list|clear|remove <n>>"),
     );
 
     registry.register(Command::new(
-        "workers", "Inspect, redirect, cancel, or resume existing workers", CommandCategory::Tools,
+        "workers", maestro_ui::localization::tr("Inspect, redirect, cancel, or resume existing workers"), CommandCategory::Tools,
         Box::new(|ctx| {
             use super::types::WorkerAction;
             let raw = ctx.raw_args.trim();
@@ -2970,21 +3241,21 @@ pub fn build_command_registry() -> CommandRegistry {
                 "steer" | "resume" => {
                     let (id, message) = rest.split_once(char::is_whitespace)
                         .filter(|(id, message)| !id.is_empty() && !message.trim().is_empty())
-                        .ok_or_else(|| CommandError::new("Provide a worker id and a message."))?;
+                        .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Provide a worker id and a message.")))?;
                     if verb == "steer" { WorkerAction::Steer { agent_ref: id.into(), message: message.trim().into() } }
                     else { WorkerAction::Resume { id: id.into(), message: message.trim().into() } }
                 }
-                _ => return Err(CommandError::new("Usage: /workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]")),
+                _ => return Err(CommandError::new(maestro_ui::localization::tr("Usage: /workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]"))),
             };
             Ok(CommandOutput::Action(CommandAction::Worker(action)))
         }),
-    ).usage("/workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]"));
+    ).localized().usage("/workers [list|inspect <id>|steer <agent-ref> <message>|cancel <id>|resume <id> <message>]"));
 
     // Memory commands
     registry.register(
         Command::new(
             "memory",
-            "Review, save, edit, or forget scoped memory; show account status",
+            maestro_ui::localization::tr("Review, save, edit, or forget scoped memory; show account status"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2999,11 +3270,11 @@ pub fn build_command_registry() -> CommandRegistry {
                     "edit" => format!("update {rest}"),
                     "forget" => format!("delete {rest}"),
                     "reject" => format!("reject {rest}"),
-                    _ => return Err(CommandError::new("Usage: /memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]")),
+                    _ => return Err(CommandError::new(maestro_ui::localization::tr("Usage: /memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]"))),
                 };
                 Ok(CommandOutput::Action(CommandAction::Harness(parse_harness_action(&mapped)?)))
             }),
-        )
+        ).localized()
         .group(vec!["list", "review", "save", "edit", "forget", "reject"])
         .usage("/memory [list|review|save <proposal-id>|edit <entry-id> <text>|forget <entry-id>|reject <proposal-id>]"),
     );
@@ -3012,7 +3283,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "plan",
-            "Plan mode: explore + write plan.md only until approved",
+            maestro_ui::localization::tr("Plan mode: explore + write plan.md only until approved"),
             CommandCategory::Context,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -3034,13 +3305,13 @@ pub fn build_command_registry() -> CommandRegistry {
                     ))),
                     "comment" => {
                         let range = parts.next().ok_or_else(|| {
-                            CommandError::new("Usage: /plan comment <line|start-end> <text>")
+                            CommandError::new(maestro_ui::localization::tr("Usage: /plan comment <line|start-end> <text>"))
                         })?;
                         let (start_line, end_line) = parse_plan_range(range)?;
                         let text = parts.collect::<Vec<_>>().join(" ");
                         if text.is_empty() {
                             return Err(CommandError::new(
-                                "Usage: /plan comment <line|start-end> <text>",
+                                maestro_ui::localization::tr("Usage: /plan comment <line|start-end> <text>"),
                             ));
                         }
                         Ok(CommandOutput::Action(CommandAction::PlanReview(
@@ -3054,10 +3325,10 @@ pub fn build_command_registry() -> CommandRegistry {
                     "resolve" | "reopen" => {
                         let id = parts
                             .next()
-                            .ok_or_else(|| CommandError::new("Usage: /plan resolve|reopen <id>"))?
+                            .ok_or_else(|| CommandError::new(maestro_ui::localization::tr("Usage: /plan resolve|reopen <id>")))?
                             .trim_start_matches('#')
                             .parse::<u64>()
-                            .map_err(|_| CommandError::new("Plan comment id must be a number"))?;
+                            .map_err(|_| CommandError::new(maestro_ui::localization::tr("Plan comment id must be a number")))?;
                         let action = if subcommand == "resolve" {
                             PlanReviewAction::Resolve { id }
                         } else {
@@ -3065,20 +3336,21 @@ pub fn build_command_registry() -> CommandRegistry {
                         };
                         Ok(CommandOutput::Action(CommandAction::PlanReview(action)))
                     }
-                    _ => Err(CommandError::new("Usage: /plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]")),
+                    _ => Err(CommandError::new(maestro_ui::localization::tr("Usage: /plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]"))),
                 }
             }),
-        )
+        ).localized()
         .usage("/plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]").primary(5)
     );
 
     registry.register(
         Command::new(
             "view-plan",
-            "Show the current session plan.md",
+            maestro_ui::localization::tr("Show the current session plan.md"),
             CommandCategory::Context,
             Box::new(|_| Ok(CommandOutput::Action(CommandAction::ViewPlan))),
         )
+        .localized()
         .alias("show-plan")
         .alias("plan-view")
         .usage("/view-plan"),
@@ -3088,7 +3360,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "always-approve",
-            "Auto-approve all tool executions (YOLO)",
+            maestro_ui::localization::tr("Auto-approve all tool executions (YOLO)"),
             CommandCategory::Safety,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
@@ -3096,34 +3368,41 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .alias("yolo"),
     );
-    registry.register(Command::new(
-        "auto",
-        "Selective approvals (safe tools free, risky prompt)",
-        CommandCategory::Safety,
-        Box::new(|_| {
-            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                "selective".to_string(),
-            )))
-        }),
-    ));
-    registry.register(Command::new(
-        "ask",
-        "Require approval for all tools",
-        CommandCategory::Safety,
-        Box::new(|_| {
-            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                "safe".to_string(),
-            )))
-        }),
-    ));
+    registry.register(
+        Command::new(
+            "auto",
+            maestro_ui::localization::tr("Selective approvals (safe tools free, risky prompt)"),
+            CommandCategory::Safety,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                    "selective".to_string(),
+                )))
+            }),
+        )
+        .localized(),
+    );
+    registry.register(
+        Command::new(
+            "ask",
+            maestro_ui::localization::tr("Require approval for all tools"),
+            CommandCategory::Safety,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                    "safe".to_string(),
+                )))
+            }),
+        )
+        .localized(),
+    );
 
     // Continue command
     registry.register(
         Command::new(
             "continue",
-            "Continue the most recent session for this workspace",
+            maestro_ui::localization::tr("Continue the most recent session for this workspace"),
             CommandCategory::Session,
             Box::new(|_| {
                 Ok(CommandOutput::Action(CommandAction::Session(
@@ -3131,6 +3410,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .alias("c")
         .usage("/continue"),
     );
@@ -3139,10 +3419,11 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "resume",
-            "Browse and resume saved conversations",
+            maestro_ui::localization::tr("Browse and resume saved conversations"),
             CommandCategory::Session,
             Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
         )
+        .localized()
         .alias("r")
         .primary(1),
     );
@@ -3151,7 +3432,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "cost",
-            "Show token usage and cost statistics",
+            maestro_ui::localization::tr("Show token usage and cost statistics"),
             CommandCategory::Diagnostics,
             Box::new(|ctx| {
                 let subcommand = ctx.raw_args.trim().to_lowercase();
@@ -3160,20 +3441,24 @@ pub fn build_command_registry() -> CommandRegistry {
                     "detailed" | "detail" | "full" => UsageAction::Detailed,
                     "reset" | "clear" => UsageAction::Reset,
                     other => {
-                        return Err(
-                            CommandError::new(format!("Unknown cost subcommand: {other}"))
-                                .with_hint("Available: summary, detailed, reset"),
-                        );
+                        return Err(CommandError::new(maestro_ui::localization::format(
+                            "Unknown cost subcommand: {0}",
+                            &[(other).to_string()],
+                        ))
+                        .with_hint(maestro_ui::localization::tr(
+                            "Available: summary, detailed, reset",
+                        )));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::ShowUsage(action)))
             }),
         )
+        .localized()
         .alias("usage")
         .alias("tokens")
         .arg(CommandArgument::choice(
             "action",
-            "What to show",
+            maestro_ui::localization::tr("What to show"),
             vec!["summary", "detailed", "reset"],
         ))
         .usage("/cost [summary|detailed|reset]"),
@@ -3182,12 +3467,12 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "bug",
-            "Draft, review, or send a product bug report",
+            maestro_ui::localization::tr("Draft, review, or send a product bug report"),
             CommandCategory::Session,
             Box::new(|ctx| Ok(CommandOutput::Action(CommandAction::BugReport(
                 if ctx.raw_args.trim().is_empty() && ctx.command_name == "bug" { "compose".into() } else { ctx.raw_args.clone() }
             )))),
-        )
+        ).localized()
         .alias("feedback")
         .usage("/bug [description|queue|draft <text>|expected <text>|repro <steps>|review|send|export|dismiss|diagnostics on|off|rating useful|partly_useful|not_useful]"),
     );
@@ -3196,7 +3481,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "export",
-            "Export current session to file",
+            maestro_ui::localization::tr("Export current session to file"),
             CommandCategory::Session,
             Box::new(|ctx| {
                 let parts: Vec<&str> = ctx.raw_args.split_whitespace().collect();
@@ -3210,19 +3495,28 @@ pub fn build_command_registry() -> CommandRegistry {
                     Some("json") => ExportAction::Json(path),
                     Some("txt" | "text") => ExportAction::PlainText(path),
                     Some(other) => {
-                        return Err(CommandError::new(format!("Unknown export format: {other}"))
-                            .with_hint("Available: markdown, html, json, text"));
+                        return Err(CommandError::new(maestro_ui::localization::format(
+                            "Unknown export format: {0}",
+                            &[(other).to_string()],
+                        ))
+                        .with_hint(maestro_ui::localization::tr(
+                            "Available: markdown, html, json, text",
+                        )));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::ExportSession(action)))
             }),
         )
+        .localized()
         .arg(CommandArgument::choice(
             "format",
-            "Export format",
+            maestro_ui::localization::tr("Export format"),
             vec!["markdown", "html", "json", "text"],
         ))
-        .arg(CommandArgument::string("path", "Output file path"))
+        .arg(CommandArgument::string(
+            "path",
+            maestro_ui::localization::tr("Output file path"),
+        ))
         .usage("/export [format] [path]"),
     );
 
@@ -3230,7 +3524,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "history",
-            "Show or search prompt history",
+            maestro_ui::localization::tr("Show or search prompt history"),
             CommandCategory::Session,
             Box::new(|ctx| {
                 let args = ctx.raw_args.trim();
@@ -3249,10 +3543,11 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Action(CommandAction::ShowHistory(action)))
             }),
         )
+        .localized()
         .alias("hist")
         .arg(CommandArgument::string(
             "query",
-            "Number of entries or search query",
+            maestro_ui::localization::tr("Number of entries or search query"),
         ))
         .usage("/history [count|search query|clear]"),
     );
@@ -3261,7 +3556,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "toolhistory",
-            "Show tool execution history and statistics",
+            maestro_ui::localization::tr("Show tool execution history and statistics"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let raw_args = ctx.raw_args.trim();
@@ -3283,8 +3578,12 @@ pub fn build_command_registry() -> CommandRegistry {
                     "tool" => {
                         let tool_name = rest_trimmed.to_string();
                         if tool_name.is_empty() {
-                            return Err(CommandError::new("Tool name required")
-                                .with_hint("Usage: /toolhistory tool <name>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Tool name required",
+                            ))
+                            .with_hint(maestro_ui::localization::tr(
+                                "Usage: /toolhistory tool <name>",
+                            )));
                         }
                         ToolHistoryAction::ForTool(tool_name)
                     }
@@ -3303,8 +3602,12 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
+        .localized()
         .alias("th")
-        .arg(CommandArgument::string("action", "Action or tool name"))
+        .arg(CommandArgument::string(
+            "action",
+            maestro_ui::localization::tr("Action or tool name"),
+        ))
         .usage("/toolhistory [count|stats|clear|tool <name>]"),
     );
 
@@ -3312,7 +3615,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "skills",
-            "Manage skills (specialized behaviors from SKILL.md files)",
+            maestro_ui::localization::tr(
+                "Manage skills (specialized behaviors from SKILL.md files)",
+            ),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let raw_args = ctx.raw_args.trim();
@@ -3333,24 +3638,36 @@ pub fn build_command_registry() -> CommandRegistry {
                     "activate" | "enable" | "on" => {
                         let name = rest_trimmed.to_string();
                         if name.is_empty() {
-                            return Err(CommandError::new("Skill name required")
-                                .with_hint("Usage: /skills activate <skill-name>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Skill name required",
+                            ))
+                            .with_hint(maestro_ui::localization::tr(
+                                "Usage: /skills activate <skill-name>",
+                            )));
                         }
                         SkillsAction::Activate(name)
                     }
                     "deactivate" | "disable" | "off" => {
                         let name = rest_trimmed.to_string();
                         if name.is_empty() {
-                            return Err(CommandError::new("Skill name required")
-                                .with_hint("Usage: /skills deactivate <skill-name>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Skill name required",
+                            ))
+                            .with_hint(maestro_ui::localization::tr(
+                                "Usage: /skills deactivate <skill-name>",
+                            )));
                         }
                         SkillsAction::Deactivate(name)
                     }
                     "info" | "show" => {
                         let name = rest_trimmed.to_string();
                         if name.is_empty() {
-                            return Err(CommandError::new("Skill name required")
-                                .with_hint("Usage: /skills info <skill-name>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Skill name required",
+                            ))
+                            .with_hint(maestro_ui::localization::tr(
+                                "Usage: /skills info <skill-name>",
+                            )));
                         }
                         SkillsAction::Info(name)
                     }
@@ -3367,12 +3684,16 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Action(CommandAction::Skills(action)))
             }),
         )
+        .localized()
         .alias("skill")
         .arg(CommandArgument::string(
             "action",
             "list|activate|deactivate|reload|info",
         ))
-        .arg(CommandArgument::string("name", "Skill name"))
+        .arg(CommandArgument::string(
+            "name",
+            maestro_ui::localization::tr("Skill name"),
+        ))
         .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
     );
 
@@ -3380,7 +3701,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "plugins",
-            "List plugins, marketplace catalog, install/reload",
+            maestro_ui::localization::tr("List plugins, marketplace catalog, install/reload"),
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let raw_args = ctx.raw_args.trim();
@@ -3398,9 +3719,9 @@ pub fn build_command_registry() -> CommandRegistry {
                             Some("install") => {
                                 let id = rest.get(1).copied().unwrap_or("").trim();
                                 if id.is_empty() {
-                                    return Err(CommandError::new(
+                                    return Err(CommandError::new(maestro_ui::localization::tr(
                                         "Usage: /plugins marketplace install <id> [--trust]",
-                                    ));
+                                    )));
                                 }
                                 let trust = rest
                                     .iter()
@@ -3411,11 +3732,14 @@ pub fn build_command_registry() -> CommandRegistry {
                                 }
                             }
                             Some(other) => {
-                                return Err(CommandError::new(format!(
-                                    "Unknown marketplace subcommand: {other}"
+                                return Err(CommandError::new(maestro_ui::localization::format(
+                                    "Unknown marketplace subcommand: {0}",
+                                    &[(other).to_string()],
                                 ))
                                 .with_hint(
-                                    "Usage: /plugins marketplace [list|install <id> [--trust]]",
+                                    maestro_ui::localization::tr(
+                                        "Usage: /plugins marketplace [list|install <id> [--trust]]",
+                                    ),
                                 ));
                             }
                         }
@@ -3429,8 +3753,12 @@ pub fn build_command_registry() -> CommandRegistry {
                             .join(" ");
                         let name = name.trim();
                         if name.is_empty() {
-                            return Err(CommandError::new("Plugin name required")
-                                .with_hint("Usage: /plugins info <plugin-name>"));
+                            return Err(CommandError::new(maestro_ui::localization::tr(
+                                "Plugin name required",
+                            ))
+                            .with_hint(maestro_ui::localization::tr(
+                                "Usage: /plugins info <plugin-name>",
+                            )));
                         }
                         PluginsAction::Info(name.to_string())
                     }
@@ -3443,10 +3771,11 @@ pub fn build_command_registry() -> CommandRegistry {
                 Ok(CommandOutput::Action(CommandAction::Plugins(action)))
             }),
         )
+        .localized()
         .alias("plugin")
         .arg(CommandArgument::string(
             "action",
-            "list|info|reload|marketplace or plugin name",
+            maestro_ui::localization::tr("list|info|reload|marketplace or plugin name"),
         ))
         .usage("/plugins [list|info|reload|marketplace [list|install <id> [--trust]]]"),
     );
@@ -3467,9 +3796,9 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             let (text, max_turns, token_budget, max_duration_secs) =
                 crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
-                ));
+                )));
             }
             Ok(GoalAction::Create {
                 text,
@@ -3484,9 +3813,9 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             let (text, max_turns, token_budget, max_duration_secs) =
                 crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /goal replace [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
-                ));
+                )));
             }
             Ok(GoalAction::Create {
                 text,
@@ -3510,7 +3839,9 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 "on" | "true" | "1" | "enable" | "enabled" => true,
                 "off" | "false" | "0" | "disable" | "disabled" => false,
                 _ => {
-                    return Err(CommandError::new("Usage: /goal auto on|off"));
+                    return Err(CommandError::new(maestro_ui::localization::tr(
+                        "Usage: /goal auto on|off",
+                    )));
                 }
             };
             Ok(GoalAction::AutoContinue { enabled })
@@ -3520,9 +3851,9 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             let (text, max_turns, token_budget, max_duration_secs) =
                 crate::goal::strip_goal_flags_with_duration(trimmed).map_err(CommandError::new)?;
             if text.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
-                ));
+                )));
             }
             Ok(GoalAction::Create {
                 text,
@@ -3557,20 +3888,20 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
             let name = fields.next().unwrap_or_default();
             let content = fields.next().unwrap_or_default().trim();
             if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /refine propose <scope> <kind> <name> <content> --evidence <text>",
-                ));
+                )));
             }
             let (content, evidence) = split_harness_evidence(content);
             let Some(evidence) = evidence else {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Refinement proposals require --evidence <text>.",
-                ));
+                )));
             };
             if content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Refinement content is required before --evidence.",
-                ));
+                )));
             }
             Ok(HarnessAction::Propose {
                 scope: scope.to_string(),
@@ -3587,15 +3918,15 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
             let name = fields.next().unwrap_or_default();
             let content = fields.next().unwrap_or_default().trim();
             if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /harness add <scope> <kind> <name> <content> [--evidence <text>]",
-                ));
+                )));
             }
             let (content, evidence) = split_harness_evidence(content);
             if content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Harness content is required before --evidence",
-                ));
+                )));
             }
             Ok(HarnessAction::Add {
                 scope: scope.to_string(),
@@ -3610,15 +3941,15 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
             let id = fields.next().unwrap_or_default();
             let content = fields.next().unwrap_or_default().trim();
             if id.is_empty() || content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /harness update <id> <content> [--evidence <text>]",
-                ));
+                )));
             }
             let (content, evidence) = split_harness_evidence(content);
             if content.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Harness content is required before --evidence",
-                ));
+                )));
             }
             Ok(HarnessAction::Update {
                 id: id.to_string(),
@@ -3628,13 +3959,17 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
         }
         "delete" | "remove" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /harness delete <id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /harness delete <id>",
+                )));
             }
             Ok(HarnessAction::Delete(rest.to_string()))
         }
         "apply" | "accept" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /refine apply <proposal-id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /refine apply <proposal-id>",
+                )));
             }
             Ok(HarnessAction::Apply(rest.to_string()))
         }
@@ -3647,9 +3982,9 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
             if id.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /refine reject <proposal-id> [note]",
-                ));
+                )));
             }
             Ok(HarnessAction::Reject {
                 id: id.to_string(),
@@ -3658,12 +3993,15 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
         }
         "rollback" | "restore" => {
             let revision = rest.parse::<u64>().map_err(|_| {
-                CommandError::new("Usage: /harness rollback <revision> (revision must be numeric)")
+                CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /harness rollback <revision> (revision must be numeric)",
+                ))
             })?;
             Ok(HarnessAction::Rollback(revision))
         }
-        _ => Err(CommandError::new(format!(
-            "Unknown harness action '{subcommand}'. Use status, list, review, propose, add, update, apply, reject, delete, or rollback."
+        _ => Err(CommandError::new(maestro_ui::localization::format(
+            "Unknown harness action '{0}'. Use status, list, review, propose, add, update, apply, reject, delete, or rollback.",
+            std::slice::from_ref(&(subcommand)),
         ))),
     }
 }
@@ -3694,9 +4032,9 @@ fn parse_rlm_action(raw: &str) -> Result<RlmAction, CommandError> {
             let value = fields.next().unwrap_or_default().trim();
             let (value, description) = split_rlm_description(value);
             if name.is_empty() || value.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /rlm set <name> <value> [--description <text>]",
-                ));
+                )));
             }
             Ok(RlmAction::Set {
                 name: name.to_string(),
@@ -3709,7 +4047,9 @@ fn parse_rlm_action(raw: &str) -> Result<RlmAction, CommandError> {
             let name = fields.next().unwrap_or_default();
             let value = fields.next().unwrap_or_default().trim();
             if name.is_empty() || value.is_empty() {
-                return Err(CommandError::new("Usage: /rlm append <name> <value>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /rlm append <name> <value>",
+                )));
             }
             Ok(RlmAction::Append {
                 name: name.to_string(),
@@ -3718,19 +4058,23 @@ fn parse_rlm_action(raw: &str) -> Result<RlmAction, CommandError> {
         }
         "render" | "expand" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /rlm render <template>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /rlm render <template>",
+                )));
             }
             Ok(RlmAction::Render(rest.to_string()))
         }
         "clear" | "delete" | "remove" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /rlm clear <name>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /rlm clear <name>",
+                )));
             }
             Ok(RlmAction::Clear(rest.to_string()))
         }
-        _ => Err(CommandError::new(
+        _ => Err(CommandError::new(maestro_ui::localization::tr(
             "Usage: /rlm list|set|append|render|clear",
-        )),
+        ))),
     }
 }
 
@@ -3759,9 +4103,9 @@ fn parse_mailbox_action(raw: &str) -> Result<MailboxAction, CommandError> {
             let recipient = fields.next().unwrap_or_default();
             let body = fields.next().unwrap_or_default().trim();
             if recipient.is_empty() || body.is_empty() {
-                return Err(CommandError::new(
+                return Err(CommandError::new(maestro_ui::localization::tr(
                     "Usage: /mailbox send <recipient> <message>",
-                ));
+                )));
             }
             Ok(MailboxAction::Send {
                 recipient: recipient.to_string(),
@@ -3770,32 +4114,40 @@ fn parse_mailbox_action(raw: &str) -> Result<MailboxAction, CommandError> {
         }
         "read" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /mailbox read <id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /mailbox read <id>",
+                )));
             }
             Ok(MailboxAction::Read(rest.to_string()))
         }
         "inspect" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /mailbox inspect <id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /mailbox inspect <id>",
+                )));
             }
             Ok(MailboxAction::Inspect(rest.to_string()))
         }
         "ack" | "acknowledge" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /mailbox ack <id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /mailbox ack <id>",
+                )));
             }
             Ok(MailboxAction::Acknowledge(rest.to_string()))
         }
         "approve" => {
             if rest.is_empty() {
-                return Err(CommandError::new("Usage: /mailbox approve <id>"));
+                return Err(CommandError::new(maestro_ui::localization::tr(
+                    "Usage: /mailbox approve <id>",
+                )));
             }
             Ok(MailboxAction::Approve(rest.to_string()))
         }
         "compact" | "clear" => Ok(MailboxAction::Compact),
-        _ => Err(CommandError::new(
+        _ => Err(CommandError::new(maestro_ui::localization::tr(
             "Usage: /mailbox list|send|read|inspect|ack|approve|compact",
-        )),
+        ))),
     }
 }
 
@@ -3809,10 +4161,12 @@ pub fn build_command_registry_with_extensions(
 
     for prompt in prompts {
         let name = prompt.name.clone();
-        let desc = prompt
-            .description
-            .clone()
-            .unwrap_or_else(|| format!("Prompt template ({})", prompt.source_type.as_str()));
+        let desc = prompt.description.clone().unwrap_or_else(|| {
+            maestro_ui::localization::format(
+                "Prompt template ({0})",
+                &[(prompt.source_type.as_str()).to_string()],
+            )
+        });
         let usage = crate::prompts::get_usage_hint(prompt).replace("/prompts:", "/");
         let name_for_handler = name.clone();
         registry.register_if_absent(
@@ -3837,7 +4191,7 @@ pub fn build_command_registry_with_extensions(
         }
         let name = skill.definition.name.clone();
         let desc = if skill.definition.description.is_empty() {
-            format!("Skill: {name}")
+            maestro_ui::localization::format("Skill: {0}", std::slice::from_ref(&(name)))
         } else {
             skill.definition.description.clone()
         };
@@ -3884,10 +4238,12 @@ pub fn register_exec_commands(
     let mut skipped = Vec::new();
     for exec in exec_commands {
         let name = exec.name.clone();
-        let description = format!(
-            "Executable command ({}, `{}`)",
-            exec.source.as_str(),
-            exec.path.display()
+        let description = maestro_ui::localization::format(
+            "Executable command ({0}, `{1}`)",
+            &[
+                (exec.source.as_str()).to_string(),
+                (exec.path.display()).to_string(),
+            ],
         );
         let usage = format!("/{name} [args...]");
         let name_for_handler = name.clone();
@@ -3917,13 +4273,16 @@ fn build_diag_about(ctx: &CommandContext) -> String {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let cwd = ctx.cwd.clone();
-    let branch =
-        git::current_branch(Path::new(&ctx.cwd)).unwrap_or_else(|| "(not a repo)".to_string());
+    let branch = git::current_branch(Path::new(&ctx.cwd))
+        .unwrap_or_else(|| maestro_ui::localization::tr("(not a repo)").to_string());
     let session = ctx
         .session_id
         .clone()
         .unwrap_or_else(|| "(ephemeral)".to_string());
-    let model = ctx.model.clone().unwrap_or_else(|| "(unknown)".to_string());
+    let model = ctx
+        .model
+        .clone()
+        .unwrap_or_else(|| maestro_ui::localization::tr("(unknown)").to_string());
 
     let mut lines = Vec::new();
     lines.push("## About".to_string());
@@ -3931,8 +4290,14 @@ fn build_diag_about(ctx: &CommandContext) -> String {
     lines.push(format!("**Version:** {version}"));
     lines.push(format!("**OS:** {os}/{arch}"));
     lines.push(format!("**CWD:** {cwd}"));
-    lines.push(format!("**Session:** {session}"));
-    lines.push(format!("**Model:** {model}"));
+    lines.push(maestro_ui::localization::format(
+        "**Session:** {0}",
+        std::slice::from_ref(&(session)),
+    ));
+    lines.push(maestro_ui::localization::format(
+        "**Model:** {0}",
+        std::slice::from_ref(&(model)),
+    ));
     lines.push(format!("**Git:** {branch}"));
     lines.join("\n")
 }
@@ -3942,98 +4307,135 @@ fn build_diag_context(ctx: &CommandContext) -> String {
         .session_id
         .clone()
         .unwrap_or_else(|| "(ephemeral)".to_string());
-    let model = ctx.model.clone().unwrap_or_else(|| "(unknown)".to_string());
+    let model = ctx
+        .model
+        .clone()
+        .unwrap_or_else(|| maestro_ui::localization::tr("(unknown)").to_string());
 
     let mut lines = Vec::new();
-    lines.push("## Context".to_string());
+    lines.push(maestro_ui::localization::tr("## Context").to_string());
     lines.push(String::new());
-    lines.push(format!("**Model:** {model}"));
-    lines.push(format!("**Session:** {session}"));
+    lines.push(maestro_ui::localization::format(
+        "**Model:** {0}",
+        std::slice::from_ref(&(model)),
+    ));
+    lines.push(maestro_ui::localization::format(
+        "**Session:** {0}",
+        std::slice::from_ref(&(session)),
+    ));
     lines.push(format!("**CWD:** {}", ctx.cwd));
     lines.push(String::new());
-    lines.push("Use /context for a token breakdown of the current session.".to_string());
+    lines.push(
+        maestro_ui::localization::tr("Use /context for a token breakdown of the current session.")
+            .to_string(),
+    );
     lines.join("\n")
 }
 
 fn git_help_message() -> String {
     let mut msg = String::new();
-    msg.push_str("Git Commands:\n");
-    msg.push_str("  /git                 Show git status summary\n");
-    msg.push_str("  /git status          Show git status\n");
-    msg.push_str("  /git diff [path]     Show diff for file\n");
-    msg.push_str("  /git review          Summarize status and diff stats\n\n");
-    msg.push_str("Direct shortcuts still work: /diff, /review");
+    msg.push_str(maestro_ui::localization::tr("Git Commands:\n"));
+    msg.push_str(maestro_ui::localization::tr(
+        "  /git                 Show git status summary\n",
+    ));
+    msg.push_str(maestro_ui::localization::tr(
+        "  /git status          Show git status\n",
+    ));
+    msg.push_str(maestro_ui::localization::tr(
+        "  /git diff [path]     Show diff for file\n",
+    ));
+    msg.push_str(maestro_ui::localization::tr(
+        "  /git review          Summarize status and diff stats\n\n",
+    ));
+    msg.push_str(maestro_ui::localization::tr(
+        "Direct shortcuts still work: /diff, /review",
+    ));
     msg
 }
 
 fn build_git_status_message(cwd: &str) -> String {
     let cwd_path = Path::new(cwd);
     if !git::is_git_repo(cwd_path) {
-        return "Not a git repository.".to_string();
+        return maestro_ui::localization::tr("Not a git repository.").to_string();
     }
     match git::status_short(cwd_path) {
         Ok(status) => {
             if status.is_empty() {
-                return "Working tree clean.".to_string();
+                return maestro_ui::localization::tr("Working tree clean.").to_string();
             }
             if is_clean_status(&status) {
                 if let Some(branch_line) = status.lines().next() {
-                    return format!(
-                        "## Git Status\n\n```\n{branch_line}\n```\n\nWorking tree clean.",
+                    return maestro_ui::localization::format(
+                        "## Git Status\n\n```\n{0}\n```\n\nWorking tree clean.",
+                        &[(branch_line).to_string()],
                     );
                 }
-                return "Working tree clean.".to_string();
+                return maestro_ui::localization::tr("Working tree clean.").to_string();
             }
-            format!("## Git Status\n\n```\n{status}\n```")
+            maestro_ui::localization::format(
+                "## Git Status\n\n```\n{0}\n```",
+                std::slice::from_ref(&(status)),
+            )
         }
-        Err(err) => format!("Git status failed: {err}"),
+        Err(err) => {
+            maestro_ui::localization::format("Git status failed: {0}", std::slice::from_ref(&(err)))
+        }
     }
 }
 
 fn build_git_review_message(cwd: &str) -> String {
     let cwd_path = Path::new(cwd);
     if !git::is_git_repo(cwd_path) {
-        return "Not a git repository.".to_string();
+        return maestro_ui::localization::tr("Not a git repository.").to_string();
     }
 
-    let status =
-        git::status_short(cwd_path).unwrap_or_else(|err| format!("git status failed: {err}"));
-    let staged = git::diff_stat(cwd_path, true)
-        .unwrap_or_else(|err| format!("git diff --cached --stat failed: {err}"));
-    let worktree = git::diff_stat(cwd_path, false)
-        .unwrap_or_else(|err| format!("git diff --stat failed: {err}"));
+    let status = git::status_short(cwd_path).unwrap_or_else(|err| {
+        maestro_ui::localization::format("git status failed: {0}", std::slice::from_ref(&(err)))
+    });
+    let staged = git::diff_stat(cwd_path, true).unwrap_or_else(|err| {
+        maestro_ui::localization::format(
+            "git diff --cached --stat failed: {0}",
+            std::slice::from_ref(&(err)),
+        )
+    });
+    let worktree = git::diff_stat(cwd_path, false).unwrap_or_else(|err| {
+        maestro_ui::localization::format(
+            "git diff --stat failed: {0}",
+            std::slice::from_ref(&(err)),
+        )
+    });
 
     let status_display = if status.is_empty() {
-        "Working tree clean.".to_string()
+        maestro_ui::localization::tr("Working tree clean.").to_string()
     } else if is_clean_status(&status) {
         let mut display = String::new();
         if let Some(branch_line) = status.lines().next() {
             display.push_str(branch_line);
             display.push('\n');
         }
-        display.push_str("Working tree clean.");
+        display.push_str(maestro_ui::localization::tr("Working tree clean."));
         display
     } else {
         status.clone()
     };
 
-    let mut msg = String::from("## Git Review\n\n");
+    let mut msg = String::from(maestro_ui::localization::tr("## Git Review\n\n"));
     msg.push_str("**Status:**\n```\n");
     msg.push_str(&status_display);
     msg.push_str("\n```\n\n");
 
-    msg.push_str("**Staged diff stats:**\n");
+    msg.push_str(maestro_ui::localization::tr("**Staged diff stats:**\n"));
     if staged.is_empty() {
-        msg.push_str("No staged changes.\n\n");
+        msg.push_str(maestro_ui::localization::tr("No staged changes.\n\n"));
     } else {
         msg.push_str("```\n");
         msg.push_str(&staged);
         msg.push_str("\n```\n\n");
     }
 
-    msg.push_str("**Worktree diff stats:**\n");
+    msg.push_str(maestro_ui::localization::tr("**Worktree diff stats:**\n"));
     if worktree.is_empty() {
-        msg.push_str("No unstaged changes.");
+        msg.push_str(maestro_ui::localization::tr("No unstaged changes."));
     } else {
         msg.push_str("```\n");
         msg.push_str(&worktree);
@@ -4052,24 +4454,28 @@ fn is_clean_status(status: &str) -> bool {
 fn build_git_diff_message(cwd: &str, path: Option<&str>) -> String {
     let cwd_path = Path::new(cwd);
     if !git::is_git_repo(cwd_path) {
-        return "Not a git repository.".to_string();
+        return maestro_ui::localization::tr("Not a git repository.").to_string();
     }
 
     match git::diff(cwd_path, path) {
         Ok(diff) => {
             if diff.is_empty() {
-                return "No unstaged changes.".to_string();
+                return maestro_ui::localization::tr("No unstaged changes.").to_string();
             }
             let (truncated, was_truncated) = truncate_text(&diff, 200, 20_000);
-            let mut msg = String::from("## Git Diff\n\n```diff\n");
+            let mut msg = String::from(maestro_ui::localization::tr("## Git Diff\n\n```diff\n"));
             msg.push_str(&truncated);
             msg.push_str("\n```");
             if was_truncated {
-                msg.push_str("\n\n(Truncated. Run git diff in your shell for full output.)");
+                msg.push_str(maestro_ui::localization::tr(
+                    "\n\n(Truncated. Run git diff in your shell for full output.)",
+                ));
             }
             msg
         }
-        Err(err) => format!("Git diff failed: {err}"),
+        Err(err) => {
+            maestro_ui::localization::format("Git diff failed: {0}", std::slice::from_ref(&(err)))
+        }
     }
 }
 
@@ -4197,5 +4603,34 @@ mod menu_contract_tests {
                 .execute("/output typo", "/tmp", None, None)
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod localization_regression_tests {
+    use super::*;
+
+    #[test]
+    fn localization_keeps_command_identity_and_error_kind() {
+        use crate::localization::{Locale, with_locale};
+        for locale in Locale::ALL {
+            with_locale(locale, || {
+                let registry = build_command_registry();
+                assert_eq!(registry.get("help").unwrap().name, "help");
+                assert_eq!(
+                    registry.get("help").unwrap().description,
+                    "Show available commands"
+                );
+                let error = registry
+                    .execute("/no-such-command-xyz", ".", None, None)
+                    .unwrap_err();
+                assert_eq!(error.kind, CommandErrorKind::UnknownCommand);
+                assert!(error.message.contains("/no-such-command-xyz"));
+                assert_eq!(
+                    CommandError::new("Unknown command in custom validation").kind,
+                    CommandErrorKind::InvalidInput
+                );
+            });
+        }
     }
 }

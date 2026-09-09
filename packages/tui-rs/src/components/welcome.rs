@@ -297,11 +297,11 @@ impl OnboardingStep {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Welcome => "Welcome",
-            Self::Auth => "Authentication",
-            Self::TrustDirectory => "Trust Directory",
-            Self::Configure => "Configuration",
-            Self::Complete => "Complete",
+            Self::Welcome => maestro_ui::localization::tr("Welcome"),
+            Self::Auth => maestro_ui::localization::tr("Authentication"),
+            Self::TrustDirectory => maestro_ui::localization::tr("Trust Directory"),
+            Self::Configure => maestro_ui::localization::tr("Configuration"),
+            Self::Complete => maestro_ui::localization::tr("Complete"),
         }
     }
 }

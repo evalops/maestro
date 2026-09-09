@@ -18,23 +18,32 @@ impl ExecCommandOutcome {
     /// Render the script source plus captured output as a transcript message
     /// so the user can see exactly what ran and what it produced.
     fn format_transcript(&self) -> String {
-        let mut msg = format!("## /{} (executable command)\n\n", self.name);
+        let mut msg = maestro_ui::localization::format(
+            "## /{0} (executable command)\n\n",
+            std::slice::from_ref(&(self.name)),
+        );
         msg.push_str(&format!("**Script:** `{}`\n\n", self.path.display()));
         msg.push_str("```sh\n");
         msg.push_str(self.source.trim_end());
         msg.push_str("\n```\n\n");
         match &self.result {
             Ok(output) => {
-                let exit = output
-                    .exit_code
-                    .map_or_else(|| "none".to_string(), |code| code.to_string());
-                msg.push_str(&format!("**Exit code:** {exit}\n"));
+                let exit = output.exit_code.map_or_else(
+                    || maestro_ui::localization::tr("none").to_string(),
+                    |code| code.to_string(),
+                );
+                msg.push_str(&maestro_ui::localization::format(
+                    "**Exit code:** {0}\n",
+                    std::slice::from_ref(&(exit)),
+                ));
                 if output.timed_out {
-                    msg.push_str("**Killed:** exceeded the 120s timeout\n");
+                    msg.push_str(maestro_ui::localization::tr(
+                        "**Killed:** exceeded the 120s timeout\n",
+                    ));
                 }
                 msg.push('\n');
                 if output.stdout.trim().is_empty() && output.stderr.trim().is_empty() {
-                    msg.push_str("*(no output)*\n");
+                    msg.push_str(maestro_ui::localization::tr("*(no output)*\n"));
                 } else {
                     if !output.stdout.trim().is_empty() {
                         msg.push_str("**Output:**\n```\n");
@@ -48,14 +57,17 @@ impl ExecCommandOutcome {
                     }
                 }
                 if output.truncated {
-                    msg.push_str(&format!(
-                        "\n*(output truncated at {}KB)*\n",
-                        exec_commands::MAX_OUTPUT_BYTES / 1024
+                    msg.push_str(&maestro_ui::localization::format(
+                        "\n*(output truncated at {0}KB)*\n",
+                        &[(exec_commands::MAX_OUTPUT_BYTES / 1024).to_string()],
                     ));
                 }
             }
             Err(err) => {
-                msg.push_str(&format!("**Error:** {err}\n"));
+                msg.push_str(&maestro_ui::localization::format(
+                    "**Error:** {0}\n",
+                    std::slice::from_ref(err),
+                ));
             }
         }
         msg
@@ -69,8 +81,9 @@ pub(super) fn exec_collision_warning(skipped: &[String]) -> String {
         .map(|name| format!("/{name}"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "Executable command(s) skipped because the name is already taken by a built-in or extension command: {names}. Built-in commands always win; rename the script to use it."
+    maestro_ui::localization::format(
+        "Executable command(s) skipped because the name is already taken by a built-in or extension command: {0}. Built-in commands always win; rename the script to use it.",
+        std::slice::from_ref(&(names)),
     )
 }
 
@@ -86,7 +99,11 @@ impl App {
             .find(|cmd| cmd.name.eq_ignore_ascii_case(name))
             .cloned()
         else {
-            self.state.error = Some(format!("Executable command '{name}' not found"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Executable command '{0}' not found", &[(name).to_string()]),
+            );
             return;
         };
 
@@ -115,7 +132,10 @@ impl App {
                 });
             });
         if let Err(err) = spawned {
-            self.state.error = Some(format!("Failed to start /{name}: {err}"));
+            self.state.error = Some(self.state.locale.format(
+                "Failed to start /{0}: {1}",
+                &[(name).to_string(), (err).to_string()],
+            ));
         }
     }
 

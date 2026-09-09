@@ -59,14 +59,14 @@ impl ShortcutCategory {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Navigation => "Navigation",
-            Self::Input => "Input",
-            Self::Modal => "Dialogs",
-            Self::Commands => "Commands",
-            Self::Session => "Session",
-            Self::Tools => "Tools",
-            Self::View => "View",
-            Self::System => "System",
+            Self::Navigation => maestro_ui::localization::tr("Navigation"),
+            Self::Input => maestro_ui::localization::tr("Input"),
+            Self::Modal => maestro_ui::localization::tr("Dialogs"),
+            Self::Commands => maestro_ui::localization::tr("Commands"),
+            Self::Session => maestro_ui::localization::tr("Session"),
+            Self::Tools => maestro_ui::localization::tr("Tools"),
+            Self::View => maestro_ui::localization::tr("View"),
+            Self::System => maestro_ui::localization::tr("System"),
         }
     }
 
@@ -95,6 +95,7 @@ impl ShortcutCategory {
 /// A single keyboard shortcut definition
 #[derive(Debug, Clone)]
 pub struct Shortcut {
+    localized: bool,
     /// The key combination (e.g., "Ctrl+C", "↑/↓")
     pub keys: String,
     /// Description of what this shortcut does
@@ -113,10 +114,19 @@ impl Shortcut {
         description: impl Into<String>,
     ) -> Self {
         Self {
+            localized: false,
             keys: keys.into(),
             description: description.into(),
             category,
             context_hint: None,
+        }
+    }
+
+    fn display_description(&self) -> &str {
+        if self.localized {
+            maestro_ui::localization::tr(&self.description)
+        } else {
+            &self.description
         }
     }
 
@@ -170,6 +180,9 @@ impl ShortcutsHelp {
         };
 
         help.add_default_shortcuts(&labels);
+        for shortcut in &mut help.shortcuts {
+            shortcut.localized = true;
+        }
         help
     }
 
@@ -517,7 +530,7 @@ impl ShortcutsHelp {
                 // Text filter
                 if let Some(ref filter) = self.filter {
                     let matches = s.keys.to_lowercase().contains(filter)
-                        || s.description.to_lowercase().contains(filter)
+                        || s.display_description().to_lowercase().contains(filter)
                         || s.category.label().to_lowercase().contains(filter);
                     if !matches {
                         return false;
@@ -583,13 +596,22 @@ impl ShortcutsHelp {
                 let context = shortcut
                     .context_hint
                     .as_ref()
-                    .map(|c| format!(" ({c})"))
+                    .map(|c| {
+                        format!(
+                            " ({})",
+                            if shortcut.localized {
+                                maestro_ui::localization::tr(c)
+                            } else {
+                                c
+                            }
+                        )
+                    })
                     .unwrap_or_default();
 
                 rows.push(
                     Row::new(vec![
                         shortcut.keys.clone(),
-                        shortcut.description.clone() + &context,
+                        shortcut.display_description().to_string() + &context,
                     ])
                     .style(Style::default()),
                 );
@@ -610,9 +632,12 @@ impl ShortcutsHelp {
 
         let table = Table::new(visible_rows, widths)
             .header(
-                Row::new(vec!["Key", "Action"])
-                    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
-                    .bottom_margin(1),
+                Row::new(vec![
+                    maestro_ui::localization::tr("Key"),
+                    maestro_ui::localization::tr("Action"),
+                ])
+                .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+                .bottom_margin(1),
             )
             .column_spacing(2);
 
@@ -649,14 +674,21 @@ impl ShortcutsHelp {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
             .style(theme.text_style())
-            .title(format!(" {} ", self.title))
+            .title(format!(
+                " {} ",
+                if self.title == "Keyboard Shortcuts" {
+                    maestro_ui::localization::tr("Keyboard Shortcuts")
+                } else {
+                    &self.title
+                }
+            ))
             .title_style(
                 Style::default()
                     .fg(theme.focus)
                     .add_modifier(Modifier::BOLD),
             )
             .title_bottom(Line::styled(
-                " Press F1 or Esc to close ",
+                maestro_ui::localization::tr(" Press F1 or Esc to close "),
                 theme.muted_style(),
             ))
             .padding(Padding::horizontal(1));
@@ -682,7 +714,7 @@ impl ShortcutsHelpBuilder {
     pub fn new() -> Self {
         Self {
             shortcuts: Vec::new(),
-            title: "Keyboard Shortcuts".to_string(),
+            title: maestro_ui::localization::tr("Keyboard Shortcuts").to_string(),
         }
     }
 

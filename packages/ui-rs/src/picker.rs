@@ -38,7 +38,7 @@ impl<'a> Picker<'a> {
             placeholder,
             items,
             theme,
-            empty: "No matches found".into(),
+            empty: crate::localization::tr("No matches found").into(),
             help: None,
             message: None,
         }

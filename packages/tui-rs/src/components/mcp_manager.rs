@@ -130,7 +130,7 @@ impl McpManager {
     fn filtered_catalog(&self) -> Vec<&'static crate::mcp_config_cli::McpCatalogEntry> {
         crate::mcp_config_cli::catalog_entries()
             .iter()
-            .filter(|entry| entry.matches(&self.catalog_query))
+            .filter(|entry| entry.matches_in(self.locale, &self.catalog_query))
             .collect()
     }
     pub fn catalog_entry_configured(&self, id: &str) -> bool {
@@ -185,7 +185,7 @@ impl McpManager {
                         ),
                         Span::raw(format!(
                             "{}{}",
-                            entry.description,
+                            self.locale.translate(entry.description),
                             if self.catalog_entry_configured(entry.id) {
                                 " ✓"
                             } else {
@@ -213,7 +213,7 @@ impl McpManager {
                 |entry| {
                     format!(
                         "{} · {}\n{}\n{}",
-                        entry.category,
+                        self.locale.translate(entry.category),
                         if self.catalog_entry_configured(entry.id) {
                             self.locale.text(crate::localization::TextKey::Configured)
                         } else {
@@ -263,12 +263,17 @@ impl McpManager {
                             format!("{:<22}", status.name),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<22}", status.state.label()), state_style),
-                        Span::raw(format!(
-                            "{:<10} {:<7} {} tools",
-                            format!("{:?}", status.scope).to_lowercase(),
-                            format!("{:?}", status.transport).to_lowercase(),
-                            status.tools.len()
+                        Span::styled(
+                            format!("{:<22}", self.locale.translate(status.state.label())),
+                            state_style,
+                        ),
+                        Span::raw(maestro_ui::localization::format(
+                            "{0} {1} {2} tools",
+                            &[
+                                format!("{:<10}", format!("{:?}", status.scope).to_lowercase()),
+                                format!("{:<7}", format!("{:?}", status.transport).to_lowercase()),
+                                (status.tools.len()).to_string(),
+                            ],
                         )),
                     ]))
                 })
@@ -319,11 +324,13 @@ impl McpManager {
                         ));
                     }
                 } else {
-                    lines.push(Line::raw(format!(
-                        "{} resources · {} prompts · {} disabled tools",
-                        status.resources.len(),
-                        status.prompts.len(),
-                        status.disabled_tools.len()
+                    lines.push(Line::raw(maestro_ui::localization::format(
+                        "{0} resources · {1} prompts · {2} disabled tools",
+                        &[
+                            (status.resources.len()).to_string(),
+                            (status.prompts.len()).to_string(),
+                            (status.disabled_tools.len()).to_string(),
+                        ],
                     )));
                 }
                 Text::from(lines)

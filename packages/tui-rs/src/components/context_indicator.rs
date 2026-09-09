@@ -72,9 +72,9 @@ impl UsageLevel {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Low => "OK",
-            Self::Medium => "Moderate",
-            Self::High => "High",
-            Self::Critical => "Critical",
+            Self::Medium => maestro_ui::localization::tr("Moderate"),
+            Self::High => maestro_ui::localization::tr("High"),
+            Self::Critical => maestro_ui::localization::tr("Critical"),
         }
     }
 }
@@ -204,11 +204,13 @@ impl ContextIndicator {
         let pct = self.percentage();
         let level = self.level();
 
-        let label = format!(
-            "Context: {} / {} ({:.0}%)",
-            Self::format_tokens(self.total_used()),
-            Self::format_tokens(self.context_window),
-            pct
+        let label = maestro_ui::localization::format(
+            "Context: {0} / {1} ({2}%)",
+            &[
+                Self::format_tokens(self.total_used()).clone(),
+                Self::format_tokens(self.context_window).clone(),
+                format!("{:.0}", pct),
+            ],
         );
 
         let style = Style::default().fg(level.color());
@@ -239,8 +241,10 @@ impl ContextIndicator {
         };
 
         let title = match &self.model_name {
-            Some(name) => format!(" Context: {name} "),
-            None => " Context Window ".to_string(),
+            Some(name) => {
+                maestro_ui::localization::format(" Context: {0} ", std::slice::from_ref(name))
+            }
+            None => maestro_ui::localization::tr(" Context Window ").to_string(),
         };
 
         Gauge::default()

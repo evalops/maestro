@@ -284,7 +284,7 @@ pub async fn run_init(args: &[String]) -> Result<i32> {
 }
 
 fn help() -> &'static str {
-    "deixic-code init\n  deixic-code init                         Login, create or reuse an API key, and register this agent\n  deixic-code init --rotate-key           Replace the stored agent MCP API key\n  deixic-code init --mcp-url <url>        Override the EvalOps agent MCP endpoint\n  deixic-code init --json                 Emit machine-readable bootstrap output\n\nOptions\n  --agent-type <type>                 Agent type to register, defaults to maestro\n  --surface <surface>                 Surface to register, defaults to cli\n  --integration-profile <profile>     mcp_only, mcp_otlp, managed_runtime, sdk_integrated, or provider_proxy\n  --shim-type <type>                  native_mcp, command_wrapper, hook, provider_proxy, sdk, or mcp_firewall_proxy\n  --trace-mode <mode>                 none, mcp_events, or otlp\n  --memory-mode <mode>                none, read_only, durable, or cerebro\n  --runtime-owner <owner>             external or evalops\n  --capability <cap[,cap...]>         Agent capability to declare; repeatable\n  --workspace, --workspace-id <id>    Workspace to associate with the registration\n  --scope <scope[,scope...]>          Registration scopes to request\n  --key-scope <scope[,scope...]>      API key scopes to request\n  --expires-in-days <days>            API key TTL in days\n  --force-login                       Re-run EvalOps OAuth before bootstrapping\n  --manifest-url <url>                Override the agent MCP manifest URL\n  --ttl-seconds <seconds>             Registration TTL in seconds"
+    crate::localization::cli_locale().translate("deixic-code init\n  deixic-code init                         Login, create or reuse an API key, and register this agent\n  deixic-code init --rotate-key           Replace the stored agent MCP API key\n  deixic-code init --mcp-url <url>        Override the EvalOps agent MCP endpoint\n  deixic-code init --json                 Emit machine-readable bootstrap output\n\nOptions\n  --agent-type <type>                 Agent type to register, defaults to maestro\n  --surface <surface>                 Surface to register, defaults to cli\n  --integration-profile <profile>     mcp_only, mcp_otlp, managed_runtime, sdk_integrated, or provider_proxy\n  --shim-type <type>                  native_mcp, command_wrapper, hook, provider_proxy, sdk, or mcp_firewall_proxy\n  --trace-mode <mode>                 none, mcp_events, or otlp\n  --memory-mode <mode>                none, read_only, durable, or cerebro\n  --runtime-owner <owner>             external or evalops\n  --capability <cap[,cap...]>         Agent capability to declare; repeatable\n  --workspace, --workspace-id <id>    Workspace to associate with the registration\n  --scope <scope[,scope...]>          Registration scopes to request\n  --key-scope <scope[,scope...]>      API key scopes to request\n  --expires-in-days <days>            API key TTL in days\n  --force-login                       Re-run EvalOps OAuth before bootstrapping\n  --manifest-url <url>                Override the agent MCP manifest URL\n  --ttl-seconds <seconds>             Registration TTL in seconds")
 }
 
 fn parse_args(args: &[String]) -> Result<InitOptions> {
@@ -340,8 +340,20 @@ fn parse_args(args: &[String]) -> Result<InitOptions> {
                 options.ttl_seconds = Some(positive_integer(&read(index)?, flag)?);
             }
             "--workspace" | "--workspace-id" => options.workspace_id = Some(read(index)?),
-            value if value.starts_with('-') => bail!("Unknown deixic-code init option: {value}"),
-            value => bail!("Unexpected deixic-code init argument: {value}"),
+            value if value.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown deixic-code init option: {0}",
+                    &[(value).to_string()]
+                )
+            ),
+            value => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unexpected deixic-code init argument: {0}",
+                    &[(value).to_string()]
+                )
+            ),
         }
         index += 2;
     }
@@ -353,7 +365,13 @@ fn positive_integer(value: &str, flag: &str) -> Result<u64> {
         .parse::<u64>()
         .ok()
         .filter(|value| *value > 0)
-        .ok_or_else(|| anyhow!("{flag} must be a positive integer"))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} must be a positive integer", &[(flag).to_string()])
+            )
+        })
 }
 
 fn split_list(value: &str) -> Vec<String> {
@@ -451,7 +469,11 @@ async fn bootstrap(options: &InitOptions) -> Result<InitResult> {
         .await
         .context("EvalOps agent registration failed")?;
     if register.registered != Some(true) || register.agent_id.as_deref().unwrap_or("").is_empty() {
-        bail!("EvalOps agent registration did not return an agent_id");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("EvalOps agent registration did not return an agent_id", &[])
+        );
     }
 
     status(options, "Running first governed inference check");
@@ -693,9 +715,14 @@ async fn login_with_scopes(
     let registration_body = registration_response.text().await.unwrap_or_default();
     if !registration_status.is_success() {
         bail!(
-            "EvalOps OAuth client registration failed (HTTP {}): {}",
-            registration_status.as_u16(),
-            response_detail(&registration_body)
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps OAuth client registration failed (HTTP {0}): {1}",
+                &[
+                    (registration_status.as_u16()).to_string(),
+                    (response_detail(&registration_body)).clone()
+                ]
+            )
         );
     }
     let registration: OAuthClientRegistration = serde_json::from_str(&registration_body)
@@ -722,10 +749,22 @@ async fn login_with_scopes(
     }
     status(options, "Waiting for EvalOps identity callback...");
     if options.json {
-        eprintln!("Open this URL in your browser to authenticate with EvalOps:");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Open this URL in your browser to authenticate with EvalOps:",
+                &[]
+            )
+        );
         eprintln!("{}", authorization_url.as_str());
     } else {
-        println!("Open this URL in your browser to authenticate with EvalOps:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Open this URL in your browser to authenticate with EvalOps:",
+                &[]
+            )
+        );
         println!("{}", authorization_url.as_str());
     }
     open_browser(authorization_url.as_str());
@@ -750,9 +789,14 @@ async fn login_with_scopes(
     let token_response_body = token_response.text().await.unwrap_or_default();
     if !token_status.is_success() {
         bail!(
-            "EvalOps authorization-code exchange failed (HTTP {}): {}",
-            token_status.as_u16(),
-            response_detail(&token_response_body)
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps authorization-code exchange failed (HTTP {0}): {1}",
+                &[
+                    (token_status.as_u16()).to_string(),
+                    (response_detail(&token_response_body)).clone()
+                ]
+            )
         );
     }
     let token: OAuthTokenExchange = serde_json::from_str(&token_response_body)
@@ -842,7 +886,13 @@ async fn read_callback(
             "EvalOps login failed. You can close this window.",
         )
         .await?;
-        bail!("EvalOps identity login failed: {error}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps identity login failed: {0}",
+                std::slice::from_ref(error)
+            )
+        );
     }
     let code = match validated_callback_code(&query, expected_state) {
         Ok(code) => code,
@@ -869,7 +919,13 @@ fn validated_callback_code(
         .filter(|value| !value.is_empty())
         .context("EvalOps callback was missing state")?;
     if state != expected_state {
-        bail!("EvalOps callback state did not match the login request");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps callback state did not match the login request",
+                &[]
+            )
+        );
     }
     query
         .get("code")
@@ -1024,9 +1080,18 @@ async fn endpoint_from_manifest(client: &Client, manifest_url: &str) -> Result<E
         .await?;
     if !response.status().is_success() {
         bail!(
-            "Failed to fetch EvalOps MCP manifest ({} {})",
-            response.status().as_u16(),
-            response.status().canonical_reason().unwrap_or("")
+            "{}",
+            crate::localization::cli_locale().format(
+                "Failed to fetch EvalOps MCP manifest ({0} {1})",
+                &[
+                    (response.status().as_u16()).to_string(),
+                    response
+                        .status()
+                        .canonical_reason()
+                        .unwrap_or("")
+                        .to_string()
+                ]
+            )
         );
     }
     let payload: Value = response.json().await?;
@@ -1242,7 +1307,11 @@ impl AgentMcpClient {
             .request("tools/call", json!({"name": name, "arguments": arguments}))
             .await?;
         if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            bail!("{name} returned an MCP error");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} returned an MCP error", &[(name).to_string()])
+            );
         }
         let output = if let Some(structured) = result.get("structuredContent") {
             structured.clone()
@@ -1269,12 +1338,21 @@ impl AgentMcpClient {
         let payload = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let response = self.send(&payload).await?;
         if let Some(error) = response.get("error") {
-            bail!("MCP {method} failed: {error}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "MCP {0} failed: {1}",
+                    &[(method).to_string(), (error).to_string()]
+                )
+            );
         }
-        response
-            .get("result")
-            .cloned()
-            .ok_or_else(|| anyhow!("MCP {method} response missing result"))
+        response.get("result").cloned().ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("MCP {0} response missing result", &[(method).to_string()])
+            )
+        })
     }
 
     async fn notification(&mut self, method: &str, params: Option<Value>) -> Result<()> {
@@ -1284,7 +1362,13 @@ impl AgentMcpClient {
         }
         let response = self.send_response(&payload).await?;
         if !response.status().is_success() && response.status() != StatusCode::ACCEPTED {
-            bail!("MCP {method} notification failed ({})", response.status());
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "MCP {0} notification failed ({1})",
+                    &[(method).to_string(), (response.status()).to_string()]
+                )
+            );
         }
         Ok(())
     }
@@ -1294,7 +1378,13 @@ impl AgentMcpClient {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            bail!("MCP request failed ({status}): {text}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "MCP request failed ({0}): {1}",
+                    &[(status).to_string(), (text).clone()]
+                )
+            );
         }
         parse_mcp_response(response).await
     }
@@ -1353,7 +1443,10 @@ async fn parse_mcp_response(response: Response) -> Result<Value> {
                 }
             }
         }
-        bail!("MCP SSE response did not contain data");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("MCP SSE response did not contain data", &[])
+        );
     }
     serde_json::from_str(&body).context("parse MCP JSON response")
 }
@@ -1895,13 +1988,23 @@ fn refresh_expiry(payload: &Value, now_ms: i64) -> Result<i64> {
         "expires_at",
     )?;
     if expires <= now_ms {
-        bail!("EvalOps refresh expiry is not in the future");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("EvalOps refresh expiry is not in the future", &[])
+        );
     }
     Ok(expires)
 }
 
 fn parse_timestamp(value: Option<&str>, field: &str) -> Result<i64> {
-    let value = value.ok_or_else(|| anyhow!("Missing {field} in EvalOps response"))?;
+    let value = value.ok_or_else(|| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Missing {0} in EvalOps response", &[(field).to_string()])
+        )
+    })?;
     DateTime::parse_from_rfc3339(value)
         .map(|date| date.timestamp_millis())
         .with_context(|| format!("Invalid {field} in EvalOps response: {value}"))
@@ -2172,7 +2275,13 @@ async fn load_current_evalops_snapshot_async() -> Result<Option<EvalOpsCredentia
         return Ok(Some(snapshot_from_credentials(&credentials)));
     }
     if credentials.refresh.trim().is_empty() {
-        bail!("EvalOps login expired and cannot be refreshed; run `maestro login`");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps login expired and cannot be refreshed; run `maestro login`",
+                &[]
+            )
+        );
     }
 
     let client = Client::builder()
@@ -2203,7 +2312,13 @@ pub(crate) fn load_current_evalops_snapshot() -> Result<Option<EvalOpsCredential
             .block_on(load_current_evalops_snapshot_async())
     })
     .join()
-    .map_err(|_| anyhow!("EvalOps credential refresh thread panicked"))?
+    .map_err(|_| {
+        anyhow!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("EvalOps credential refresh thread panicked", &[])
+        )
+    })?
 }
 
 /// Resolve the trusted Identity authority used to verify a stored or
@@ -2241,9 +2356,7 @@ fn validate_identity_authority(candidate: &str, allow_test_loopback: bool) -> Re
         || url.fragment().is_some()
         || !matches!(url.path(), "" | "/")
     {
-        bail!(
-            "EvalOps Identity authority must be an origin without credentials, path, query, or fragment"
-        );
+        bail!("{}", crate::localization::cli_locale().format("EvalOps Identity authority must be an origin without credentials, path, query, or fragment", &[]));
     }
 
     let host = url.host_str().unwrap_or_default();
@@ -2265,9 +2378,7 @@ fn validate_identity_authority(candidate: &str, allow_test_loopback: bool) -> Re
         return Ok(normalized);
     }
 
-    bail!(
-        "untrusted EvalOps Identity authority; model admission requires a first-party HTTPS Identity endpoint"
-    )
+    bail!("{}", crate::localization::cli_locale().format("untrusted EvalOps Identity authority; model admission requires a first-party HTTPS Identity endpoint", &[]))
 }
 
 fn test_identity_authority_enabled(env: &std::collections::HashMap<String, String>) -> bool {
@@ -2288,7 +2399,11 @@ fn test_identity_authority_enabled(env: &std::collections::HashMap<String, Strin
 /// Persist the selected org `provider_ref` on the stored EvalOps session.
 pub fn store_evalops_provider_ref(provider_ref: Value) -> Result<()> {
     let Some(mut credentials) = load_credentials()? else {
-        bail!("no EvalOps session; run `deixic-code evalops login`");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("no EvalOps session; run `deixic-code evalops login`", &[])
+        );
     };
     credentials
         .metadata
@@ -2339,7 +2454,13 @@ pub async fn perform_evalops_logout() -> Result<()> {
                 .build()
                 .context("build EvalOps HTTP client")?;
             if let Err(error) = revoke_refresh_token(&credentials, &client).await {
-                eprintln!("Warning: failed to revoke EvalOps refresh token: {error:#}");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Warning: failed to revoke EvalOps refresh token: {0}",
+                        &[format!("{:#}", error)]
+                    )
+                );
             }
         }
     }
@@ -2408,7 +2529,13 @@ async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -
         .context("revoke EvalOps refresh token")?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        bail!("EvalOps token revoke failed: {}", response_detail(&body));
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps token revoke failed: {0}",
+                &[(response_detail(&body)).clone()]
+            )
+        );
     }
     Ok(())
 }

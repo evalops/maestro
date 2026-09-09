@@ -64,9 +64,7 @@ pub async fn run_openai(args: &[String]) -> Result<i32> {
         Some("logout") => logout(),
         Some("status") => status().await,
         _ => {
-            eprintln!(
-                "Unknown openai subcommand. Try \"deixic-code openai login\", \"logout\", or \"status\"."
-            );
+            eprintln!("{}", crate::localization::cli_locale().format("Unknown openai subcommand. Try \"deixic-code openai login\", \"logout\", or \"status\".", &[]));
             Ok(1)
         }
     }
@@ -76,17 +74,36 @@ async fn login() -> Result<i32> {
     let listener = match TcpListener::bind(CALLBACK_ADDR).await {
         Ok(listener) => listener,
         Err(error) if error.kind() == ErrorKind::AddrInUse => {
-            eprintln!("Port 1455 is already in use. Please close the other process and try again.");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Port 1455 is already in use. Please close the other process and try again.",
+                    &[]
+                )
+            );
             return Ok(1);
         }
         Err(error) => {
-            eprintln!("Server error: {error}");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Server error: {0}", &[(error).to_string()])
+            );
             return Ok(1);
         }
     };
     let request = login_request()?;
-    println!("Deixic Code OpenAI Login");
-    println!("Please open the following URL in your browser to authenticate:");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code OpenAI Login", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Please open the following URL in your browser to authenticate:",
+            &[]
+        )
+    );
     println!("{}", request.url);
 
     loop {
@@ -125,14 +142,20 @@ async fn login() -> Result<i32> {
                             "<html><body><h1>Login Successful</h1><p>You can close this tab and return to the terminal.</p></body></html>",
                         )
                         .await?;
-                        println!("\nOpenAI credentials saved successfully.");
                         println!(
-                            "Future runs can use --auth auto (default) or provide an OpenAI API key."
+                            "{}",
+                            crate::localization::cli_locale()
+                                .format("\nOpenAI credentials saved successfully.", &[])
                         );
+                        println!("{}", crate::localization::cli_locale().format("Future runs can use --auth auto (default) or provide an OpenAI API key.", &[]));
                         return Ok(0);
                     }
                     Err(error) => {
-                        eprintln!("\nLogin failed: {error:#}");
+                        eprintln!(
+                            "{}",
+                            crate::localization::cli_locale()
+                                .format("\nLogin failed: {0}", &[format!("{:#}", error)])
+                        );
                         write_response(
                             &mut stream,
                             500,
@@ -146,7 +169,11 @@ async fn login() -> Result<i32> {
             }
             Err(error) => {
                 write_response(&mut stream, 400, "text/plain", "Invalid request").await?;
-                eprintln!("Server error: {error:#}");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Server error: {0}", &[format!("{:#}", error)])
+                );
                 return Ok(1);
             }
         }
@@ -156,7 +183,10 @@ async fn login() -> Result<i32> {
 async fn complete_login(code: &str, verifier: &str) -> Result<()> {
     let client = Client::new();
     let Some(tokens) = exchange_authorization_code(&client, code, verifier).await? else {
-        bail!("Failed to exchange code for tokens.");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("Failed to exchange code for tokens.", &[])
+        );
     };
     let id_token = tokens
         .id_token
@@ -189,25 +219,49 @@ fn logout() -> Result<i32> {
             return Err(error).with_context(|| format!("Failed to remove {}", path.display()));
         }
     }
-    println!("Removed stored OpenAI credentials.");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Removed stored OpenAI credentials.", &[])
+    );
     Ok(0)
 }
 
 async fn status() -> Result<i32> {
     let Some(stored) = load_credential() else {
-        println!("No stored OpenAI credentials.");
-        println!("Run \"deixic-code openai login\" to authenticate with OpenAI.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No stored OpenAI credentials.", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Run \"deixic-code openai login\" to authenticate with OpenAI.",
+                &[]
+            )
+        );
         return Ok(0);
     };
     let remaining_ms = (stored.expires_at - now_ms()).max(0);
     let minutes = (remaining_ms as f64 / 60_000.0).round() as i64;
-    println!("Stored OpenAI credentials detected.");
     println!(
-        "Access token expires in ~{minutes} minute{} (auto-refresh enabled).",
-        if minutes == 1 { "" } else { "s" }
+        "{}",
+        crate::localization::cli_locale().format("Stored OpenAI credentials detected.", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Access token expires in ~{0} minute{1} (auto-refresh enabled).",
+            &[
+                (minutes).to_string(),
+                (if minutes == 1 { "" } else { "s" }).to_string()
+            ]
+        )
     );
     if fresh_credential(stored).await?.is_some() {
-        println!("Credentials refreshed.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Credentials refreshed.", &[])
+        );
     }
     Ok(0)
 }

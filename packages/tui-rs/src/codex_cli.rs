@@ -40,7 +40,10 @@ pub fn parse_codex_subcommand(args: &[&str]) -> Result<CodexCommand> {
         Some("status") => Ok(CodexCommand::Status),
         Some("doctor") => Ok(CodexCommand::Doctor),
         Some("ready") => Ok(CodexCommand::Ready),
-        _ => bail!("unknown codex subcommand"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale().format("unknown codex subcommand", &[])
+        ),
     }
 }
 
@@ -50,9 +53,7 @@ pub async fn run_codex(args: &[String]) -> Result<i32> {
     let command = match parse_codex_subcommand(&refs) {
         Ok(command) => command,
         Err(_) => {
-            eprintln!(
-                "Unknown codex subcommand. Try \"deixic-code codex login\", \"logout\", \"status\", \"ready\", or \"doctor\"."
-            );
+            eprintln!("{}", crate::localization::cli_locale().format("Unknown codex subcommand. Try \"deixic-code codex login\", \"logout\", \"status\", \"ready\", or \"doctor\".", &[]));
             return Ok(1);
         }
     };
@@ -83,17 +84,29 @@ fn parse_codex_options(params: &[String]) -> Result<CodexCliOptions> {
                     .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
                     .ok_or_else(|| anyhow::anyhow!("--profile requires a profile name"))?;
                 if options.profile.replace(value.clone()).is_some() {
-                    bail!("--profile may only be specified once");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--profile may only be specified once", &[])
+                    );
                 }
                 index += 2;
             }
             value if value.starts_with("--profile=") => {
                 let profile = value.trim_start_matches("--profile=").trim().to_owned();
                 if profile.is_empty() {
-                    bail!("--profile requires a profile name");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--profile requires a profile name", &[])
+                    );
                 }
                 if options.profile.replace(profile).is_some() {
-                    bail!("--profile may only be specified once");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--profile may only be specified once", &[])
+                    );
                 }
                 index += 1;
             }
@@ -107,17 +120,29 @@ fn parse_codex_options(params: &[String]) -> Result<CodexCliOptions> {
                     .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
                     .ok_or_else(|| anyhow::anyhow!("--model requires a model name"))?;
                 if options.model.replace(value.clone()).is_some() {
-                    bail!("--model may only be specified once");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--model may only be specified once", &[])
+                    );
                 }
                 index += 2;
             }
             value if value.starts_with("--model=") => {
                 let model = value.trim_start_matches("--model=").trim().to_owned();
                 if model.is_empty() {
-                    bail!("--model requires a model name");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--model requires a model name", &[])
+                    );
                 }
                 if options.model.replace(model).is_some() {
-                    bail!("--model may only be specified once");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--model may only be specified once", &[])
+                    );
                 }
                 index += 1;
             }
@@ -381,18 +406,30 @@ async fn readiness_binding_check_at(
 fn render_readiness_human(evaluation: &CodexReadinessEvaluation) -> String {
     let mut out = String::new();
     if evaluation.ready {
-        out.push_str("Codex ready.\n");
+        out.push_str(crate::localization::cli_locale().translate("Codex ready.\n"));
     } else {
-        out.push_str("Codex not ready.\n");
+        out.push_str(crate::localization::cli_locale().translate("Codex not ready.\n"));
     }
-    out.push_str(&format!("Profile: {}\n", evaluation.profile));
-    out.push_str(&format!("Auth: {}\n", evaluation.auth.detail));
-    out.push_str(&format!(
-        "Compatibility: {}\n",
-        evaluation.compatibility.detail
+    out.push_str(&crate::localization::cli_locale().format(
+        "Profile: {0}\n",
+        std::slice::from_ref(&(evaluation.profile)),
     ));
-    out.push_str(&format!("Tool schema: {}\n", evaluation.tool_schema.detail));
-    out.push_str(&format!("Binding: {}\n", evaluation.binding.detail));
+    out.push_str(&crate::localization::cli_locale().format(
+        "Auth: {0}\n",
+        std::slice::from_ref(&(evaluation.auth.detail)),
+    ));
+    out.push_str(&crate::localization::cli_locale().format(
+        "Compatibility: {0}\n",
+        std::slice::from_ref(&(evaluation.compatibility.detail)),
+    ));
+    out.push_str(&crate::localization::cli_locale().format(
+        "Tool schema: {0}\n",
+        std::slice::from_ref(&(evaluation.tool_schema.detail)),
+    ));
+    out.push_str(&crate::localization::cli_locale().format(
+        "Binding: {0}\n",
+        std::slice::from_ref(&(evaluation.binding.detail)),
+    ));
     let degraded = evaluation
         .optional
         .iter()
@@ -400,7 +437,10 @@ fn render_readiness_human(evaluation: &CodexReadinessEvaluation) -> String {
         .map(|check| format!("{} ({})", check.name, check.detail))
         .collect::<Vec<_>>();
     if !degraded.is_empty() {
-        out.push_str(&format!("Optional: {}\n", degraded.join(", ")));
+        out.push_str(
+            &crate::localization::cli_locale()
+                .format("Optional: {0}\n", &[(degraded.join(", ")).clone()]),
+        );
     }
     out
 }
@@ -453,7 +493,10 @@ async fn handle_login(params: &[String]) -> Result<i32> {
         .iter()
         .any(|p| matches!(p.as_str(), "--force" | "--refresh"));
 
-    println!("Deixic Code OpenAI Codex Login");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code OpenAI Codex Login", &[])
+    );
     let identity = requested_identity(params)?;
     let client = spawn_for_identity(&identity).await?;
     let result = login_with_client(&client, device_flow, force_login).await;
@@ -477,15 +520,30 @@ async fn login_with_client(
         match client.read_account(true).await {
             Ok(account) if account.account.is_some() => {
                 println!(
-                    "OpenAI Codex is already signed in{}.",
-                    account_label(&account)
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "OpenAI Codex is already signed in{0}.",
+                        &[(account_label(&account)).clone()]
+                    )
                 );
-                println!("Run \"deixic-code codex login --force\" to start a new sign-in flow.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Run \"deixic-code codex login --force\" to start a new sign-in flow.",
+                        &[]
+                    )
+                );
                 return Ok(0);
             }
             Ok(_) => {}
             Err(_) => {
-                println!("Codex app-server account refresh failed; starting a new sign-in flow.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Codex app-server account refresh failed; starting a new sign-in flow.",
+                        &[]
+                    )
+                );
             }
         }
     }
@@ -509,9 +567,19 @@ async fn login_with_client(
                 .get("authUrl")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing authUrl"))?;
-            println!("Open this URL in your browser to sign in with ChatGPT:");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Open this URL in your browser to sign in with ChatGPT:",
+                    &[]
+                )
+            );
             println!("{auth_url}");
-            println!("Waiting for ChatGPT sign-in to complete...");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Waiting for ChatGPT sign-in to complete...", &[])
+            );
             client.wait_for_login_completion(login_id, None).await?;
         }
         "chatgptDeviceCode" => {
@@ -527,34 +595,78 @@ async fn login_with_client(
                 .get("userCode")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing userCode"))?;
-            println!("Open this URL and enter the code:");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("Open this URL and enter the code:", &[])
+            );
             println!("{verification_url}");
             println!("{user_code}");
-            println!("Waiting for ChatGPT sign-in to complete...");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Waiting for ChatGPT sign-in to complete...", &[])
+            );
             client.wait_for_login_completion(login_id, None).await?;
         }
         "apiKey" => {
-            println!("OpenAI Codex is already configured with an API key.");
-            println!("Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("OpenAI Codex is already configured with an API key.", &[])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".",
+                    &[]
+                )
+            );
             return Ok(0);
         }
         "chatgptAuthTokens" => {
             let account = client.read_account(true).await?;
             println!(
-                "OpenAI Codex is using externally managed ChatGPT auth{}.",
-                account_label(&account)
+                "{}",
+                crate::localization::cli_locale().format(
+                    "OpenAI Codex is using externally managed ChatGPT auth{0}.",
+                    &[(account_label(&account)).clone()]
+                )
             );
-            println!("Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".",
+                    &[]
+                )
+            );
             return Ok(0);
         }
         other => {
-            bail!("Unsupported Codex login response: {other}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unsupported Codex login response: {0}",
+                    &[(other).to_string()]
+                )
+            );
         }
     }
 
     let account = client.read_account(true).await?;
-    println!("Signed in with ChatGPT{}.", account_label(&account));
-    println!("Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Signed in with ChatGPT{0}.",
+            &[(account_label(&account)).clone()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Select provider \"openai-codex\" or a model like \"openai-codex/gpt-5.5\".",
+            &[]
+        )
+    );
     Ok(0)
 }
 
@@ -564,7 +676,11 @@ async fn handle_logout(params: &[String]) -> Result<i32> {
     let result = async {
         client.initialize(InitializeOptions::default()).await?;
         client.logout().await?;
-        println!("Signed out of ChatGPT for OpenAI Codex.");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Signed out of ChatGPT for OpenAI Codex.", &[])
+        );
         Ok(0)
     }
     .await;
@@ -600,7 +716,10 @@ async fn handle_status(params: &[String]) -> Result<i32> {
 }
 
 async fn handle_doctor(params: &[String]) -> Result<i32> {
-    println!("Deixic Code Codex Doctor");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code Codex Doctor", &[])
+    );
     let identity = requested_identity(params)?;
     let client = spawn_for_identity(&identity).await?;
     let mut exit_code = 0;
@@ -611,44 +730,94 @@ async fn handle_doctor(params: &[String]) -> Result<i32> {
                 ..Default::default()
             })
             .await?;
-        println!("Identity profile: {}", identity.profile_name);
-        println!("Provider: openai-codex");
-        println!("Transport: codex-app-server");
         println!(
-            "Auth health: {}",
-            crate::codex_identity::inspect_codex_auth(&identity.auth_path()).state
+            "{}",
+            crate::localization::cli_locale().format(
+                "Identity profile: {0}",
+                std::slice::from_ref(&(identity.profile_name))
+            )
         );
         println!(
-            "Protocol: {}",
-            initialized
-                .get("protocolVersion")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
+            "{}",
+            crate::localization::cli_locale().format("Provider: openai-codex", &[])
         );
-        println!("Connectivity: ready");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Transport: codex-app-server", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Auth health: {0}",
+                &[
+                    (crate::codex_identity::inspect_codex_auth(&identity.auth_path()).state)
+                        .to_string()
+                ]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Protocol: {0}",
+                &[(initialized
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"))
+                .to_string()]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Connectivity: ready", &[])
+        );
         let account = client.read_account(true).await?;
         if account.account.is_none() {
-            println!("ChatGPT sign-in: missing");
             println!(
-                "Run \"{}\" to sign in with ChatGPT.",
-                login_command(&identity)
+                "{}",
+                crate::localization::cli_locale().format("ChatGPT sign-in: missing", &[])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Run \"{0}\" to sign in with ChatGPT.",
+                    &[(login_command(&identity)).clone()]
+                )
             );
             exit_code = 1;
         } else {
-            println!("ChatGPT sign-in: {}", account_doctor_label(&account));
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "ChatGPT sign-in: {0}",
+                    &[(account_doctor_label(&account)).clone()]
+                )
+            );
         }
 
         let cwd = std::env::current_dir()?;
         let dynamic_tools = runtime_codex_dynamic_tools(&cwd);
         let diagnostics = codex_dynamic_tool_schema_diagnostics(&dynamic_tools);
-        println!("Codex dynamic tools: {} tools", dynamic_tools.len());
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Codex dynamic tools: {0} tools",
+                &[(dynamic_tools.len()).to_string()]
+            )
+        );
 
         let errors = diagnostics.len();
         if errors > 0 {
             exit_code = 1;
-            println!("Dynamic tool schema: {errors} error(s)");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Dynamic tool schema: {0} error(s)", &[(errors).to_string()])
+            );
         } else {
-            println!("Dynamic tool schema: compatible");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("Dynamic tool schema: compatible", &[])
+            );
         }
         for diagnostic in &diagnostics {
             println!("{diagnostic}");
@@ -692,17 +861,22 @@ fn render_status_human(
     identity: &crate::codex_identity::CodexIdentitySelection,
     account: &AccountReadResult,
 ) -> String {
-    let mut out = format!("Profile: {}\n", identity.profile_name);
+    let mut out = crate::localization::cli_locale().format(
+        "Profile: {0}\n",
+        std::slice::from_ref(&(identity.profile_name)),
+    );
     if account.account.is_none() {
-        out.push_str("No ChatGPT sign-in for OpenAI Codex.\n");
-        out.push_str(&format!(
-            "Run \"{}\" to sign in with ChatGPT.\n",
-            login_command(identity)
+        out.push_str(
+            crate::localization::cli_locale().translate("No ChatGPT sign-in for OpenAI Codex.\n"),
+        );
+        out.push_str(&crate::localization::cli_locale().format(
+            "Run \"{0}\" to sign in with ChatGPT.\n",
+            &[(login_command(identity)).clone()],
         ));
     } else {
-        out.push_str(&format!(
-            "OpenAI Codex is signed in{}.\n",
-            account_label(account)
+        out.push_str(&crate::localization::cli_locale().format(
+            "OpenAI Codex is signed in{0}.\n",
+            &[(account_label(account)).clone()],
         ));
     }
     out

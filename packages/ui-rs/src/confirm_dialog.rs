@@ -47,7 +47,10 @@ pub struct ConfirmDialog {
 
 impl Default for ConfirmDialog {
     fn default() -> Self {
-        Self::new("Confirm", "Are you sure?")
+        Self::new(
+            crate::localization::tr("Confirm"),
+            crate::localization::tr("Are you sure?"),
+        )
     }
 }
 
@@ -58,8 +61,8 @@ impl ConfirmDialog {
             title: title.into(),
             message: message.into(),
             selected_yes: false, // Default to No for safety
-            yes_label: "Yes".to_string(),
-            no_label: "No".to_string(),
+            yes_label: crate::localization::tr("Yes").to_string(),
+            no_label: crate::localization::tr("No").to_string(),
             dangerous: false,
             result: None,
         }

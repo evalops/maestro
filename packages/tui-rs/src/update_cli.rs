@@ -312,7 +312,11 @@ impl UpdateChannel {
             "alpha" => Ok(Self::Alpha),
             other => {
                 bail!(
-                    "Unknown Deixic Code update channel: {other}; expected stable, beta, or alpha"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Unknown Deixic Code update channel: {0}; expected stable, beta, or alpha",
+                        &[(other).to_string()]
+                    )
                 )
             }
         }
@@ -371,7 +375,13 @@ fn parse_args(args: &[String]) -> Result<UpdateArgs> {
                 }
                 parsed.action = UpdateAction::Rollback { version };
             }
-            other => bail!("Unknown deixic-code update subcommand: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown deixic-code update subcommand: {0}",
+                    &[(other).to_string()]
+                )
+            ),
         }
         if !matches!(parsed.action, UpdateAction::Rollback { .. }) {
             index = 1;
@@ -390,12 +400,24 @@ fn parse_args(args: &[String]) -> Result<UpdateArgs> {
                 parsed.channel = UpdateChannel::parse(value)?;
                 channel_explicit = true;
             }
-            other => bail!("Unknown deixic-code update option: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown deixic-code update option: {0}",
+                    &[(other).to_string()]
+                )
+            ),
         }
         index += 1;
     }
     if parsed.check_only && !matches!(parsed.action, UpdateAction::Apply) {
-        bail!("--check is only supported for the default update action");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "--check is only supported for the default update action",
+                &[]
+            )
+        );
     }
     if !channel_explicit && matches!(parsed.action, UpdateAction::Apply | UpdateAction::Status) {
         parsed.channel = UpdateChannel::from_environment()?;
@@ -406,7 +428,13 @@ fn parse_args(args: &[String]) -> Result<UpdateArgs> {
             UpdateAction::History | UpdateAction::Rollback { .. }
         )
     {
-        bail!("--channel is only supported for update and update status");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "--channel is only supported for update and update status",
+                &[]
+            )
+        );
     }
     Ok(parsed)
 }
@@ -638,7 +666,13 @@ fn trusted_channel_key(channel: UpdateChannel, key_id: &str) -> Result<Verifying
         }
     };
     if key_id != expected_key_id {
-        bail!("untrusted {} channel key id: {key_id}", channel.as_str());
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "untrusted {0} channel key id: {1}",
+                &[(channel.as_str()).to_string(), (key_id).to_string()]
+            )
+        );
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -649,7 +683,11 @@ fn trusted_channel_key(channel: UpdateChannel, key_id: &str) -> Result<Verifying
     let key = VerifyingKey::from_bytes(&bytes)
         .map_err(|_| anyhow::anyhow!("validate trusted release channel public key"))?;
     if key.is_weak() {
-        bail!("trusted release channel public key is weak");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("trusted release channel public key is weak", &[])
+        );
     }
     Ok(key)
 }
@@ -659,32 +697,66 @@ fn verify_channel_manifest(
     expected_channel: UpdateChannel,
 ) -> Result<()> {
     if manifest.schema_version != CHANNEL_MANIFEST_SCHEMA {
-        bail!("unsupported release channel manifest schema");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("unsupported release channel manifest schema", &[])
+        );
     }
     if manifest.channel != expected_channel.as_str() {
-        bail!("release channel manifest channel mismatch");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("release channel manifest channel mismatch", &[])
+        );
     }
     let version = Version::parse(manifest.version.trim())
         .context("release channel manifest has an invalid version")?;
     if manifest.release_tag != format!("v{}", version) {
-        bail!("release channel manifest tag does not match its version");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "release channel manifest tag does not match its version",
+                &[]
+            )
+        );
     }
     if !channel_version_matches(&version, expected_channel) {
         match expected_channel {
-            UpdateChannel::Stable => bail!("stable channel requires a stable semver version"),
-            UpdateChannel::Beta => bail!("beta channel requires a beta prerelease version"),
-            UpdateChannel::Alpha => bail!("alpha channel requires an alpha prerelease version"),
+            UpdateChannel::Stable => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("stable channel requires a stable semver version", &[])
+            ),
+            UpdateChannel::Beta => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("beta channel requires a beta prerelease version", &[])
+            ),
+            UpdateChannel::Alpha => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("alpha channel requires an alpha prerelease version", &[])
+            ),
         }
     }
     if !manifest.release_url.starts_with("https://") {
-        bail!("release channel manifest release URL must use HTTPS");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("release channel manifest release URL must use HTTPS", &[])
+        );
     }
     if manifest
         .metadata_url
         .as_deref()
         .is_some_and(|url| !url.starts_with("https://"))
     {
-        bail!("release channel manifest metadata URL must use HTTPS");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("release channel manifest metadata URL must use HTTPS", &[])
+        );
     }
     if !manifest
         .source_sha
@@ -692,7 +764,11 @@ fn verify_channel_manifest(
         .all(|byte| byte.is_ascii_hexdigit())
         || manifest.source_sha.len() != 40
     {
-        bail!("release channel manifest source SHA is invalid");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("release channel manifest source SHA is invalid", &[])
+        );
     }
     if let Some(digest) = manifest.metadata_sha256.as_deref() {
         if !digest.starts_with("sha256:")
@@ -701,7 +777,11 @@ fn verify_channel_manifest(
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
         {
-            bail!("release channel manifest metadata digest is invalid");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("release channel manifest metadata digest is invalid", &[])
+            );
         }
     }
     let key = trusted_channel_key(expected_channel, &manifest.key_id)?;
@@ -723,23 +803,32 @@ fn verify_github_release_manifest_binding(
     let selected_version = selected.tag.trim_start_matches('v');
     if manifest.release_tag != selected.tag {
         bail!(
-            "release channel manifest tag {} does not match selected GitHub release {}",
-            manifest.release_tag,
-            selected.tag
+            "{}",
+            crate::localization::cli_locale().format(
+                "release channel manifest tag {0} does not match selected GitHub release {1}",
+                &[(manifest.release_tag).clone(), (selected.tag).clone()]
+            )
         );
     }
     if manifest.version.trim() != selected_version {
         bail!(
-            "release channel manifest version {} does not match selected GitHub release {}",
-            manifest.version,
-            selected.tag
+            "{}",
+            crate::localization::cli_locale().format(
+                "release channel manifest version {0} does not match selected GitHub release {1}",
+                &[(manifest.version).clone(), (selected.tag).clone()]
+            )
         );
     }
     if manifest.release_url.trim_end_matches('/') != selected.release_url {
         bail!(
-            "release channel manifest URL {} does not match selected GitHub release {}",
-            manifest.release_url,
-            selected.release_url
+            "{}",
+            crate::localization::cli_locale().format(
+                "release channel manifest URL {0} does not match selected GitHub release {1}",
+                &[
+                    (manifest.release_url).clone(),
+                    (selected.release_url).clone()
+                ]
+            )
         );
     }
     Ok(())
@@ -1247,12 +1336,21 @@ fn run_with_timeout(command: &mut Command, label: &str) -> Result<()> {
         let _ = child.kill();
         let _ = child.wait();
         bail!(
-            "{label} timed out after {} seconds",
-            INSTALL_TIMEOUT.as_secs()
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} timed out after {1} seconds",
+                &[(label).to_string(), (INSTALL_TIMEOUT.as_secs()).to_string()]
+            )
         );
     };
     if !status.success() {
-        bail!("{label} exited with status {status}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} exited with status {1}",
+                &[(label).to_string(), (status).to_string()]
+            )
+        );
     }
     Ok(())
 }
@@ -1741,16 +1839,24 @@ fn verify_retained_release(release: &VerifiedRelease) -> Result<()> {
         })?;
     if !output.status.success() {
         bail!(
-            "Retained Deixic Code {} failed its version check",
-            release.version_text
+            "{}",
+            crate::localization::cli_locale().format(
+                "Retained Deixic Code {0} failed its version check",
+                std::slice::from_ref(&(release.version_text))
+            )
         );
     }
     let reported = String::from_utf8_lossy(&output.stdout);
     if !reported_version_matches(&reported, &release.version_text) {
         bail!(
-            "Retained Deixic Code reported the wrong version: expected {}, got {}",
-            release.version_text,
-            reported.trim()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Retained Deixic Code reported the wrong version: expected {0}, got {1}",
+                &[
+                    (release.version_text).clone(),
+                    (reported.trim()).to_string()
+                ]
+            )
         );
     }
     Ok(())
@@ -1781,14 +1887,20 @@ fn restore_verified_web_tree(release_dir: &Path) -> Result<()> {
         .with_context(|| format!("Failed to run tar for {}", archive.display()))?;
     if !status.success() {
         bail!(
-            "Failed to extract verified web archive {}",
-            archive.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Failed to extract verified web archive {0}",
+                &[(archive.display()).to_string()]
+            )
         );
     }
     if !temporary.path().join("index.html").is_file() {
         bail!(
-            "Verified web archive {} has no index.html",
-            archive.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Verified web archive {0} has no index.html",
+                &[(archive.display()).to_string()]
+            )
         );
     }
     let restored = temporary.keep();
@@ -1797,8 +1909,11 @@ fn restore_verified_web_tree(release_dir: &Path) -> Result<()> {
     let had_web_tree = fs::symlink_metadata(&web_dir).is_ok();
     if backup.exists() {
         bail!(
-            "Web restore backup path already exists: {}",
-            backup.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Web restore backup path already exists: {0}",
+                &[(backup.display()).to_string()]
+            )
         );
     }
     if had_web_tree {
@@ -1841,7 +1956,13 @@ fn select_rollback_release(
         let requested_version = Version::parse(requested.trim())
             .with_context(|| format!("Rollback version is not valid semver: {requested}"))?;
         if requested_version >= current_version {
-            bail!("Rollback target must be older than the active version {current}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Rollback target must be older than the active version {0}",
+                    &[(current).to_string()]
+                )
+            );
         }
         return releases
             .into_iter()
@@ -1992,7 +2113,11 @@ fn acquire_update_lock(context: &InstallContext) -> Result<Option<StartupUpdateL
         )
     })?;
     if lock.is_none() {
-        bail!("Another Deixic Code update is already in progress");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Another Deixic Code update is already in progress", &[])
+        );
     }
     Ok(lock)
 }
@@ -2151,7 +2276,11 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     let latest = check.latest_version.as_deref()?;
     if startup_update_mode() == "check" {
         eprintln!(
-            "Deixic Code {latest} is available (current {current}); run `deixic-code update`."
+            "{}",
+            crate::localization::cli_locale().format(
+                "Deixic Code {0} is available (current {1}); run `deixic-code update`.",
+                &[(latest).to_string(), (current).clone()]
+            )
         );
         return None;
     }
@@ -2197,7 +2326,13 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         let _ = restore_startup_state(&state_path, persisted_state.as_ref());
         return None;
     }
-    eprintln!("Updating Deixic Code from {current} to {latest}...");
+    eprintln!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Updating Deixic Code from {0} to {1}...",
+            &[(current).clone(), (latest).to_string()]
+        )
+    );
     if let Err(error) = install(
         &context,
         latest,
@@ -2215,7 +2350,13 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
             Some(format!("{error:#}")),
             None,
         );
-        eprintln!("Deixic Code auto-update failed; continuing with {current}: {error:#}");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Deixic Code auto-update failed; continuing with {0}: {1}",
+                &[(current).clone(), format!("{:#}", error)]
+            )
+        );
         return None;
     }
     let verification = match &context {
@@ -2235,7 +2376,13 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         ..attempted
     };
     let _ = write_startup_state(&state_path, &completed);
-    eprintln!("Updated Deixic Code to {latest}; restarting.");
+    eprintln!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Updated Deixic Code to {0}; restarting.",
+            &[(latest).to_string()]
+        )
+    );
     drop(update_lock);
 
     let mut restart = Command::new(launcher(&context));
@@ -2246,7 +2393,13 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     match restart.status() {
         Ok(status) => Some(status.code().unwrap_or(1)),
         Err(error) => {
-            eprintln!("Deixic Code was updated, but automatic restart failed: {error}");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code was updated, but automatic restart failed: {0}",
+                    &[(error).to_string()]
+                )
+            );
             None
         }
     }
@@ -2392,7 +2545,13 @@ async fn run_status(json: bool, channel: UpdateChannel) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else {
-        println!("Deixic Code update status: {}", status.state);
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Deixic Code update status: {0}",
+                std::slice::from_ref(&(status.state))
+            )
+        );
         println!("  channel: {}", status.channel.as_str());
         println!(
             "  active/current: {} / {}",
@@ -2404,35 +2563,82 @@ async fn run_status(json: bool, channel: UpdateChannel) -> Result<i32> {
             status.latest_version.as_deref().unwrap_or("unknown")
         );
         println!(
-            "  install method: {}",
-            status.install_method.as_deref().unwrap_or("unknown")
+            "{}",
+            crate::localization::cli_locale().format(
+                "  install method: {0}",
+                &[status
+                    .install_method
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string()]
+            )
         );
         println!(
-            "  update source: {}",
-            status.update_source.as_deref().unwrap_or("unknown")
+            "{}",
+            crate::localization::cli_locale().format(
+                "  update source: {0}",
+                &[status
+                    .update_source
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string()]
+            )
         );
         println!("  channel: {}", status.channel.as_str());
         if let Some(channel) = status.channel_verification.as_ref() {
             println!(
-                "  channel verification: {} ({})",
-                channel.status,
-                channel.algorithm.as_deref().unwrap_or("unknown")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "  channel verification: {0} ({1})",
+                    &[
+                        (channel.status).clone(),
+                        channel
+                            .algorithm
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .to_string()
+                    ]
+                )
             );
         } else {
-            println!("  channel verification: unavailable");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("  channel verification: unavailable", &[])
+            );
         }
         if let Some(attempt) = status.last_attempt.as_ref() {
             println!(
-                "  last attempt: {} {} -> {}",
-                attempt.status,
-                attempt.from_version.as_deref().unwrap_or("unknown"),
-                attempt.to_version.as_deref().unwrap_or("unknown")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "  last attempt: {0} {1} -> {2}",
+                    &[
+                        (attempt.status).clone(),
+                        attempt
+                            .from_version
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        attempt
+                            .to_version
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .to_string()
+                    ]
+                )
             );
             if let Some(error) = attempt.error.as_deref() {
-                println!("  last error: {error}");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("  last error: {0}", &[(error).to_string()])
+                );
             }
         } else {
-            println!("  last attempt: none");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("  last attempt: none", &[])
+            );
         }
         println!(
             "  retry: {}ms{}",
@@ -2457,7 +2663,11 @@ async fn run_status(json: bool, channel: UpdateChannel) -> Result<i32> {
             println!("  verification: unavailable");
         }
         if let Some(error) = status.check_error.as_deref() {
-            println!("  check error: {error}");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("  check error: {0}", &[(error).to_string()])
+            );
         }
     }
     Ok(0)
@@ -2475,7 +2685,11 @@ fn run_history(json: bool) -> Result<i32> {
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if history.attempts.is_empty() {
-        println!("No Deixic Code update attempts recorded.");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("No Deixic Code update attempts recorded.", &[])
+        );
     } else {
         for attempt in history.attempts.iter().rev() {
             println!(
@@ -2503,9 +2717,7 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
         launcher,
     } = &context
     else {
-        bail!(
-            "package-manager rollback is not supported; rollback requires a retained, previously verified native release"
-        );
+        bail!("{}", crate::localization::cli_locale().format("package-manager rollback is not supported; rollback requires a retained, previously verified native release", &[]));
     };
     let current = current_version();
     let _update_lock = acquire_update_lock(&context)?;
@@ -2612,15 +2824,29 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
     } else {
-        println!("Rolled Deixic Code back to {}.", outcome.active_version);
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Rolled Deixic Code back to {0}.",
+                std::slice::from_ref(&(outcome.active_version))
+            )
+        );
         if let Some(error) = history_error {
             eprintln!(
-                "Deixic Code rollback succeeded, but update history persistence failed: {error}"
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code rollback succeeded, but update history persistence failed: {0}",
+                    std::slice::from_ref(&(error))
+                )
             );
         }
         if let Some(warning) = outcome.launcher_warning {
             eprintln!(
-                "Deixic Code rollback completed with a launcher durability warning: {warning}"
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code rollback completed with a launcher durability warning: {0}",
+                    std::slice::from_ref(&(warning))
+                )
             );
         }
     }
@@ -2628,9 +2854,7 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
 }
 
 fn print_help() {
-    println!(
-        "Usage: deixic-code update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help"
-    );
+    println!("{}", crate::localization::cli_locale().format("Usage: deixic-code update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help", &[]));
 }
 
 fn write_update_header(output: &mut impl Write, current: &str) -> io::Result<()> {
@@ -2686,16 +2910,38 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&check)?);
         } else if check.status == "available" {
             println!(
-                "Deixic Code {} is available (current {}).",
-                check.latest_version.as_deref().unwrap_or("update"),
-                current
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code {0} is available (current {1}).",
+                    &[
+                        check
+                            .latest_version
+                            .as_deref()
+                            .unwrap_or("update")
+                            .to_string(),
+                        (current).clone()
+                    ]
+                )
             );
         } else if check.status == "current" {
-            println!("Deixic Code is up to date ({current}).");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code is up to date ({0}).",
+                    std::slice::from_ref(&(current))
+                )
+            );
         } else {
             eprintln!(
-                "Deixic Code update check failed: {}",
-                check.error.as_deref().unwrap_or("unknown error")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code update check failed: {0}",
+                    &[check
+                        .error
+                        .as_deref()
+                        .unwrap_or("unknown error")
+                        .to_string()]
+                )
             );
         }
         return Ok(i32::from(check.status == "failed"));
@@ -2728,7 +2974,13 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
             outcome.attempt_id = Some(attempt.attempt_id);
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         } else {
-            eprintln!("Deixic Code update failed: {}", error_text);
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code update failed: {0}",
+                    std::slice::from_ref(&(error_text))
+                )
+            );
         }
         return Ok(1);
     }
@@ -2736,7 +2988,13 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         if parsed.json {
             println!("{}", serde_json::to_string_pretty(&check)?);
         } else {
-            println!("Deixic Code is up to date ({current}).");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Deixic Code is up to date ({0}).",
+                    std::slice::from_ref(&(current))
+                )
+            );
         }
         return Ok(0);
     }
@@ -2797,9 +3055,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
                 let mut output = io::stdout().lock();
                 write_update_success(&mut output, latest)?;
                 if let Some(error) = history_error {
-                    eprintln!(
-                        "Deixic Code updated successfully, but update history persistence failed: {error}"
-                    );
+                    eprintln!("{}", crate::localization::cli_locale().format("Deixic Code updated successfully, but update history persistence failed: {0}", std::slice::from_ref(&(error))));
                 }
             }
             Ok(0)
@@ -2820,7 +3076,11 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
                 outcome.attempt_id = Some(attempt.attempt_id);
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
-                eprintln!("Deixic Code update failed: {error:#}");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Deixic Code update failed: {0}", &[format!("{:#}", error)])
+                );
             }
             Ok(1)
         }

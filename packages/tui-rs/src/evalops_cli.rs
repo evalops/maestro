@@ -115,9 +115,7 @@ pub async fn run_evalops(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         _ => {
-            eprintln!(
-                "Unknown evalops subcommand. Try \"deixic-code init\" for setup, \"deixic-code evalops platform-tools\" for governed execution, or \"deixic-code evalops login\", \"logout\", or \"status\"."
-            );
+            eprintln!("{}", crate::localization::cli_locale().format("Unknown evalops subcommand. Try \"deixic-code init\" for setup, \"deixic-code evalops platform-tools\" for governed execution, or \"deixic-code evalops login\", \"logout\", or \"status\".", &[]));
             Ok(1)
         }
     }
@@ -128,7 +126,7 @@ fn is_help(arg: &str) -> bool {
 }
 
 fn evalops_help() -> &'static str {
-    "deixic-code evalops device-enroll       Enroll this device for tool authority\n  deixic-code evalops device-revoke       Revoke this device authority\n  maestro login                         Authenticate with EvalOps Identity\n  maestro evalops logout                  Remove stored EvalOps credentials\n  maestro evalops status                  Show managed EvalOps session status\n  maestro evalops init ...                Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...      Install and operate Platform-governed tools\n\n`maestro evalops login` remains a compatibility alias for `maestro login`."
+    crate::localization::cli_locale().translate("deixic-code evalops device-enroll       Enroll this device for tool authority\n  deixic-code evalops device-revoke       Revoke this device authority\n  maestro login                         Authenticate with EvalOps Identity\n  maestro evalops logout                  Remove stored EvalOps credentials\n  maestro evalops status                  Show managed EvalOps session status\n  maestro evalops init ...                Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...      Install and operate Platform-governed tools\n\n`maestro evalops login` remains a compatibility alias for `maestro login`.")
 }
 
 pub(crate) fn authenticated_session_history_endpoint() -> String {
@@ -154,7 +152,13 @@ fn session_history_endpoint_from(env: &HashMap<String, String>) -> String {
 
 fn hosted_orb_smoke_credential_command(args: &[String]) -> Result<i32> {
     if args.len() != 1 || args[0] != "--json" {
-        eprintln!("Usage: deixic-code evalops hosted-computer-smoke-credential --json");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Usage: deixic-code evalops hosted-computer-smoke-credential --json",
+                &[]
+            )
+        );
         return Ok(1);
     }
     let snapshot = load_evalops_snapshot()?;
@@ -175,10 +179,20 @@ fn hosted_orb_smoke_credential(
         .unwrap_or(snapshot.access.trim())
         .trim();
     if token.is_empty() {
-        bail!("stored EvalOps session has no access credential");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("stored EvalOps session has no access credential", &[])
+        );
     }
     if snapshot.expires <= now_ms() {
-        bail!("stored EvalOps session is expired; run `deixic-code evalops login`");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "stored EvalOps session is expired; run `deixic-code evalops login`",
+                &[]
+            )
+        );
     }
     let organization_id = snapshot
         .organization_id
@@ -206,16 +220,39 @@ fn hosted_orb_smoke_credential(
 }
 
 async fn login() -> Result<i32> {
-    println!("Deixic Code EvalOps Login");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code EvalOps Login", &[])
+    );
     match perform_evalops_login().await {
         Ok(()) => {
-            println!("EvalOps credentials saved successfully.");
-            println!("Run `deixic-code` to open the TUI with your configured default model.");
-            println!("Run `deixic-code doctor --live` to verify your login and setup.");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("EvalOps credentials saved successfully.", &[])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Run `deixic-code` to open the TUI with your configured default model.",
+                    &[]
+                )
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Run `deixic-code doctor --live` to verify your login and setup.",
+                    &[]
+                )
+            );
             Ok(0)
         }
         Err(error) => {
-            eprintln!("Login failed: {error:#}");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Login failed: {0}", &[format!("{:#}", error)])
+            );
             Ok(1)
         }
     }
@@ -224,11 +261,19 @@ async fn login() -> Result<i32> {
 async fn logout() -> Result<i32> {
     match perform_evalops_logout().await {
         Ok(()) => {
-            println!("Removed stored EvalOps credentials.");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Removed stored EvalOps credentials.", &[])
+            );
             Ok(0)
         }
         Err(error) => {
-            eprintln!("Logout failed: {error:#}");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Logout failed: {0}", &[format!("{:#}", error)])
+            );
             Ok(1)
         }
     }
@@ -237,17 +282,35 @@ async fn logout() -> Result<i32> {
 fn status() -> Result<i32> {
     // Match TS: short-circuit on stored OAuth credentials only (not env tokens).
     if !has_evalops_credentials() {
-        println!("No stored EvalOps credentials.");
-        println!("Run \"deixic-code evalops login\" to authenticate with EvalOps.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No stored EvalOps credentials.", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Run \"deixic-code evalops login\" to authenticate with EvalOps.",
+                &[]
+            )
+        );
         return Ok(0);
     }
 
-    println!("Stored EvalOps credentials detected.");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Stored EvalOps credentials detected.", &[])
+    );
     let snapshot = load_evalops_snapshot().ok().flatten();
     let context = resolve_managed_context(snapshot.as_ref(), &env_map());
     println!("{}", format_managed_status(&context));
     if !context.managed {
-        println!("No EvalOps agent session yet. Run \"deixic-code init\".");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "No EvalOps agent session yet. Run \"deixic-code init\".",
+                &[]
+            )
+        );
     }
     Ok(0)
 }

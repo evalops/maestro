@@ -8,6 +8,7 @@ use ratatui::{Frame, layout::Rect, widgets::ListState};
 /// A single configurable setting
 #[derive(Debug, Clone)]
 pub struct ConfigOption {
+    localized: bool,
     /// Setting key/identifier
     pub key: String,
     /// Human-readable name
@@ -35,6 +36,7 @@ impl ConfigOption {
         category: ConfigCategory,
     ) -> Self {
         Self {
+            localized: false,
             key: key.to_string(),
             name: name.to_string(),
             value: options
@@ -86,9 +88,9 @@ impl ConfigCategory {
     fn display_name(&self) -> &'static str {
         match self {
             ConfigCategory::Model => "Model & AI",
-            ConfigCategory::Security => "Security",
-            ConfigCategory::Display => "Display",
-            ConfigCategory::Tools => "Tools",
+            ConfigCategory::Security => maestro_ui::localization::tr("Security"),
+            ConfigCategory::Display => maestro_ui::localization::tr("Display"),
+            ConfigCategory::Tools => maestro_ui::localization::tr("Tools"),
         }
     }
 }
@@ -128,7 +130,13 @@ impl ConfigSelector {
     /// Create a new config selector with default settings
     #[must_use]
     pub fn new() -> Self {
-        let options = Self::default_options();
+        let mut options = maestro_ui::localization::with_locale(
+            crate::localization::Locale::English,
+            Self::default_options,
+        );
+        for option in &mut options {
+            option.localized = true;
+        }
         Self {
             options,
             selected: 0,
@@ -144,24 +152,24 @@ impl ConfigSelector {
             // Model settings
             ConfigOption::new(
                 "reasoning_effort",
-                "Reasoning Effort",
-                "How much 'thinking' the model does",
+                maestro_ui::localization::tr("Reasoning Effort"),
+                maestro_ui::localization::tr("How much 'thinking' the model does"),
                 vec!["off", "low", "medium", "high"],
                 0,
                 ConfigCategory::Model,
             ),
             ConfigOption::new(
                 "reasoning_summary",
-                "Reasoning Summary",
-                "How reasoning is summarized in output",
+                maestro_ui::localization::tr("Reasoning Summary"),
+                maestro_ui::localization::tr("How reasoning is summarized in output"),
                 vec!["off", "auto", "concise", "detailed"],
                 1,
                 ConfigCategory::Model,
             ),
             ConfigOption::new(
                 "verbosity",
-                "Model Verbosity",
-                "How verbose the model's responses are",
+                maestro_ui::localization::tr("Model Verbosity"),
+                maestro_ui::localization::tr("How verbose the model's responses are"),
                 vec!["quiet", "normal", "verbose"],
                 1,
                 ConfigCategory::Model,
@@ -169,16 +177,16 @@ impl ConfigSelector {
             // Security settings
             ConfigOption::new(
                 "sandbox_mode",
-                "Sandbox Mode",
-                "Restrict command execution to safe zones",
+                maestro_ui::localization::tr("Sandbox Mode"),
+                maestro_ui::localization::tr("Restrict command execution to safe zones"),
                 vec!["off", "permissive", "strict"],
                 0,
                 ConfigCategory::Security,
             ),
             ConfigOption::new(
                 "approval_policy",
-                "Approval Policy",
-                "When to require user approval",
+                maestro_ui::localization::tr("Approval Policy"),
+                maestro_ui::localization::tr("When to require user approval"),
                 vec!["auto", "suggest", "always"],
                 0,
                 ConfigCategory::Security,
@@ -186,16 +194,16 @@ impl ConfigSelector {
             // Display settings
             ConfigOption::new(
                 "notifications",
-                "Notifications",
-                "When to send desktop notifications",
+                maestro_ui::localization::tr("Notifications"),
+                maestro_ui::localization::tr("When to send desktop notifications"),
                 vec!["off", "errors", "all"],
                 1,
                 ConfigCategory::Display,
             ),
             ConfigOption::new(
                 "syntax_highlight",
-                "Syntax Highlighting",
-                "Enable code syntax highlighting",
+                maestro_ui::localization::tr("Syntax Highlighting"),
+                maestro_ui::localization::tr("Enable code syntax highlighting"),
                 vec!["off", "on"],
                 1,
                 ConfigCategory::Display,
@@ -203,16 +211,16 @@ impl ConfigSelector {
             // Tool settings
             ConfigOption::new(
                 "web_search",
-                "Web Search",
-                "Enable web search tool",
+                maestro_ui::localization::tr("Web Search"),
+                maestro_ui::localization::tr("Enable web search tool"),
                 vec!["off", "on"],
                 1,
                 ConfigCategory::Tools,
             ),
             ConfigOption::new(
                 "view_image",
-                "Image Viewing",
-                "Enable image/screenshot tools",
+                maestro_ui::localization::tr("Image Viewing"),
+                maestro_ui::localization::tr("Enable image/screenshot tools"),
                 vec!["off", "on"],
                 1,
                 ConfigCategory::Tools,
@@ -329,7 +337,7 @@ impl ConfigSelector {
         }
 
         let theme = crate::themes::current_ui_theme();
-        let inner = Modal::new(" Preferences ", 70, 20)
+        let inner = Modal::new(maestro_ui::localization::tr(" Preferences "), 70, 20)
             .theme(theme)
             .render(frame, area);
         let fields: Vec<_> = self
@@ -337,11 +345,25 @@ impl ConfigSelector {
             .iter()
             .map(|option| SettingField {
                 category: option.category.display_name(),
-                label: &option.name,
-                value: &option.value,
-                description: &option.description,
+                label: if option.localized {
+                    maestro_ui::localization::tr(&option.name)
+                } else {
+                    &option.name
+                },
+                value: if option.localized {
+                    maestro_ui::localization::tr(&option.value)
+                } else {
+                    &option.value
+                },
+                description: if option.localized {
+                    maestro_ui::localization::tr(&option.description)
+                } else {
+                    &option.description
+                },
                 error: if option.options.get(option.current_option).is_none() {
-                    Some("Choose a valid option with the left or right arrow")
+                    Some(maestro_ui::localization::tr(
+                        "Choose a valid option with the left or right arrow",
+                    ))
                 } else {
                     None
                 },
@@ -502,5 +524,30 @@ mod tests {
         assert_eq!(ConfigCategory::Security.display_name(), "Security");
         assert_eq!(ConfigCategory::Display.display_name(), "Display");
         assert_eq!(ConfigCategory::Tools.display_name(), "Tools");
+    }
+}
+
+#[cfg(test)]
+mod localization_regression_tests {
+    use super::*;
+
+    #[test]
+    fn language_does_not_change_setting_ids_or_values() {
+        use crate::localization::{Locale, with_locale};
+        let canonical = ConfigSelector::new().options;
+        for locale in Locale::ALL {
+            with_locale(locale, || {
+                let mut localized = ConfigSelector::new();
+                for (actual, expected) in localized.options.iter_mut().zip(&canonical) {
+                    assert_eq!(actual.key, expected.key);
+                    assert_eq!(actual.value, expected.value);
+                    assert_eq!(actual.options, expected.options);
+                    let mut next = expected.clone();
+                    next.next_option();
+                    actual.next_option();
+                    assert_eq!(actual.value, next.value);
+                }
+            });
+        }
     }
 }

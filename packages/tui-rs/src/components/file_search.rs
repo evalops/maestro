@@ -172,9 +172,12 @@ impl FileSearchModal {
         }
 
         let theme = crate::themes::current_ui_theme();
-        let inner = Modal::sized("Search Files (@)", ModalSize::Standard)
-            .theme(theme)
-            .render(frame, area);
+        let inner = Modal::sized(
+            maestro_ui::localization::tr("Search Files (@)"),
+            ModalSize::Standard,
+        )
+        .theme(theme)
+        .render(frame, area);
         let items = self
             .results
             .matches
@@ -182,9 +185,12 @@ impl FileSearchModal {
             .map(|m| self.render_match(m))
             .collect();
         let empty = if self.query.is_empty() {
-            format!("Type to search {} files", self.results.total_files)
+            maestro_ui::localization::format(
+                "Type to search {0} files",
+                &[(self.results.total_files).to_string()],
+            )
         } else {
-            "No matches found".to_string()
+            maestro_ui::localization::tr("No matches found").to_string()
         };
         Picker::new(&self.query, "", items, theme)
             .cursor(self.cursor)

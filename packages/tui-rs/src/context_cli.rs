@@ -192,7 +192,11 @@ pub async fn run_context(args: &[String]) -> Result<i32> {
                 return Ok(0);
             }
             arg if arg.starts_with('-') => {
-                bail!("Unknown option: {arg}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Unknown option: {0}", &[(arg).to_string()])
+                );
             }
             arg => {
                 if subcommand.is_none() {
@@ -211,7 +215,13 @@ pub async fn run_context(args: &[String]) -> Result<i32> {
 
     let command = subcommand.as_deref().unwrap_or("explain");
     if command != "explain" && command != "diff" {
-        eprintln!("Unknown context subcommand: {command}. Try \"maestro context explain\"");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Unknown context subcommand: {0}. Try \"maestro context explain\"",
+                &[(command).to_string()]
+            )
+        );
         return Ok(1);
     }
 
@@ -1526,23 +1536,33 @@ fn format_bytes(n: usize) -> String {
 
 fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("Prompt context for {}", manifest.cwd));
-    lines.push(format!("Generation: {}", manifest.manifest_sha256));
+    lines.push(crate::localization::cli_locale().format(
+        "Prompt context for {0}",
+        std::slice::from_ref(&(manifest.cwd)),
+    ));
+    lines.push(crate::localization::cli_locale().format(
+        "Generation: {0}",
+        std::slice::from_ref(&(manifest.manifest_sha256)),
+    ));
     let budget = match manifest.project_docs.max_bytes {
-        None => format!(
-            "{} bytes used (unlimited)",
-            format_bytes(manifest.project_docs.bytes_read)
+        None => crate::localization::cli_locale().format(
+            "{0} bytes used (unlimited)",
+            &[(format_bytes(manifest.project_docs.bytes_read)).clone()],
         ),
-        Some(max) => format!(
-            "{} / {} bytes used",
-            format_bytes(manifest.project_docs.bytes_read),
-            format_bytes(max)
+        Some(max) => crate::localization::cli_locale().format(
+            "{0} / {1} bytes used",
+            &[
+                (format_bytes(manifest.project_docs.bytes_read)).clone(),
+                (format_bytes(max)).clone(),
+            ],
         ),
     };
-    lines.push(format!("Budget: {budget}"));
-    lines.push(format!(
-        "Candidate order: {}",
-        manifest.project_docs.candidates.join(", ")
+    lines.push(
+        crate::localization::cli_locale().format("Budget: {0}", std::slice::from_ref(&(budget))),
+    );
+    lines.push(crate::localization::cli_locale().format(
+        "Candidate order: {0}",
+        &[(manifest.project_docs.candidates.join(", ")).clone()],
     ));
     lines.push(String::new());
 
@@ -1552,9 +1572,17 @@ fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String 
         .filter(|e| e.kind == "project_doc")
         .collect();
     if project_docs.is_empty() {
-        lines.push("Loaded files: none".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Loaded files: none")
+                .into(),
+        );
     } else {
-        lines.push("Loaded files:".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Loaded files:")
+                .into(),
+        );
         for entry in project_docs {
             let entry_path = entry.path.as_deref().unwrap_or(entry.id.as_str());
             let mut flags = Vec::new();
@@ -1601,7 +1629,11 @@ fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String 
         .collect();
     if !mcp_entries.is_empty() {
         lines.push(String::new());
-        lines.push("MCP context:".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("MCP context:")
+                .into(),
+        );
         for entry in mcp_entries {
             let location = entry
                 .uri
@@ -1615,7 +1647,11 @@ fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String 
 
     if !manifest.diagnostics.is_empty() {
         lines.push(String::new());
-        lines.push("Diagnostics:".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Diagnostics:")
+                .into(),
+        );
         for diagnostic in &manifest.diagnostics {
             let location = diagnostic.path.as_ref().or(diagnostic.scope_dir.as_ref());
             let suffix = location
@@ -1632,18 +1668,22 @@ fn render_context_manifest_summary(manifest: &UnifiedContextManifest) -> String 
 }
 
 fn render_context_manifest_diff(diff: &UnifiedContextManifestDiff) -> String {
-    let mut lines = Vec::new();
-    lines.push("Context diff".into());
-    lines.push(format!("Before: {}", diff.before_cwd));
-    lines.push(format!("After:  {}", diff.after_cwd));
-    lines.push(String::new());
-    lines.push(format!(
-        "Summary: {} added, {} removed, {} changed, {} unchanged",
-        diff.added.len(),
-        diff.removed.len(),
-        diff.changed.len(),
-        diff.unchanged.len()
-    ));
+    let locale = crate::localization::cli_locale();
+    let mut lines = vec![
+        locale.translate("Context diff").into(),
+        locale.format("Before: {0}", std::slice::from_ref(&diff.before_cwd)),
+        locale.format("After:  {0}", std::slice::from_ref(&diff.after_cwd)),
+        String::new(),
+        locale.format(
+            "Summary: {0} added, {1} removed, {2} changed, {3} unchanged",
+            &[
+                diff.added.len().to_string(),
+                diff.removed.len().to_string(),
+                diff.changed.len().to_string(),
+                diff.unchanged.len().to_string(),
+            ],
+        ),
+    ];
 
     let append_group = |lines: &mut Vec<String>,
                         title: &str,
@@ -1665,13 +1705,32 @@ fn render_context_manifest_diff(diff: &UnifiedContextManifestDiff) -> String {
         }
     };
 
-    append_group(&mut lines, "Added", "+", &diff.added);
-    append_group(&mut lines, "Removed", "-", &diff.removed);
-    append_group(&mut lines, "Changed", "~", &diff.changed);
+    append_group(
+        &mut lines,
+        crate::localization::cli_locale().translate("Added"),
+        "+",
+        &diff.added,
+    );
+    append_group(
+        &mut lines,
+        crate::localization::cli_locale().translate("Removed"),
+        "-",
+        &diff.removed,
+    );
+    append_group(
+        &mut lines,
+        crate::localization::cli_locale().translate("Changed"),
+        "~",
+        &diff.changed,
+    );
 
     if !diff.diagnostics.is_empty() {
         lines.push(String::new());
-        lines.push("Diagnostics:".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Diagnostics:")
+                .into(),
+        );
         for diagnostic in &diff.diagnostics {
             lines.push(format!(
                 "- {} {}: {}",

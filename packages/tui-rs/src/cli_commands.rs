@@ -24,7 +24,10 @@ const ANTHROPIC_OAUTH_REMOVED_MESSAGE: &str = "Anthropic OAuth login has been re
 /// `["sessions", "list"]` or `["cost", "today"]`.
 pub async fn run_cli_command(args: &[String]) -> Result<i32> {
     let Some(cmd) = args.first().map(String::as_str) else {
-        bail!("missing command");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("missing command", &[])
+        );
     };
 
     match cmd {
@@ -36,13 +39,23 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "doctor" => crate::doctor::run_doctor(&args[1..]).await,
         "setup" => crate::setup_cli::run_setup(&args[1..]).await,
         "status" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: deixic-code status");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Usage: {0}", &["deixic-code status".to_string()])
+            );
             Ok(0)
         }
         "status" => run_status(),
         "hooks" => run_hooks(&args[1..]),
         "export" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: deixic-code export <session-id> [output-path] [--format f]");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Usage: {0}",
+                    &["deixic-code export <session-id> [output-path] [--format f]".to_string()]
+                )
+            );
             Ok(0)
         }
         "export" => {
@@ -50,12 +63,24 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
             run_sessions_export(&args[1..])
         }
         "import" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: deixic-code import <file.jsonl|file.json>");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Usage: {0}",
+                    &["deixic-code import <file.jsonl|file.json>".to_string()]
+                )
+            );
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
         "import-claude" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: deixic-code import-claude [--dry-run]");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Usage: {0}",
+                    &["deixic-code import-claude [--dry-run]".to_string()]
+                )
+            );
             Ok(0)
         }
         "import-claude" => crate::import_claude_cli::run_import_claude(&args[1..]),
@@ -66,7 +91,11 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "mission" => crate::mission_cli::run_mission(&args[1..]).await,
         "init" => crate::init_cli::run_init(&args[1..]).await,
         "login" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro login");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Usage: {0}", &["maestro login".to_string()])
+            );
             Ok(0)
         }
         "login" => crate::evalops_cli::run_evalops(&["login".to_owned()]).await,
@@ -91,7 +120,10 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "mcp" => crate::mcp_config_cli::run_mcp_config(&args[1..]).await,
         "plugins" | "plugin" => crate::plugins_cli::run_plugins(&args[1..]),
         "connections" => crate::connections_cli::run_connections(&args[1..]),
-        other => bail!("unknown command: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format("unknown command: {0}", &[other.to_string()])
+        ),
     }
 }
 
@@ -107,14 +139,22 @@ fn run_sessions(args: &[String]) -> Result<i32> {
         "export" => run_sessions_export(&args[1..]),
         "import" => run_sessions_import(&args[1..]),
         "help" | "--help" | "-h" => {
-            println!(
-                "Usage: deixic-code sessions [list [N]|path|export <id> [out] [--format f]|import <file> [secure key flags]]"
-            );
+            println!("{}", crate::localization::cli_locale().format("Usage: {0}", &["deixic-code sessions [list [N]|path|export <id> [out] [--format f]|import <file> [secure key flags]]".to_string()]));
             Ok(0)
         }
         other => {
-            eprintln!("Unknown sessions subcommand: {other}");
-            eprintln!("Try: deixic-code sessions list|export|import|path");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown sessions subcommand: {0}", &[other.to_string()])
+            );
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Try: {0}",
+                    &["deixic-code sessions list|export|import|path".to_string()]
+                )
+            );
             Ok(1)
         }
     }
@@ -131,10 +171,20 @@ fn run_sessions_list(args: &[String]) -> Result<i32> {
         .recent_sessions(limit)
         .context("Failed to list sessions")?;
     if sessions.is_empty() {
-        println!("No sessions found for {}", cwd.display());
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("No sessions found for {0}", &[format!("{}", cwd.display())])
+        );
         return Ok(0);
     }
-    println!("ID            MODEL                 MODIFIED                  TITLE");
+    println!(
+        "{:<12}  {:<20}  {:<24}  {}",
+        "ID",
+        crate::localization::cli_locale().translate("Model"),
+        crate::localization::cli_locale().translate("Modified"),
+        crate::localization::cli_locale().translate("Title")
+    );
     for s in sessions {
         let id_short = if s.id.len() > 10 {
             format!("{}…", &s.id[..8])
@@ -172,11 +222,25 @@ fn run_sessions_list(args: &[String]) -> Result<i32> {
 fn run_sessions_path() -> Result<i32> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
-    println!("cwd: {}", cwd.display());
-    println!("sessions dir: {}", manager.sessions_dir().display());
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("Working directory: {0}", &[cwd.display().to_string()])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "sessions dir: {0}",
+            &[format!("{}", manager.sessions_dir().display())]
+        )
+    );
     if let Ok(sessions) = manager.recent_sessions(1) {
         if let Some(s) = sessions.first() {
-            println!("latest: {}", s.path.display());
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Latest: {0}", &[s.path.display().to_string()])
+            );
         }
     }
     Ok(0)
@@ -198,7 +262,13 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
         if a == "--format" || a == "-f" {
             i += 1;
             let Some(f) = args.get(i) else {
-                bail!("--format requires a value (json|secure-json|md|html|txt|jsonl|markdown)");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "--format requires a value (json|secure-json|md|html|txt|jsonl|markdown)",
+                        &[]
+                    )
+                );
             };
             if f.eq_ignore_ascii_case("secure-json") {
                 format = ExportFormat::Json;
@@ -234,7 +304,11 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
         } else if a == "--signing-key-id" || a.starts_with("--signing-key-id=") {
             signing_key_id = Some(take_arg_value(args, &mut i, a, "--signing-key-id")?);
         } else if a.starts_with('-') {
-            bail!("unknown export flag: {a}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unknown export flag: {0}", std::slice::from_ref(a))
+            );
         } else if session_id.is_none() {
             session_id = Some(a.clone());
         } else if output.is_none() {
@@ -244,9 +318,7 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     }
 
     let Some(id) = session_id else {
-        eprintln!(
-            "Usage: deixic-code sessions export <session-id> [output-path] [--format json|secure-json|md|html|txt|jsonl]"
-        );
+        eprintln!("{}", crate::localization::cli_locale().format("Usage: {0}", &["deixic-code sessions export <session-id> [output-path] [--format json|secure-json|md|html|txt|jsonl]".to_string()]));
         return Ok(2);
     };
 
@@ -264,8 +336,11 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
         };
         let out_path = export_secure_portable_session(&manager, &id, output.as_deref(), &options)?;
         println!(
-            "Exported redacted session {id} to {} (secure-json).",
-            out_path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Exported redacted session {0} to {1} (secure-json).",
+                &[id.clone(), format!("{}", out_path.display())]
+            )
         );
         return Ok(0);
     }
@@ -274,7 +349,11 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
         || recipient_key_id.is_some()
         || signing_key_id.is_some()
     {
-        bail!("secure session key flags require --format secure-json");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("secure session key flags require --format secure-json", &[])
+        );
     }
     if matches!(format_name.as_str(), "json" | "jsonl") {
         let portable_format = if format_name == "jsonl" {
@@ -290,14 +369,26 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
             redact_secrets,
         )?;
         println!(
-            "Exported session {id} to {} ({}).",
-            out_path.display(),
-            format_name
+            "{}",
+            crate::localization::cli_locale().format(
+                "Exported session {0} to {1} ({2}).",
+                &[
+                    id.clone(),
+                    format!("{}", out_path.display()),
+                    format_name.clone()
+                ]
+            )
         );
         return Ok(0);
     }
     if redact_secrets {
-        bail!("--redact-secrets is supported for json and jsonl exports");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "--redact-secrets is supported for json and jsonl exports",
+                &[]
+            )
+        );
     }
     let session = manager
         .load_session(&id)
@@ -329,10 +420,15 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     fs::write(&out_path, content)
         .with_context(|| format!("write export to {}", out_path.display()))?;
     println!(
-        "Exported session {} to {} ({}).",
-        session.header.id,
-        out_path.display(),
-        format.extension()
+        "{}",
+        crate::localization::cli_locale().format(
+            "Exported session {0} to {1} ({2}).",
+            &[
+                session.header.id.clone(),
+                format!("{}", out_path.display()),
+                format.extension().to_string()
+            ]
+        )
     );
     Ok(0)
 }
@@ -345,7 +441,13 @@ fn parse_export_format(s: &str) -> Result<ExportFormat> {
         "txt" | "text" | "plain" => Ok(ExportFormat::PlainText),
         "jsonl" => Ok(ExportFormat::Json), // handled specially above for raw copy
         other => {
-            bail!("unsupported export format: {other} (use json|secure-json|md|html|txt|jsonl)")
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "unsupported export format: {0} (use json|secure-json|md|html|txt|jsonl)",
+                    &[other.to_string()]
+                )
+            )
         }
     }
 }
@@ -376,18 +478,24 @@ fn run_sessions_import(args: &[String]) -> Result<i32> {
             expected_recipient_key_id =
                 Some(take_arg_value(args, &mut i, a, "--recipient-key-id")?);
         } else if a.starts_with('-') {
-            bail!("unknown import flag: {a}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unknown import flag: {0}", std::slice::from_ref(a))
+            );
         } else if source.is_none() {
             source = Some(PathBuf::from(a));
         } else {
-            bail!("unexpected import argument: {a}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unexpected import argument: {0}", std::slice::from_ref(a))
+            );
         }
         i += 1;
     }
     let Some(source) = source else {
-        eprintln!(
-            "Usage: deixic-code sessions import <file.jsonl|file.json> [--encryption-key-file path --verify-key-file path [--recipient-key-id id]]"
-        );
+        eprintln!("{}", crate::localization::cli_locale().format("Usage: {0}", &["deixic-code sessions import <file.jsonl|file.json> [--encryption-key-file path --verify-key-file path [--recipient-key-id id]]".to_string()]));
         return Ok(2);
     };
     let secure_options = match (encryption_key_file, verify_key_file) {
@@ -397,7 +505,11 @@ fn run_sessions_import(args: &[String]) -> Result<i32> {
             verify_key_file,
             expected_recipient_key_id,
         }),
-        _ => bail!("secure session import requires both key files"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("secure session import requires both key files", &[])
+        ),
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
@@ -405,19 +517,32 @@ fn run_sessions_import(args: &[String]) -> Result<i32> {
         import_portable_session_with_options(&manager, &source, secure_options.as_ref())?;
     if imported.imported_count > 1 {
         println!(
-            "Imported {} sessions from {}. Active session: {}.",
-            imported.imported_count,
-            source.display(),
-            imported.session_id
+            "{}",
+            crate::localization::cli_locale().format(
+                "Imported {0} sessions from {1}. Active session: {2}.",
+                &[
+                    format!("{}", imported.imported_count),
+                    format!("{}", source.display()),
+                    imported.session_id.clone()
+                ]
+            )
         );
     } else {
         println!(
-            "Imported session {} from {}.",
-            imported.session_id,
-            source.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "Imported session {0} from {1}.",
+                &[imported.session_id.clone(), format!("{}", source.display())]
+            )
         );
     }
-    println!("Stored at {}", imported.session_file.display());
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Stored at {0}",
+            &[format!("{}", imported.session_file.display())]
+        )
+    );
     Ok(0)
 }
 
@@ -445,15 +570,34 @@ fn run_cost(args: &[String]) -> Result<i32> {
         "clear" => run_cost_clear(args),
         "breakdown" => run_cost_breakdown(),
         "help" | "--help" | "-h" => {
-            println!("Usage: deixic-code cost [today|week|month|all|breakdown|clear]");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Usage: {0}",
+                    &["deixic-code cost [today|week|month|all|breakdown|clear]".to_string()]
+                )
+            );
             Ok(0)
         }
         "today" | "yesterday" | "week" | "7d" | "month" | "30d" | "all" | "total" => {
             run_cost_summary(period)
         }
         other => {
-            eprintln!("Unknown cost subcommand: {other}");
-            eprintln!("Try: deixic-code cost today|yesterday|week|month|all|breakdown|clear");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown cost subcommand: {0}", &[other.to_string()])
+            );
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Try: {0}",
+                    &[
+                        "deixic-code cost today|yesterday|week|month|all|breakdown|clear"
+                            .to_string()
+                    ]
+                )
+            );
             Ok(1)
         }
     }
@@ -487,14 +631,45 @@ fn run_cost_summary(period: &str) -> Result<i32> {
         other => other,
     };
 
-    println!("Deixic Code cost — {label}");
-    println!("  Sessions scanned: {session_count}");
-    println!("  Input tokens:     {input_tokens}");
-    println!("  Output tokens:    {output_tokens}");
-    println!("  Total tokens:     {}", input_tokens + output_tokens);
-    println!("  Est. cost (USD):  {total_cost:.4}");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code cost — {0}", &[label.to_string()])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Sessions scanned: {0}", &[format!("{}", session_count)])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Input tokens:     {0}", &[format!("{}", input_tokens)])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Output tokens:    {0}", &[format!("{}", output_tokens)])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Total tokens:     {0}",
+            &[format!("{}", input_tokens + output_tokens)]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Estimated cost (USD): {0}", &[format!("{total_cost:.4}")])
+    );
     println!();
-    println!("Note: native cost reads local session stats (not the legacy TS usage DB).");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Note: native cost reads local session stats (not the legacy TS usage DB).",
+            &[]
+        )
+    );
     Ok(0)
 }
 
@@ -514,9 +689,18 @@ fn run_cost_breakdown() -> Result<i32> {
         entry.3 += s.stats.total_cost;
     }
 
-    println!("Deixic Code cost breakdown (by model, last 200 sessions)");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Deixic Code cost breakdown (by model, last 200 sessions)",
+            &[]
+        )
+    );
     if by_model.is_empty() {
-        println!("  No session usage found.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  No session usage found.", &[])
+        );
         return Ok(0);
     }
     println!(
@@ -539,13 +723,19 @@ fn run_cost_breakdown() -> Result<i32> {
 fn run_cost_clear(args: &[String]) -> Result<i32> {
     let force = args.iter().any(|a| a == "--yes" || a == "-y" || a == "yes");
     if !force {
-        eprint!("Clear local usage.json files? [y/N] ");
+        eprint!(
+            "{}",
+            crate::localization::cli_locale().format("Clear local usage.json files? [y/N] ", &[])
+        );
         let _ = io::stderr().flush();
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         let answer = line.trim().to_ascii_lowercase();
         if answer != "y" && answer != "yes" {
-            println!("Aborted.");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("Aborted.", &[])
+            );
             return Ok(0);
         }
     }
@@ -554,14 +744,25 @@ fn run_cost_clear(args: &[String]) -> Result<i32> {
     for path in usage_file_candidates() {
         if path.exists() {
             fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-            println!("Removed {}", path.display());
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Removed {0}", &[format!("{}", path.display())])
+            );
             removed += 1;
         }
     }
     if removed == 0 {
-        println!("No usage files found to clear.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No usage files found to clear.", &[])
+        );
     } else {
-        println!("Cleared {removed} usage file(s).");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Cleared {0} usage file(s).", &[format!("{}", removed)])
+        );
     }
     Ok(0)
 }
@@ -611,11 +812,23 @@ fn load_usage_entries() -> Vec<UsageEntry> {
             Ok(raw) => match serde_json::from_str::<Vec<UsageEntry>>(&raw) {
                 Ok(entries) => return entries,
                 Err(err) => {
-                    eprintln!("warning: failed to parse {}: {err}", path.display());
+                    eprintln!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "warning: failed to parse {0}: {1}",
+                            &[format!("{}", path.display()), format!("{}", err)]
+                        )
+                    );
                 }
             },
             Err(err) => {
-                eprintln!("warning: failed to read {}: {err}", path.display());
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "warning: failed to read {0}: {1}",
+                        &[format!("{}", path.display()), format!("{}", err)]
+                    )
+                );
             }
         }
     }
@@ -671,9 +884,7 @@ fn run_stats(args: &[String]) -> Result<i32> {
                 session_id = Some(s.trim_start_matches("--session="));
             }
             "help" | "--help" | "-h" => {
-                println!(
-                    "Usage: deixic-code stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]"
-                );
+                println!("{}", crate::localization::cli_locale().format("Usage: {0}", &["deixic-code stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]".to_string()]));
                 return Ok(0);
             }
             "today" | "yesterday" | "week" | "7d" | "month" | "30d" | "all" | "total" => {
@@ -737,20 +948,57 @@ fn run_stats(args: &[String]) -> Result<i32> {
         m.2 += e.cost;
     }
 
-    println!("Deixic Code stats — {label} (native usage.json)");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Deixic Code stats — {0} (native usage.json)",
+            &[label.to_string()]
+        )
+    );
     if entries.is_empty() {
         // Fall back to session rollups when no usage DB.
-        println!("  No usage.json entries; showing local session rollup instead.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "  No usage.json entries; showing local session rollup instead.",
+                &[]
+            )
+        );
         return run_cost_summary(if period == "week" { "all" } else { period });
     }
-    println!("  Requests:      {}", entries.len());
-    println!("  Input tokens:  {total_in}");
-    println!("  Output tokens: {total_out}");
-    println!("  Total tokens:  {}", total_in + total_out);
-    println!("  Est. cost:     ${total_cost:.4}");
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Requests:      {0}", &[format!("{}", entries.len())])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Input tokens:  {0}", &[format!("{}", total_in)])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Output tokens: {0}", &[format!("{}", total_out)])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Total tokens:  {0}",
+            &[format!("{}", total_in + total_out)]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Estimated cost (USD): {0}", &[format!("{total_cost:.4}")])
+    );
     if !by_provider.is_empty() {
         println!();
-        println!("  By provider:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  By provider:", &[])
+        );
         for (name, (n, tok, cost)) in by_provider {
             println!(
                 "    {:<16} req={n:<5} tok={tok:<10} cost=${cost:.4}",
@@ -760,7 +1008,10 @@ fn run_stats(args: &[String]) -> Result<i32> {
     }
     if !by_model.is_empty() {
         println!();
-        println!("  By model:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  By model:", &[])
+        );
         for (name, (n, tok, cost)) in by_model {
             println!(
                 "    {:<28} req={n:<5} tok={tok:<10} cost=${cost:.4}",
@@ -781,24 +1032,60 @@ fn run_models(args: &[String]) -> Result<i32> {
         if args.iter().any(|arg| arg == "--json") {
             println!("{}", serde_json::to_string_pretty(&inspection)?);
         } else {
-            println!("Model: {}", inspection.id);
-            println!("Provider: {}", inspection.resolved.provider);
-            println!("Protocol: {}", inspection.resolved.protocol);
             println!(
-                "Authentication: {} ({})",
-                if inspection.resolved.auth_configured {
-                    "configured"
-                } else {
-                    "not configured"
-                },
-                inspection.sources["auth"]
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Model: {0}", std::slice::from_ref(&inspection.id))
             );
             println!(
-                "Base URL: {} ({})",
-                inspection.resolved.base_url.as_deref().unwrap_or("(none)"),
-                inspection.sources["baseUrl"]
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Provider: {0}",
+                    std::slice::from_ref(&inspection.resolved.provider)
+                )
             );
-            println!("Catalog: {}", inspection.sources["catalog"]);
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Protocol: {0}",
+                    std::slice::from_ref(&inspection.resolved.protocol)
+                )
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Authentication: {0} ({1})",
+                    &[
+                        (if inspection.resolved.auth_configured {
+                            "configured"
+                        } else {
+                            "not configured"
+                        })
+                        .to_string(),
+                        inspection.sources["auth"].clone()
+                    ]
+                )
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Base URL: {0} ({1})",
+                    &[
+                        inspection
+                            .resolved
+                            .base_url
+                            .as_deref()
+                            .unwrap_or("(none)")
+                            .to_string(),
+                        inspection.sources["baseUrl"].clone()
+                    ]
+                )
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Catalog: {0}", &[inspection.sources["catalog"].clone()])
+            );
         }
         return Ok(0);
     }
@@ -851,23 +1138,42 @@ fn run_models(args: &[String]) -> Result<i32> {
         for m in &filtered {
             *counts.entry(m.provider.clone()).or_default() += 1;
         }
-        println!("Providers (native catalog)");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Providers (native catalog)", &[])
+        );
         if counts.is_empty() {
-            println!("  (none)");
+            println!(
+                "  ({})",
+                crate::localization::cli_locale().translate("none")
+            );
             return Ok(0);
         }
         for (p, n) in counts {
-            println!("  {p:<16} {n} model(s)");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("  {0} — models: {1}", &[format!("{p:<16}"), n.to_string()])
+            );
         }
         return Ok(0);
     }
 
-    println!("Registered models (native catalog)");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Registered models (native catalog)", &[])
+    );
     if let Some(p) = &provider_filter {
-        println!("  Filter: {p}");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  Filter: {0}", std::slice::from_ref(p))
+        );
     }
     if filtered.is_empty() {
-        println!("  No models matched.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  No models matched.", &[])
+        );
         return Ok(1);
     }
     let mut by_provider: BTreeMap<String, Vec<_>> = BTreeMap::new();
@@ -876,7 +1182,13 @@ fn run_models(args: &[String]) -> Result<i32> {
     }
     for (provider, entries) in by_provider {
         println!();
-        println!("{provider}  ({} models)", entries.len());
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "  {0} — models: {1}",
+                &[provider.clone(), entries.len().to_string()]
+            )
+        );
         for m in entries {
             println!("  • {:<28}  {}", m.id, m.description);
             println!(
@@ -898,27 +1210,56 @@ fn run_models(args: &[String]) -> Result<i32> {
 fn run_status() -> Result<i32> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let version = env!("CARGO_PKG_VERSION");
-    println!("Deixic Code status (native)");
-    println!("  Binary:     maestro {version}");
-    println!("  Cwd:        {}", cwd.display());
     println!(
-        "  Git:        {}",
-        crate::git::current_branch(&cwd).unwrap_or_else(|| "(not a repo)".into())
+        "{}",
+        crate::localization::cli_locale().format("Deixic Code status (native)", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Binary:     maestro {0}", &[version.to_string()])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("  Cwd:        {0}", &[format!("{}", cwd.display())])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Git:        {0}",
+            &[crate::git::current_branch(&cwd)
+                .unwrap_or_else(|| "(not a repo)".into())
+                .clone()]
+        )
     );
     if let Some(home) = crate::path_utils::maestro_home_dir() {
-        println!("  Home:       {}", home.display());
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  Home:       {0}", &[format!("{}", home.display())])
+        );
     }
     println!(
-        "  Model env:  {}",
-        std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "(default)".into())
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Model env:  {0}",
+            &[std::env::var("MAESTRO_MODEL")
+                .unwrap_or_else(|_| "(default)".into())
+                .clone()]
+        )
     );
     println!(
-        "  Plan mode:  {}",
-        if crate::safety::is_plan_mode() {
-            "on"
-        } else {
-            "off"
-        }
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Plan mode:  {0}",
+            &[(if crate::safety::is_plan_mode() {
+                "on"
+            } else {
+                "off"
+            })
+            .to_string()]
+        )
     );
     Ok(0)
 }
@@ -961,13 +1302,22 @@ fn run_hooks_import(args: &[String]) -> Result<i32> {
             "--out" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
-                    eprintln!("--out requires a path");
+                    eprintln!(
+                        "{}",
+                        crate::localization::cli_locale().format("--out requires a path", &[])
+                    );
                     return Ok(1);
                 };
                 out_path = Some(PathBuf::from(value));
             }
             other if other.starts_with("--") => {
-                eprintln!("Unknown option for `deixic-code hooks import`: {other}");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Unknown option for `deixic-code hooks import`: {0}",
+                        &[other.to_string()]
+                    )
+                );
                 return Ok(1);
             }
             other => explicit_source = Some(other.to_string()),
@@ -976,37 +1326,58 @@ fn run_hooks_import(args: &[String]) -> Result<i32> {
     }
 
     let Some(source) = claude_code_settings_path(explicit_source.as_deref()) else {
-        eprintln!(
-            "No Claude Code settings found. Looked for .claude/settings.json here and ~/.claude/settings.json."
-        );
+        eprintln!("{}", crate::localization::cli_locale().format("No Claude Code settings found. Looked for .claude/settings.json here and ~/.claude/settings.json.", &[]));
         return Ok(1);
     };
     let text = match std::fs::read_to_string(&source) {
         Ok(text) => text,
         Err(error) => {
-            eprintln!("Failed to read {}: {error}", source.display());
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Failed to read {0}: {1}",
+                    &[format!("{}", source.display()), format!("{}", error)]
+                )
+            );
             return Ok(1);
         }
     };
     let outcome = match crate::hooks::import_claude_code_hooks(&text) {
         Ok(outcome) => outcome,
         Err(error) => {
-            eprintln!("Failed to parse {}: {error}", source.display());
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Failed to parse {0}: {1}",
+                    &[format!("{}", source.display()), format!("{}", error)]
+                )
+            );
             return Ok(1);
         }
     };
 
     if outcome.has_unmappable() {
         eprintln!(
-            "{} of {} entries in {} have no Deixic Code equivalent:",
-            outcome.unmappable.len(),
-            outcome.unmappable.len() + outcome.hooks.len(),
-            source.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} of {1} entries in {2} have no Deixic Code equivalent:",
+                &[
+                    format!("{}", outcome.unmappable.len()),
+                    format!("{}", outcome.unmappable.len() + outcome.hooks.len()),
+                    format!("{}", source.display())
+                ]
+            )
         );
         for entry in &outcome.unmappable {
             eprintln!("  - {entry}");
         }
-        eprintln!("Nothing was written. Remove or rewrite those entries and run the import again.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Nothing was written. Remove or rewrite those entries and run the import again.",
+                &[]
+            )
+        );
         return Ok(1);
     }
 
@@ -1014,14 +1385,25 @@ fn run_hooks_import(args: &[String]) -> Result<i32> {
     match out_path {
         Some(path) => {
             if let Err(error) = std::fs::write(&path, &rendered) {
-                eprintln!("Failed to write {}: {error}", path.display());
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Failed to write {0}: {1}",
+                        &[format!("{}", path.display()), format!("{}", error)]
+                    )
+                );
                 return Ok(1);
             }
             println!(
-                "Imported {} hook(s) from {} into {}",
-                outcome.hooks.len(),
-                source.display(),
-                path.display()
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Imported {0} hook(s) from {1} into {2}",
+                    &[
+                        format!("{}", outcome.hooks.len()),
+                        format!("{}", source.display()),
+                        format!("{}", path.display())
+                    ]
+                )
             );
         }
         None => print!("{rendered}"),
@@ -1035,25 +1417,59 @@ fn run_hooks(args: &[String]) -> Result<i32> {
         return run_hooks_import(&args[1..]);
     }
     if sub != "status" && sub != "list" {
-        eprintln!("Unknown hooks subcommand: {sub}");
-        eprintln!("Try: deixic-code hooks status");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Unknown hooks subcommand: {0}", &[sub.to_string()])
+        );
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Try: {0}", &["deixic-code hooks status".to_string()])
+        );
         eprintln!("     deixic-code hooks import --from-claude-code [path]");
         return Ok(1);
     }
 
-    println!("Hook status (native summary)");
-    println!("  Runtime:    native TUI hooks (Lua/WASM/native + optional Node bridge)");
     println!(
-        "  Config:     ~/.maestro/hooks.toml and project hooks (see packages/tui-rs hooks docs)"
+        "{}",
+        crate::localization::cli_locale().format("Hook status (native summary)", &[])
     );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  Runtime:    native TUI hooks (Lua/WASM/native + optional Node bridge)",
+            &[]
+        )
+    );
+    println!("{}", crate::localization::cli_locale().format("  Config:     ~/.maestro/hooks.toml and project hooks (see packages/tui-rs hooks docs)", &[]));
     if std::env::var("MAESTRO_HOOKS_DISABLED").ok().as_deref() == Some("1") {
-        println!("  State:      disabled (MAESTRO_HOOKS_DISABLED=1)");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  State:      disabled (MAESTRO_HOOKS_DISABLED=1)", &[])
+        );
     } else {
-        println!("  State:      enabled (default)");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  State:      enabled (default)", &[])
+        );
     }
     println!();
-    println!("Inspect hooks from the interactive TUI (/hooks) for live concurrency stats.");
-    println!("Import a Claude Code config with `deixic-code hooks import --from-claude-code`.");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Inspect hooks from the interactive TUI (/hooks) for live concurrency stats.",
+            &[]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Import a Claude Code config with `deixic-code hooks import --from-claude-code`.",
+            &[]
+        )
+    );
     Ok(0)
 }
 

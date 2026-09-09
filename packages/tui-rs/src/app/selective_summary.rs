@@ -40,23 +40,29 @@ impl SummaryDialog {
     pub(super) fn render(&mut self, frame: &mut Frame, area: Rect) {
         let theme = crate::themes::current_ui_theme();
         let title = match &self.stage {
-            Stage::Picking { through: true, .. } => "Summarize · start through selected turn",
-            Stage::Picking { .. } => "Summarize · selected turn through end",
-            Stage::Review { .. } => "Review summary · Enter saves a new conversation",
-            _ => "Summarize conversation",
+            Stage::Picking { through: true, .. } => {
+                maestro_ui::localization::tr("Summarize · start through selected turn")
+            }
+            Stage::Picking { .. } => {
+                maestro_ui::localization::tr("Summarize · selected turn through end")
+            }
+            Stage::Review { .. } => {
+                maestro_ui::localization::tr("Review summary · Enter saves a new conversation")
+            }
+            _ => maestro_ui::localization::tr("Summarize conversation"),
         };
         let inner = Modal::new(title, 88, area.height.saturating_sub(4).max(5))
             .theme(theme)
             .render(frame, area);
         match &mut self.stage {
             Stage::Picking { picker, .. } => picker.render(frame, inner, theme, PickerOptions {
-                empty: "No complete turns to summarize",
-                hints: Some(&[KeyHint::new("↑↓", "turn"), KeyHint::new("f", "from here"), KeyHint::new("t", "up to here"), KeyHint::new("Enter", "generate"), KeyHint::new("Esc", "cancel")]),
+                empty: maestro_ui::localization::tr("No complete turns to summarize"),
+                hints: Some(&[KeyHint::new("↑↓", "turn"), KeyHint::new("f", maestro_ui::localization::tr("from here")), KeyHint::new("t", maestro_ui::localization::tr("up to here")), KeyHint::new("Enter", "generate"), KeyHint::new("Esc", maestro_ui::localization::tr("cancel"))]),
                 ..PickerOptions::default()
             }, |turn| ListItem::new(format!("{}. {}", turn.number, turn.preview))),
-            Stage::Loading(_) => frame.render_widget(Paragraph::new("Reading current model context… Esc cancels").style(theme.on_panel().text_style()), inner),
-            Stage::Running { cancelled, .. } => frame.render_widget(Paragraph::new(if *cancelled { "Cancelling summary…" } else { "Generating summary… Esc cancels. Original conversation stays intact." }).wrap(Wrap { trim: false }).style(theme.on_panel().text_style()), inner),
-            Stage::Review { result, scroll, .. } => frame.render_widget(Paragraph::new(format!("Turns {}–{} of {} · original conversation stays available\nEnter: save and continue in child · Esc: discard · ↑↓: scroll\n\n{}", result.first_turn, result.last_turn, result.total_turns, result.summary)).wrap(Wrap { trim: false }).scroll((*scroll, 0)).style(theme.on_panel().text_style()), inner),
+            Stage::Loading(_) => frame.render_widget(Paragraph::new(maestro_ui::localization::tr("Reading current model context… Esc cancels")).style(theme.on_panel().text_style()), inner),
+            Stage::Running { cancelled, .. } => frame.render_widget(Paragraph::new(if *cancelled { maestro_ui::localization::tr("Cancelling summary…") } else { maestro_ui::localization::tr("Generating summary… Esc cancels. Original conversation stays intact.") }).wrap(Wrap { trim: false }).style(theme.on_panel().text_style()), inner),
+            Stage::Review { result, scroll, .. } => frame.render_widget(Paragraph::new(maestro_ui::localization::format("Turns {0}–{1} of {2} · original conversation stays available\nEnter: save and continue in child · Esc: discard · ↑↓: scroll\n\n{3}", &[(result.first_turn).to_string(), (result.last_turn).to_string(), (result.total_turns).to_string(), (result.summary).clone()])).wrap(Wrap { trim: false }).scroll((*scroll, 0)).style(theme.on_panel().text_style()), inner),
         }
     }
 }
@@ -71,8 +77,12 @@ impl App {
         instructions: Option<String>,
     ) {
         if self.state.busy || !self.queued_prompts.is_empty() {
-            self.state.status =
-                Some("Finish the active response and queued prompts before summarizing.".into());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Finish the active response and queued prompts before summarizing.")
+                    .into(),
+            );
             return;
         }
         let result = self
@@ -88,7 +98,13 @@ impl App {
                 });
                 self.active_modal = ActiveModal::SelectiveSummary;
             }
-            Err(error) => self.state.error = Some(format!("Cannot summarize: {error}")),
+            Err(error) => {
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Cannot summarize: {0}", &[(error).to_string()]),
+                );
+            }
         }
     }
 
@@ -111,15 +127,29 @@ impl App {
                     changed = true;
                 }
                 Ok(Ok(_)) => {
-                    self.state.status = Some("No conversation turns to summarize.".into());
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .translate("No conversation turns to summarize.")
+                            .into(),
+                    );
                     close = true;
                 }
                 Ok(Err(error)) => {
-                    self.state.error = Some(format!("Cannot summarize: {error}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Cannot summarize: {0}", &[(error).to_string()]),
+                    );
                     close = true;
                 }
                 Err(TryRecvError::Closed) => {
-                    self.state.error = Some("Summary preview stopped.".into());
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .translate("Summary preview stopped.")
+                            .into(),
+                    );
                     close = true;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -145,16 +175,22 @@ impl App {
                             }
                             Err(error) => {
                                 usage_recorded = false;
-                                self.state.error =
-                                    Some(format!("Failed to record summary usage: {error}"));
+                                self.state.error = Some(self.state.locale.format(
+                                    "Failed to record summary usage: {0}",
+                                    &[(error).to_string()],
+                                ));
                             }
                         }
                     }
                     if !usage_recorded {
                         close = true;
                     } else if *cancelled {
-                        self.state.status =
-                            Some("Summary cancelled; original conversation preserved.".into());
+                        self.state.status = Some(
+                            self.state
+                                .locale
+                                .translate("Summary cancelled; original conversation preserved.")
+                                .into(),
+                        );
                         close = true;
                     } else {
                         match outcome.result {
@@ -167,15 +203,23 @@ impl App {
                                 changed = true;
                             }
                             Err(error) => {
-                                self.state.error = Some(format!("Summary failed: {error}"));
+                                self.state.error = Some(
+                                    self.state
+                                        .locale
+                                        .format("Summary failed: {0}", &[(error).to_string()]),
+                                );
                                 close = true;
                             }
                         }
                     }
                 }
                 Err(TryRecvError::Closed) => {
-                    self.state.error =
-                        Some("Summary request stopped; original conversation preserved.".into());
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .translate("Summary request stopped; original conversation preserved.")
+                            .into(),
+                    );
                     close = true;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -240,7 +284,11 @@ impl App {
                                 }
                             }
                             Err(error) => {
-                                self.state.error = Some(format!("Cannot summarize: {error}"));
+                                self.state.error = Some(
+                                    self.state
+                                        .locale
+                                        .format("Cannot summarize: {0}", &[(error).to_string()]),
+                                );
                                 close = true;
                             }
                         }
@@ -266,7 +314,11 @@ impl App {
                 KeyCode::Down => *scroll = scroll.saturating_add(1),
                 KeyCode::Enter => {
                     if let Err(error) = self.save_selective_summary(result, digest.clone()).await {
-                        self.state.error = Some(format!("Could not apply summary: {error}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Could not apply summary: {0}", &[(error).to_string()]),
+                        );
                     }
                     close = true;
                 }
@@ -332,8 +384,9 @@ impl App {
         }
         crate::plan_mode::set_active_session_id(Some(child_id.clone()));
         self.session_resume_failed = false;
-        let notice = format!(
-            "Summary saved in {child_id}. Original conversation remains available in /sessions."
+        let notice = self.state.locale.format(
+            "Summary saved in {0}. Original conversation remains available in /sessions.",
+            std::slice::from_ref(&(child_id)),
         );
         self.state.status = Some(notice.clone());
         self.state.add_system_message(notice);

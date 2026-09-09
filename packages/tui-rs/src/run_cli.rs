@@ -351,7 +351,10 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if !RUN_SUBCOMMANDS.contains(&subcommand) {
-        eprintln!("Run subcommand required.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format("Run subcommand required.", &[])
+        );
         eprintln!("{}", run_help());
         return Ok(1);
     }
@@ -363,7 +366,10 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
         .find(|arg| !arg.starts_with('-'))
         .map(String::as_str);
     let Some(session_id) = session_id else {
-        eprintln!("Session id required.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format("Session id required.", &[])
+        );
         eprintln!("{}", run_help());
         return Ok(1);
     };
@@ -2728,98 +2734,37 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
         .and_then(JsonValue::as_u64)
         .unwrap_or(0);
     let mut lines = vec![
-        format!(
-            "Execution evidence: {} succeeded, {} failed, {} denied, {} cancelled, {} unknown outcomes, {} without matching receipts",
-            report.execution_evidence.succeeded,
-            report.execution_evidence.failed,
-            report.execution_evidence.denied,
-            report.execution_evidence.cancelled,
-            report.execution_evidence.indeterminate,
-            report.execution_evidence.unverified
-        ),
-        format!(
-            "Recorded changes: {} file operations; {} command results",
-            report.execution_evidence.file_changes,
-            report.execution_evidence.commands.len()
-        ),
-        format!("Run reconstruction: {}", report.session.id),
-        format!("Session file: {}", report.session.session_file),
-        format!("Messages: {}", report.session.message_count),
-        format!("Timeline items: {}", report.counts.timeline_items),
-        format!("Trajectory events: {traj_events}"),
-        format!(
-            "Replay deltas: {} ({} errors, {} warnings)",
-            u64_at(&report.trajectory_replay, "/counts/deltas"),
-            u64_at(&report.trajectory_replay, "/counts/errors"),
-            u64_at(&report.trajectory_replay, "/counts/warnings"),
-        ),
-        format!(
-            "Trajectory score: {} failed, {} warnings across {} rule(s)",
-            u64_at(&report.trajectory_score, "/counts/failed"),
-            u64_at(&report.trajectory_score, "/counts/warnings"),
-            u64_at(&report.trajectory_score, "/counts/rules"),
-        ),
-        format!(
-            "Replay lab: {} event/source jump target(s), redaction={}",
-            u64_at(&report.trajectory_inspection, "/counts/jumpTargets"),
-            report
+        crate::localization::cli_locale().format("Execution evidence: {0} succeeded, {1} failed, {2} denied, {3} cancelled, {4} unknown outcomes, {5} without matching receipts", &[(report.execution_evidence.succeeded).to_string(), (report.execution_evidence.failed).to_string(), (report.execution_evidence.denied).to_string(), (report.execution_evidence.cancelled).to_string(), (report.execution_evidence.indeterminate).to_string(), (report.execution_evidence.unverified).to_string()]),
+        crate::localization::cli_locale().format("Recorded changes: {0} file operations; {1} command results", &[(report.execution_evidence.file_changes).to_string(), (report.execution_evidence.commands.len()).to_string()]),
+        crate::localization::cli_locale().format("Run reconstruction: {0}", std::slice::from_ref(&(report.session.id))),
+        crate::localization::cli_locale().format("Session file: {0}", std::slice::from_ref(&(report.session.session_file))),
+        crate::localization::cli_locale().format("Messages: {0}", &[(report.session.message_count).to_string()]),
+        crate::localization::cli_locale().format("Timeline items: {0}", &[(report.counts.timeline_items).to_string()]),
+        crate::localization::cli_locale().format("Trajectory events: {0}", &[(traj_events).to_string()]),
+        crate::localization::cli_locale().format("Replay deltas: {0} ({1} errors, {2} warnings)", &[(u64_at(&report.trajectory_replay, "/counts/deltas")).to_string(), (u64_at(&report.trajectory_replay, "/counts/errors")).to_string(), (u64_at(&report.trajectory_replay, "/counts/warnings")).to_string()]),
+        crate::localization::cli_locale().format("Trajectory score: {0} failed, {1} warnings across {2} rule(s)", &[(u64_at(&report.trajectory_score, "/counts/failed")).to_string(), (u64_at(&report.trajectory_score, "/counts/warnings")).to_string(), (u64_at(&report.trajectory_score, "/counts/rules")).to_string()]),
+        crate::localization::cli_locale().format("Replay lab: {0} event/source jump target(s), redaction={1}", &[(u64_at(&report.trajectory_inspection, "/counts/jumpTargets")).to_string(), (report
                 .trajectory_inspection
                 .pointer("/redaction/default")
                 .and_then(JsonValue::as_str)
-                .unwrap_or("redacted"),
-        ),
-        format!(
-            "AgentRuntime ledger: {} entries, {} dry-run promotion op(s), replay deterministic={}",
-            u64_at(&report.agent_runtime_ledger, "/counts/entries"),
-            u64_at(&report.agent_runtime_ledger, "/counts/promotionOperations"),
-            yn(report.durability.replay_deterministic),
-        ),
-        format!(
-            "Evidence envelope: {} / {}, redaction={}, missing signals={}",
-            report.evidence_envelope.terminal.state,
-            report.evidence_envelope.terminal.outcome,
-            report.evidence_envelope.redaction_state,
-            report.evidence_envelope.missing_signals.len(),
-        ),
-        format!(
-            "Durability: reconstructable={}, resume summary={}, memory hash={}, checkpoints={}, pending waits={}",
-            yn(report.durability.reconstructable),
-            yn(report.durability.resume_summary_present),
-            yn(report.durability.memory_extraction_hash_present),
-            report.durability.compaction_checkpoints,
-            report.durability.pending_requests,
-        ),
-        format!("Coverage: {}", render_coverage(&report.coverage)),
-        format!(
-            "Prompt context: {} entries ({} docs, {} MCP servers)",
-            report.prompt_context.entries,
-            report.prompt_context.project_docs,
-            report.prompt_context.mcp_servers,
-        ),
-        format!(
-            "Context manifest: {} entries ({} docs, {} MCP servers, {} resources, {} prompts, {} diagnostics)",
-            report.context_manifest.entries,
-            report.context_manifest.project_docs,
-            report.context_manifest.mcp_servers,
-            report.context_manifest.mcp_resources,
-            report.context_manifest.mcp_prompts,
-            report.context_manifest.diagnostics,
-        ),
-        format!(
-            "Context generation: {} (declared digest verified={})",
-            report
+                .unwrap_or("redacted")).to_string()]),
+        crate::localization::cli_locale().format("AgentRuntime ledger: {0} entries, {1} dry-run promotion op(s), replay deterministic={2}", &[(u64_at(&report.agent_runtime_ledger, "/counts/entries")).to_string(), (u64_at(&report.agent_runtime_ledger, "/counts/promotionOperations")).to_string(), (yn(report.durability.replay_deterministic)).to_string()]),
+        crate::localization::cli_locale().format("Evidence envelope: {0} / {1}, redaction={2}, missing signals={3}", &[(report.evidence_envelope.terminal.state).to_string(), (report.evidence_envelope.terminal.outcome).to_string(), (report.evidence_envelope.redaction_state).to_string(), (report.evidence_envelope.missing_signals.len()).to_string()]),
+        crate::localization::cli_locale().format("Durability: reconstructable={0}, resume summary={1}, memory hash={2}, checkpoints={3}, pending waits={4}", &[(yn(report.durability.reconstructable)).to_string(), (yn(report.durability.resume_summary_present)).to_string(), (yn(report.durability.memory_extraction_hash_present)).to_string(), (report.durability.compaction_checkpoints).to_string(), (report.durability.pending_requests).to_string()]),
+        crate::localization::cli_locale().format("Coverage: {0}", &[(render_coverage(&report.coverage)).clone()]),
+        crate::localization::cli_locale().format("Prompt context: {0} entries ({1} docs, {2} MCP servers)", &[(report.prompt_context.entries).to_string(), (report.prompt_context.project_docs).to_string(), (report.prompt_context.mcp_servers).to_string()]),
+        crate::localization::cli_locale().format("Context manifest: {0} entries ({1} docs, {2} MCP servers, {3} resources, {4} prompts, {5} diagnostics)", &[(report.context_manifest.entries).to_string(), (report.context_manifest.project_docs).to_string(), (report.context_manifest.mcp_servers).to_string(), (report.context_manifest.mcp_resources).to_string(), (report.context_manifest.mcp_prompts).to_string(), (report.context_manifest.diagnostics).to_string()]),
+        crate::localization::cli_locale().format("Context generation: {0} (declared digest verified={1})", &[(report
                 .context_manifest
                 .manifest_sha256
                 .as_deref()
-                .unwrap_or("unavailable"),
-            report
+                .unwrap_or("unavailable")).to_string(), (report
                 .context_manifest
                 .manifest_sha256_verified
                 .map(yn)
-                .unwrap_or("not declared"),
-        ),
+                .unwrap_or("not declared")).to_string()]),
         String::new(),
-        "Timeline preview".into(),
+        crate::localization::cli_locale().translate("Timeline preview").into(),
     ];
     for item in report.timeline.items.iter().take(12) {
         let mut parts = vec![
@@ -2834,20 +2779,28 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
         lines.push(format!("  - {}", parts.join(" | ")));
     }
     if report.timeline.items.len() > 12 {
-        lines.push(format!(
-            "  ... {} more item(s)",
-            report.timeline.items.len() - 12
+        lines.push(crate::localization::cli_locale().format(
+            "  ... {0} more item(s)",
+            &[(report.timeline.items.len() - 12).to_string()],
         ));
     }
     if report.execution_evidence.indeterminate > 0 {
-        lines.push("Reconcile unknown remote outcomes before retrying those calls.".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Reconcile unknown remote outcomes before retrying those calls.")
+                .into(),
+        );
     }
     if report.execution_evidence.failed
         + report.execution_evidence.denied
         + report.execution_evidence.cancelled
         > 0
     {
-        lines.push("Inspect the recorded failures or denials before resuming the session.".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Inspect the recorded failures or denials before resuming the session.")
+                .into(),
+        );
     }
     lines.join("\n")
 }
@@ -2861,19 +2814,49 @@ fn u64_at(value: &JsonValue, pointer: &str) -> u64 {
 
 fn render_coverage(coverage: &ReconstructionCoverage) -> String {
     let labels: [(&str, bool); 13] = [
-        ("prompt inputs", coverage.prompt_inputs),
-        ("assistant responses", coverage.assistant_responses),
-        ("tool requests", coverage.tool_requests),
-        ("tool results", coverage.tool_results),
-        ("context manifest", coverage.context_manifest),
-        ("context diagnostics", coverage.context_diagnostics),
-        ("file changes", coverage.file_changes),
+        (
+            crate::localization::cli_locale().translate("prompt inputs"),
+            coverage.prompt_inputs,
+        ),
+        (
+            crate::localization::cli_locale().translate("assistant responses"),
+            coverage.assistant_responses,
+        ),
+        (
+            crate::localization::cli_locale().translate("tool requests"),
+            coverage.tool_requests,
+        ),
+        (
+            crate::localization::cli_locale().translate("tool results"),
+            coverage.tool_results,
+        ),
+        (
+            crate::localization::cli_locale().translate("context manifest"),
+            coverage.context_manifest,
+        ),
+        (
+            crate::localization::cli_locale().translate("context diagnostics"),
+            coverage.context_diagnostics,
+        ),
+        (
+            crate::localization::cli_locale().translate("file changes"),
+            coverage.file_changes,
+        ),
         ("artifacts", coverage.artifacts),
-        ("policy decisions", coverage.policy_decisions),
+        (
+            crate::localization::cli_locale().translate("policy decisions"),
+            coverage.policy_decisions,
+        ),
         ("diagnostics", coverage.diagnostics),
         ("compactions", coverage.compactions),
-        ("pending waits", coverage.pending_requests),
-        ("MCP context", coverage.mcp_context),
+        (
+            crate::localization::cli_locale().translate("pending waits"),
+            coverage.pending_requests,
+        ),
+        (
+            crate::localization::cli_locale().translate("MCP context"),
+            coverage.mcp_context,
+        ),
     ];
     labels
         .iter()
