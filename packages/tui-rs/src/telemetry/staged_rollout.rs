@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fd_lock::RwLock as FileLock;
 use rand::Rng as _;
@@ -136,10 +136,7 @@ pub async fn record_staged_rollout_surface_usage(
     owner: Option<&str>,
     source: &str,
 ) {
-    if true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
-        || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
-        || telemetry_flag() == Some(false)
-    {
+    if first_party_telemetry_disabled() {
         return;
     }
 
@@ -186,13 +183,22 @@ fn append_local_telemetry(path: PathBuf, encoded: &str) {
 ///
 /// This is intentionally distinct from [`ExternalTurnEvent`]: the latter is
 /// the backwards-compatible custom exporter format, while this type has a
-/// UUID idempotency key, a finite provider/error taxonomy, and no tenant or
-/// content-bearing fields.
+/// UUID idempotency key and native session correlation for Session History.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FirstPartyTurnTelemetryEvent {
     schema_version: u16,
     event_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partial_reported_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivery: Option<DeliverySnapshot>,
     #[serde(rename = "type")]
     event_type: FirstPartyEventType,
     timestamp: String,
@@ -207,6 +213,10 @@ struct FirstPartyTurnTelemetryEvent {
     tool_failure_count: u32,
     tokens: FirstPartyTokenUsage,
     cost_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reported_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_outcomes: Option<FirstPartyToolOutcomes>,
     sandbox_mode: SandboxMode,
     approval_mode: ApprovalMode,
     mcp_server_count: u32,
@@ -221,6 +231,85 @@ struct FirstPartyTurnTelemetryEvent {
     measurements: Option<FirstPartyTurnMeasurements>,
     sampled: bool,
     sample_reason: SampleReason,
+}
+
+/// Content-free receipt outcomes; absence denotes an older producer.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FirstPartyToolOutcomes {
+    succeeded: u32,
+    failed: u32,
+    denied: u32,
+    cancelled: u32,
+    indeterminate: u32,
+    unknown: u32,
+    measured_execution_count: u32,
+    execution_duration_ms: u64,
+}
+
+/// Queue observations attached to the next turn; no extra upload lifecycle.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeliverySnapshot {
+    pending_events: u32,
+    rejected_events: u32,
+    oldest_pending_age_seconds: u64,
+    queue_capacity: u32,
+}
+
+fn delivery_snapshot(outbox: &Path, scope: &TelemetryIdentityScope) -> DeliverySnapshot {
+    let pending = outbox_paths(outbox)
+        .into_iter()
+        .filter(|path| {
+            read_bounded_outbox_record(path).is_some_and(|record| record.identity_scope == *scope)
+        })
+        .collect::<Vec<_>>();
+    let oldest_pending_age_seconds = pending
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            let micros: i64 = name.split_once('_')?.0.parse().ok()?;
+            Some(
+                chrono::Utc::now()
+                    .timestamp_micros()
+                    .saturating_sub(micros)
+                    .max(0) as u64
+                    / 1_000_000,
+            )
+        })
+        .max()
+        .unwrap_or(0);
+    let rejected_events = outbox_paths(&dead_letter_dir(outbox))
+        .into_iter()
+        .filter(|path| {
+            read_bounded_outbox_record(path).is_some_and(|record| record.identity_scope == *scope)
+        })
+        .count() as u32;
+    DeliverySnapshot {
+        pending_events: pending.len() as u32,
+        rejected_events,
+        oldest_pending_age_seconds,
+        queue_capacity: OUTBOX_CAPACITY as u32,
+    }
+}
+
+impl FirstPartyToolOutcomes {
+    fn is_valid(&self, tool_count: u32) -> bool {
+        let total: u64 = [
+            self.succeeded,
+            self.failed,
+            self.denied,
+            self.cancelled,
+            self.indeterminate,
+            self.unknown,
+        ]
+        .into_iter()
+        .map(u64::from)
+        .sum();
+        total == u64::from(tool_count)
+            && self.measured_execution_count <= tool_count
+            && self.execution_duration_ms <= MAX_DURATION_MS
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -317,7 +406,7 @@ struct FirstPartyOutboxRecord {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 enum FirstPartyTelemetryEvent {
-    Turn(FirstPartyTurnTelemetryEvent),
+    Turn(Box<FirstPartyTurnTelemetryEvent>),
     Onboarding(OnboardingEvent),
     Visibility(VisibilityEvent),
 }
@@ -339,7 +428,7 @@ impl FirstPartyTelemetryEvent {
 }
 impl From<FirstPartyTurnTelemetryEvent> for FirstPartyTelemetryEvent {
     fn from(event: FirstPartyTurnTelemetryEvent) -> Self {
-        Self::Turn(event)
+        Self::Turn(Box::new(event))
     }
 }
 impl From<VisibilityEvent> for FirstPartyTelemetryEvent {
@@ -400,6 +489,21 @@ enum FirstPartyErrorCategory {
 impl FirstPartyTurnTelemetryEvent {
     fn is_server_valid(&self) -> bool {
         self.schema_version == 1
+            && [&self.session_id, &self.turn_id, &self.model_id]
+                .into_iter()
+                .all(|value| {
+                    value
+                        .as_ref()
+                        .is_none_or(|v| !v.is_empty() && v.len() <= 1024 && v.trim() == v)
+                })
+            && self.partial_reported_cost_usd.is_none_or(|cost| {
+                cost.is_finite()
+                    && (0.0..=MAX_COST_USD).contains(&cost)
+                    && self.reported_cost_usd.is_none()
+                    && self.measurements.as_ref().is_some_and(|m| {
+                        m.responses_with_cost > 0 && m.responses_with_cost < m.response_count
+                    })
+            })
             && chrono::DateTime::parse_from_rfc3339(&self.timestamp).is_ok()
             && self.turn_number <= MAX_COUNT
             && self.tool_count <= MAX_COUNT
@@ -434,6 +538,17 @@ impl FirstPartyTurnTelemetryEvent {
                 .measurements
                 .as_ref()
                 .is_none_or(|m| m.is_valid() && matches!(self.sample_reason, SampleReason::Always))
+            && self
+                .tool_outcomes
+                .as_ref()
+                .is_none_or(|v| v.is_valid(self.tool_count))
+            && self.reported_cost_usd.is_none_or(|cost| {
+                cost.is_finite()
+                    && (0.0..=MAX_COST_USD).contains(&cost)
+                    && self.measurements.as_ref().is_some_and(|m| {
+                        m.response_count > 0 && m.responses_with_cost == m.response_count
+                    })
+            })
             && self.sampled
             && matches!(
                 (self.status, self.abort_reason),
@@ -469,6 +584,17 @@ fn first_party_event(external: &ExternalTurnEvent) -> Option<FirstPartyTurnTelem
     Some(FirstPartyTurnTelemetryEvent {
         schema_version: 1,
         event_id: Uuid::new_v4(),
+        session_id: None,
+        turn_id: None,
+        model_id: None,
+        delivery: None,
+        partial_reported_cost_usd: external.measurements.as_ref().and_then(|m| {
+            (m.responses_with_cost > 0
+                && m.responses_with_cost < m.response_count
+                && external.cost_usd.is_finite()
+                && external.cost_usd >= 0.0)
+                .then_some(external.cost_usd)
+        }),
         event_type: FirstPartyEventType::CanonicalTurn,
         timestamp,
         turn_number: external.turn_number.min(MAX_COUNT),
@@ -493,6 +619,26 @@ fn first_party_event(external: &ExternalTurnEvent) -> Option<FirstPartyTurnTelem
                 .map(|value| value.min(MAX_TOKEN_COUNT)),
         },
         cost_usd,
+        reported_cost_usd: external.reported_cost_usd.filter(|cost| {
+            cost.is_finite()
+                && (0.0..=MAX_COST_USD).contains(cost)
+                && external.measurements.as_ref().is_some_and(|m| {
+                    m.response_count > 0 && m.responses_with_cost == m.response_count
+                })
+        }),
+        tool_outcomes: {
+            let value = FirstPartyToolOutcomes {
+                succeeded: external.tool_outcomes.succeeded,
+                failed: external.tool_outcomes.failed,
+                denied: external.tool_outcomes.denied,
+                cancelled: external.tool_outcomes.cancelled,
+                indeterminate: external.tool_outcomes.indeterminate,
+                unknown: external.tool_outcomes.unknown,
+                measured_execution_count: external.tool_outcomes.measured_execution_count,
+                execution_duration_ms: external.tool_outcomes.execution_duration_ms,
+            };
+            value.is_valid(tool_count).then_some(value)
+        },
         sandbox_mode: external.sandbox_mode,
         approval_mode: external.approval_mode,
         mcp_server_count: external.mcp_server_count.min(MAX_COUNT),
@@ -849,7 +995,16 @@ fn first_party_delivery_session() -> Option<FirstPartyDeliverySession> {
     })
 }
 
+fn first_party_telemetry_disabled() -> bool {
+    true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
+        || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
+        || telemetry_flag() == Some(false)
+}
+
 fn schedule_first_party_outbox_drain() {
+    if first_party_telemetry_disabled() {
+        return;
+    }
     if OUTBOX_DRAIN_IN_FLIGHT
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -869,6 +1024,40 @@ fn schedule_first_party_outbox_drain() {
     if worker.is_err() {
         OUTBOX_DRAIN_IN_FLIGHT.store(false, Ordering::Release);
     }
+}
+
+/// Give an already queued terminal event a bounded chance to reach the cloud.
+/// Detached workers otherwise die at `process::exit` in short-lived exec runs.
+/// Unsent records remain durable for retry; this never starts collection.
+pub async fn flush_first_party_telemetry() {
+    flush_outbox_worker(
+        &OUTBOX_DRAIN_IN_FLIGHT,
+        Duration::from_secs(3),
+        schedule_first_party_outbox_drain,
+    )
+    .await;
+}
+
+async fn flush_outbox_worker(in_flight: &AtomicBool, budget: Duration, schedule: impl FnOnce()) {
+    let started = Instant::now();
+    wait_for_outbox_worker(in_flight, budget).await;
+    let remaining = budget.saturating_sub(started.elapsed());
+    if in_flight.load(Ordering::Acquire) || remaining.is_zero() {
+        return;
+    }
+    // The previous worker may have snapshotted the outbox before the last
+    // terminal event was queued. Give that durable record an upload attempt.
+    schedule();
+    wait_for_outbox_worker(in_flight, remaining).await;
+}
+
+async fn wait_for_outbox_worker(in_flight: &AtomicBool, budget: Duration) {
+    let _ = tokio::time::timeout(budget, async {
+        while in_flight.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
 }
 
 fn schedule_custom_export(endpoint: String, encoded: String) {
@@ -913,10 +1102,23 @@ fn record_first_party_event_with<E: Clone + Into<FirstPartyTelemetryEvent>>(
     verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
     schedule_drain: impl FnOnce(),
 ) -> OnboardingCollectionStatus {
-    if true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
-        || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
-        || telemetry_flag() == Some(false)
-    {
+    record_first_party_event_at(
+        event,
+        origin,
+        verified_session,
+        schedule_drain,
+        &first_party_outbox_dir(),
+    )
+}
+
+fn record_first_party_event_at<E: Clone + Into<FirstPartyTelemetryEvent>>(
+    event: &E,
+    origin: Option<TelemetryIdentityScope>,
+    verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
+    schedule_drain: impl FnOnce(),
+    outbox: &Path,
+) -> OnboardingCollectionStatus {
+    if first_party_telemetry_disabled() {
         return OnboardingCollectionStatus::Disabled;
     }
     let Some(origin) = origin else {
@@ -928,7 +1130,7 @@ fn record_first_party_event_with<E: Clone + Into<FirstPartyTelemetryEvent>>(
     if identity.identity_scope != origin {
         return OnboardingCollectionStatus::Unavailable;
     }
-    if persist_first_party_event(&first_party_outbox_dir(), &origin, event).is_none() {
+    if persist_first_party_event(outbox, &origin, event).is_none() {
         return OnboardingCollectionStatus::Failed;
     }
     schedule_drain();
@@ -955,8 +1157,9 @@ pub(crate) fn test_record_visibility_with_session(
     event: &VisibilityEvent,
     origin: Option<TelemetryIdentityScope>,
     session: crate::credential_mode::PlatformSession,
+    outbox: &Path,
 ) -> OnboardingCollectionStatus {
-    record_first_party_event_with(
+    record_first_party_event_at(
         event,
         origin,
         || {
@@ -969,6 +1172,7 @@ pub(crate) fn test_record_visibility_with_session(
             })
         },
         || {},
+        outbox,
     )
 }
 
@@ -982,17 +1186,14 @@ pub fn onboarding_identity_scope() -> Option<TelemetryIdentityScope> {
     TelemetryIdentityScope::new(&session.organization_id, session.workspace_id.as_deref())
 }
 
-/// Persist and export the content-free projection of a completed native turn.
+/// Persist completed native turn measurements and session correlation.
 ///
 /// Every eligible, non-opted-out turn is queued for the fixed first-party
 /// endpoint. Sampling still controls local receipts and custom exports. The Identity
 /// bearer is loaded only by a background worker and is never written to the
 /// outbox or sent to a configured custom exporter.
 pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
-    if true_flag("MAESTRO_INTERNAL_TELEMETRY_DISABLED")
-        || true_flag("EVALOPS_INTERNAL_TELEMETRY_DISABLED")
-        || telemetry_flag() == Some(false)
-    {
+    if first_party_telemetry_disabled() {
         return;
     }
 
@@ -1006,9 +1207,13 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
         return;
     };
 
-    if let (Some(identity_scope), Some(first_party)) =
+    if let (Some(identity_scope), Some(mut first_party)) =
         (event.identity_scope.as_ref(), first_party_event(&external))
     {
+        first_party.session_id = Some(event.session_id.clone());
+        first_party.turn_id = Some(event.turn_id.clone());
+        first_party.model_id = Some(event.model.id.clone());
+        first_party.delivery = Some(delivery_snapshot(&first_party_outbox_dir(), identity_scope));
         if persist_first_party_event(&first_party_outbox_dir(), identity_scope, &first_party)
             .is_some()
         {
@@ -1029,7 +1234,11 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
     );
 
     if let Some(endpoint) = configured_endpoint {
-        schedule_custom_export(endpoint, encoded);
+        let format =
+            std::env::var("MAESTRO_TELEMETRY_FORMAT").unwrap_or_else(|_| "json".to_owned());
+        if let Some(payload) = super::customer_export::encode(&external, &format) {
+            schedule_custom_export(endpoint, payload);
+        }
     }
 }
 

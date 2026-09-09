@@ -151,11 +151,7 @@ fn conversation_theme() -> maestro_ui::UiTheme {
 }
 
 fn conversation_theme_for(theme: &crate::themes::Theme) -> maestro_ui::UiTheme {
-    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
-        theme.ui_theme()
-    } else {
-        maestro_presentation::palette::conversation()
-    }
+    theme.ui_theme()
 }
 
 fn semantic_color(key: &str, fallback: Color) -> Color {
@@ -163,11 +159,7 @@ fn semantic_color(key: &str, fallback: Color) -> Color {
 }
 
 fn semantic_color_for_theme(theme: &crate::themes::Theme, key: &str, fallback: Color) -> Color {
-    if theme.name != "dark" || theme.canvas_style().bg.is_some() {
-        theme.get_color(key).unwrap_or(fallback)
-    } else {
-        fallback
-    }
+    theme.get_color(key).unwrap_or(fallback)
 }
 
 fn themed_chrome(key: &str, fallback: (u8, u8, u8)) -> Color {
@@ -800,7 +792,9 @@ impl Widget for MessageWidget<'_> {
                 }
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
-                        MessageKind::System => ("• ", "System", Color::Yellow),
+                        MessageKind::System => {
+                            ("• ", "System", semantic_color("warning", Color::Yellow))
+                        }
                         MessageKind::SideAnswer => ("• ", "Dex (side)", brand_muted()),
                         _ => ("• ", "Dex", brand_violet()),
                     };
@@ -2761,7 +2755,10 @@ impl ChatView<'_> {
                         .map(|_| crate::themes::current_ui_theme()),
                 );
             }
-            if area.height >= 7 {
+            if area.height >= 7
+                && (self.dex_personality == super::dex_companion::DexPersonality::Quiet
+                    || super::deixic_logo::welcome_prompt_row(area) + 1 < area.bottom())
+            {
                 if let Some(text) = self.dex_notice.or(self.dex_tip) {
                     maestro_ui::Notice::new(text)
                         .style(Style::default().fg(crate::themes::current_ui_theme().muted))
@@ -2773,7 +2770,7 @@ impl ChatView<'_> {
                                 {
                                     area.bottom().saturating_sub(1)
                                 } else {
-                                    area.y + 6
+                                    super::deixic_logo::welcome_prompt_row(area) + 1
                                 },
                                 area.width.saturating_sub(3),
                                 1,
@@ -2953,6 +2950,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn system_message_header_uses_the_theme_warning_color() {
+        let mut message = polish_message("system", "Setup needs attention");
+        message.kind = MessageKind::System;
+        let area = Rect::new(0, 0, 60, 6);
+        let mut buffer = Buffer::empty(area);
+        MessageWidget::new(&message).render(area, &mut buffer);
+        let label = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "S")
+            .unwrap();
+        assert_eq!(label.fg, crate::themes::current_ui_theme().attention);
+    }
+
+    #[test]
     fn inline_code_uses_readable_theme_ink_without_terminal_dimming() {
         for name in [
             "light",
@@ -2973,8 +2985,10 @@ mod tests {
             assert_eq!(code.style.fg, theme.get_color("md_code"));
             assert!(!code.style.add_modifier.contains(Modifier::DIM));
         }
-        let legacy = parse_markdown_line_with_theme("`cargo test`", &crate::themes::dark_theme());
-        assert!(legacy.spans[0].style.add_modifier.contains(Modifier::DIM));
+        let dark = crate::themes::dark_theme();
+        let code = parse_markdown_line_with_theme("`cargo test`", &dark);
+        assert_eq!(code.spans[0].style.fg, dark.get_color("md_code"));
+        assert!(!code.spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -2997,7 +3011,10 @@ mod tests {
             "[guide](https://example.com)",
             &crate::themes::dark_theme(),
         );
-        assert_eq!(line.spans[0].style.fg, Some(Color::Blue));
+        assert_eq!(
+            line.spans[0].style.fg,
+            crate::themes::dark_theme().get_color("md_link")
+        );
     }
 
     fn polish_message(id: &str, content: &str) -> Message {
@@ -3572,12 +3589,14 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.starts_with("──"));
-        assert!(!rendered.contains("│"));
+        assert!(rendered.starts_with('╭'));
+        assert!(rendered.contains('╮'));
+        assert!(rendered.contains('╰'));
+        assert!(rendered.contains('╯'));
         assert!(!rendered.contains("Describe what you want to build..."));
         let lines = buffer_lines(&buf, width, height);
         assert!(
-            lines[0].starts_with("──"),
+            lines[0].starts_with('╭'),
             "prompt must not sit on the top border: {}",
             lines[0]
         );
@@ -4087,7 +4106,7 @@ mod transparent_theme_regression {
         );
         assert_eq!(
             conversation_theme_for(&crate::themes::dark_theme()).text,
-            maestro_presentation::palette::conversation().text
+            crate::themes::dark_theme().ui_theme().text
         );
     }
 }

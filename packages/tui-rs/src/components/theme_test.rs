@@ -25,6 +25,7 @@ pub(crate) fn assert_palette(buffer: &Buffer, theme: UiTheme) {
         theme.muted,
         theme.border,
         theme.focus,
+        theme.resting_focus_style().fg.unwrap_or(theme.focus),
         theme.success,
         theme.attention,
         theme.error,
@@ -49,6 +50,30 @@ pub(crate) fn assert_palette(buffer: &Buffer, theme: UiTheme) {
         );
     }
     assert!(painted > 0);
+}
+
+#[test]
+fn palette_accepts_theme_derived_resting_ink() {
+    for theme in palettes() {
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 1, 1));
+        buffer[(0, 0)]
+            .set_symbol("−")
+            .set_fg(theme.resting_focus_style().fg.unwrap_or(theme.focus))
+            .set_bg(theme.surface);
+        assert_palette(&buffer, theme);
+    }
+}
+
+#[test]
+#[should_panic(expected = "unexpected ink")]
+fn palette_still_rejects_unrelated_ink() {
+    let theme = palettes()[0];
+    let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 1, 1));
+    buffer[(0, 0)]
+        .set_symbol("−")
+        .set_fg(Color::Rgb(1, 2, 3))
+        .set_bg(theme.surface);
+    assert_palette(&buffer, theme);
 }
 
 /// Check the first matching label, including the selection surface underneath it.

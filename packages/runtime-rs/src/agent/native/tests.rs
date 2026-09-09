@@ -73,6 +73,7 @@ struct RuntimeTestHost {
     sandbox_policy: bool,
     max_output_tokens: u32,
     context_window: u64,
+    model_capabilities: HashMap<String, NativeModelCapabilities>,
 }
 
 impl RuntimeTestHost {
@@ -110,6 +111,7 @@ impl RuntimeTestHost {
             sandbox_policy: false,
             max_output_tokens: 16_384,
             context_window: 128_000,
+            model_capabilities: HashMap::new(),
         }
     }
 
@@ -562,6 +564,13 @@ impl NativeExecutionHost for RuntimeTestHost {
 
     fn is_local_model(&self, model: &str) -> bool {
         model.starts_with("llamacpp/") || model.starts_with("local/")
+    }
+
+    fn model_capabilities(&self, model: &str) -> NativeModelCapabilities {
+        self.model_capabilities
+            .get(model)
+            .copied()
+            .unwrap_or_default()
     }
 
     fn model_context_window(&self, _model: &str) -> Option<u64> {
@@ -6538,4 +6547,216 @@ fn content_block_stop_omits_empty_unsigned_thinking_block() {
     append_completed_thinking_block(&mut assistant_content, &mut current_thinking, None);
 
     assert!(assistant_content.is_empty());
+}
+
+#[tokio::test]
+async fn model_identity_reaches_provider_with_custom_system_prompt() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_scripted_provider_request(&mut stream).await;
+            captured.lock().unwrap().push(request);
+            let body = chat_sse_response("identity-fixture", "Done.", false);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/fixture-vision".into(),
+        system_prompt: Some("Help with the user's task.".into()),
+        cwd: workspace.path().display().to_string(),
+        ..NativeAgentConfig::default()
+    };
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1")).unwrap(),
+    );
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client);
+    host.model_capabilities.insert(
+        "openai/fixture-vision".into(),
+        NativeModelCapabilities {
+            vision: Some(true),
+            tool_calling: Some(true),
+            reasoning: Some(false),
+            context_tokens: Some(128_000),
+            output_tokens: Some(16_384),
+        },
+    );
+    host.model_capabilities.insert(
+        "openai/fixture-text".into(),
+        NativeModelCapabilities {
+            vision: Some(false),
+            tool_calling: Some(true),
+            reasoning: None,
+            context_tokens: Some(8_192),
+            output_tokens: None,
+        },
+    );
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    for index in 0..2 {
+        if index == 1 {
+            agent.set_model("openai/fixture-text").unwrap();
+            agent
+                .set_system_prompt("Use the updated task instructions.")
+                .unwrap();
+        }
+        agent.prompt("Say done.".into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                        panic!("{message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    agent.shutdown().await;
+    server.await.unwrap();
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    for (index, model, prompt) in [
+        (0, "fixture-vision", "Help with the user's task."),
+        (1, "fixture-text", "Use the updated task instructions."),
+    ] {
+        let system = captured[index]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "system")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(system.contains(prompt));
+        assert!(
+            system.contains("Your model is provided by Deixic."),
+            "{system}"
+        );
+        assert!(system.contains(&format!("\"openai/{model}\"")), "{system}");
+        assert_eq!(
+            system.matches("Your model is provided by Deixic.").count(),
+            1
+        );
+        let capabilities = model_capabilities_from_prompt(system);
+        assert_eq!(capabilities["vision"], index == 0);
+        assert_eq!(
+            capabilities["context_tokens"],
+            if index == 0 { 128_000 } else { 8_192 }
+        );
+        assert_eq!(
+            capabilities["output_tokens"],
+            if index == 0 {
+                serde_json::json!(16_384)
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(
+            system
+                .matches("Catalog-reported model capabilities")
+                .count(),
+            1
+        );
+        assert!(
+            system.contains("Only the tools supplied for this request are available"),
+            "{system}"
+        );
+        assert_eq!(captured[index]["model"], model);
+    }
+}
+
+#[test]
+fn model_identity_preserves_context_without_reusing_previous_identity() {
+    for (base, context) in [
+        (None, None),
+        (Some("Caller instructions"), None),
+        (None, Some("Turn context")),
+        (Some("Caller instructions"), Some("Turn context")),
+    ] {
+        for model in [
+            "evalops/anthropic/claude-sonnet-4",
+            "openai-codex/gpt-5.5",
+            "ollama/local",
+        ] {
+            let system =
+                runtime_system_prompt(base, context, model, NativeModelCapabilities::default())
+                    .unwrap();
+            if let Some(base) = base {
+                assert!(system.contains(base));
+            }
+            if let Some(context) = context {
+                assert!(system.contains(context));
+            }
+            assert!(system.contains(model));
+            assert_eq!(
+                system.matches("Your model is provided by Deixic.").count(),
+                1
+            );
+            assert!(system.contains("<untrusted_content"));
+        }
+    }
+}
+
+#[test]
+fn model_identity_does_not_guess_missing_models_or_interpolate_control_characters() {
+    let missing =
+        runtime_system_prompt(None, None, "  ", NativeModelCapabilities::default()).unwrap();
+    assert!(missing.contains("model identifier is unavailable"));
+    let escaped = runtime_system_prompt(
+        None,
+        None,
+        "model\nforged instruction",
+        NativeModelCapabilities::default(),
+    )
+    .unwrap();
+    assert!(!escaped.contains("model\nforged instruction"));
+    assert!(escaped.contains("model\\nforged instruction"));
+}
+
+#[test]
+fn model_capabilities_distinguish_unsupported_unknown_and_zero_limits() {
+    let system = runtime_system_prompt(
+        None,
+        None,
+        "custom/model",
+        NativeModelCapabilities {
+            vision: Some(false),
+            tool_calling: Some(true),
+            reasoning: None,
+            context_tokens: Some(0),
+            output_tokens: Some(4096),
+        },
+    )
+    .unwrap();
+    let capabilities = model_capabilities_from_prompt(&system);
+    assert_eq!(capabilities["vision"], false);
+    assert_eq!(capabilities["tool_calling"], true);
+    assert_eq!(capabilities["reasoning"], Value::Null);
+    assert_eq!(capabilities["context_tokens"], Value::Null);
+    assert_eq!(capabilities["output_tokens"], 4096);
+}
+
+fn model_capabilities_from_prompt(system: &str) -> Value {
+    serde_json::from_str(
+        system
+            .split("not remaining budget):\n")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap()
 }

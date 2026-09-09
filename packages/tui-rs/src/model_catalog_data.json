@@ -1,5 +1,5 @@
 {
-  "generated_at": 1788766792,
+  "generated_at": 1788852633,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1457,7 +1457,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 235929
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -2274,7 +2274,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 163840,
-        "output_tokens": 144900
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -2426,7 +2426,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 131072
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -3802,25 +3802,6 @@
       }
     },
     {
-      "id": "minimax/minimax-m2.7:free",
-      "name": "MiniMax: MiniMax M2.7 (free)",
-      "provider": "openrouter",
-      "description": "MiniMax-M2.7 is a next-generation large language model designed for autonomous, real-world productivity and continuous…",
-      "capabilities": {
-        "protocol": "openai-chat",
-        "tools": true,
-        "vision": false,
-        "reasoning": true,
-        "streaming": true,
-        "context_tokens": 196608,
-        "output_tokens": 176947
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "openrouter"
-      }
-    },
-    {
       "id": "minimax/minimax-m3",
       "name": "MiniMax: MiniMax M3",
       "provider": "openrouter",
@@ -3833,25 +3814,6 @@
         "streaming": true,
         "context_tokens": 1048576,
         "output_tokens": 512000
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "openrouter"
-      }
-    },
-    {
-      "id": "minimax/minimax-m3:free",
-      "name": "MiniMax: MiniMax M3 (free)",
-      "provider": "openrouter",
-      "description": "MiniMax-M3 is a multimodal foundation model from MiniMax. It supports text, image, and video inputs with text output,…",
-      "capabilities": {
-        "protocol": "openai-chat",
-        "tools": true,
-        "vision": true,
-        "reasoning": true,
-        "streaming": true,
-        "context_tokens": 1048576,
-        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -4269,7 +4231,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 100352
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -6261,7 +6223,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 131072,
-        "output_tokens": 16384
+        "output_tokens": 8192
       },
       "verification": {
         "state": "catalog",
@@ -7876,7 +7838,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 204800,
-        "output_tokens": 16384
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7933,7 +7895,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 202752,
-        "output_tokens": 16384
+        "output_tokens": 117964
       },
       "verification": {
         "state": "catalog",

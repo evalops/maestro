@@ -15,6 +15,8 @@ use uuid::Uuid;
 use crate::agent::{ManagedInferenceAuthorization, session_scope::MaestroThreadId};
 use crate::headless::{CodeMode, GovernedToolGrant};
 
+use super::initial_actions::InitialActionRequest;
+
 use super::{
     FromAgentMessage, HostedRunnerDrainResult, IdentityBindingFailure, ServerRequestType,
     StreamEnvelope, ToAgentMessage, response_ack_request_id,
@@ -191,6 +193,7 @@ impl ThreadTurnRecord {
 pub(super) struct ThreadProtocolState {
     thread_id: MaestroThreadId,
     turns: Vec<ThreadTurnRecord>,
+    pub(super) initial_actions: HashMap<String, InitialActionRequest>,
     active_turn_ids: VecDeque<String>,
     runtime_generation: u64,
     runtime_failure_type: Option<String>,
@@ -206,6 +209,7 @@ impl ThreadProtocolState {
         Self {
             thread_id,
             turns: Vec::new(),
+            initial_actions: HashMap::new(),
             active_turn_ids: VecDeque::new(),
             runtime_generation,
             runtime_failure_type: None,
@@ -231,6 +235,7 @@ impl ThreadProtocolState {
         Self {
             thread_id,
             turns,
+            initial_actions: HashMap::new(),
             active_turn_ids: VecDeque::new(),
             runtime_generation,
             runtime_failure_type,
@@ -273,6 +278,7 @@ impl ThreadProtocolState {
     /// so later restarts of the replacement can recover only its own evidence.
     pub(super) fn reset_for_replacement(&mut self) {
         self.turns.clear();
+        self.initial_actions.clear();
         self.active_turn_ids.clear();
         self.runtime_failure_type = None;
         self.snapshot_lineage = None;
@@ -508,6 +514,8 @@ pub(super) struct ThreadStateView<'a> {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct DurableThreadDocument {
+    #[serde(default)]
+    initial_actions: HashMap<String, InitialActionRequest>,
     protocol_version: String,
     thread_id: String,
     /// Runner Host identity that last durably owned this journal. Older
@@ -717,16 +725,18 @@ impl ThreadJournal {
         let snapshot_lineage = same_generation
             .then_some(document.snapshot_lineage)
             .flatten();
+        let mut restored = ThreadProtocolState::restore(
+            thread_id.to_string().into(),
+            document.turns,
+            runtime_generation,
+            document.runtime_generation,
+            runtime_failure_type,
+            snapshot_lineage,
+        );
+        restored.initial_actions = document.initial_actions;
         Ok(LoadedThreadJournal {
             journal,
-            state: ThreadProtocolState::restore(
-                thread_id.to_string().into(),
-                document.turns,
-                runtime_generation,
-                document.runtime_generation,
-                runtime_failure_type,
-                snapshot_lineage,
-            ),
+            state: restored,
             persisted_runtime_generation,
             persisted_runner_session_id: document.runner_session_id,
             persisted_drain_runtime_failed_before_finalization: same_generation
@@ -768,6 +778,7 @@ impl ThreadJournal {
         let mut response_idempotency_keys = metadata.keys.iter().cloned().collect::<Vec<_>>();
         response_idempotency_keys.sort();
         let document = DurableThreadDocument {
+            initial_actions: state.initial_actions.clone(),
             protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
             thread_id: state.thread_id.as_str().to_string(),
             runner_session_id: Some(metadata.runner_session_id.to_string()),

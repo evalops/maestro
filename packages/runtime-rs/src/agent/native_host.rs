@@ -50,6 +50,18 @@ pub enum QueueMode {
 /// Boxed future used by asynchronous operations in the host seam.
 pub type NativeHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Catalog-reported model support, supplied by the composing host without
+/// coupling the runtime to a catalog implementation. None means unknown, not
+/// unsupported. These facts do not grant tool access or model-change authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct NativeModelCapabilities {
+    pub vision: Option<bool>,
+    pub tool_calling: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub context_tokens: Option<u64>,
+    pub output_tokens: Option<u32>,
+}
+
 /// Provider transport selected by the composing host after authentication and
 /// model policy have been resolved.  The runtime only needs to know whether a
 /// turn is served by the direct provider client or by the existing Codex
@@ -364,6 +376,17 @@ pub trait NativeExecutionHost: Send + Sync {
     fn default_max_output_tokens(&self, model: &str) -> u32;
     fn is_local_model(&self, model: &str) -> bool;
     fn model_context_window(&self, model: &str) -> Option<u64>;
+    /// Report only known model metadata. Hosts without a richer catalog retain
+    /// their existing context-window fact and leave other support unknown.
+    fn model_capabilities(&self, model: &str) -> NativeModelCapabilities {
+        NativeModelCapabilities {
+            context_tokens: self
+                .model_context_window(model)
+                .filter(|tokens| *tokens > 0),
+            ..NativeModelCapabilities::default()
+        }
+    }
+
     fn validate_model_transition(&self, from: &str, to: &str) -> Result<(), String>;
     fn boost_choice(
         &self,
@@ -766,6 +789,11 @@ impl NativeExecutionHostHandle {
     #[must_use]
     pub fn default_max_output_tokens(&self, model: &str) -> u32 {
         self.0.default_max_output_tokens(model)
+    }
+
+    #[must_use]
+    pub fn model_capabilities(&self, model: &str) -> NativeModelCapabilities {
+        self.0.model_capabilities(model)
     }
 
     #[must_use]

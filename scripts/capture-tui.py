@@ -318,7 +318,7 @@ class Terminal:
             preferences.write_text(
                 json.dumps({"animations": False, "timestamps": False, "onboardingSeen": True})
             )
-        self.model = "gpt-4o" if fixture else "gpt-4.1-mini"
+        self.model = fixture.model if fixture else "gpt-4.1-mini"
         self.root, self.binary, self.columns, self.rows = root, binary, columns, rows
 
     def run(self, *args, check=True):

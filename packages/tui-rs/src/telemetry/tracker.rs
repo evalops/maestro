@@ -68,6 +68,11 @@ impl TurnTracker {
         }
     }
 
+    /// Bind future turns to the saved conversation used by transcript capture.
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.config.session_id = session_id;
+    }
+
     /// Update the context for future turns.
     pub fn update_context(&mut self, context: TurnTrackerContext) {
         self.context = context;
@@ -176,9 +181,13 @@ impl TurnTracker {
                 None
             }
             FromAgent::ToolEnd {
-                call_id, success, ..
+                call_id,
+                success,
+                receipt,
+                ..
             } => {
                 if let Some(ref mut turn) = self.current_turn {
+                    turn.record_tool_receipt(call_id, receipt.as_ref());
                     turn.record_tool_end(call_id, *success, None, None);
                 }
                 None
@@ -238,13 +247,12 @@ impl TurnTracker {
                 None
             }
             FromAgent::TurnCompleted { .. } => self.end_turn(TurnStatus::Success, None),
-            FromAgent::TurnInterrupted { reason, .. } => self.end_turn(
-                TurnStatus::Error,
-                Some(ErrorDetails {
-                    category: Some("interrupted".to_string()),
-                    message: Some(reason.clone()),
-                }),
-            ),
+            FromAgent::TurnInterrupted { .. } => {
+                // The native producer emits this event when a request is cancelled.
+                let mut event = self.end_turn(TurnStatus::Aborted, None)?;
+                event.abort_reason = Some(crate::telemetry::AbortReason::User);
+                Some(event)
+            }
             FromAgent::CodexUsageState {
                 usage: Some(usage), ..
             } => {
@@ -326,8 +334,13 @@ impl TurnTracker {
         self.context.features.boost_suggested = false;
         self.context.features.boost_requested = false;
         self.context.features.boost_applied = false;
-        let turn = self.current_turn.take()?;
+        let mut turn = self.current_turn.take()?;
         let identity_scope = self.current_identity_scope.take();
+        if self.current_response_id.is_some() {
+            turn.record_llm_end();
+            turn.record_response_coverage(false, false);
+            self.cost_complete = false;
+        }
         self.current_response_id = None;
 
         // Convert token usage
@@ -354,7 +367,7 @@ impl TurnTracker {
             .accumulated_usage
             .as_ref()
             .and_then(|usage| usage.cost)
-            .filter(|_| self.cost_complete);
+            .filter(|cost| self.cost_complete && cost.is_finite() && *cost >= 0.0);
         event.identity_scope = identity_scope;
         Some(event)
     }
@@ -363,6 +376,36 @@ impl TurnTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_session_identity_survives_mid_turn_changes_and_resume() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "runtime-run".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.set_session_id("saved-conversation".into());
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "response-1".into(),
+        });
+        tracker.set_session_id("resumed-conversation".into());
+        assert_eq!(
+            tracker
+                .end_turn(TurnStatus::Success, None)
+                .unwrap()
+                .session_id,
+            "saved-conversation"
+        );
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "response-2".into(),
+        });
+        assert_eq!(
+            tracker
+                .end_turn(TurnStatus::Success, None)
+                .unwrap()
+                .session_id,
+            "resumed-conversation"
+        );
+    }
 
     #[test]
     fn response_coverage_requires_matching_open_response_and_ignores_cleanup() {
@@ -752,5 +795,109 @@ mod boost_tests {
                 && !event.features.boost_suggested
         );
         assert_eq!(event.reported_cost_usd, Some(0.02));
+    }
+}
+
+#[cfg(test)]
+mod droid_telemetry_tests {
+    use super::*;
+    use maestro_runtime::{
+        ExecutionPhase, ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails,
+    };
+
+    fn tracker() -> TurnTracker {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "private-session".into(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "r".into(),
+        });
+        tracker
+    }
+
+    #[test]
+    fn unfinished_response_cannot_export_a_complete_cost() {
+        let mut tracker = tracker();
+        tracker.handle_event(&FromAgent::ResponseEnd {
+            response_id: "r".into(),
+            usage: Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost: Some(0.25),
+            }),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "unfinished".into(),
+        });
+        let event = tracker
+            .handle_event(&FromAgent::TurnInterrupted {
+                response_id: "unfinished".into(),
+                reason: "cancelled".into(),
+            })
+            .unwrap();
+        assert!(event.reported_cost_usd.is_none());
+        assert_eq!(event.status, TurnStatus::Aborted);
+        assert_eq!(
+            event.abort_reason,
+            Some(crate::telemetry::AbortReason::User)
+        );
+    }
+
+    #[test]
+    fn receipt_outcomes_separate_denials_and_cancellation_from_failures() {
+        let mut tracker = tracker();
+        let statuses = [
+            ExecutionStatus::Succeeded,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Denied,
+            ExecutionStatus::Cancelled {
+                phase: ExecutionPhase::Queued,
+            },
+            ExecutionStatus::Indeterminate,
+        ];
+        for (index, status) in statuses.into_iter().enumerate() {
+            let id = index.to_string();
+            tracker.handle_event(&FromAgent::ToolCall {
+                call_id: id.clone(),
+                tool: "private-mcp-name".into(),
+                args: serde_json::json!({"secret": "never-export"}),
+                requires_approval: false,
+                approval_inline_env: None,
+            });
+            let end = FromAgent::ToolEnd {
+                call_id: id.clone(),
+                success: status == ExecutionStatus::Succeeded,
+                result: None,
+                receipt: Some(ExecutionReceipt {
+                    code_authority: None,
+                    call_id: id,
+                    tool_name: "private-mcp-name".into(),
+                    source: ExecutionSource::Native,
+                    status,
+                    duration_ms: Some(37),
+                    policy: None,
+                    details: ToolReceiptDetails::None,
+                }),
+            };
+            tracker.handle_event(&end);
+            tracker.handle_event(&end); // replay must not count twice
+        }
+        let external = tracker
+            .end_turn(TurnStatus::Success, None)
+            .unwrap()
+            .external_projection();
+        let json = serde_json::to_value(external).unwrap();
+        assert_eq!(json["tool_outcomes"]["succeeded"], 1);
+        assert_eq!(json["tool_outcomes"]["failed"], 1);
+        assert_eq!(json["tool_outcomes"]["denied"], 1);
+        assert_eq!(json["tool_outcomes"]["cancelled"], 1);
+        assert_eq!(json["tool_outcomes"]["indeterminate"], 1);
+        assert_eq!(json["tool_outcomes"]["measured_execution_count"], 3);
+        assert_eq!(json["tool_outcomes"]["execution_duration_ms"], 111);
+        assert!(!json.to_string().contains("private-mcp-name"));
+        assert!(!json.to_string().contains("never-export"));
     }
 }

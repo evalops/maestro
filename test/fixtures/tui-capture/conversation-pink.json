@@ -2,7 +2,7 @@
   "name": "conversation-pink",
   "steps": [
     {
-      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
     },
     {
       "text": "/theme"

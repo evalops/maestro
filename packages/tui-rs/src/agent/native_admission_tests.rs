@@ -76,6 +76,7 @@ fn composed_tui_host(executor: ToolExecutor) -> NativeExecutionHostHandle {
         crate::hooks::IntegratedHookSystem::new("."),
         |_model, _preserve_scope| Err("test host has no model resolver".to_owned()),
         |_model| super::NativeModelRoute::DirectProvider,
+        None,
     )
 }
 

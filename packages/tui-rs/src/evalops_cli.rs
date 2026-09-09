@@ -191,6 +191,7 @@ fn hosted_orb_smoke_credential(
         .agent_mcp
         .as_ref()
         .and_then(|agent| agent.workspace_id.as_deref())
+        .or(snapshot.workspace_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .context("stored EvalOps session has no workspace binding; run `deixic-code init`")?
@@ -263,8 +264,13 @@ fn resolve_managed_context(
     });
     let organization_id = env_from_map(env, EVALOPS_ORGANIZATION_ID_ENV_VARS)
         .or_else(|| snapshot.and_then(|value| value.organization_id.clone()));
+    // Organization already falls back to the stored session; workspace did not,
+    // so a signed-in user with no registered agent read as "scope unverified"
+    // even though the issuer bound a workspace. Agent registration still wins
+    // when present, so a managed agent session keeps its own workspace.
     let workspace_id = env_from_map(env, EVALOPS_WORKSPACE_ID_ENV_VARS)
-        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()));
+        .or_else(|| agent_mcp.and_then(|meta| meta.workspace_id.clone()))
+        .or_else(|| snapshot.and_then(|value| value.workspace_id.clone()));
     let agent_id = env_from_map(env, &["MAESTRO_AGENT_ID"])
         .or_else(|| agent_mcp.and_then(|meta| meta.agent_id.clone()));
     let run_id = env_from_map(env, &["MAESTRO_AGENT_RUN_ID"])
@@ -507,6 +513,57 @@ mod tests {
     }
 
     #[test]
+    fn login_only_snapshot_uses_the_issuer_workspace_binding() {
+        // A signed-in user with no registered agent. Identity bound a workspace
+        // and the client stores it, so this is a complete platform session --
+        // not "scope unverified".
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "tok".to_owned(),
+            refresh: "ref".to_owned(),
+            expires: now_ms() + 120_000,
+            email: Some("user@evalops.dev".to_owned()),
+            organization_id: Some("org_123".to_owned()),
+            workspace_id: Some("workspace_123".to_owned()),
+            user_id: Some("user_1".to_owned()),
+            identity_base_url: Some("https://identity.evalops.dev".to_owned()),
+            provider_ref: Some(json!({"provider": "openai", "environment": "prod"})),
+            agent_mcp: None,
+        };
+        let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
+        assert_eq!(context.workspace_id.as_deref(), Some("workspace_123"));
+        assert_eq!(context.mode, "EvalOps platform");
+        let output = format_managed_status(&context);
+        assert!(output.contains("Workspace: workspace_123"));
+        assert!(
+            !output.contains("Workspace scope is not saved locally"),
+            "a stored workspace must not report as unsaved: {output}"
+        );
+    }
+
+    #[test]
+    fn agent_registration_workspace_still_wins_over_the_session() {
+        // A managed agent keeps its own workspace; the session is only a
+        // fallback for when no agent is registered.
+        let snapshot = EvalOpsCredentialSnapshot {
+            access: "tok".to_owned(),
+            refresh: "ref".to_owned(),
+            expires: now_ms() + 120_000,
+            email: Some("user@evalops.dev".to_owned()),
+            organization_id: Some("org_123".to_owned()),
+            workspace_id: Some("workspace_session".to_owned()),
+            user_id: Some("user_1".to_owned()),
+            identity_base_url: Some("https://identity.evalops.dev".to_owned()),
+            provider_ref: None,
+            agent_mcp: Some(EvalOpsAgentMcpSnapshot {
+                workspace_id: Some("workspace_agent".to_owned()),
+                ..Default::default()
+            }),
+        };
+        let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
+        assert_eq!(context.workspace_id.as_deref(), Some("workspace_agent"));
+    }
+
+    #[test]
     fn managed_status_formats_login_only_snapshot() {
         let snapshot = EvalOpsCredentialSnapshot {
             access: "tok".to_owned(),
@@ -514,6 +571,7 @@ mod tests {
             expires: now_ms() + 120_000,
             email: Some("user@evalops.dev".to_owned()),
             organization_id: Some("org_123".to_owned()),
+            workspace_id: None,
             user_id: Some("user_1".to_owned()),
             identity_base_url: Some("https://identity.evalops.dev".to_owned()),
             provider_ref: Some(json!({"provider": "openai", "environment": "prod"})),
@@ -544,6 +602,7 @@ mod tests {
             expires: now_ms() + 120_000,
             email: Some("user@evalops.dev".to_owned()),
             organization_id: Some("org_fixture".to_owned()),
+            workspace_id: None,
             user_id: Some("user_fixture".to_owned()),
             identity_base_url: Some("https://identity.evalops.dev".to_owned()),
             provider_ref: None,
@@ -573,6 +632,7 @@ mod tests {
             expires: now_ms() + 3_600_000,
             email: None,
             organization_id: Some("org_abc".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: None,
             provider_ref: None,
@@ -617,6 +677,7 @@ mod tests {
             expires: 0,
             email: None,
             organization_id: Some("org_stored".to_owned()),
+            workspace_id: None,
             user_id: None,
             identity_base_url: None,
             provider_ref: None,

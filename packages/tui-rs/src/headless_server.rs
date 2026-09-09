@@ -136,6 +136,7 @@ impl RuntimeMeta {
 
 struct HeadlessState {
     model: String,
+    model_capabilities: maestro_runtime::agent::NativeModelCapabilities,
     cwd: String,
     system_prompt: String,
     thinking_enabled: bool,
@@ -187,6 +188,7 @@ impl HeadlessState {
         );
         let session_id = env_session_id();
         Self {
+            model_capabilities: crate::agent::catalog_model_capabilities(&model),
             model,
             cwd,
             system_prompt: system_prompt.clone(),
@@ -293,7 +295,7 @@ impl HeadlessState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .turn_active;
-        let prepared = self
+        let mut prepared = self
             .workspace_capabilities
             .prepare(
                 request,
@@ -302,6 +304,11 @@ impl HeadlessState {
                 &runner_session_id,
             )
             .map_err(anyhow::Error::from)?;
+        prepared.bind_provider_prompt(&crate::agent::provider_system_prompt(
+            prepared.prompt(),
+            &self.model,
+            self.model_capabilities,
+        ));
         if turn_active || prepared.is_idempotent() {
             return Ok(self
                 .workspace_capabilities
@@ -354,8 +361,9 @@ impl HeadlessState {
         if self.agent.is_none() {
             let started = Instant::now();
             let config = NativeAgentConfig {
-                model_dynamics: crate::config::model_dynamics_config(),
+                model_dynamics: headless_model_dynamics(crate::config::model_dynamics_config()),
                 model: self.model.clone(),
+                model_capabilities: Some(self.model_capabilities),
                 max_tokens: crate::model_catalog::default_max_output_tokens(&self.model),
                 max_tokens_source: MaxTokensSource::Catalog,
                 system_prompt: Some(self.system_prompt.clone()),
@@ -1394,13 +1402,25 @@ fn configure_prompt_experiment(
         artifact_id: assignment.artifact_id,
         artifact_version: assignment.artifact_version,
         artifact_sha256: assignment.artifact_sha256,
-        provider_prompt_sha256: sha256_prefixed(
-            &crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .unwrap_or_default(),
-        ),
+        provider_prompt_sha256: sha256_prefixed(&crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        )),
         applied: assignment.arm == PromptExperimentArm::Candidate,
     });
     Ok(())
+}
+
+// Headless prompt receipts bind the launch model for the session lifetime.
+// A receipt may arrive after an agent has already started, so pin automatic
+// transitions from creation rather than waiting until receipt activation.
+fn headless_model_dynamics(
+    mut config: crate::model_dynamics::ModelDynamicsConfig,
+) -> crate::model_dynamics::ModelDynamicsConfig {
+    config.auto_boost = false;
+    config.fallbacks.clear();
+    config
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
@@ -6747,9 +6767,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
             .prompt_experiment
             .clone()
             .expect("exposure prepared");
-        let provider_prompt =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
         assert!(exposure.applied);
         assert_eq!(
             exposure.provider_prompt_sha256,
@@ -6769,9 +6791,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
             None,
             None,
         );
-        let provider_prompt_before =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt_before = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
 
         configure_prompt_experiment(
             &mut state,
@@ -6787,9 +6811,11 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         )
         .expect("control assignment is valid");
 
-        let provider_prompt_after =
-            crate::agent::ensure_untrusted_content_policy(Some(state.system_prompt.clone()))
-                .expect("provider prompt");
+        let provider_prompt_after = crate::agent::provider_system_prompt(
+            &state.system_prompt,
+            &state.model,
+            state.model_capabilities,
+        );
         let exposure = state
             .meta
             .lock()
@@ -7156,4 +7182,25 @@ else if(x.method==="turn/start"){const turnId="turn-"+x.id;send({id:x.id,result:
         );
         state.agent.take().unwrap().shutdown().await;
     }
+}
+
+#[cfg(test)]
+#[test]
+fn headless_receipt_model_does_not_automatically_boost_or_fallback() {
+    let choice = crate::model_dynamics::ModelChoice {
+        model: "openai/gpt-5".to_owned(),
+        thinking: Default::default(),
+    };
+    let config = headless_model_dynamics(crate::model_dynamics::ModelDynamicsConfig {
+        auto_boost: true,
+        boost: Some(choice.clone()),
+        fallbacks: vec![choice.clone()],
+        light: Some(choice.clone()),
+        summary_model: Some("openai/gpt-5-mini".to_owned()),
+        ..Default::default()
+    });
+    assert!(!config.auto_boost);
+    assert!(config.fallbacks.is_empty());
+    assert_eq!(config.light, Some(choice));
+    assert_eq!(config.summary_model.as_deref(), Some("openai/gpt-5-mini"));
 }

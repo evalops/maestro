@@ -841,6 +841,24 @@ fn capability_summary(model: &ModelInfo) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn managed_fireworks_search_selects_exact_gateway_routes() {
+        for model in crate::model_catalog::MANAGED_FIREWORKS_MODELS {
+            let mut selector = ModelSelector::new();
+            selector.set_current_model(Some(
+                crate::credential_mode::DEFAULT_MANAGED_MODEL.to_owned(),
+            ));
+            selector.show();
+            assert_eq!(
+                selector.confirm().as_deref(),
+                Some(crate::credential_mode::DEFAULT_MANAGED_MODEL)
+            );
+            selector.show();
+            selector.insert_str(&format!("evalops/{}", model.id));
+            assert_eq!(selector.confirm(), Some(format!("evalops/{}", model.id)));
+        }
+    }
+
+    #[test]
     fn model_selector_shared_picker_renders_empty_query_result_and_help() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut selector = ModelSelector::new();

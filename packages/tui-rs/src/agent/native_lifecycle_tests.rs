@@ -42,6 +42,7 @@ fn test_host(
         hooks,
         |_, _| Err("lifecycle integration test has no model resolver".to_owned()),
         |_| NativeModelRoute::DirectProvider,
+        None,
     )
 }
 
@@ -92,6 +93,7 @@ fn scripted_agent_with_tui_host_and_vault(
             })
         },
         |_| NativeModelRoute::DirectProvider,
+        None,
     );
     let resolved = NativeResolvedClient {
         client: Some(client.clone()),

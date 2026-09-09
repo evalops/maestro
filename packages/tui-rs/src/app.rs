@@ -2572,6 +2572,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.state.thinking_level = thinking_level;
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();
         let config = NativeAgentConfig {
+            model_capabilities: None,
             model_dynamics: crate::config::model_dynamics_config(),
             model: model.clone(),
             max_tokens: crate::model_catalog::default_max_output_tokens(&model),
@@ -4639,7 +4640,6 @@ was missing; retry to review the exact execution context."
         let goal_badge = self.goal_store.status_line();
         let worker_badge = self.worker_badge.as_deref();
         let attach_count = self.pending_attachments.len();
-        let draft_stashed = self.draft_stash.is_some();
         let history_search = &self.history_search;
 
         // DEC mode 2026 lets capable terminals present a whole Ratatui diff
@@ -4831,13 +4831,7 @@ was missing; retry to review the exact execution context."
                     if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                         frame.set_cursor_position((cursor_x, cursor_y));
                     }
-                    composer_recall::render(
-                        frame,
-                        area,
-                        input_area,
-                        history_search.as_ref(),
-                        draft_stashed,
-                    );
+                    composer_recall::render(frame, area, input_area, history_search.as_ref());
                 }
             })
             .map(|_| ());

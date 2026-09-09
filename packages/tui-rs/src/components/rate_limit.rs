@@ -267,7 +267,7 @@ impl RateLimitDisplay {
             if let Some(reset) = primary.format_reset() {
                 spans.push(Span::styled(
                     format!(" ({reset})"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(crate::themes::current_ui_theme().muted),
                 ));
             }
         }
@@ -284,7 +284,7 @@ impl RateLimitDisplay {
             } else if let Some(ref balance) = credits.balance {
                 spans.push(Span::styled(
                     format!("Credits: {balance}"),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(crate::themes::current_ui_theme().focus),
                 ));
             }
         }
@@ -335,10 +335,13 @@ impl RateLimitDisplay {
                 } else if let Some(ref balance) = credits.balance {
                     Span::styled(
                         format!("Credits: {balance}"),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(crate::themes::current_ui_theme().focus),
                     )
                 } else {
-                    Span::styled("Credits: Unknown", Style::default().fg(Color::DarkGray))
+                    Span::styled(
+                        "Credits: Unknown",
+                        Style::default().fg(crate::themes::current_ui_theme().muted),
+                    )
                 };
                 Paragraph::new(Line::from(vec![Span::raw(" "), text])).render(credits_area, buf);
             }
@@ -348,6 +351,7 @@ impl RateLimitDisplay {
 
 impl Widget for RateLimitDisplay {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        buf.set_style(area, crate::themes::current_ui_theme().text_style());
         if self.compact {
             self.render_compact(area, buf);
         } else {
@@ -429,6 +433,26 @@ impl RateLimitTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credits_use_the_shared_brand_accent_and_surface() {
+        let theme = crate::themes::current_ui_theme();
+        for compact in [false, true] {
+            let mut display =
+                RateLimitDisplay::new().with_credits(CreditsDisplay::new(Some("12.50".into())));
+            display.compact = compact;
+            let area = Rect::new(0, 0, 40, 5);
+            let mut buffer = Buffer::empty(area);
+            display.render(area, &mut buffer);
+            let credit = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == "C")
+                .unwrap();
+            assert_eq!(credit.fg, theme.focus);
+            assert_eq!(credit.bg, theme.surface);
+        }
+    }
 
     #[test]
     fn test_format_duration_compact() {

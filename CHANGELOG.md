@@ -47,6 +47,146 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.84] - 2026-09-08
+
+### Added
+
+- Prepare upcoming work and resume connected tasks (#8803). <!-- maestro-release-note:e097b40a7d5f -->
+- Link search passages and pair parallel tools (#8810). <!-- maestro-release-note:08492868faf2 -->
+
+### Fixed
+
+- Isolate canonical verification artifacts by checkout (#8812). <!-- maestro-release-note:08cfcd23378c -->
+- Preserve transcript wakeups and interrupted receipt recovery (#8794). <!-- maestro-release-note:19f24655f26b -->
+- Reject blank review anchors with usable repair hints (#8811). <!-- maestro-release-note:8cb11235d0a1 -->
+- Avoid redundant publisher downloads and cache shutdown (#8813). <!-- maestro-release-note:4ded1c494e7e -->
+- Enforce hosted shell and effect boundaries (#8805). <!-- maestro-release-note:54808c52892e -->
+
+## [0.10.83] - 2026-09-08
+
+### Added
+
+- Link Code turns to their captured conversations in Session History, with per-session telemetry and links back to the transcript (#8800). <!-- maestro-release-note:1624b58500b6 -->
+- Report known provider charges separately when a turn's full cost is unavailable.
+- Report the client's latest upload queue size, retained rejections, and oldest pending event with the next turn. This is an upload observation, not a live device status.
+
+### Changed
+
+- Recognize theme-derived resting eye colors (#8801). <!-- maestro-release-note:69809b409c9f -->
+- Bound session history upload path (#8791). <!-- maestro-release-note:56ed113ef6c0 -->
+
+### Fixed
+
+- Keep rollout visibility limited to supported consumers (#8806). <!-- maestro-release-note:792a1b1cbc1d -->
+- Recover updates through legacy package launchers (#8798). <!-- maestro-release-note:00504d260be6 -->
+- Isolate Cargo artifacts across checkouts (#8796). <!-- maestro-release-note:27361ea49601 -->
+- Enable shared GitHub App authorization (#8799). <!-- maestro-release-note:cb4359ff38f3 -->
+- Cross-compile service images on the builder CPU (#8795). <!-- maestro-release-note:d29d9416468f -->
+- Bind rotating logs to their supplied parent directory (#8792). <!-- maestro-release-note:eee2660b2dec -->
+- Repair Zstandard wrappers and preserve transcript compatibility (#8789). <!-- maestro-release-note:810daf331684 -->
+
+## [0.10.82] - 2026-09-08
+
+### Added
+
+- Add restrained Dex state cues. <!-- maestro-release-note:1f7f3b6fbb73 -->
+- Give Dex an angular hooded portrait (#8783). <!-- maestro-release-note:a2e64dbbbd0d -->
+- Refine Dex mascot and simplify composer (#8778). <!-- maestro-release-note:2179cbe50158 -->
+- Simplify platform web navigation (#8773). <!-- maestro-release-note:583fbb36c1ba -->
+- Add host-held credentialless command transport (#8740). <!-- maestro-release-note:35bf6e71c593 -->
+- Deliver cloud telemetry and hosted release builds (#8759). <!-- maestro-release-note:d2ecbf8ebb4f -->
+- Make staff context a useful operator control (#8768). <!-- maestro-release-note:1d51f504925b -->
+- Verify sandbox file execution with fresh challenges (#8746). <!-- maestro-release-note:96fb6753ca19 -->
+- Make staff and internal organization context visible (#8749). <!-- maestro-release-note:c77f92939a8d -->
+- Move CRM records to native business objects (#8750). <!-- maestro-release-note:5a74814106c3 -->
+
+### Changed
+
+- Optimize session history uploader (#8772). <!-- maestro-release-note:f43703da2cbc -->
+- Preserve strict environment checks across shells (#8765). <!-- maestro-release-note:3a781a0d7b8b -->
+- Initialize provider schema for event ordering (#8748). <!-- maestro-release-note:85b918f1e319 -->
+
+### Fixed
+
+- Remove unused key set helpers (#8785). <!-- maestro-release-note:fe721f570822 -->
+- Use Astra in native UI captures (#8787). <!-- maestro-release-note:d24580a9b929 -->
+- Clear source action receipts on runner replacement (#8786). <!-- maestro-release-note:b140ae2d5e86 -->
+- Clarify attachment scope and hidden navigation state (#8782). <!-- maestro-release-note:5095e0ad9552 -->
+- Keep collapsed platform UI surfaces reporting their state (#8781). <!-- maestro-release-note:494df6f50bc1 -->
+- Preserve uploader completion and encoding negotiation (#8780). <!-- maestro-release-note:45d4bb4475db -->
+- Preserve receipt binding and terminal delivery (#8777). <!-- maestro-release-note:50abd6927bf8 -->
+- Restore advisory cache ownership before security checks (#8776). <!-- maestro-release-note:2980b2ca225a -->
+- Preserve login scope and exported telemetry (#8774). <!-- maestro-release-note:f86f5662aeb4 -->
+- Run Sandboxwich checks with bounded namespace support (#8769). <!-- maestro-release-note:c6fcef9feb5a -->
+- Recognize pinned CLI empty response diagnostics (#8771). <!-- maestro-release-note:511628f32cc1 -->
+- Keep public dependency rationale generic (#8770). <!-- maestro-release-note:299dd2928cb0 -->
+
+## [0.10.81] - 2026-09-08
+
+### Added
+
+- Refine Dex mascot and simplify composer (#8778). <!-- maestro-release-note:2179cbe50158 -->
+- Simplify platform web navigation (#8773). <!-- maestro-release-note:583fbb36c1ba -->
+- Add host-held credentialless command transport (#8740). <!-- maestro-release-note:35bf6e71c593 -->
+- Deliver cloud telemetry and hosted release builds (#8759). <!-- maestro-release-note:d2ecbf8ebb4f -->
+- Make staff context a useful operator control (#8768). <!-- maestro-release-note:1d51f504925b -->
+- Verify sandbox file execution with fresh challenges (#8746). <!-- maestro-release-note:96fb6753ca19 -->
+- Make staff and internal organization context visible (#8749). <!-- maestro-release-note:c77f92939a8d -->
+- Move CRM records to native business objects (#8750). <!-- maestro-release-note:5a74814106c3 -->
+
+### Changed
+
+- Optimize session history uploader (#8772). <!-- maestro-release-note:f43703da2cbc -->
+- Preserve strict environment checks across shells (#8765). <!-- maestro-release-note:3a781a0d7b8b -->
+- Initialize provider schema for event ordering (#8748). <!-- maestro-release-note:85b918f1e319 -->
+
+### Fixed
+
+- Preserve receipt binding and terminal delivery (#8777). <!-- maestro-release-note:50abd6927bf8 -->
+- Restore advisory cache ownership before security checks (#8776). <!-- maestro-release-note:2980b2ca225a -->
+- Preserve login scope and exported telemetry (#8774). <!-- maestro-release-note:f86f5662aeb4 -->
+- Run Sandboxwich checks with bounded namespace support (#8769). <!-- maestro-release-note:c6fcef9feb5a -->
+- Recognize pinned CLI empty response diagnostics (#8771). <!-- maestro-release-note:511628f32cc1 -->
+- Keep public dependency rationale generic (#8770). <!-- maestro-release-note:299dd2928cb0 -->
+- Use efficient model with coherent investigation budgets (#8751). <!-- maestro-release-note:fdd73441530e -->
+- Enforce hosted computer gateway egress (#8726). <!-- maestro-release-note:4a27f21bba09 -->
+- Preserve workspace and authoritative turn receipts (#8767). <!-- maestro-release-note:4a54c250e5a2 -->
+- Clear hosted shell process environment (#8724). <!-- maestro-release-note:35d6aee24787 -->
+- Recognize declared base ancestry in stacked PR tripwire (#8766). <!-- maestro-release-note:76e223532134 -->
+- Supply Bubblewrap for hosted sandbox isolation tests (#8764). <!-- maestro-release-note:f795677be63d -->
+
+## [0.10.80] - 2026-09-08
+
+### Added
+
+- Materialize cross-session failure insights and charts (#8730). <!-- maestro-release-note:5647dd12f452 -->
+- Export actionable turn telemetry to customer collectors (#8732). <!-- maestro-release-note:7a70f02e30dc -->
+- Execute hosted commands through guest agents (#8728). <!-- maestro-release-note:0283f5c90207 -->
+- Enroll the shared production GitHub App (#8725). <!-- maestro-release-note:a0938e7b34fc -->
+- Add bounded server-owned review profiles (#8700). <!-- maestro-release-note:71a5b296e8d3 -->
+- Query repository filters through the owner API (#8699). <!-- maestro-release-note:d1bbd5eef20e -->
+- Rename the repository review surface and map Git integration (#8698). <!-- maestro-release-note:cdf1c5e0b02e -->
+- Prepare durable Deixic Code Security reviews (#8669). <!-- maestro-release-note:453f7d2e6d30 -->
+
+### Changed
+
+- Refresh bundled model catalog (#8729). <!-- maestro-release-note:3ae0e7cabed1 -->
+- Promote consumed labs and retire context ingest (#8677). <!-- maestro-release-note:4f6953227753 -->
+- Remove the retired device-identity client (#8690). <!-- maestro-release-note:88fb81244060 -->
+- Retire legacy Chat product (#8675). <!-- maestro-release-note:f38fb80b455b -->
+
+### Fixed
+
+- Separate resource scope from scheduling ownership (#8727). <!-- maestro-release-note:9e2c3f6bab0b -->
+- Repair capability persistence and sandbox audit anchors (#8701). <!-- maestro-release-note:3e4594627b6f -->
+- Record Mono source and K8s promotion ownership (#8723). <!-- maestro-release-note:b566b7033254 -->
+- Revoke at the RFC 7009 endpoint (#8697). <!-- maestro-release-note:4ed2740d9bd0 -->
+- Persist the workspace binding Identity returns (#8695). <!-- maestro-release-note:89b09c7e67b8 -->
+- Reject unknown fields on internal credential requests (#8693). <!-- maestro-release-note:cdb966f75e8d -->
+- Authenticate tenant-scoped ToolExecution calls (#8691). <!-- maestro-release-note:0fba2c5d1928 -->
+- Persist the requested API-key expiry (#8689). <!-- maestro-release-note:402ba67f8fe8 -->
+- Send `token` to Identity revoke endpoint on logout (#8685). <!-- maestro-release-note:0bffe298e5c4 -->
+
 ## [0.10.79] - 2026-09-07
 
 ### Fixed

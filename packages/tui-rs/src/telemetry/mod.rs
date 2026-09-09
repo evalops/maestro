@@ -38,6 +38,7 @@
 //! );
 //! ```
 
+mod customer_export;
 mod onboarding;
 mod staged_rollout;
 mod tracker;
@@ -47,8 +48,9 @@ pub use visibility::*;
 
 pub use onboarding::*;
 pub use staged_rollout::{
-    onboarding_identity_scope, record_canonical_turn_event, record_first_party_visibility_event,
-    record_onboarding_event, record_staged_rollout_surface_usage,
+    flush_first_party_telemetry, onboarding_identity_scope, record_canonical_turn_event,
+    record_first_party_visibility_event, record_onboarding_event,
+    record_staged_rollout_surface_usage,
 };
 pub use tracker::{TurnTracker, TurnTrackerConfig, TurnTrackerContext};
 pub use wide_events::{

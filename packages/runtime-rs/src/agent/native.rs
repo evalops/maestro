@@ -114,8 +114,8 @@ use super::message_queue::{
 };
 use super::native_host::{
     ApprovalMode, NativeExecutionHostHandle, NativeFirewallVerdict, NativeHookEvent,
-    NativeHookResult, NativeModelRoute, NativeResolvedClient, NativeToolExecutionOptions,
-    QueueMode, ToolDefinition,
+    NativeHookResult, NativeModelCapabilities, NativeModelRoute, NativeResolvedClient,
+    NativeToolExecutionOptions, QueueMode, ToolDefinition,
 };
 use super::reminders::{ReminderEngine, ToolOutcome as ReminderToolOutcome};
 use super::safety::stable_stringify;
@@ -2564,6 +2564,56 @@ struct CodexToolOutcome<'a> {
     pre_hook_context: Option<&'a str>,
     /// Wall-clock time the tool took, for the hooks' `durationMs`.
     duration_ms: u64,
+}
+
+/// Build standing instructions from caller context and the model selected for
+/// this request. Rebuild from the base prompt so switches and retries never
+/// accumulate stale model identities. Shared by HTTP and Codex transports.
+#[must_use]
+pub fn runtime_system_prompt(
+    base: Option<&str>,
+    context: Option<&str>,
+    model: &str,
+    mut capabilities: NativeModelCapabilities,
+) -> Option<String> {
+    let mut system = base.unwrap_or_default().to_owned();
+    if let Some(context) = context.filter(|context| !context.trim().is_empty()) {
+        if !system.is_empty() {
+            system.push_str("\n\n");
+        }
+        system.push_str(context);
+    }
+    if !system.is_empty() {
+        system.push_str("\n\n");
+    }
+    system.push_str("Your model is provided by Deixic.\n");
+    let model = model.trim();
+    if model.is_empty() {
+        system.push_str("The current model identifier is unavailable. Do not guess it.");
+    } else {
+        system.push_str(&format!(
+            "The model identifier selected for this request is {model:?}."
+        ));
+    }
+    system.push_str(concat!(
+        "\nDeixic provides the agent experience; this does not mean Deixic trained the underlying model. ",
+        "A configured model identifier may be an alias; do not invent a more specific model identity."
+    ));
+    // A zero ceiling is missing metadata, never evidence of a zero-token model.
+    capabilities.context_tokens = capabilities.context_tokens.filter(|tokens| *tokens > 0);
+    capabilities.output_tokens = capabilities.output_tokens.filter(|tokens| *tokens > 0);
+    system.push_str("\nCatalog-reported model capabilities (null means unknown; token limits are ceilings, not remaining budget):\n");
+    system.push_str(&serde_json::json!(capabilities).to_string());
+    system.push_str(concat!(
+        "\nUse these facts to plan work in bounded chunks and keep responses within the runtime's limits. ",
+        "If image input is unsupported, use an available tool to obtain text or ask for a text description. ",
+        "Only the tools supplied for this request are available; model tool-calling support does not grant access. ",
+        "Reasoning support does not say whether reasoning is enabled. ",
+        "If the task needs capabilities or reasoning beyond this configuration, explain the concrete limitation ",
+        "and ask the caller to adjust the model or reasoning settings. Do not claim a model or setting changed ",
+        "until the runtime reports it. Do not infer capability, intelligence, price, or permission from a model name."
+    ));
+    ensure_untrusted_content_policy(Some(system))
 }
 
 /// The staged system prompt to apply to a queued message starting now.
@@ -6186,22 +6236,12 @@ impl NativeAgentRunner {
             None
         };
 
-        let system = match (&self.config.system_prompt, &self.prompt_context) {
-            (Some(base), Some(extra)) if !extra.trim().is_empty() => {
-                Some(format!("{base}\n\n{extra}"))
-            }
-            (Some(base), _) => Some(base.clone()),
-            (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
-            _ => None,
-        };
-
-        // Every runtime that can surface an `<untrusted_content>` envelope
-        // (the shared `ToolExecution::model_content` chokepoint) must also
-        // send the policy that gives the envelope its security meaning.
-        // Callers that supply their own system prompt — the headless server,
-        // the control-plane chat path — get it appended here; prompts that
-        // already embed it (the TUI base prompt) pass through unchanged.
-        let system = ensure_untrusted_content_policy(system);
+        let system = runtime_system_prompt(
+            self.config.system_prompt.as_deref(),
+            self.prompt_context.as_deref(),
+            &self.config.model,
+            self.tool_executor.model_capabilities(&self.config.model),
+        );
         self.refresh_runtime_audit_with_prompt(system.clone());
 
         let configured_model = self.config.model.trim();
@@ -6337,6 +6377,12 @@ impl NativeAgentRunner {
         config.thinking = None;
         config.temperature = Some(0.0);
         if model != self.config.model {
+            config.system = runtime_system_prompt(
+                self.config.system_prompt.as_deref(),
+                self.prompt_context.as_deref(),
+                &model,
+                self.tool_executor.model_capabilities(&model),
+            );
             let context_tokens = self
                 .tool_executor
                 .model_context_window(&model)
@@ -6849,17 +6895,12 @@ impl NativeAgentRunner {
         let restored_messages = side_question_compactor
             .compact_with_tokens(&resolved_messages)
             .messages;
-        let instructions = {
-            let system = match (&self.config.system_prompt, &self.prompt_context) {
-                (Some(base), Some(extra)) if !extra.trim().is_empty() => {
-                    Some(format!("{base}\n\n{extra}"))
-                }
-                (Some(base), _) => Some(base.clone()),
-                (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
-                _ => None,
-            };
-            ensure_untrusted_content_policy(system)
-        };
+        let instructions = runtime_system_prompt(
+            self.config.system_prompt.as_deref(),
+            self.prompt_context.as_deref(),
+            &self.config.model,
+            self.tool_executor.model_capabilities(&self.config.model),
+        );
         let auth = self
             .tool_executor
             .codex_auth_context()
@@ -6991,17 +7032,12 @@ impl NativeAgentRunner {
         };
         let dynamic_tools = super::codex_app_server_turns::dynamic_tools_from_native(&self.tools);
         // Same standing instructions the HTTP path puts in RequestConfig.system.
-        let instructions = {
-            let system = match (&self.config.system_prompt, &self.prompt_context) {
-                (Some(base), Some(extra)) if !extra.trim().is_empty() => {
-                    Some(format!("{base}\n\n{extra}"))
-                }
-                (Some(base), _) => Some(base.clone()),
-                (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
-                _ => None,
-            };
-            ensure_untrusted_content_policy(system)
-        };
+        let instructions = runtime_system_prompt(
+            self.config.system_prompt.as_deref(),
+            self.prompt_context.as_deref(),
+            &self.config.model,
+            self.tool_executor.model_capabilities(&self.config.model),
+        );
         let restored_prefix_len = self.codex_history_restore_prefix_len.unwrap_or(0);
         let restored_messages = resolve_provider_history(
             &self.messages[..restored_prefix_len.min(self.messages.len())],

@@ -4355,6 +4355,7 @@ impl SubagentManager {
             )
         };
         let config = NativeAgentConfig {
+            model_capabilities: None,
             model_dynamics: crate::config::model_dynamics_config(),
             model,
             max_tokens: record.max_tokens,

@@ -2,7 +2,7 @@
   "name": "dex-suggestion",
   "steps": [
     {
-      "wait": "(?s)Dex.*GPT-4o.*release-planner"
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
     },
     {
       "text": "Read the README and explain what this project does."
