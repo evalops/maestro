@@ -1226,3 +1226,36 @@ fn terminal_delivery_respects_each_existing_telemetry_opt_out() {
         std::env::remove_var(name);
     }
 }
+
+#[test]
+fn context_calibration_reaches_closed_cloud_projection() {
+    let mut event = canonical_event(TurnStatus::Success);
+    let measurements = event.measurements.as_mut().unwrap();
+    measurements.response_count = 1;
+    measurements.responses_with_usage = 1;
+    let observation = maestro_context::context_usage::ContextCalibration::from_usage(
+        "local-request-only".into(),
+        2,
+        100,
+        20,
+        300,
+        40,
+    )
+    .unwrap();
+    measurements
+        .context_estimation
+        .get_or_insert_with(Default::default)
+        .record(&observation);
+    let projected = first_party_event(&event.external_projection()).unwrap();
+    assert!(projected.is_server_valid());
+    let wire = serde_json::to_value(projected).unwrap();
+    assert_eq!(
+        wire["measurements"]["contextEstimation"]["observedInputTokens"],
+        360
+    );
+    assert_eq!(
+        wire["measurements"]["contextEstimation"]["absoluteErrorTokens"],
+        260
+    );
+    assert!(!wire.to_string().contains("local-request-only"));
+}

@@ -965,6 +965,11 @@ pub enum FromAgent {
         observation: crate::ai::StreamObservation,
     },
 
+    /// Input estimate and provider usage from the same completed primary request.
+    ContextCalibration {
+        observation: maestro_context::context_usage::ContextCalibration,
+    },
+
     /// A request retry actually started after its interruptible backoff.
     RequestRetryObservation,
 

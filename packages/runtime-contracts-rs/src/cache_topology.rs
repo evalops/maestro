@@ -119,8 +119,8 @@ impl CacheScope {
     }
 }
 
-/// Contract for the OpenAI-compatible hosted request path. Provider translations
-/// that change this structure require a separately implemented codec contract.
+/// Contract for admitted hosted input. Gateway-owned codecs bind this source
+/// to the final provider projection without pretending translations are identical.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostedCacheTopology {
@@ -132,11 +132,15 @@ pub fn wire_shape(body: &Value, namespace: String) -> Result<PromptShape, &'stat
     if !body.is_object() {
         return Err("cache payload must be an object");
     }
-    let history = body
+    let history_value = body
         .get("messages")
         .or_else(|| body.get("input"))
-        .and_then(Value::as_array)
-        .ok_or("cache topology requires an ordered message array")?;
+        .ok_or("cache topology requires ordered input")?;
+    let history = match history_value {
+        Value::Array(items) => items.iter().map(digest).collect(),
+        Value::String(_) if body.get("messages").is_none() => vec![digest(history_value)],
+        _ => return Err("cache topology requires an ordered message array or Responses text"),
+    };
     // Hash the actual serializer's JSON values. Do not sort messages, tools, or
     // content arrays to make diagnostics look stable while changing wire order.
     Ok(PromptShape {
@@ -158,7 +162,7 @@ pub fn wire_shape(body: &Value, namespace: String) -> Result<PromptShape, &'stat
             body.get("prompt_cache_options"),
             body.get("cache_prompt")
         ])),
-        history: history.iter().map(digest).collect(),
+        history,
     })
 }
 
@@ -172,6 +176,21 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn cache_topology_responses_text_is_one_ordered_input() {
+        let body = serde_json::json!({"model":"m", "input":"hello"});
+        let shape = wire_shape(&body, "session".into()).unwrap();
+        assert_eq!(shape.history, vec![digest(&serde_json::json!("hello"))]);
+        let mut changed = body.clone();
+        changed["input"] = serde_json::json!("different");
+        assert_ne!(
+            shape.history,
+            wire_shape(&changed, "session".into()).unwrap().history
+        );
+        changed["messages"] = serde_json::json!("invalid messages");
+        assert!(wire_shape(&changed, "session".into()).is_err());
+    }
+
     #[test]
     fn cache_topology_append_and_rewrite_have_distinct_generations() {
         let initial = CacheTopology::prepare(shape(), None).unwrap();

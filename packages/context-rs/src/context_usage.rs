@@ -12,7 +12,81 @@ pub struct RequestContextUsage {
     pub tools: Vec<(String, u64)>,
 }
 
+/// A primary response measured against its own sealed request, before auxiliary usage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ContextCalibration {
+    pub request_id: String,
+    pub generation: u64,
+    pub estimated_input_tokens: u64,
+    pub observed_input_tokens: u64,
+}
+
+impl ContextCalibration {
+    pub fn from_usage(
+        request_id: String,
+        generation: u64,
+        estimated_input_tokens: u64,
+        input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+    ) -> Option<Self> {
+        let observed_input_tokens = input_tokens
+            .checked_add(cache_read_tokens)?
+            .checked_add(cache_write_tokens)?;
+        Some(Self {
+            request_id,
+            generation,
+            estimated_input_tokens,
+            observed_input_tokens,
+        })
+    }
+}
+
+/// Content-free aggregates for the existing turn telemetry pipeline.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextEstimationMeasurements {
+    pub responses: u64,
+    pub estimated_input_tokens: u64,
+    pub observed_input_tokens: u64,
+    pub absolute_error_tokens: u64,
+    pub underestimated_responses: u64,
+}
+
+impl ContextEstimationMeasurements {
+    pub fn record(&mut self, observation: &ContextCalibration) {
+        self.responses = self.responses.saturating_add(1);
+        self.estimated_input_tokens = self
+            .estimated_input_tokens
+            .saturating_add(observation.estimated_input_tokens);
+        self.observed_input_tokens = self
+            .observed_input_tokens
+            .saturating_add(observation.observed_input_tokens);
+        self.absolute_error_tokens = self.absolute_error_tokens.saturating_add(
+            observation
+                .estimated_input_tokens
+                .abs_diff(observation.observed_input_tokens),
+        );
+        self.underestimated_responses = self.underestimated_responses.saturating_add(u64::from(
+            observation.estimated_input_tokens < observation.observed_input_tokens,
+        ));
+    }
+}
+
 impl RequestContextUsage {
+    /// Includes stable instructions, tools, history and the sealed volatile tail.
+    pub fn total(&self) -> Option<u64> {
+        [
+            self.system,
+            self.conversation,
+            self.tool_results,
+            self.other,
+        ]
+        .into_iter()
+        .chain(self.tools.iter().map(|(_, tokens)| *tokens))
+        .try_fold(0_u64, u64::checked_add)
+    }
+
     pub fn from_request(
         messages: &[Message],
         config: &RequestConfig,
@@ -76,6 +150,24 @@ impl RequestContextUsage {
 mod tests {
     use super::*;
     use maestro_ai::Tool;
+
+    #[test]
+    fn calibration_counts_cache_buckets_and_rejects_overflow() {
+        let observation =
+            ContextCalibration::from_usage("request-2".into(), 2, 100, 20, 300, 40).unwrap();
+        assert_eq!(observation.observed_input_tokens, 360);
+        assert_eq!(observation.generation, 2);
+        assert_eq!(observation.request_id, "request-2");
+        assert!(
+            ContextCalibration::from_usage("overflow".into(), 1, 100, u64::MAX, 1, 0).is_none()
+        );
+        let mut measurements = ContextEstimationMeasurements::default();
+        measurements.record(&observation);
+        assert_eq!(measurements.responses, 1);
+        assert_eq!(measurements.absolute_error_tokens, 260);
+        assert_eq!(measurements.underestimated_responses, 1);
+    }
+
     use std::sync::Arc;
 
     #[test]

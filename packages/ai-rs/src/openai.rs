@@ -2085,10 +2085,7 @@ impl OpenAiClient {
             );
         }
 
-        if let Some(scope) = self
-            .cache_scope()?
-            .filter(|_| crate::cache_topology::supports_hosted_wire_topology(&body))
-        {
+        if let Some(scope) = self.cache_scope()? {
             use maestro_runtime_contracts::cache_topology::{
                 CacheTopology, HostedCacheTopology, wire_shape,
             };
@@ -6486,6 +6483,8 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
     async fn cache_topology_preserves_translating_and_model_fallback_routes() {
         for (provider, candidate_model) in [
             ("google", "openai/gpt-5.6-terra"),
+            ("vertex-ai", "openai/gpt-5.6-terra"),
+            ("openrouter", "openai/gpt-5.6-terra"),
             ("azure-openai", "openai/gpt-5.6-terra"),
             ("openai", "different-fallback-model"),
         ] {
@@ -6513,7 +6512,10 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
             let body = captured_request_body(&request);
-            assert!(body.get("cache_topology").is_none());
+            assert!(
+                body.get("cache_topology").is_some(),
+                "managed routes must carry topology"
+            );
             assert_eq!(body["managed_inference_authorization"], authorization);
         }
     }

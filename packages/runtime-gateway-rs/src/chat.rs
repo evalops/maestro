@@ -1192,6 +1192,7 @@ pub(crate) async fn handle_chat_endpoint(
             | FromAgent::RequestContextPrepared { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
+            | FromAgent::ContextCalibration { .. }
             | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,
@@ -2111,6 +2112,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             | FromAgent::RequestContextPrepared { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
+            | FromAgent::ContextCalibration { .. }
             | FromAgent::CompactionMeasured { .. } => {}
             FromAgent::Compaction {
                 summary,

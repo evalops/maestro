@@ -71,6 +71,8 @@ struct RuntimeTestHost {
     session_id: Arc<Mutex<Option<String>>>,
     provider_admission_blocked: Arc<AtomicBool>,
     block_provider_after_tool: bool,
+    post_tool_context: Option<String>,
+    checkpoint_barrier: Option<Arc<(tokio::sync::Notify, tokio::sync::Notify, AtomicBool)>>,
     completed_tool_executions: Arc<AtomicUsize>,
     tool_definitions: Arc<Vec<ToolDefinition>>,
     code_authority: bool,
@@ -109,6 +111,8 @@ impl RuntimeTestHost {
             session_id: Arc::new(Mutex::new(None)),
             provider_admission_blocked: Arc::new(AtomicBool::new(false)),
             block_provider_after_tool: false,
+            post_tool_context: None,
+            checkpoint_barrier: None,
             completed_tool_executions: Arc::new(AtomicUsize::new(0)),
             tool_definitions: Arc::new(tool_definitions),
             code_authority: true,
@@ -398,7 +402,15 @@ impl NativeExecutionHost for RuntimeTestHost {
         _is_error: bool,
         _duration_ms: u64,
     ) -> NativeHostFuture<'a, NativeHookResult> {
-        Box::pin(async { Self::hook_result() })
+        Box::pin(async {
+            self.post_tool_context
+                .as_ref()
+                .map_or_else(Self::hook_result, |context| {
+                    NativeHookResult::InjectContext {
+                        context: context.clone(),
+                    }
+                })
+        })
     }
 
     fn hook_eval_gate<'a>(
@@ -454,7 +466,15 @@ impl NativeExecutionHost for RuntimeTestHost {
         _duration_ms: u64,
         _stop_reason: Option<&'a str>,
     ) -> NativeHostFuture<'a, NativeHookResult> {
-        Box::pin(async { Self::hook_result() })
+        Box::pin(async {
+            if let Some(barrier) = &self.checkpoint_barrier {
+                if !barrier.2.swap(true, Ordering::SeqCst) {
+                    barrier.0.notify_one();
+                    barrier.1.notified().await;
+                }
+            }
+            Self::hook_result()
+        })
     }
 
     fn hook_on_error<'a>(
@@ -619,6 +639,31 @@ impl NativeExecutionHost for RuntimeTestHost {
         _spill_dir: Option<&Path>,
     ) -> String {
         content.to_owned()
+    }
+
+    fn project_tool_output(
+        &self,
+        content: &str,
+        _tool: &str,
+        spill_dir: Option<&Path>,
+    ) -> super::super::native_host::NativeToolOutput {
+        let mut output = super::super::native_host::NativeToolOutput {
+            content: content.to_owned(),
+            saved_path: None,
+        };
+        if self.post_tool_context.is_some() && content.len() > 40_000 {
+            let dir = spill_dir.expect("fixture must have a session-owned spill directory");
+            std::fs::create_dir_all(dir).unwrap();
+            let path = dir.join("full-output.txt");
+            std::fs::write(&path, content).unwrap();
+            output.content = format!(
+                "{}\n[Truncated. Full output: {}. Read with offset and limit.]",
+                &content[..1000],
+                path.display()
+            );
+            output.saved_path = Some(path);
+        }
+        output
     }
 
     fn model_tool_spill_dir(&self, cwd: &str, session_id: &str) -> std::path::PathBuf {
@@ -7059,4 +7104,242 @@ fn model_capabilities_from_prompt(system: &str) -> Value {
             .unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn file_provenance_requires_successful_typed_result() {
+    let details = crate::ToolDetails::Write(crate::tool_details::WriteDetails {
+        path: "src/result.rs".into(),
+        ..Default::default()
+    });
+    let mut result = ToolExecution::from_legacy(
+        "write-1",
+        "write",
+        ExecutionSource::Native,
+        ToolResult::success("wrote file"),
+    );
+    assert!(successful_file_operation("write-1", &result.receipt).is_none());
+    result.receipt.details = super::super::protocol::ToolReceiptDetails::BuiltIn(details.clone());
+    let operation = successful_file_operation("write-1", &result.receipt).unwrap();
+    assert_eq!(operation.path, "src/result.rs");
+    assert!(successful_file_operation("wrong-call", &result.receipt).is_none());
+    let mut failed = ToolExecution::from_legacy(
+        "write-2",
+        "write",
+        ExecutionSource::Native,
+        ToolResult::failure("write failed"),
+    );
+    failed.receipt.details = super::super::protocol::ToolReceiptDetails::BuiltIn(details);
+    assert!(successful_file_operation("write-2", &failed.receipt).is_none());
+    assert!(
+        successful_file_operation(
+            "denied",
+            &ToolExecution::denied("denied", "write", DenialReason::User).receipt
+        )
+        .is_none()
+    );
+}
+
+async fn two_request_context_fixture(
+    tool_first: bool,
+    with_usage: bool,
+) -> (
+    UnifiedClient,
+    Arc<Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_scripted_provider_request(&mut stream).await;
+            captured.lock().unwrap().push(request);
+            let mut body = chat_sse_response("continuity", "Done.", tool_first && index == 0);
+            if with_usage {
+                let usage = json!({"id":"continuity","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":360,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":300}}});
+                body = body.replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
+            }
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+        }
+    });
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1")).unwrap(),
+    );
+    (client, requests, server)
+}
+
+#[tokio::test]
+async fn final_tool_projection_bounds_hook_output_and_retains_full_capture() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, requests, server) = two_request_context_fixture(true, false).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client);
+    host.post_tool_context = Some(format!(
+        "{}unique-end-marker",
+        "large tool context ".repeat(5000)
+    ));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    agent
+        .set_session_context(Some("output-fixture".into()), "new", true)
+        .unwrap();
+    agent.prompt("Read the file".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::ContextCalibration { .. } => {
+                    panic!("missing usage must stay unobserved")
+                }
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
+    let captured = requests.lock().unwrap();
+    let messages = captured[1]["messages"].as_array().unwrap();
+    let tool = messages.iter().find(|m| m["role"] == "tool").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(tool.len() < 40_000);
+    assert!(tool.contains("Truncated"));
+    let path = workspace
+        .path()
+        .join(".maestro/output-fixture/full-output.txt");
+    assert!(tool.contains(path.to_str().unwrap()));
+    let full = std::fs::read_to_string(path).unwrap();
+    assert!(full.len() > 40_000);
+    assert!(full.contains("unique-end-marker"));
+}
+
+#[tokio::test]
+async fn steering_queued_before_checkpoint_install_reaches_next_request_once() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, requests, server) = two_request_context_fixture(false, false).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let barrier = Arc::new((
+        tokio::sync::Notify::new(),
+        tokio::sync::Notify::new(),
+        AtomicBool::new(false),
+    ));
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client);
+    host.checkpoint_barrier = Some(Arc::clone(&barrier));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    agent.set_steering_mode(QueueMode::One).unwrap();
+    agent.replace_history(
+        (0..20)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: MessageContent::text("earlier context ".repeat(100)),
+            })
+            .collect(),
+    );
+    agent.prompt("Continue".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+        .await
+        .unwrap();
+    agent
+        .prompt_with_kind(
+            "Correction: preserve the database".into(),
+            vec![],
+            PromptKind::Steer,
+            None,
+        )
+        .await
+        .unwrap();
+    barrier.1.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let snapshot = agent.runtime_audit_snapshot();
+    agent.shutdown().await;
+    server.await.unwrap();
+    assert!(
+        snapshot
+            .request_cache
+            .unwrap()
+            .cache_topology
+            .unwrap()
+            .generation
+            >= 2
+    );
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(
+        captured[1]
+            .to_string()
+            .matches("Correction: preserve the database")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn calibration_is_bound_to_each_completed_primary_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, _requests, server) = two_request_context_fixture(true, true).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let (agent, mut events) =
+        new_runtime_test_agent_with_host(config.clone(), RuntimeTestHost::new(config.cwd, client))
+            .unwrap();
+    agent.prompt("Read the file".into(), vec![]).await.unwrap();
+    let mut observations = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::ContextCalibration { observation } => observations.push(observation),
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
+    assert_eq!(observations.len(), 2);
+    assert_ne!(observations[0].request_id, observations[1].request_id);
+    for observation in observations {
+        assert_eq!(observation.observed_input_tokens, 360);
+        assert_eq!(observation.generation, 1);
+        assert!(observation.estimated_input_tokens > 0);
+    }
 }

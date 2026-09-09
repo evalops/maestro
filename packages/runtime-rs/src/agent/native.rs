@@ -8543,6 +8543,9 @@ impl NativeAgentRunner {
         is_error: bool,
         receipt: Option<&super::protocol::ExecutionReceipt>,
     ) -> (String, bool) {
+        if let Some(receipt) = receipt {
+            self.retain_file_operation(call_id, receipt);
+        }
         let cx = ExtensionToolResultContext {
             edit: receipt.and_then(|receipt| match &receipt.details {
                 super::protocol::ToolReceiptDetails::BuiltIn(crate::ToolDetails::Edit(edit))
@@ -8670,6 +8673,12 @@ impl NativeAgentRunner {
             } else {
                 provider_request_id("primary", &config.model, &provider_messages)?
             };
+            let estimated_input_tokens = super::RequestContextUsage::from_request(
+                &provider_messages,
+                &config,
+                self.compactor.counter(),
+            )
+            .total();
             self.admit_provider_request("primary", &request_id, Some(&config.model))
                 .await?;
             let client = self
@@ -9120,6 +9129,28 @@ impl NativeAgentRunner {
                 return Err(anyhow::Error::new(EmptyAssistantResponse));
             }
 
+            // Shadow calibration only: keep compaction thresholds unchanged until
+            // real estimation error is measured. Never mix in summarizer usage.
+            if saw_usage {
+                if let (Some(estimated), Some(prepared)) =
+                    (estimated_input_tokens, &config.cache_topology)
+                {
+                    if let Some(observation) =
+                        maestro_context::context_usage::ContextCalibration::from_usage(
+                            request_id.clone(),
+                            prepared.topology().generation,
+                            estimated,
+                            usage.input_tokens,
+                            usage.cache_read_tokens,
+                            usage.cache_write_tokens,
+                        )
+                    {
+                        let _ = self
+                            .event_tx
+                            .send(FromAgent::ContextCalibration { observation });
+                    }
+                }
+            }
             step_budget.accept_attempt();
 
             // Persist the completed provider blocks before tool execution
@@ -10287,6 +10318,10 @@ impl NativeAgentRunner {
                     append_reminder_to_last_tool_result(&mut tool_results, &reminder);
                 }
 
+                // This is the final projection boundary, after tool hooks, batch
+                // extensions and reminders, including parallel read-only results.
+                self.bound_final_tool_results(&mut tool_results).await;
+
                 // Add tool results to history
                 self.messages_mut().push(Message {
                     role: Role::User,
@@ -10812,6 +10847,61 @@ impl NativeAgentRunner {
         }
     }
 
+    async fn bound_final_tool_results(&mut self, results: &mut [ContentBlock]) {
+        let session_id = self.hooks.hook_session_id().await;
+        let spill_dir = model_tool_spill_dir_for_active_tools(
+            Some(&self.tool_executor),
+            &self.active_tool_names,
+            &self.config.cwd,
+            session_id.as_deref(),
+            self.owns_persistent_tool_spills,
+        );
+        for block in results {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            // No prose-based dispatch: the name is only a safe spill-file label.
+            let output =
+                self.tool_executor
+                    .clamp_tool_output(content, "tool-result", spill_dir.as_deref());
+            *content = output.content;
+            if let Some(path) = output.saved_path {
+                let reference = super::compaction::ToolOutputReference {
+                    tool_call_id: tool_use_id.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                };
+                let references = &mut self
+                    .semantic_continuation
+                    .get_or_insert_with(Default::default)
+                    .tool_outputs;
+                if !references.contains(&reference) {
+                    references.push(reference);
+                }
+            }
+        }
+    }
+
+    fn retain_file_operation(
+        &mut self,
+        call_id: &str,
+        execution: &super::protocol::ExecutionReceipt,
+    ) {
+        if let Some(operation) = successful_file_operation(call_id, execution) {
+            let operations = &mut self
+                .semantic_continuation
+                .get_or_insert_with(Default::default)
+                .file_operations;
+            if !operations.contains(&operation) {
+                operations.push(operation);
+            }
+        }
+    }
+
     fn cancel_remaining_deferred_if_interrupted(
         &mut self,
         deferred_calls: &mut impl Iterator<Item = DeferredToolCall>,
@@ -11058,6 +11148,36 @@ fn redact_semantic_snapshot_json(value: serde_json::Value) -> serde_json::Value 
         ),
         value => value,
     }
+}
+
+/// Extract only typed successful results; proposals and prose are not evidence.
+fn successful_file_operation(
+    call_id: &str,
+    execution: &super::protocol::ExecutionReceipt,
+) -> Option<super::compaction::ContinuationFileOperation> {
+    use super::compaction::{ContinuationFileOperation, ContinuationFileOperationKind as Kind};
+    if execution.call_id != call_id
+        || execution.status != super::protocol::ExecutionStatus::Succeeded
+    {
+        return None;
+    }
+    let super::protocol::ToolReceiptDetails::BuiltIn(details) = &execution.details else {
+        return None;
+    };
+    let (path, kind) = match details {
+        crate::ToolDetails::Read(details) => (&details.path, Kind::Read),
+        crate::ToolDetails::Write(details) => (&details.path, Kind::Write),
+        crate::ToolDetails::Edit(details) => (&details.path, Kind::Edit),
+        _ => return None,
+    };
+    if path.is_empty() {
+        return None;
+    }
+    Some(ContinuationFileOperation {
+        tool_call_id: call_id.to_owned(),
+        path: path.clone(),
+        kind,
+    })
 }
 
 #[cfg(test)]

@@ -147,6 +147,12 @@ impl TurnTracker {
                 }
                 None
             }
+            FromAgent::ContextCalibration { observation } => {
+                if let Some(turn) = &mut self.current_turn {
+                    turn.record_context_calibration(observation);
+                }
+                None
+            }
             FromAgent::RequestContextPrepared { .. } => None,
             FromAgent::TurnStarted => None,
             FromAgent::RequestRetryScheduled { .. } => None,

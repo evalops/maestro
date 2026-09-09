@@ -1157,6 +1157,7 @@ impl AppState {
             | FromAgent::RequestContextPrepared { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
+            | FromAgent::ContextCalibration { .. }
             | FromAgent::CompactionMeasured { .. } => {}
 
             // Session info updated
