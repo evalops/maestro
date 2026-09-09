@@ -298,8 +298,10 @@ jobs:
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
   post-publish-canary:
     environment: npm-release
     needs:
@@ -911,8 +913,10 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
 `,
 			"",
 		)
@@ -929,8 +933,10 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
       - name: Publish to npm
 `,
 		);
@@ -1009,8 +1015,10 @@ test("rejects GitHub release retargeting of a detached commit", () => {
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
 `,
 		`      - uses: softprops/action-gh-release@sha
         with:
@@ -1024,8 +1032,10 @@ test("rejects GitHub release retargeting of a detached commit", () => {
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
 `,
 	);
 	assert.ok(

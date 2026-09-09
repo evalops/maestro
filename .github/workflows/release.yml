@@ -570,8 +570,10 @@ jobs:
             release-assets/*.txt
             release-assets/*SUMS
             release-assets/*.bundle
-            release-assets/maestro-linux-*
-            release-assets/maestro-darwin-*
+            release-assets/maestro-linux-arm64
+            release-assets/maestro-linux-x64
+            release-assets/maestro-darwin-arm64
+            release-assets/maestro-darwin-x64
   post-publish-canary:
     environment: npm-release
     needs:

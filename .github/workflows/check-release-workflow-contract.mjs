@@ -822,7 +822,7 @@ export function validateReleaseWorkflow(source) {
 			"${{ needs.prepare.outputs.release_tag }}" ||
 		releaseStep?.with.name !==
 			"Maestro ${{ needs.prepare.outputs.release_version }}" ||
-		releaseStep?.with.files !== "release-assets/*.json\nrelease-assets/*.tgz\nrelease-assets/*.tar.gz\nrelease-assets/*.txt\nrelease-assets/*SUMS\nrelease-assets/*.bundle\nrelease-assets/maestro-linux-*\nrelease-assets/maestro-darwin-*"
+		releaseStep?.with.files !== "release-assets/*.json\nrelease-assets/*.tgz\nrelease-assets/*.tar.gz\nrelease-assets/*.txt\nrelease-assets/*SUMS\nrelease-assets/*.bundle\nrelease-assets/maestro-linux-arm64\nrelease-assets/maestro-linux-x64\nrelease-assets/maestro-darwin-arm64\nrelease-assets/maestro-darwin-x64"
 	) {
 		failures.push(
 			"GitHub release metadata and files must bind to immutable prepare outputs",
