@@ -721,18 +721,26 @@ fn read_manifest_with_receipts(path: &Path) -> Result<(TranscriptManifest, bool)
     if !journal_path.is_file() {
         return Ok((manifest, false));
     }
-    for (line_number, line) in BufReader::new(File::open(&journal_path)?)
-        .lines()
-        .enumerate()
-    {
-        let line = line?;
-        if line.trim().is_empty() {
+    let mut reader = BufReader::new(File::open(&journal_path)?);
+    let mut line = Vec::new();
+    let mut committed_bytes = 0_u64;
+    let mut line_number = 0;
+    let mut incomplete_tail = false;
+    while reader.read_until(b'\n', &mut line)? > 0 {
+        if !line.ends_with(b"\n") {
+            incomplete_tail = true;
+            break;
+        }
+        committed_bytes += line.len() as u64;
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            line.clear();
             continue;
         }
-        let entry: ReceiptJournalEntry = serde_json::from_str(&line).map_err(|error| {
+        let entry: ReceiptJournalEntry = serde_json::from_slice(&line).map_err(|error| {
             TranscriptError::InvalidInput(format!(
                 "receipt journal line {} is invalid: {error}",
-                line_number + 1
+                line_number
             ))
         })?;
         let index = usize::try_from(entry.segment_index).map_err(|_| {
@@ -760,8 +768,17 @@ fn read_manifest_with_receipts(path: &Path) -> Result<(TranscriptManifest, bool)
         } else {
             segment.upload = Some(entry.receipt);
         }
+        line.clear();
     }
     validate_manifest(&manifest)?;
+    if incomplete_tail {
+        // A crash may interrupt write_all before its newline. Keep validated
+        // complete receipts and replay the uncommitted segment idempotently.
+        // Callers hold the manifest lock across recovery and journal appends.
+        let journal = OpenOptions::new().write(true).open(&journal_path)?;
+        journal.set_len(committed_bytes)?;
+        journal.sync_all()?;
+    }
     Ok((manifest, true))
 }
 
@@ -902,20 +919,34 @@ fn remove_upload_schedule(directory: &Path) {
 }
 
 struct UploadScheduleGuard {
-    directory: PathBuf,
+    directory: Option<PathBuf>,
 }
 
 impl UploadScheduleGuard {
     fn new(directory: &Path) -> Self {
         Self {
-            directory: directory.to_path_buf(),
+            directory: Some(directory.to_path_buf()),
         }
+    }
+
+    fn release(&mut self) -> Result<(), TranscriptError> {
+        if let Some(directory) = &self.directory {
+            match fs::remove_file(directory.join(UPLOAD_SCHEDULE_FILE)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.directory = None;
+        Ok(())
     }
 }
 
 impl Drop for UploadScheduleGuard {
     fn drop(&mut self) {
-        remove_upload_schedule(&self.directory);
+        if let Some(directory) = &self.directory {
+            remove_upload_schedule(directory);
+        }
     }
 }
 
@@ -954,11 +985,14 @@ fn spawn_background_upload(
             .name("transcript-upload".to_string())
             .spawn(move || {
                 if let Err(error) = push_transcript(PushTranscriptArgs {
-                    manifest,
+                    manifest: manifest.clone(),
                     endpoint,
                     token,
                 }) {
-                    eprintln!("[session-history] upload deferred; spooled data retained for retry: {error}");
+                    // The caller may own an active TUI or a protocol stream.
+                    // Even a tracing subscriber can target stderr, so retain
+                    // this diagnostic beside the spool instead of printing.
+                    let _ = record_background_upload_error(&manifest, &error);
                 }
             });
         if let Err(error) = spawned {
@@ -992,6 +1026,23 @@ fn spawn_background_upload(
             Err(error.into())
         }
     }
+}
+
+fn record_background_upload_error(
+    manifest: &Path,
+    error: &TranscriptError,
+) -> Result<(), TranscriptError> {
+    let directory = manifest.parent().ok_or_else(|| {
+        TranscriptError::InvalidInput("manifest path must have a parent directory".into())
+    })?;
+    let _lock = lock_manifest_directory(directory)?;
+    write_private_json(
+        &directory.join("last-background-upload-error.json"),
+        &serde_json::json!({
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "error": error.to_string().chars().take(1024).collect::<String>(),
+        }),
+    )
 }
 
 fn prepare_transcript(
@@ -1143,11 +1194,18 @@ fn prepare_transcript_with_options(
 }
 
 fn push_transcript(args: PushTranscriptArgs) -> Result<Value, TranscriptError> {
+    push_transcript_after_unlock(args, || {})
+}
+
+fn push_transcript_after_unlock(
+    args: PushTranscriptArgs,
+    after_unlock: impl FnOnce(),
+) -> Result<Value, TranscriptError> {
     let manifest_path = args.manifest;
     let manifest_dir = manifest_path.parent().ok_or_else(|| {
         TranscriptError::InvalidInput("manifest path must have a parent directory".to_string())
     })?;
-    let _schedule_guard = UploadScheduleGuard::new(manifest_dir);
+    let mut schedule_guard = UploadScheduleGuard::new(manifest_dir);
     validate_endpoint(&args.endpoint)?;
     // One sender per spool, while preparation uses only the short manifest lock.
     let _upload_lock = lock_directory_file(manifest_dir, ".upload.lock")?;
@@ -1342,6 +1400,11 @@ fn push_transcript(args: PushTranscriptArgs) -> Result<Value, TranscriptError> {
     if receipt_journal_present {
         compact_receipt_journal(&manifest_path, &manifest)?;
     }
+    // Release the marker while the final manifest lock still excludes capture.
+    // A producer admitted after this point must be able to schedule a successor.
+    schedule_guard.release()?;
+    drop(manifest_lock);
+    after_unlock();
     Ok(json!({
         "operation": "transcript.push",
         "session_id": manifest.session_id,
@@ -1802,6 +1865,73 @@ mod tests {
     }
 
     #[test]
+    fn background_upload_errors_stay_out_of_terminal() {
+        const CHILD: &str = "MAESTRO_TEST_BACKGROUND_UPLOAD_DIAGNOSTIC";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::background_upload_errors_stay_out_of_terminal",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "background upload wrote to the terminal"
+            );
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let manifest = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        // Fail deterministically before network I/O through the real background sender.
+        spawn_background_upload(&manifest, "ftp://invalid", Some("test-token".into())).unwrap();
+        let diagnostic = manifest
+            .parent()
+            .unwrap()
+            .join("last-background-upload-error.json");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !diagnostic.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let report: Value = serde_json::from_reader(File::open(&diagnostic).unwrap()).unwrap();
+        assert!(!report["error"].as_str().unwrap().is_empty());
+        assert!(!report.to_string().contains("test-token"));
+        assert!(report["occurred_at"].as_str().is_some());
+        let pending = read_locked_manifest(&manifest).unwrap();
+        assert!(
+            pending
+                .segments
+                .iter()
+                .all(|segment| segment.upload.is_none())
+        );
+        assert!(
+            !manifest
+                .parent()
+                .unwrap()
+                .join(UPLOAD_SCHEDULE_FILE)
+                .exists()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(diagnostic).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
     fn native_maestro_records_preserve_content_and_project_available_metadata() {
         let temp = tempdir().unwrap();
         let input = temp.path().join("session.jsonl");
@@ -2158,6 +2288,84 @@ mod tests {
         let error = validate_endpoint("http://platform.example.com")
             .expect_err("remote plaintext endpoint must fail closed");
         assert!(error.to_string().contains("HTTPS"), "{error}");
+    }
+
+    #[test]
+    fn completed_sender_preserves_a_successor_scheduled_after_manifest_unlock() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let directory = path.parent().unwrap();
+        let mut saved = read_locked_manifest(&path).unwrap();
+        for segment in &mut saved.segments {
+            segment.upload = Some(UploadReceipt {
+                segment_id: "accepted".into(),
+                object_id: "object".into(),
+                version_id: "version".into(),
+                replayed: false,
+                recorded_at: "now".into(),
+            });
+        }
+        write_private_json(&path, &saved).unwrap();
+        assert!(claim_upload_schedule(directory).unwrap());
+        push_transcript_after_unlock(
+            PushTranscriptArgs {
+                manifest: path.clone(),
+                endpoint: "http://127.0.0.1:1".into(),
+                token: None,
+            },
+            || {
+                let _producer_lock = lock_manifest_directory(directory).unwrap();
+                assert!(
+                    claim_upload_schedule(directory).unwrap(),
+                    "the next producer must schedule a successor"
+                );
+            },
+        )
+        .unwrap();
+        assert!(
+            directory.join(UPLOAD_SCHEDULE_FILE).exists(),
+            "the previous sender must not delete its successor's marker"
+        );
+    }
+
+    #[test]
+    fn receipt_journal_discards_only_an_unterminated_tail_before_replay() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("session.jsonl");
+        fs::write(&input, include_str!("../tests/fixtures/maestro.jsonl")).unwrap();
+        let path = prepare_native_fixture(input, &temp.path().join("state"), "main");
+        let directory = path.parent().unwrap();
+        let saved = read_locked_manifest(&path).unwrap();
+        let receipt = UploadReceipt {
+            segment_id: "accepted".into(),
+            object_id: "object".into(),
+            version_id: "version".into(),
+            replayed: false,
+            recorded_at: "now".into(),
+        };
+        append_receipt_journal(directory, 0, &saved.segments[0].sha256, &receipt).unwrap();
+        let journal = directory.join(RECEIPT_JOURNAL_FILE);
+        let complete = fs::read(&journal).unwrap();
+        for tail in [b"{\"segment_index\":".as_slice(), b"\xff\xfe".as_slice()] {
+            let mut interrupted = complete.clone();
+            interrupted.extend_from_slice(tail);
+            fs::write(&journal, interrupted).unwrap();
+            let recovered = read_locked_manifest(&path).unwrap();
+            assert_eq!(recovered.segments[0].upload.as_ref(), Some(&receipt));
+            assert_eq!(fs::read(&journal).unwrap(), complete);
+        }
+        append_receipt_journal(directory, 0, &saved.segments[0].sha256, &receipt).unwrap();
+        assert!(read_locked_manifest(&path).is_ok());
+        let mut corrupt = complete;
+        corrupt.extend_from_slice(b"{invalid}\n");
+        fs::write(&journal, &corrupt).unwrap();
+        assert!(
+            read_locked_manifest(&path).is_err(),
+            "terminated corruption must fail closed"
+        );
+        assert_eq!(fs::read(journal).unwrap(), corrupt);
     }
 
     #[test]
