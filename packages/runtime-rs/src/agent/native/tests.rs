@@ -2442,10 +2442,18 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         }
         agent.prompt("Say done.".into(), vec![]).await.unwrap();
         let mut observed_prepared_context = false;
+        let mut turn_starts = 0;
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 match events.recv().await.unwrap() {
                     FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::TurnStarted => turn_starts += 1,
+                    FromAgent::ResponseStart { .. } => {
+                        assert_eq!(
+                            turn_starts, 1,
+                            "turn attribution must precede its responses"
+                        );
+                    }
                     FromAgent::RequestContextPrepared { .. } => {
                         assert!(agent.runtime_audit_snapshot().request_context.is_some());
                         observed_prepared_context = true;
@@ -2460,6 +2468,7 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         .await
         .unwrap();
         assert!(observed_prepared_context);
+        assert_eq!(turn_starts, 1);
         let snapshot = agent.runtime_audit_snapshot();
         let topology = snapshot
             .request_cache
@@ -7337,6 +7346,10 @@ async fn calibration_is_bound_to_each_completed_primary_request() {
     server.await.unwrap();
     assert_eq!(observations.len(), 2);
     assert_ne!(observations[0].request_id, observations[1].request_id);
+    assert!(
+        observations[1].estimated_input_tokens > observations[0].estimated_input_tokens,
+        "accounting must come from each prepared history, not a stale earlier request"
+    );
     for observation in observations {
         assert_eq!(observation.observed_input_tokens, 360);
         assert_eq!(observation.generation, 1);

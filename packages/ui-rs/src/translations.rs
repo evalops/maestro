@@ -79,6 +79,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\n  Evidence: {0}",
+        [
+            "\n  Evidencia: {0}",
+            "\n  Éléments justificatifs : {0}",
+            "\n  Belege: {0}",
+            "\n  根拠: {0}",
+            "\n  근거: {0}",
+            "\n  依据： {0}",
+        ],
+    ),
+    (
+        "\n### Components\n\n",
+        [
+            "\n### Componentes\n\n",
+            "\n### Composants\n\n",
+            "\n### Komponenten\n\n",
+            "\n### 構成要素\n\n",
+            "\n### 구성 요소\n\n",
+            "\n### 组件\n\n",
+        ],
+    ),
+    (
         "\n*(output truncated at {0}KB)*\n",
         [
             "\n*(out truncated at {0}KB)*\n",
@@ -90,6 +112,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\n**Block reason:** {0}\n",
+        [
+            "\n**Motivo del bloqueo:** {0}\n",
+            "\n**Motif du blocage :** {0}\n",
+            "\n**Blockierungsgrund:** {0}\n",
+            "\n**ブロックの理由:** {0}\n",
+            "\n**차단 이유:** {0}\n",
+            "\n**受阻原因：** {0}\n",
+        ],
+    ),
+    (
         "\n**Host:** sandbox unavailable ({0})\n",
         [
             "\n**Host:** sandbox no disponible ({0})\n",
@@ -98,6 +131,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\n**ホスト:** サンドボックス利用不可 ({0})\n",
             "\n**호스트:** 샌드박스 사용 불가 ({0})\n",
             "\n** 住房:** 沙盒没有({0}) (中文(中国大陆)\n",
+        ],
+    ),
+    (
+        "\n**Note:** {0}\n",
+        [
+            "\n**Nota:** {0}\n",
+            "\n**Note :** {0}\n",
+            "\n**Hinweis:** {0}\n",
+            "\n**注記:** {0}\n",
+            "\n**참고:** {0}\n",
+            "\n**备注：** {0}\n",
         ],
     ),
     (
@@ -134,6 +178,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\n**Success criteria:** {0}\n",
+        [
+            "\n**Criterios de éxito:** {0}\n",
+            "\n**Critères de réussite :** {0}\n",
+            "\n**Erfolgskriterien:** {0}\n",
+            "\n**成功条件:** {0}\n",
+            "\n**성공 기준:** {0}\n",
+            "\n**成功标准：** {0}\n",
+        ],
+    ),
+    (
+        "\n**Wall-clock budget:** {0} / {1} seconds\n",
+        [
+            "\n**Límite de tiempo:** {0} / {1} segundos\n",
+            "\n**Limite de temps :** {0} / {1} secondes\n",
+            "\n**Zeitbudget:** {0} / {1} Sekunden\n",
+            "\n**制限時間:** {0} / {1} 秒\n",
+            "\n**시간 한도:** {0} / {1}초\n",
+            "\n**时间限额：** {0} / {1} 秒\n",
+        ],
+    ),
+    (
         "\n**{0} error(s) loading skills:**\n",
         [
             "\n**{0} errores (s) habilidades de carga:**\n",
@@ -153,6 +219,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\n*フォーカス:{0}*\n",
             "\n* 초점: {0}*\n",
             "\n*焦点:{0}*\n",
+        ],
+    ),
+    (
+        "\n*{0} plugin(s) discovered*\n\nUse `/plugins <name>` for details.\n",
+        [
+            "\n*Plugins encontrados: {0}*\n\nUsa `/plugins <name>` para ver detalles.\n",
+            "\n*Plugins trouvés : {0}*\n\nUtilisez `/plugins <name>` pour les détails.\n",
+            "\n*Gefundene Plugins: {0}*\n\nDetails mit `/plugins <name>`.\n",
+            "\n*検出したプラグイン: {0}*\n\n詳細は `/plugins <name>`。\n",
+            "\n*발견된 플러그인: {0}*\n\n자세한 내용은 `/plugins <name>`.\n",
+            "\n*已发现插件：{0}*\n\n使用 `/plugins <name>` 查看详情。\n",
         ],
     ),
     (
@@ -288,6 +365,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\nAgent tools: `get_goal`, `update_goal` (visible only while a goal exists).\nCreate flags: `--max-turns N` (safety), `--token-budget N` (Codex-style budget), `--max-duration-secs N` (wall-clock budget).\n",
+        [
+            "\nComandos: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\nHerramientas del agente: `get_goal`, `update_goal` (visibles solo mientras exista un objetivo).\nOpciones de creación: `--max-turns N` (seguridad), `--token-budget N` (presupuesto estilo Codex), `--max-duration-secs N` (límite de tiempo).\n",
+            "\nCommandes : `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\nOutils de l’agent : `get_goal`, `update_goal` (visibles uniquement tant qu’un objectif existe).\nOptions de création : `--max-turns N` (sécurité), `--token-budget N` (budget de style Codex), `--max-duration-secs N` (limite de temps).\n",
+            "\nBefehle: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\nAgentenwerkzeuge: `get_goal`, `update_goal` (nur sichtbar, solange ein Ziel besteht).\nErstellungsoptionen: `--max-turns N` (Sicherheit), `--token-budget N` (Codex-Budget), `--max-duration-secs N` (Zeitbudget).\n",
+            "\nコマンド: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\nエージェントのツール: `get_goal`、`update_goal`（目標が存在する間のみ表示）。\n作成時のオプション: `--max-turns N`（安全上限）、`--token-budget N`（Codex 方式の予算）、`--max-duration-secs N`（制限時間）。\n",
+            "\n명령: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n에이전트 도구: `get_goal`, `update_goal` (목표가 있을 때만 표시).\n생성 옵션: `--max-turns N` (안전), `--token-budget N` (Codex 방식 예산), `--max-duration-secs N` (시간 한도).\n",
+            "\n命令：`/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n代理工具：`get_goal`、`update_goal`（仅在目标存在时可见）。\n创建选项：`--max-turns N`（安全）、`--token-budget N`（Codex 方式的预算）、`--max-duration-secs N`（时间限额）。\n",
+        ],
+    ),
+    (
         "\nConfiguration initialized successfully!",
         [
             "\nConfiguración inicializada con éxito!",
@@ -318,6 +406,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\n除外回路:{0}。",
             "\n포함 된 스키마 : {0}.",
             "\n被排除在外的计划:{0}.",
+        ],
+    ),
+    (
+        "\nInstall: `/plugins marketplace install <id> [--trust]`\nOr CLI: `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+        [
+            "\nInstalar: `/plugins marketplace install <id> [--trust]`\nO por CLI: `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+            "\nInstaller : `/plugins marketplace install <id> [--trust]`\nOu via la CLI : `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+            "\nInstallieren: `/plugins marketplace install <id> [--trust]`\nOder per CLI: `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+            "\nインストール: `/plugins marketplace install <id> [--trust]`\nCLI から: `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+            "\n설치: `/plugins marketplace install <id> [--trust]`\n또는 CLI: `maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
+            "\n安装：`/plugins marketplace install <id> [--trust]`\n或通过 CLI：`maestro plugins marketplace list` / `maestro plugins install <url> --trust`\n",
         ],
     ),
     (
@@ -376,6 +475,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\nNo entries match the current workspace or session.\n",
+        [
+            "\nNinguna entrada coincide con el espacio de trabajo o sesión actual.\n",
+            "\nAucune entrée ne correspond à l’espace de travail ou à la session actuelle.\n",
+            "\nKeine Einträge passen zum aktuellen Arbeitsbereich oder zur Sitzung.\n",
+            "\n現在のワークスペースまたはセッションに一致する項目はありません。\n",
+            "\n현재 작업 공간 또는 세션에 일치하는 항목이 없습니다.\n",
+            "\n没有与当前工作区或会话匹配的条目。\n",
+        ],
+    ),
+    (
+        "\nNo pending messages.\n",
+        [
+            "\nNo hay mensajes pendientes.\n",
+            "\nAucun message en attente.\n",
+            "\nKeine ausstehenden Nachrichten.\n",
+            "\n保留中のメッセージはありません。\n",
+            "\n대기 중인 메시지가 없습니다.\n",
+            "\n没有待处理消息。\n",
+        ],
+    ),
+    (
         "\nNo queued prompts.\n",
         [
             "\nSin avisos.\n",
@@ -387,6 +508,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\nNo variables. Use `/rlm set <name> <value>`.\n",
+        [
+            "\nNo hay variables. Usa `/rlm set <name> <value>`.\n",
+            "\nAucune variable. Utilisez `/rlm set <name> <value>`.\n",
+            "\nKeine Variablen. Verwenden Sie `/rlm set <name> <value>`.\n",
+            "\n変数はありません。`/rlm set <name> <value>` を使用してください。\n",
+            "\n변수가 없습니다. `/rlm set <name> <value>`를 사용하세요.\n",
+            "\n没有变量。请使用 `/rlm set <name> <value>`。\n",
+        ],
+    ),
+    (
         "\nOpenAI credentials saved successfully.",
         [
             "\nOpenAI credenciales guardadas con éxito.",
@@ -395,6 +527,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\nOpenAI認証が正常に保存されました。",
             "\nOpenAI 자격은 성공적으로 저장했습니다.",
             "\nOpenAI证书成功保存.",
+        ],
+    ),
+    (
+        "\nPending messages:\n",
+        [
+            "\nMensajes pendientes:\n",
+            "\nMessages en attente :\n",
+            "\nAusstehende Nachrichten:\n",
+            "\n保留中のメッセージ:\n",
+            "\n대기 중인 메시지:\n",
+            "\n待处理消息：\n",
         ],
     ),
     (
@@ -417,6 +560,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\n結果: publish/install 契約が渡されました。",
             "\n결과 : 출판/install 계약이 통과했습니다.",
             "\n结果:公布/install合同通过。",
+        ],
+    ),
+    (
+        "\nRun the action shown under each message.\n",
+        [
+            "\nEjecuta la acción que aparece debajo de cada mensaje.\n",
+            "\nExécutez l’action indiquée sous chaque message.\n",
+            "\nFühren Sie die Aktion unter jeder Nachricht aus.\n",
+            "\n各メッセージの下にある操作を実行してください。\n",
+            "\n각 메시지 아래에 표시된 작업을 실행하세요.\n",
+            "\n请执行每条消息下方显示的操作。\n",
         ],
     ),
     (
@@ -508,6 +662,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "\nUse `/harness add <scope> <kind> <name> <content>` to add a record.\n",
+        [
+            "\nUsa `/harness add <scope> <kind> <name> <content>` para añadir un registro.\n",
+            "\nUtilisez `/harness add <scope> <kind> <name> <content>` pour ajouter une entrée.\n",
+            "\nFügen Sie mit `/harness add <scope> <kind> <name> <content>` einen Eintrag hinzu.\n",
+            "\n`/harness add <scope> <kind> <name> <content>` でレコードを追加できます。\n",
+            "\n`/harness add <scope> <kind> <name> <content>`로 레코드를 추가하세요.\n",
+            "\n使用 `/harness add <scope> <kind> <name> <content>` 添加记录。\n",
+        ],
+    ),
+    (
+        "\nUse `/mailbox read <id>` and `/mailbox ack <id>` to process a message.\n",
+        [
+            "\nUsa `/mailbox read <id>` y `/mailbox ack <id>` para procesar un mensaje.\n",
+            "\nUtilisez `/mailbox read <id>` et `/mailbox ack <id>` pour traiter un message.\n",
+            "\nVerarbeiten Sie Nachrichten mit `/mailbox read <id>` und `/mailbox ack <id>`.\n",
+            "\n`/mailbox read <id>` と `/mailbox ack <id>` でメッセージを処理できます。\n",
+            "\n`/mailbox read <id>`와 `/mailbox ack <id>`로 메시지를 처리하세요.\n",
+            "\n使用 `/mailbox read <id>` 和 `/mailbox ack <id>` 处理消息。\n",
+        ],
+    ),
+    (
+        "\nUse `/refine apply <id>` or `/refine reject <id> [note]`.\n",
+        [
+            "\nUsa `/refine apply <id>` o `/refine reject <id> [note]`.\n",
+            "\nUtilisez `/refine apply <id>` ou `/refine reject <id> [note]`.\n",
+            "\nVerwenden Sie `/refine apply <id>` oder `/refine reject <id> [note]`.\n",
+            "\n`/refine apply <id>` または `/refine reject <id> [note]` を使用してください。\n",
+            "\n`/refine apply <id>` 또는 `/refine reject <id> [note]`를 사용하세요.\n",
+            "\n使用 `/refine apply <id>` 或 `/refine reject <id> [note]`。\n",
+        ],
+    ),
+    (
+        "\nUse `/rlm render <text>` for `{{name}}` substitution.\n",
+        [
+            "\nUsa `/rlm render <text>` para sustituir `{{name}}`.\n",
+            "\nUtilisez `/rlm render <text>` pour remplacer `{{name}}`.\n",
+            "\nErsetzen Sie `{{name}}` mit `/rlm render <text>`.\n",
+            "\n`/rlm render <text>` で `{{name}}` を置換できます。\n",
+            "\n`/rlm render <text>`로 `{{name}}`를 치환하세요.\n",
+            "\n使用 `/rlm render <text>` 替换 `{{name}}`。\n",
+        ],
+    ),
+    (
         "\nUsing environment variable: {0}",
         [
             "\nVariable de entorno: {0}",
@@ -527,6 +725,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "\nプリセットの使用: {0}",
             "\n미리 설치 사용하기: {0}",
             "\n使用预设:{0}",
+        ],
+    ),
+    (
+        "\nVariables:\n",
+        [
+            "\nVariables:\n",
+            "\nVariables :\n",
+            "\nVariablen:\n",
+            "\n変数:\n",
+            "\n변수:\n",
+            "\n变量：\n",
+        ],
+    ),
+    (
+        "\nVisible entries:\n",
+        [
+            "\nEntradas visibles:\n",
+            "\nEntrées visibles :\n",
+            "\nSichtbare Einträge:\n",
+            "\n表示中の項目:\n",
+            "\n표시된 항목:\n",
+            "\n可见条目：\n",
         ],
     ),
     (
@@ -827,6 +1047,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "  Action: `/mailbox inspect {0}`\n",
+        [
+            "  Acción: `/mailbox inspect {0}`\n",
+            "  Action : `/mailbox inspect {0}`\n",
+            "  Aktion: `/mailbox inspect {0}`\n",
+            "  操作: `/mailbox inspect {0}`\n",
+            "  작업: `/mailbox inspect {0}`\n",
+            "  操作： `/mailbox inspect {0}`\n",
+        ],
+    ),
+    (
+        "  Actions: `/mailbox read {0}`, `/mailbox ack {1}`\n",
+        [
+            "  Acciones: `/mailbox read {0}`, `/mailbox ack {1}`\n",
+            "  Actions : `/mailbox read {0}`, `/mailbox ack {1}`\n",
+            "  Aktionen: `/mailbox read {0}`, `/mailbox ack {1}`\n",
+            "  操作: `/mailbox read {0}`, `/mailbox ack {1}`\n",
+            "  작업: `/mailbox read {0}`, `/mailbox ack {1}`\n",
+            "  操作： `/mailbox read {0}`, `/mailbox ack {1}`\n",
+        ],
+    ),
+    (
+        "  Applied entry: `{0}`\n",
+        [
+            "  Entrada aplicada: `{0}`\n",
+            "  Entrée appliquée : `{0}`\n",
+            "  Übernommener Eintrag: `{0}`\n",
+            "  適用した項目: `{0}`\n",
+            "  적용된 항목: `{0}`\n",
+            "  已应用条目： `{0}`\n",
+        ],
+    ),
+    (
+        "  Approval: `/mailbox approve {0}`\n",
+        [
+            "  Aprobación: `/mailbox approve {0}`\n",
+            "  Approbation : `/mailbox approve {0}`\n",
+            "  Freigabe: `/mailbox approve {0}`\n",
+            "  承認: `/mailbox approve {0}`\n",
+            "  승인: `/mailbox approve {0}`\n",
+            "  审批： `/mailbox approve {0}`\n",
+        ],
+    ),
+    (
         "  Binary:     maestro {0}",
         [
             "  Binario:     maestro {0}",
@@ -1058,6 +1322,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "  Review note: {0}\n",
+        [
+            "  Nota de revisión: {0}\n",
+            "  Note de révision : {0}\n",
+            "  Prüfvermerk: {0}\n",
+            "  レビューの注記: {0}\n",
+            "  검토 참고: {0}\n",
+            "  审核备注： {0}\n",
+        ],
+    ),
+    (
         "  Runtime:    native TUI hooks (Lua/WASM/native + optional Node bridge)",
         [
             "  Ejecución:    hooks de TUI nativos (Lua/WASM/native + puente Node opcional)",
@@ -1179,6 +1454,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "  default",
+        [
+            "  predeterminado",
+            "  par défaut",
+            "  Standard",
+            "  既定",
+            "  기본값",
+            "  默认",
+        ],
+    ),
+    (
         "  deixic-code memory [status]\n  deixic-code memory remember <fact>\n  deixic-code memory recall <query>\n  deixic-code memory capabilities\n  deixic-code memory session <id>\n  deixic-code memory audit <id> [limit]\n  deixic-code memory export <id>\n  deixic-code memory watch [id] [intervalMs]\n\nAccount memory uses the exact stored organization/workspace registration. Remember is always explicit; recall returns at most three memories.",
         [
             "  deixic-code memory [status]\n  deixic-code memory remember <fact>\n  deixic-code memory recall <query>\n  deixic-code memory capabilities\n  deixic-code memory session <id>\n  deixic-code memory audit <id> [limit]\n  deixic-code memory export <id>\n  deixic-code memory watch [id] [intervalMs]\n\nLa memoria de la cuenta utiliza la organización almacenada exacta/workspace registro. Recuerde siempre es explícito; el recuerdo vuelve a la mayoría de los tres recuerdos.",
@@ -1209,6 +1495,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "  ヘッドレスゲートウェイ:検証済み",
             "  헤드리스 게이트웨이: 검증",
             "  无头网关:已校验",
+        ],
+    ),
+    (
+        "  homepage: {0}\n",
+        [
+            "  página web: {0}\n",
+            "  site web : {0}\n",
+            "  Webseite: {0}\n",
+            "  ホームページ: {0}\n",
+            "  홈페이지: {0}\n",
+            "  主页： {0}\n",
         ],
     ),
     (
@@ -1300,6 +1597,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "  {0} msgs",
+        [
+            "  {0} mensajes",
+            "  {0} messages",
+            "  {0} Nachrichten",
+            "  {0} 件のメッセージ",
+            "  메시지 {0}개",
+            "  {0} 条消息",
+        ],
+    ),
+    (
         "  {0} — models: {1}",
         [
             "  {0} — modelos: {1}",
@@ -1322,6 +1630,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "  ·  session {0}",
+        [
+            "  ·  sesión {0}",
+            "  ·  session {0}",
+            "  ·  Sitzung {0}",
+            "  ·  セッション {0}",
+            "  ·  세션 {0}",
+            "  ·  会话 {0}",
+        ],
+    ),
+    (
         "  ·  {0} queued",
         [
             "  ·  {0} queued",
@@ -1330,6 +1649,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "  ·  {0} キューイング",
             "  ·  {0} 누비질",
             "  ·  排队{0}",
+        ],
+    ),
+    (
+        "  ·  {0} tok",
+        [
+            "  ·  {0} tokens",
+            "  ·  {0} jetons",
+            "  ·  {0} Token",
+            "  ·  {0} トークン",
+            "  ·  토큰 {0}개",
+            "  ·  {0} 个令牌",
         ],
     ),
     (
@@ -1399,6 +1729,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        " (shell)",
+        [
+            " (shell)",
+            " (shell)",
+            " (Shell)",
+            " (シェル)",
+            " (셸)",
+            " (Shell)",
+        ],
+    ),
+    (
         " ({0} chars) ",
         [
             " ({0} chars) ",
@@ -1407,6 +1748,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             " ({0} chars) ",
             " ({0} 숯) ",
             " ({0}个字符) ",
+        ],
+    ),
+    (
+        " 1Password · Add capability ",
+        [
+            " 1Password · Añadir permiso ",
+            " 1Password · Ajouter une autorisation ",
+            " 1Password · Berechtigung hinzufügen ",
+            " 1Password · 権限を追加 ",
+            " 1Password · 권한 추가 ",
+            " 1Password · 添加权限 ",
         ],
     ),
     (
@@ -1597,6 +1949,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        " via ",
+        [
+            " mediante ",
+            " via ",
+            " über ",
+            " 経由 ",
+            " 경유 ",
+            " 通过 ",
+        ],
+    ),
+    (
         " with Computer package `{0}`",
         [
             " con paquete informático `{0}`",
@@ -1638,6 +2001,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             " {0} 延長思考: {1} ",
             " {0} 장시간 사고: {1} ",
             " {0} 扩展思维:{1} ",
+        ],
+    ),
+    (
+        " · **installed**",
+        [
+            " · **instalado**",
+            " · **installé**",
+            " · **installiert**",
+            " · **インストール済み**",
+            " · **설치됨**",
+            " · **已安装**",
         ],
     ),
     (
@@ -1693,6 +2067,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             " ↑/↓ 選択・Enter 実行・Tab 完了 ",
             " ↑/↓ С · Enter 실행 · Tab 완료 ",
             " ++/++ 选择 + Enter 运行 ・ Tab完成 ",
+        ],
+    ),
+    (
+        "! Attention  ",
+        [
+            "! Atención  ",
+            "! Attention  ",
+            "! Achtung  ",
+            "! 注意  ",
+            "! 주의  ",
+            "! 注意  ",
         ],
     ),
     (
@@ -1850,6 +2235,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "## Goal {0}\n\n**Status:** {1}\n**Auto-continue:** {2} ({3} turns; safety max {4})\n{5}**Completion:** worker calls `update_goal` complete|blocked (same model; Codex-style)\n\n{6}\n",
+        [
+            "## Objetivo {0}\n\n**Estado:** {1}\n**Continuación automática:** {2} ({3} turnos; límite de seguridad {4})\n{5}**Finalización:** el agente llama a `update_goal` con complete|blocked (mismo modelo; estilo Codex)\n\n{6}\n",
+            "## Objectif {0}\n\n**État :** {1}\n**Poursuite automatique :** {2} ({3} tours ; limite de sécurité {4})\n{5}**Fin :** l’agent appelle `update_goal` avec complete|blocked (même modèle ; style Codex)\n\n{6}\n",
+            "## Ziel {0}\n\n**Status:** {1}\n**Automatische Fortsetzung:** {2} ({3} Runden; Sicherheitslimit {4})\n{5}**Abschluss:** Agent ruft `update_goal` mit complete|blocked auf (gleiches Modell; Codex-Stil)\n\n{6}\n",
+            "## 目標 {0}\n\n**状態:** {1}\n**自動続行:** {2}（{3} ターン、安全上限 {4}）\n{5}**完了:** エージェントが `update_goal` を complete|blocked で呼び出します（同じモデル、Codex 方式）\n\n{6}\n",
+            "## 목표 {0}\n\n**상태:** {1}\n**자동 계속:** {2} ({3}턴, 안전 한도 {4})\n{5}**완료:** 에이전트가 complete|blocked로 `update_goal`을 호출합니다 (동일 모델, Codex 방식)\n\n{6}\n",
+            "## 目标 {0}\n\n**状态：** {1}\n**自动继续：** {2}（{3} 轮；安全上限 {4}）\n{5}**完成：** 代理调用 `update_goal` 并指定 complete|blocked（同一模型；Codex 方式）\n\n{6}\n",
+        ],
+    ),
+    (
         "## Handoff response from {0}\n\n{1}\n\nTask: `{2}`",
         [
             "## Handoff response from {0}\n\n{1}\n\nTareas: `{2}`",
@@ -1858,6 +2254,39 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "##{0}からのハンドオフ応答\n\n{1}\n\nタスク: `{2}`",
             "## {0}에서 Handoff 응답\n\n{1}\n\n작업: `{2}`",
             "□ {0}的答复\n\n{1}\n\n任务:`{2}`",
+        ],
+    ),
+    (
+        "## Harness\n\nPath: `{0}`\nRevision: {1}\nEntries: {2}\nProposals: {3}\nHistory: {4}\nSnapshots: {5}\n",
+        [
+            "## Entorno de instrucciones\n\nRuta: `{0}`\nRevisión: {1}\nEntradas: {2}\nPropuestas: {3}\nHistorial: {4}\nInstantáneas: {5}\n",
+            "## Cadre d’instructions\n\nChemin : `{0}`\nRévision : {1}\nEntrées : {2}\nPropositions : {3}\nHistorique : {4}\nInstantanés : {5}\n",
+            "## Anweisungsrahmen\n\nPfad: `{0}`\nRevision: {1}\nEinträge: {2}\nVorschläge: {3}\nVerlauf: {4}\nMomentaufnahmen: {5}\n",
+            "## 指示環境\n\nパス: `{0}`\nリビジョン: {1}\n項目: {2}\n提案: {3}\n履歴: {4}\nスナップショット: {5}\n",
+            "## 지침 환경\n\n경로: `{0}`\n리비전: {1}\n항목: {2}\n제안: {3}\n기록: {4}\n스냅샷: {5}\n",
+            "## 指令环境\n\n路径： `{0}`\n修订： {1}\n条目： {2}\n提案： {3}\n历史： {4}\n快照： {5}\n",
+        ],
+    ),
+    (
+        "## Harness entries\n\n",
+        [
+            "## Entradas del entorno de instrucciones\n\n",
+            "## Entrées du cadre d’instructions\n\n",
+            "## Einträge im Anweisungsrahmen\n\n",
+            "## 指示環境の項目\n\n",
+            "## 지침 환경 항목\n\n",
+            "## 指令环境条目\n\n",
+        ],
+    ),
+    (
+        "## Harness refinement proposals\n\n",
+        [
+            "## Propuestas de mejora de instrucciones\n\n",
+            "## Propositions d’amélioration des instructions\n\n",
+            "## Verbesserungsvorschläge für Anweisungen\n\n",
+            "## 指示の改善案\n\n",
+            "## 지침 개선 제안\n\n",
+            "## 指令优化提案\n\n",
         ],
     ),
     (
@@ -1891,6 +2320,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "## ホック システム\n\n",
             "## 걸이 체계\n\n",
             "□虎克系统\n\n",
+        ],
+    ),
+    (
+        "## Mailbox\n\nPath: `{0}`\nRevision: {1}\nPending: {2}\n",
+        [
+            "## Buzón\n\nRuta: `{0}`\nRevisión: {1}\nPendientes: {2}\n",
+            "## Boîte de réception\n\nChemin : `{0}`\nRévision : {1}\nEn attente : {2}\n",
+            "## Postfach\n\nPfad: `{0}`\nRevision: {1}\nAusstehend: {2}\n",
+            "## メールボックス\n\nパス: `{0}`\nリビジョン: {1}\n保留中: {2}\n",
+            "## 수신함\n\n경로: `{0}`\n리비전: {1}\n대기 중: {2}\n",
+            "## 收件箱\n\n路径： `{0}`\n修订： {1}\n待处理： {2}\n",
         ],
     ),
     (
@@ -1938,6 +2378,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "## Plugin marketplace\n\n",
+        [
+            "## Catálogo de plugins\n\n",
+            "## Catalogue de plugins\n\n",
+            "## Plugin-Katalog\n\n",
+            "## プラグインカタログ\n\n",
+            "## 플러그인 카탈로그\n\n",
+            "## 插件市场\n\n",
+        ],
+    ),
+    (
+        "## Plugin: {0}\n\n",
+        [
+            "## Plugin: {0}\n\n",
+            "## Plugin : {0}\n\n",
+            "## Plugin: {0}\n\n",
+            "## プラグイン: {0}\n\n",
+            "## 플러그인: {0}\n\n",
+            "## 插件： {0}\n\n",
+        ],
+    ),
+    (
+        "## Plugins\n",
+        [
+            "## Plugins\n",
+            "## Plugins\n",
+            "## Plugins\n",
+            "## プラグイン\n",
+            "## 플러그인\n",
+            "## 插件\n",
+        ],
+    ),
+    (
+        "## Plugins\n\n",
+        [
+            "## Plugins\n\n",
+            "## Plugins\n\n",
+            "## Plugins\n\n",
+            "## プラグイン\n\n",
+            "## 플러그인\n\n",
+            "## 插件\n\n",
+        ],
+    ),
+    (
         "## Prompt Audit\n\n- Schema: `evalops.maestro.prompt_audit.v{0}`\n- Model: `{1}`\n- Prompt: {2} bytes, {3} tokens ({4})\n- Redacted prompt SHA-256: `{5}`\n- Registered tools: {6} (`{7}`; {8} surface; excludes {9})\n- Active skills: {10}\n\n### Fragments\n",
         [
             "## Prompt Audit\n\n- Esquema: `evalops.maestro.prompt_audit.v{0}`\n- Modelo: `{1}`\n- Prompt: {2} bytes, {3} tokens ({4})\n- Redacted prompt SHA-256: `{5}`\n- Herramientas registradas: {6} (`{7}`; {8} superficie; excluye {9})\n- Destrezas activas: {10}\n\n## Fragmentos\n",
@@ -1957,6 +2441,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "## キューに追加\n\n",
             "## 대기열에 추가\n\n",
             "## 加入队列\n\n",
+        ],
+    ),
+    (
+        "## RLM context\n\nPath: `{0}`\nRevision: {1}\nVariables: {2}\n",
+        [
+            "## Contexto RLM\n\nRuta: `{0}`\nRevisión: {1}\nVariables: {2}\n",
+            "## Contexte RLM\n\nChemin : `{0}`\nRévision : {1}\nVariables : {2}\n",
+            "## RLM-Kontext\n\nPfad: `{0}`\nRevision: {1}\nVariablen: {2}\n",
+            "## RLM コンテキスト\n\nパス: `{0}`\nリビジョン: {1}\n変数: {2}\n",
+            "## RLM 컨텍스트\n\n경로: `{0}`\n리비전: {1}\n변수: {2}\n",
+            "## RLM 上下文\n\n路径： `{0}`\n修订： {1}\n变量： {2}\n",
         ],
     ),
     (
@@ -2114,6 +2609,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "(in memory)",
+        [
+            "(en memoria)",
+            "(en mémoire)",
+            "(im Speicher)",
+            "（メモリ内）",
+            "(메모리 내)",
+            "（内存中）",
+        ],
+    ),
+    (
         "(not a repo)",
         [
             "(no un repo)",
@@ -2177,6 +2683,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "**コンテキストウィンドウ:** {0}",
             "**컨텍스트 창:** {0}",
             "**上下文窗口:** {0}",
+        ],
+    ),
+    (
+        "**Description:** {0}\n",
+        [
+            "**Descripción:** {0}\n",
+            "**Description:** {0}\n",
+            "**Beschreibung:** {0}\n",
+            "**説明:** {0}\n",
+            "**설명:** {0}\n",
+            "**描述:** {0}\n",
         ],
     ),
     (
@@ -2290,6 +2807,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "**Manifest:** _(convention paths)_\n",
+        [
+            "**Manifiesto:** _(rutas convencionales)_\n",
+            "**Manifeste:** _(chemins conventionnels)_\n",
+            "**Manifest:** _(Konventionspfade)_\n",
+            "**マニフェスト:** _（規約に基づくパス）_\n",
+            "**매니페스트:** _(규약 경로)_\n",
+            "**清单:** _（约定路径）_\n",
+        ],
+    ),
+    (
+        "**Manifest:** `{0}`\n",
+        [
+            "**Manifiesto:** `{0}`\n",
+            "**Manifeste:** `{0}`\n",
+            "**Manifest:** `{0}`\n",
+            "**マニフェスト:** `{0}`\n",
+            "**매니페스트:** `{0}`\n",
+            "**清单:** `{0}`\n",
+        ],
+    ),
+    (
         "**Model:** {0}",
         [
             "**Modelo:** {0}",
@@ -2342,6 +2881,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "**次のステップ:** {0}は最大のカテゴリです({1}%)。 {2}{3}",
             "**다음 단계:** {0} 가장 큰 범주입니다 ({1}%). {2}{3}",
             "** 下一步:** {0} 最大类别({1}%). {2}{3}",
+        ],
+    ),
+    (
+        "**Origin:** {0}\n",
+        [
+            "**Origen:** {0}\n",
+            "**Origine:** {0}\n",
+            "**Herkunft:** {0}\n",
+            "**取得元:** {0}\n",
+            "**출처:** {0}\n",
+            "**来源:** {0}\n",
+        ],
+    ),
+    (
+        "**Path:** `{0}`\n",
+        [
+            "**Ruta:** `{0}`\n",
+            "**Chemin:** `{0}`\n",
+            "**Pfad:** `{0}`\n",
+            "**パス:** `{0}`\n",
+            "**경로:** `{0}`\n",
+            "**路径:** `{0}`\n",
         ],
     ),
     (
@@ -2499,6 +3060,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "**Tokens used:** {0}\n",
+        [
+            "**Tokens usados:** {0}\n",
+            "**Jetons utilisés:** {0}\n",
+            "**Verbrauchte Token:** {0}\n",
+            "**使用済みトークン:** {0}\n",
+            "**사용한 토큰:** {0}\n",
+            "**已使用令牌:** {0}\n",
+        ],
+    ),
+    (
+        "**Tokens:** {0} / {1}\n",
+        [
+            "**Tokens:** {0} / {1}\n",
+            "**Jetons:** {0} / {1}\n",
+            "**Token:** {0} / {1}\n",
+            "**トークン:** {0} / {1}\n",
+            "**토큰:** {0} / {1}\n",
+            "**令牌:** {0} / {1}\n",
+        ],
+    ),
+    (
         "**Tools:** {0}\n\n",
         [
             "**Herramientas:** {0}\n\n",
@@ -2507,6 +3090,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "**ツール:** {0}\n\n",
             "**도구:** {0}\n\n",
             "**工具:** {0}\n\n",
+        ],
+    ),
+    (
+        "**Total:** {0} (estimated)",
+        [
+            "**Total:** {0} (estimado)",
+            "**Total :** {0} (estimation)",
+            "**Gesamt:** {0} (geschätzt)",
+            "**合計:** {0}（推定）",
+            "**합계:** {0} (추정)",
+            "**总计：** {0}（估算）",
+        ],
+    ),
+    (
+        "**Total:** {0} of {1} ({2}%)",
+        [
+            "**Total:** {0} de {1} ({2}%)",
+            "**Total :** {0} sur {1} ({2}%)",
+            "**Gesamt:** {0} von {1} ({2}%)",
+            "**合計:** {0} / {1}（{2}%）",
+            "**합계:** {0} / {1} ({2}%)",
+            "**总计：** {0} / {1}（{2}%）",
+        ],
+    ),
+    (
+        "**Version:** {0}\n",
+        [
+            "**Versión:** {0}\n",
+            "**Version:** {0}\n",
+            "**Version:** {0}\n",
+            "**バージョン:** {0}\n",
+            "**버전:** {0}\n",
+            "**版本:** {0}\n",
+        ],
+    ),
+    (
+        "**Waterfall:** {0}",
+        [
+            "**Distribución:** {0}",
+            "**Répartition :** {0}",
+            "**Aufteilung:** {0}",
+            "**内訳:** {0}",
+            "**분포:** {0}",
+            "**分布：** {0}",
         ],
     ),
     (
@@ -2576,6 +3203,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "*No plugins found*\n\n",
+        [
+            "*No se encontraron plugins*\n\n",
+            "*Aucun plugin trouvé*\n\n",
+            "*Keine Plugins gefunden*\n\n",
+            "*プラグインが見つかりません*\n\n",
+            "*플러그인을 찾을 수 없습니다*\n\n",
+            "*未找到插件*\n\n",
+        ],
+    ),
+    (
         "*No skills found*\n\n",
         [
             "*No se han encontrado habilidades*\n\n",
@@ -2620,6 +3258,193 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        ", +{0} more",
+        [
+            ", y {0} más",
+            ", et {0} de plus",
+            ", +{0} weitere",
+            "、ほか {0} 個",
+            ", 외 {0}개",
+            "，另有 {0} 个",
+        ],
+    ),
+    (
+        "- **Remaining:** {0}",
+        [
+            "- **Restante:** {0}",
+            "- **Restant :** {0}",
+            "- **Verbleibend:** {0}",
+            "- **残り:** {0}",
+            "- **남은 용량:** {0}",
+            "- **剩余：** {0}",
+        ],
+    ),
+    (
+        "- **Response reserve:** {0}",
+        [
+            "- **Reserva para respuesta:** {0}",
+            "- **Réserve pour la réponse :** {0}",
+            "- **Antwortreserve:** {0}",
+            "- **応答用の予約枠:** {0}",
+            "- **응답 예약 용량:** {0}",
+            "- **响应预留：** {0}",
+        ],
+    ),
+    (
+        "- **agents:** _(none)_\n",
+        [
+            "- **agentes:** _(ninguno)_\n",
+            "- **agents:** _(aucun)_\n",
+            "- **Agenten:** _(keine)_\n",
+            "- **エージェント:** _（なし）_\n",
+            "- **에이전트:** _(없음)_\n",
+            "- **代理:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **agents:** `{0}`\n",
+        [
+            "- **agentes:** `{0}`\n",
+            "- **agents:** `{0}`\n",
+            "- **Agenten:** `{0}`\n",
+            "- **エージェント:** `{0}`\n",
+            "- **에이전트:** `{0}`\n",
+            "- **代理:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **commands:** _(none)_\n",
+        [
+            "- **comandos:** _(ninguno)_\n",
+            "- **commandes:** _(aucun)_\n",
+            "- **Befehle:** _(keine)_\n",
+            "- **コマンド:** _（なし）_\n",
+            "- **명령:** _(없음)_\n",
+            "- **命令:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **commands:** `{0}`\n",
+        [
+            "- **comandos:** `{0}`\n",
+            "- **commandes:** `{0}`\n",
+            "- **Befehle:** `{0}`\n",
+            "- **コマンド:** `{0}`\n",
+            "- **명령:** `{0}`\n",
+            "- **命令:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **connections:** _(none)_\n",
+        [
+            "- **conexiones:** _(ninguno)_\n",
+            "- **connexions:** _(aucun)_\n",
+            "- **Verbindungen:** _(keine)_\n",
+            "- **接続:** _（なし）_\n",
+            "- **연결:** _(없음)_\n",
+            "- **连接:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **connections:** `{0}`\n",
+        [
+            "- **conexiones:** `{0}`\n",
+            "- **connexions:** `{0}`\n",
+            "- **Verbindungen:** `{0}`\n",
+            "- **接続:** `{0}`\n",
+            "- **연결:** `{0}`\n",
+            "- **连接:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **hooks:** _(none)_\n",
+        [
+            "- **hooks:** _(ninguno)_\n",
+            "- **hooks:** _(aucun)_\n",
+            "- **Hooks:** _(keine)_\n",
+            "- **フック:** _（なし）_\n",
+            "- **훅:** _(없음)_\n",
+            "- **钩子:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **hooks:** `{0}`\n",
+        [
+            "- **hooks:** `{0}`\n",
+            "- **hooks:** `{0}`\n",
+            "- **Hooks:** `{0}`\n",
+            "- **フック:** `{0}`\n",
+            "- **훅:** `{0}`\n",
+            "- **钩子:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **mcp:** _(none)_\n",
+        [
+            "- **MCP:** _(ninguno)_\n",
+            "- **MCP:** _(aucun)_\n",
+            "- **MCP:** _(keine)_\n",
+            "- **MCP:** _（なし）_\n",
+            "- **MCP:** _(없음)_\n",
+            "- **MCP:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **mcp:** `{0}`\n",
+        [
+            "- **MCP:** `{0}`\n",
+            "- **MCP:** `{0}`\n",
+            "- **MCP:** `{0}`\n",
+            "- **MCP:** `{0}`\n",
+            "- **MCP:** `{0}`\n",
+            "- **MCP:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **skills:** _(none)_\n",
+        [
+            "- **habilidades:** _(ninguno)_\n",
+            "- **compétences:** _(aucun)_\n",
+            "- **Skills:** _(keine)_\n",
+            "- **スキル:** _（なし）_\n",
+            "- **스킬:** _(없음)_\n",
+            "- **技能:** _（无）_\n",
+        ],
+    ),
+    (
+        "- **skills:** `{0}`\n",
+        [
+            "- **habilidades:** `{0}`\n",
+            "- **compétences:** `{0}`\n",
+            "- **Skills:** `{0}`\n",
+            "- **スキル:** `{0}`\n",
+            "- **스킬:** `{0}`\n",
+            "- **技能:** `{0}`\n",
+        ],
+    ),
+    (
+        "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  source: `{5}`\n",
+        [
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  origen: `{5}`\n",
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  source : `{5}`\n",
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  Quelle: `{5}`\n",
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  ソース: `{5}`\n",
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  소스: `{5}`\n",
+            "- **{0}** (`{1}`) — *{2}*{3}\n  {4}\n  来源： `{5}`\n",
+        ],
+    ),
+    (
+        "- **{0}** ({1}) — {2} — `{3}`\n  components: {4}\n",
+        [
+            "- **{0}** ({1}) — {2} — `{3}`\n  componentes: {4}\n",
+            "- **{0}** ({1}) — {2} — `{3}`\n  composants : {4}\n",
+            "- **{0}** ({1}) — {2} — `{3}`\n  Komponenten: {4}\n",
+            "- **{0}** ({1}) — {2} — `{3}`\n  構成要素: {4}\n",
+            "- **{0}** ({1}) — {2} — `{3}`\n  구성 요소: {4}\n",
+            "- **{0}** ({1}) — {2} — `{3}`\n  组件： {4}\n",
+        ],
+    ),
+    (
         "- Runner-effective prompt: revision {0}, `{1}` ({2})\n- Runner-effective tools: {3} (`{4}`)\n\n",
         [
             "- Inmediatamente eficaz en el corredor: revisión {0}, `{1}` ({2})\n- Herramientas eficaces para corredores: {3} (`{4}`)\n\n",
@@ -2628,6 +3453,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "- ランナー効果的なプロンプト:リビジョン{0}、`{1}`({2})\n- ランナー効果的なツール:{3}(`{4}`)\n\n",
             "- 런너 효과 프롬프트: 개정 {0}, `{1}` ({2})\n- 런너 효율적인 도구 : {3} (`{4}`)\n\n",
             "- 运行效率快:修订{0}、`{1}`({2})\n- 径流有效工具:{3}(`{4}`)\n\n",
+        ],
+    ),
+    (
+        "- `.maestro/plugins/<name>/` (project)\n",
+        [
+            "- `.maestro/plugins/<name>/` (proyecto)\n",
+            "- `.maestro/plugins/<name>/` (projet)\n",
+            "- `.maestro/plugins/<name>/` (Projekt)\n",
+            "- `.maestro/plugins/<name>/` （プロジェクト）\n",
+            "- `.maestro/plugins/<name>/` (프로젝트)\n",
+            "- `.maestro/plugins/<name>/` （项目）\n",
+        ],
+    ),
+    (
+        "- `{0}` {1} ({2}) from `{3}` to `{4}`: {5}{6}\n",
+        [
+            "- `{0}` {1} ({2}) de `{3}` para `{4}`: {5}{6}\n",
+            "- `{0}` {1} ({2}) de `{3}` à `{4}` : {5}{6}\n",
+            "- `{0}` {1} ({2}) von `{3}` an `{4}`: {5}{6}\n",
+            "- `{0}` {1}（{2}）送信元 `{3}` 宛先 `{4}`: {5}{6}\n",
+            "- `{0}` {1} ({2}) 보낸 사람 `{3}`, 받는 사람 `{4}`: {5}{6}\n",
+            "- `{0}` {1}（{2}）从 `{3}` 发往 `{4}`：{5}{6}\n",
+        ],
+    ),
+    (
+        "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  Evidence: {6}\n",
+        [
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  Evidencia: {6}\n",
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  Éléments justificatifs : {6}\n",
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  Belege: {6}\n",
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  根拠: {6}\n",
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  근거: {6}\n",
+            "- `{0}` · {1} · {2} · {3} · {4}\n  {5}\n  依据： {6}\n",
+        ],
+    ),
+    (
+        "- `~/.maestro/plugins/<name>/` (user)\n\n",
+        [
+            "- `~/.maestro/plugins/<name>/` (usuario)\n\n",
+            "- `~/.maestro/plugins/<name>/` (utilisateur)\n\n",
+            "- `~/.maestro/plugins/<name>/` (Benutzer)\n\n",
+            "- `~/.maestro/plugins/<name>/` （ユーザー）\n\n",
+            "- `~/.maestro/plugins/<name>/` (사용자)\n\n",
+            "- `~/.maestro/plugins/<name>/` （用户）\n\n",
         ],
     ),
     (
@@ -3038,6 +3907,83 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "1Password capability added. Select it explicitly or set it as the default.",
+        [
+            "Permiso de 1Password añadido. Selecciónalo explícitamente o establécelo como predeterminado.",
+            "Autorisation 1Password ajoutée. Sélectionnez-la explicitement ou définissez-la par défaut.",
+            "1Password-Berechtigung hinzugefügt. Wählen Sie sie ausdrücklich aus oder legen Sie sie als Standard fest.",
+            "1Password の権限を追加しました。明示的に選択するか、既定に設定してください。",
+            "1Password 권한을 추가했습니다. 직접 선택하거나 기본값으로 설정하세요.",
+            "已添加 1Password 权限。请明确选择它或将其设为默认。",
+        ],
+    ),
+    (
+        "1Password capability setup requires an interactive terminal",
+        [
+            "La configuración de permisos de 1Password requiere un terminal interactivo",
+            "La configuration des autorisations 1Password nécessite un terminal interactif",
+            "Zum Einrichten einer 1Password-Berechtigung ist ein interaktives Terminal erforderlich",
+            "1Password の権限設定には対話型ターミナルが必要です",
+            "1Password 권한을 설정하려면 대화형 터미널이 필요합니다",
+            "设置 1Password 权限需要交互式终端",
+        ],
+    ),
+    (
+        "1Password field: {0}",
+        [
+            "Campo de 1Password: {0}",
+            "Champ 1Password : {0}",
+            "1Password-Feld: {0}",
+            "1Password のフィールド: {0}",
+            "1Password 필드: {0}",
+            "1Password 字段：{0}",
+        ],
+    ),
+    (
+        "1Password may ask you to unlock. Custom endpoints are not allowed.",
+        [
+            "1Password puede pedirte que lo desbloquees. No se permiten destinos personalizados.",
+            "1Password peut demander un déverrouillage. Les points de terminaison personnalisés ne sont pas autorisés.",
+            "1Password fordert möglicherweise zum Entsperren auf. Benutzerdefinierte Endpunkte sind nicht erlaubt.",
+            "1Password のロック解除を求められる場合があります。カスタムエンドポイントは使用できません。",
+            "1Password가 잠금 해제를 요청할 수 있습니다. 사용자 지정 엔드포인트는 허용되지 않습니다.",
+            "1Password 可能会要求解锁。不允许使用自定义端点。",
+        ],
+    ),
+    (
+        "1Password reference",
+        [
+            "Referencia de 1Password",
+            "Référence 1Password",
+            "1Password-Referenz",
+            "1Password の参照",
+            "1Password 참조",
+            "1Password 引用",
+        ],
+    ),
+    (
+        "1Password setup cancelled. No access was granted.",
+        [
+            "Configuración de 1Password cancelada. No se ha concedido acceso.",
+            "Configuration de 1Password annulée. Aucun accès n’a été accordé.",
+            "1Password-Einrichtung abgebrochen. Es wurde kein Zugriff gewährt.",
+            "1Password の設定をキャンセルしました。アクセスは許可されていません。",
+            "1Password 설정을 취소했습니다. 접근 권한은 부여되지 않았습니다.",
+            "已取消 1Password 设置。未授予任何访问权限。",
+        ],
+    ),
+    (
+        "1Password supports native model capabilities with fixed HTTPS destinations",
+        [
+            "1Password admite permisos de modelos nativos con destinos HTTPS fijos",
+            "1Password prend en charge les autorisations de modèles natifs avec des destinations HTTPS fixes",
+            "1Password unterstützt native Modellberechtigungen mit festen HTTPS-Zielen",
+            "1Password は固定の HTTPS 接続先を持つネイティブモデルの権限に対応しています",
+            "1Password는 고정 HTTPS 대상의 네이티브 모델 권한을 지원합니다",
+            "1Password 支持使用固定 HTTPS 目标的原生模型权限",
+        ],
+    ),
+    (
         "; runs in {0}",
         [
             "; corre en {0}",
@@ -3101,6 +4047,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ゴムダックレビューは既に実行されています。",
             "고무 오리 검토는 이미 실행됩니다.",
             "橡皮鸭审查已经开始了",
+        ],
+    ),
+    (
+        "A tiny bow from Dex.",
+        [
+            "Dex hace una pequeña reverencia.",
+            "Dex fait une petite révérence.",
+            "Dex verbeugt sich kurz.",
+            "Dex が小さくお辞儀しました。",
+            "Dex가 살짝 인사합니다.",
+            "Dex 轻轻鞠了个躬。",
         ],
     ),
     (
@@ -3233,6 +4190,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "AIゲートウェイログ",
             "AI Gateway 로그",
             "AI 网关日志",
+        ],
+    ),
+    (
+        "API key",
+        [
+            "Clave API",
+            "Clé API",
+            "API-Schlüssel",
+            "API キー",
+            "API 키",
+            "API 密钥",
         ],
     ),
     (
@@ -3465,6 +4433,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Añadir", "Ajouter", "Hinzufügen", "追加", "추가", "添加"],
     ),
     (
+        "Add a connection before checking its credential source.",
+        [
+            "Añade una conexión antes de comprobar el origen de sus credenciales.",
+            "Ajoutez une connexion avant de vérifier la source de ses identifiants.",
+            "Fügen Sie eine Verbindung hinzu, bevor Sie ihre Anmeldedatenquelle prüfen.",
+            "認証情報の取得元を確認する前に接続を追加してください。",
+            "자격 증명 출처를 확인하기 전에 연결을 추가하세요.",
+            "请先添加连接，再检查其凭据来源。",
+        ],
+    ),
+    (
+        "Add a native 1Password capability",
+        [
+            "Añadir un permiso nativo de 1Password",
+            "Ajouter une autorisation native 1Password",
+            "Native 1Password-Berechtigung hinzufügen",
+            "1Password のネイティブ権限を追加",
+            "네이티브 1Password 권한 추가",
+            "添加原生 1Password 权限",
+        ],
+    ),
+    (
         "Add connection",
         [
             "Añadir conexión",
@@ -3687,6 +4677,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "このワークスペースのスキル、プラグイン、フックを許可",
             "이 작업 공간의 스킬, 플러그인 및 훅 허용",
             "允许此工作区的技能、插件和钩子",
+        ],
+    ),
+    (
+        "Allowed action: Use {0} models (models.invoke)",
+        [
+            "Acción permitida: usar modelos de {0} (models.invoke)",
+            "Action autorisée : utiliser les modèles {0} (models.invoke)",
+            "Erlaubte Aktion: Modelle von {0} nutzen (models.invoke)",
+            "許可する操作: {0} のモデルを使用（models.invoke）",
+            "허용 작업: {0} 모델 사용 (models.invoke)",
+            "允许的操作：使用 {0} 模型（models.invoke）",
         ],
     ),
     (
@@ -4058,6 +5059,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "アシスタント",
             "어시스턴트",
             "助手",
+        ],
+    ),
+    (
+        "Assistant message",
+        [
+            "Mensaje del asistente",
+            "Message de l’assistant",
+            "Assistentennachricht",
+            "アシスタントのメッセージ",
+            "어시스턴트 메시지",
+            "助手消息",
         ],
     ),
     (
@@ -4803,6 +5815,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Capability name: {0}",
+        [
+            "Nombre del permiso: {0}",
+            "Nom de l’autorisation : {0}",
+            "Name der Berechtigung: {0}",
+            "権限名: {0}",
+            "권한 이름: {0}",
+            "权限名称：{0}",
+        ],
+    ),
+    (
+        "Catalog",
+        [
+            "Catálogo",
+            "Catalogue",
+            "Katalog",
+            "カタログ",
+            "카탈로그",
+            "目录",
+        ],
+    ),
+    (
         "Catalog · availability unchecked",
         [
             "Catálogo · disponibilidad sin control",
@@ -4891,6 +5925,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Characters entered: {0}",
+        [
+            "Caracteres introducidos: {0}",
+            "Caractères saisis : {0}",
+            "Eingegebene Zeichen: {0}",
+            "入力済みの文字数: {0}",
+            "입력한 문자 수: {0}",
+            "已输入字符数：{0}",
+        ],
+    ),
+    (
         "ChatGPT sign-in: missing",
         [
             "ChatGPT inscrito: desaparecido",
@@ -4910,6 +5955,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ChatGPT サインイン: {0}",
             "ChatGPT 로그인: {0}",
             "ChatGPT 登录:{0}",
+        ],
+    ),
+    (
+        "ChatGPT/Codex subscription",
+        [
+            "Suscripción a ChatGPT/Codex",
+            "Abonnement ChatGPT/Codex",
+            "ChatGPT/Codex-Abonnement",
+            "ChatGPT/Codex サブスクリプション",
+            "ChatGPT/Codex 구독",
+            "ChatGPT/Codex 订阅",
         ],
     ),
     (
@@ -4946,6 +6002,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Choose Allow model use before saving. No access has been granted.",
+        [
+            "Selecciona Permitir uso de modelos antes de guardar. No se ha concedido acceso.",
+            "Cochez Autoriser l’utilisation des modèles avant d’enregistrer. Aucun accès n’a été accordé.",
+            "Wählen Sie vor dem Speichern „Modellnutzung erlauben“. Es wurde kein Zugriff gewährt.",
+            "保存する前に「モデルの使用を許可」を選択してください。アクセスは許可されていません。",
+            "저장하기 전에 모델 사용 허용을 선택하세요. 접근 권한은 부여되지 않았습니다.",
+            "请在保存前选择“允许使用模型”。尚未授予访问权限。",
+        ],
+    ),
+    (
+        "Choose a credential field and copy its secret reference (op://...).",
+        [
+            "Elige un campo de credencial y copia su referencia secreta (op://...).",
+            "Choisissez un champ d’identifiant et copiez sa référence secrète (op://...).",
+            "Wählen Sie ein Anmeldedatenfeld und kopieren Sie dessen Geheimnisreferenz (op://...).",
+            "認証情報のフィールドを選び、シークレット参照（op://...）をコピーしてください。",
+            "자격 증명 필드를 선택하고 비밀 참조(op://...)를 복사하세요.",
+            "选择凭据字段并复制其机密引用（op://...）。",
+        ],
+    ),
+    (
         "Choose a format and destination",
         [
             "Elige un formato y destino",
@@ -4965,6 +6043,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "プロバイダーを選択します。",
             "공급자를 선택하십시오.",
             "选择供养者.",
+        ],
+    ),
+    (
+        "Choose a supported provider.",
+        [
+            "Elige un proveedor compatible.",
+            "Choisissez un fournisseur pris en charge.",
+            "Wählen Sie einen unterstützten Anbieter.",
+            "対応するプロバイダーを選択してください。",
+            "지원되는 제공업체를 선택하세요.",
+            "请选择受支持的提供商。",
         ],
     ),
     (
@@ -5809,6 +6898,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Connection added.",
+        [
+            "Conexión añadida.",
+            "Connexion ajoutée.",
+            "Verbindung hinzugefügt.",
+            "接続を追加しました。",
+            "연결을 추가했습니다.",
+            "已添加连接。",
+        ],
+    ),
+    (
         "Connection details",
         [
             "Detalles de conexión",
@@ -5828,6 +6928,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "接続に失敗しました。",
             "연결에 실패했습니다.",
             "连接失败。",
+        ],
+    ),
+    (
+        "Connection list refreshed.",
+        [
+            "Lista de conexiones actualizada.",
+            "Liste des connexions actualisée.",
+            "Verbindungsliste aktualisiert.",
+            "接続一覧を更新しました。",
+            "연결 목록을 새로 고쳤습니다.",
+            "已刷新连接列表。",
         ],
     ),
     (
@@ -5872,6 +6983,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "接続",
             "연결",
             "连接",
+        ],
+    ),
+    (
+        "Connections & access",
+        [
+            "Conexiones y acceso",
+            "Connexions et accès",
+            "Verbindungen und Zugriff",
+            "接続とアクセス",
+            "연결 및 접근 권한",
+            "连接与访问权限",
         ],
     ),
     (
@@ -6122,6 +7244,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Could not refresh connections: {0}",
+        [
+            "No se pudieron actualizar las conexiones: {0}",
+            "Impossible d’actualiser les connexions : {0}",
+            "Verbindungen konnten nicht aktualisiert werden: {0}",
+            "接続を更新できませんでした: {0}",
+            "연결을 새로 고칠 수 없습니다: {0}",
+            "无法刷新连接：{0}",
+        ],
+    ),
+    (
+        "Could not remove the connection: {0}",
+        [
+            "No se pudo eliminar la conexión: {0}",
+            "Impossible de supprimer la connexion : {0}",
+            "Verbindung konnte nicht entfernt werden: {0}",
+            "接続を削除できませんでした: {0}",
+            "연결을 삭제할 수 없습니다: {0}",
+            "无法移除连接：{0}",
+        ],
+    ),
+    (
         "Could not request boost: {0}",
         [
             "No se puede solicitar impulso: {0}",
@@ -6207,6 +7351,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "セットアップ情報を送信できません。セットアップを続けることができます。",
             "설정 정보를 보낼 수 없습니다; 설정 계속할 수 있습니다.",
             "无法发送设置信息; 您可以继续设置 。",
+        ],
+    ),
+    (
+        "Could not set the default: {0}",
+        [
+            "No se pudo establecer el valor predeterminado: {0}",
+            "Impossible de définir la valeur par défaut : {0}",
+            "Standard konnte nicht festgelegt werden: {0}",
+            "既定値を設定できませんでした: {0}",
+            "기본값을 설정할 수 없습니다: {0}",
+            "无法设置默认值：{0}",
         ],
     ),
     (
@@ -6310,6 +7465,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "{1}で専門家のプロファイル{0}を作成しました。",
             "{1}에서 직업적인 단면도 {0}를 창조했습니다.",
             "在{1}上创建专家档案{0}.",
+        ],
+    ),
+    (
+        "Credential file",
+        [
+            "Archivo de credenciales",
+            "Fichier d’identifiants",
+            "Anmeldedatendatei",
+            "認証情報ファイル",
+            "자격 증명 파일",
+            "凭据文件",
         ],
     ),
     (
@@ -6678,6 +7844,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Deixic Code does not browse your vault or import its contents.",
+        [
+            "Deixic Code no explora tu bóveda ni importa su contenido.",
+            "Deixic Code ne parcourt pas votre coffre et n’importe pas son contenu.",
+            "Deixic Code durchsucht Ihren Tresor nicht und importiert keine Inhalte daraus.",
+            "Deixic Code は保管庫を閲覧したり、内容を取り込んだりしません。",
+            "Deixic Code는 보관함을 탐색하거나 내용을 가져오지 않습니다.",
+            "Deixic Code 不会浏览您的保险库或导入其内容。",
+        ],
+    ),
+    (
         "Deixic Code is up to date ({0}).",
         [
             "Deixic Code está al día ({0}).",
@@ -6998,6 +8175,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Destination: {0}",
+        [
+            "Destino: {0}",
+            "Destination : {0}",
+            "Ziel: {0}",
+            "接続先: {0}",
+            "대상: {0}",
+            "目标：{0}",
+        ],
+    ),
+    (
         "Detail",
         ["Detalle", "Détail", "Detail", "詳細", "세부 정보", "详情"],
     ),
@@ -7065,6 +8253,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "Dex 外観, 反応, キャップ, 好み",
             "Dex 외관, 반응, 재캡 및 선호도",
             "Dex 外观,反应,回顾,和偏好",
+        ],
+    ),
+    (
+        "Dex appreciates the boop.",
+        [
+            "Dex agradece el toquecito.",
+            "Dex apprécie la petite caresse.",
+            "Dex freut sich über den Stups.",
+            "Dex はなでてもらって喜んでいます。",
+            "Dex가 쓰다듬어 줘서 고마워합니다.",
+            "Dex 很喜欢这轻轻一碰。",
+        ],
+    ),
+    (
+        "Dex is all ears.",
+        [
+            "Dex está atento.",
+            "Dex est tout ouïe.",
+            "Dex hört aufmerksam zu.",
+            "Dex は耳を傾けています。",
+            "Dex가 귀를 기울입니다.",
+            "Dex 正在认真听。",
         ],
     ),
     (
@@ -7360,6 +8570,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Each plugin may include `plugin.json` or `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, hooks, and MCP configs.\n",
+        [
+            "Cada plugin puede incluir `plugin.json` o `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, hooks y configuraciones MCP.\n",
+            "Chaque plugin peut inclure `plugin.json` ou `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, des hooks et des configurations MCP.\n",
+            "Jedes Plugin kann `plugin.json` oder `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, Hooks und MCP-Konfigurationen enthalten.\n",
+            "各プラグインには `plugin.json` または `.plugin/plugin.json`、`skills/`、`agents/`、`commands/`、フック、MCP 設定を含められます。\n",
+            "각 플러그인에는 `plugin.json` 또는 `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, 훅, MCP 설정이 포함될 수 있습니다.\n",
+            "每个插件可包含 `plugin.json` 或 `.plugin/plugin.json`、`skills/`、`agents/`、`commands/`、钩子和 MCP 配置。\n",
+        ],
+    ),
+    (
         "Each plugin may include plugin.json or .plugin/plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types.",
         [
             "Cada plugin puede incluir plugin.json o .plugin/plugin.json, habilidades/, agentes/, comandos/, ganchos, MCP configs y tipos de conexión declarativa.",
@@ -7405,6 +8626,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "編集済み",
             "편집됨",
             "已编辑",
+        ],
+    ),
+    (
+        "Editing queued follow-up #{0}.",
+        [
+            "Editando el seguimiento en cola n.º {0}.",
+            "Modification du suivi en attente n° {0}.",
+            "Folgeanfrage Nr. {0} in der Warteschlange wird bearbeitet.",
+            "キュー内の追加指示 #{0} を編集中。",
+            "대기 중인 후속 요청 #{0} 편집 중.",
+            "正在编辑队列中的后续请求 #{0}。",
         ],
     ),
     (
@@ -7563,6 +8795,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     ),
     ("End", ["End", "End", "End", "End", "End", "End"]),
     (
+        "Enlarge the terminal to 80 columns and 28 rows to review access. Esc cancels without granting access.",
+        [
+            "Amplía el terminal a 80 columnas y 28 filas para revisar el acceso. Esc cancela sin conceder acceso.",
+            "Agrandissez le terminal à 80 colonnes et 28 lignes pour examiner l’accès. Esc annule sans accorder d’accès.",
+            "Vergrößern Sie das Terminal auf 80 Spalten und 28 Zeilen, um den Zugriff zu prüfen. Esc bricht ab, ohne Zugriff zu gewähren.",
+            "アクセス内容を確認するにはターミナルを80列・28行に広げてください。Esc でアクセスを許可せずにキャンセルします。",
+            "접근 권한을 검토하려면 터미널을 80열, 28행으로 늘리세요. Esc를 누르면 권한을 부여하지 않고 취소합니다.",
+            "请将终端扩大到 80 列、28 行以检查访问权限。按 Esc 取消，不授予权限。",
+        ],
+    ),
+    (
+        "Enlarge the terminal to at least 80 columns and {0} rows to review access. Esc cancels without granting access.",
+        [
+            "Amplía el terminal a al menos 80 columnas y {0} filas para revisar el acceso. Esc cancela sin conceder acceso.",
+            "Agrandissez le terminal à au moins 80 colonnes et {0} lignes pour examiner l’accès. Esc annule sans accorder d’accès.",
+            "Vergrößern Sie das Terminal auf mindestens 80 Spalten und {0} Zeilen, um den Zugriff zu prüfen. Esc bricht ohne Zugriffsfreigabe ab.",
+            "アクセス内容を確認するにはターミナルを80列・{0}行以上に広げてください。Esc でアクセスを許可せずにキャンセルします。",
+            "접근 권한을 검토하려면 터미널을 80열, {0}행 이상으로 늘리세요. Esc를 누르면 권한을 부여하지 않고 취소합니다.",
+            "请将终端扩大到至少 80 列、{0} 行以检查访问权限。按 Esc 取消，不授予权限。",
+        ],
+    ),
+    (
         "Enter",
         ["Enter", "Enter", "Enter", "Enter", "Enter", "Enter"],
     ),
@@ -7641,6 +8895,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "環境変数 ({0})",
             "환경 변수 ({0})",
             "环境变量({0})",
+        ],
+    ),
+    (
+        "Environment variable: {0}",
+        [
+            "Variable de entorno: {0}",
+            "Variable d’environnement : {0}",
+            "Umgebungsvariable: {0}",
+            "環境変数: {0}",
+            "환경 변수: {0}",
+            "环境变量：{0}",
         ],
     ),
     (
@@ -7969,6 +9234,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "展開",
             "펼치기",
             "展开",
+        ],
+    ),
+    (
+        "Expanded /{0} → /{1}",
+        [
+            "Ampliado /{0} → /{1}",
+            "Développé /{0} → /{1}",
+            "Erweitert /{0} → /{1}",
+            "展開しました /{0} → /{1}",
+            "확장됨 /{0} → /{1}",
+            "已展开 /{0} → /{1}",
         ],
     ),
     (
@@ -8471,6 +9747,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Failed to scaffold AGENTS.md: {0}",
+        [
+            "No se pudo generar AGENTS.md: {0}",
+            "Impossible de générer AGENTS.md : {0}",
+            "AGENTS.md konnte nicht erstellt werden: {0}",
+            "AGENTS.md を生成できませんでした: {0}",
+            "AGENTS.md를 생성할 수 없습니다: {0}",
+            "无法生成 AGENTS.md：{0}",
+        ],
+    ),
+    (
         "Failed to send prompt: {0}",
         [
             "Failed to send prompt: {0}",
@@ -8893,6 +10180,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Footer style: {0} (saved)",
+        [
+            "Estilo del pie: {0} (guardado)",
+            "Style du pied de page : {0} (enregistré)",
+            "Fußzeilenstil: {0} (gespeichert)",
+            "フッターのスタイル: {0}（保存済み）",
+            "바닥글 스타일: {0} (저장됨)",
+            "页脚样式：{0}（已保存）",
+        ],
+    ),
+    (
         "Fork conversation",
         [
             "Prek conversation",
@@ -9106,6 +10404,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Give Deixic Code permission to use one credential for model requests.",
+        [
+            "Permite a Deixic Code usar una credencial para solicitudes a modelos.",
+            "Autorisez Deixic Code à utiliser un identifiant pour les requêtes aux modèles.",
+            "Erlauben Sie Deixic Code, einen Zugangsschlüssel für Modellanfragen zu verwenden.",
+            "モデルへのリクエストに1つの認証情報を使うことを Deixic Code に許可します。",
+            "Deixic Code가 모델 요청에 자격 증명 하나를 사용하도록 허용하세요.",
+            "允许 Deixic Code 使用一项凭据发送模型请求。",
+        ],
+    ),
+    (
+        "Give this capability a name.",
+        [
+            "Asigna un nombre a este permiso.",
+            "Donnez un nom à cette autorisation.",
+            "Geben Sie dieser Berechtigung einen Namen.",
+            "この権限に名前を付けてください。",
+            "이 권한에 이름을 지정하세요.",
+            "请为此权限命名。",
+        ],
+    ),
+    (
         "Give this task more intelligence",
         [
             "Dar esta tarea más inteligencia",
@@ -9114,6 +10434,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "このタスクをもっと知的にする",
             "이 작업을 더 많은 정보",
             "给这个任务更多的情报",
+        ],
+    ),
+    (
+        "Goal auto-continue",
+        [
+            "Continuación automática del objetivo",
+            "Poursuite automatique de l’objectif",
+            "Automatische Zielfortsetzung",
+            "目標の自動続行",
+            "목표 자동 계속",
+            "目标自动继续",
         ],
     ),
     (
@@ -9150,6 +10481,39 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Goal auto-continue skipped (agent unavailable)",
+        [
+            "Continuación automática omitida (agente no disponible)",
+            "Poursuite automatique ignorée (agent indisponible)",
+            "Automatische Zielfortsetzung übersprungen (Agent nicht verfügbar)",
+            "目標の自動続行をスキップしました（エージェントが利用不可）",
+            "목표 자동 계속 건너뜀 (에이전트 사용 불가)",
+            "已跳过目标自动继续（代理不可用）",
+        ],
+    ),
+    (
+        "Goal auto-continue stopped (safety max {0})",
+        [
+            "Continuación automática detenida (límite de seguridad {0})",
+            "Poursuite automatique arrêtée (limite de sécurité {0})",
+            "Automatische Zielfortsetzung gestoppt (Sicherheitslimit {0})",
+            "目標の自動続行を停止しました（安全上限 {0}）",
+            "목표 자동 계속 중지됨 (안전 한도 {0})",
+            "目标自动继续已停止（安全上限 {0}）",
+        ],
+    ),
+    (
+        "Goal auto-continue stopped (wall-clock budget)",
+        [
+            "Continuación automática detenida (límite de tiempo)",
+            "Poursuite automatique arrêtée (limite de temps)",
+            "Automatische Zielfortsetzung gestoppt (Zeitlimit)",
+            "目標の自動続行を停止しました（制限時間）",
+            "목표 자동 계속 중지됨 (시간 한도)",
+            "目标自动继续已停止（时间限额）",
+        ],
+    ),
+    (
         "Goal auto-continue stopped: {0}. Use `/goal resume` to start a new time window.",
         [
             "Se detuvo el autocontinua Objetivo: {0}. Utilice `/goal resume` para iniciar una nueva ventana de tiempo.",
@@ -9158,6 +10522,39 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ゴール自動継続停止:{0}。 `/goal resume` を使用して、新しい時間ウィンドウを開始します。",
             "목표 자동 지속 중지 : {0}. 사용 `/goal resume` 새로운 시간 창을 시작.",
             "进球自动续站:{0}. 使用`/goal resume`启动新的时间窗口.",
+        ],
+    ),
+    (
+        "Goal auto-continue waiting for agent (sign in to EvalOps Identity, then configure a provider)",
+        [
+            "Continuación automática en espera del agente (inicia sesión en EvalOps Identity y configura un proveedor)",
+            "Poursuite automatique en attente de l’agent (connectez-vous à EvalOps Identity, puis configurez un fournisseur)",
+            "Automatische Zielfortsetzung wartet auf Agenten (bei EvalOps Identity anmelden, dann Anbieter einrichten)",
+            "目標の自動続行はエージェント待ちです（EvalOps Identity にログインし、プロバイダーを設定してください）",
+            "목표 자동 계속이 에이전트를 기다립니다 (EvalOps Identity에 로그인한 후 제공업체를 설정하세요)",
+            "目标自动继续正在等待代理（请登录 EvalOps Identity，然后配置提供商）",
+        ],
+    ),
+    (
+        "Goal auto-continue {0}",
+        [
+            "Continuación automática del objetivo {0}",
+            "Poursuite automatique de l’objectif {0}",
+            "Automatische Zielfortsetzung {0}",
+            "目標の自動続行 {0}",
+            "목표 자동 계속 {0}",
+            "目标自动继续 {0}",
+        ],
+    ),
+    (
+        "Goal complete",
+        [
+            "Objetivo completado",
+            "Objectif atteint",
+            "Ziel erreicht",
+            "目標を達成しました",
+            "목표 완료",
+            "目标已完成",
         ],
     ),
     (
@@ -9205,6 +10602,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Goal {0} blocked",
+        [
+            "Objetivo {0} bloqueado",
+            "Objectif {0} bloqué",
+            "Ziel {0} blockiert",
+            "目標 {0} がブロックされました",
+            "목표 {0} 차단됨",
+            "目标 {0} 受阻",
+        ],
+    ),
+    (
         "Goal {0} blocked.",
         [
             "El Objetivo {0} bloqueado.",
@@ -9224,6 +10632,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ゴール{0}ブロック:{1}",
             "목표 {0} 차단: {1}",
             "目标{0}被封锁:{1}",
+        ],
+    ),
+    (
+        "Goal {0} cleared",
+        [
+            "Objetivo {0} eliminado",
+            "Objectif {0} effacé",
+            "Ziel {0} gelöscht",
+            "目標 {0} を消去しました",
+            "목표 {0} 지워짐",
+            "目标 {0} 已清除",
+        ],
+    ),
+    (
+        "Goal {0} complete",
+        [
+            "Objetivo {0} completado",
+            "Objectif {0} atteint",
+            "Ziel {0} erreicht",
+            "目標 {0} を達成しました",
+            "목표 {0} 완료",
+            "目标 {0} 已完成",
         ],
     ),
     (
@@ -9271,6 +10701,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Goal {0} paused",
+        [
+            "Objetivo {0} pausado",
+            "Objectif {0} en pause",
+            "Ziel {0} pausiert",
+            "目標 {0} を一時停止しました",
+            "목표 {0} 일시 중지됨",
+            "目标 {0} 已暂停",
+        ],
+    ),
+    (
         "Goal {0} paused.",
         [
             "Se detuvo el Objetivo {0}.",
@@ -9279,6 +10720,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ゴール {0} パユース.",
             "목표 {0} 사용.",
             "{0}目标暂停.",
+        ],
+    ),
+    (
+        "Goal {0} resumed",
+        [
+            "Objetivo {0} reanudado",
+            "Objectif {0} repris",
+            "Ziel {0} fortgesetzt",
+            "目標 {0} を再開しました",
+            "목표 {0} 재개됨",
+            "目标 {0} 已恢复",
         ],
     ),
     (
@@ -9902,6 +11354,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "In 1Password, enable Settings > Developer > Integrate with 1Password CLI.",
+        [
+            "En 1Password, activa Ajustes > Desarrollador > Integrar con la CLI de 1Password.",
+            "Dans 1Password, activez Paramètres > Développeur > Intégrer avec la CLI 1Password.",
+            "Aktivieren Sie in 1Password Einstellungen > Entwickler > Mit 1Password CLI integrieren.",
+            "1Password で「設定 > 開発者 > 1Password CLI と連携」を有効にしてください。",
+            "1Password에서 설정 > 개발자 > 1Password CLI 통합을 활성화하세요.",
+            "在 1Password 中启用“设置 > 开发者 > 与 1Password CLI 集成”。",
+        ],
+    ),
+    (
         "In-workspace writes allowed under existing trees; `.git` stays read-only.\n",
         [
             "En el espacio de trabajo escribe permitido bajo los árboles existentes; `.git` estancias sólo lectura.\n",
@@ -9959,6 +11422,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     (
         "Input",
         ["Entrada", "Saisie", "Eingabe", "入力", "입력", "输入"],
+    ),
+    (
+        "Input cleared",
+        [
+            "Entrada borrada",
+            "Saisie effacée",
+            "Eingabe gelöscht",
+            "入力を消去しました",
+            "입력을 지웠습니다",
+            "已清空输入",
+        ],
     ),
     ("Ins", ["Ins", "Ins", "Ing", "ログイン", "제품정보", "内"]),
     (
@@ -10226,6 +11700,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Install plugins under:\n",
+        [
+            "Instala los plugins en:\n",
+            "Installez les plugins dans :\n",
+            "Installieren Sie Plugins unter:\n",
+            "プラグインのインストール先:\n",
+            "플러그인 설치 경로:\n",
+            "插件安装位置：\n",
+        ],
+    ),
+    (
         "Install:",
         [
             "Instala:",
@@ -10333,6 +11818,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "インターネットトラフィックの洞察",
             "인터넷 트래픽 통찰력",
             "互联网交通见解",
+        ],
+    ),
+    (
+        "Interpreted /{0} as /{1}",
+        [
+            "Interpretado /{0} como /{1}",
+            "/{0} interprété comme /{1}",
+            "/{0} als /{1} interpretiert",
+            "/{0} を /{1} と解釈しました",
+            "/{0}를 /{1}로 해석함",
+            "已将 /{0} 解释为 /{1}",
         ],
     ),
     (
@@ -10558,6 +12054,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "必要なキー。 使用法: deixicコード構成セット<key> <value>",
             "필요한 키. 사용법: deixic 부호 설정 <key> <value>",
             "需要钥匙。 用法:deixic-code配置集 <key><value>",
+        ],
+    ),
+    (
+        "Key rotated.",
+        [
+            "Clave renovada.",
+            "Clé renouvelée.",
+            "Schlüssel erneuert.",
+            "キーを更新しました。",
+            "키를 교체했습니다.",
+            "已轮换密钥。",
         ],
     ),
     (
@@ -10858,6 +12365,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Loaded {0} skill(s)",
+        [
+            "Habilidades cargadas: {0}",
+            "Compétences chargées : {0}",
+            "Geladene Skills: {0}",
+            "読み込んだスキル: {0}",
+            "불러온 스킬: {0}",
+            "已加载技能：{0}",
+        ],
+    ),
+    (
+        "Loaded {0} skill(s), {1} error(s)",
+        [
+            "Habilidades cargadas: {0}; errores: {1}",
+            "Compétences chargées : {0} ; erreurs : {1}",
+            "Geladene Skills: {0}; Fehler: {1}",
+            "読み込んだスキル: {0}、エラー: {1}",
+            "불러온 스킬: {0}, 오류: {1}",
+            "已加载技能：{0}；错误：{1}",
+        ],
+    ),
+    (
         "Loading persisted tool executions...",
         [
             "Carga persistió las ejecuciones de herramientas...",
@@ -10877,6 +12406,21 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "セッションを読み込み中…",
             "세션 불러오는 중…",
             "正在加载会话…",
+        ],
+    ),
+    (
+        "Local",
+        ["Local", "Local", "Lokal", "ローカル", "로컬", "本地"],
+    ),
+    (
+        "Local or Platform",
+        [
+            "Local o Platform",
+            "Local ou Platform",
+            "Lokal oder Platform",
+            "ローカルまたは Platform",
+            "로컬 또는 Platform",
+            "本地或 Platform",
         ],
     ),
     (
@@ -10954,6 +12498,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ループ停止。",
             "루프가 중지되었습니다.",
             "循环停止。",
+        ],
+    ),
+    (
+        "Loop: \"{0}\"",
+        [
+            "Bucle: \"{0}\"",
+            "Boucle : « {0} »",
+            "Schleife: „{0}“",
+            "ループ:「{0}」",
+            "반복: \"{0}\"",
+            "循环：“{0}”",
         ],
     ),
     ("Low", ["Bajo", "Faible", "Niedrig", "低", "낮음", "低"]),
@@ -11395,6 +12950,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ホックシステム(リスト、トグル、リロード、メトリック)の管理",
             "후크 시스템 관리(list, toggle, reload, 메트릭)",
             "管理钩子系统(列表、切换、重新装入、测量)",
+        ],
+    ),
+    (
+        "Managed (remote health not probed)",
+        [
+            "Administrado (estado remoto sin comprobar)",
+            "Géré (état distant non vérifié)",
+            "Verwaltet (Remotezustand nicht geprüft)",
+            "管理対象（リモートの状態は未確認）",
+            "관리됨 (원격 상태 확인 안 됨)",
+            "受管理（未检查远程状态）",
         ],
     ),
     (
@@ -12020,6 +13586,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "No active goal. Create one with `/goal create <text>`.",
+        [
+            "No hay un objetivo activo. Créalo con `/goal create <text>`.",
+            "Aucun objectif actif. Créez-en un avec `/goal create <text>`.",
+            "Kein aktives Ziel. Erstellen Sie eines mit `/goal create <text>`.",
+            "有効な目標はありません。`/goal create <text>` で作成できます。",
+            "활성 목표가 없습니다. `/goal create <text>`로 만드세요.",
+            "没有活动目标。使用 `/goal create <text>` 创建。",
+        ],
+    ),
+    (
         "No active loop.",
         [
             "No hay bucle activo.",
@@ -12204,6 +13781,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "クリアするゴールなし",
             "명확한 목표 없음",
             "没有目标可以清除",
+        ],
+    ),
+    (
+        "No harness entries match the current workspace or session.",
+        [
+            "Ninguna instrucción coincide con el espacio de trabajo o sesión actual.",
+            "Aucune instruction ne correspond à l’espace de travail ou à la session actuelle.",
+            "Keine Anweisungseinträge passen zum aktuellen Arbeitsbereich oder zur Sitzung.",
+            "現在のワークスペースまたはセッションに一致する指示はありません。",
+            "현재 작업 공간 또는 세션에 일치하는 지침 항목이 없습니다.",
+            "没有与当前工作区或会话匹配的指令条目。",
+        ],
+    ),
+    (
+        "No harness refinement proposals.",
+        [
+            "No hay propuestas de mejora de instrucciones.",
+            "Aucune proposition d’amélioration des instructions.",
+            "Keine Verbesserungsvorschläge für Anweisungen.",
+            "指示の改善案はありません。",
+            "지침 개선 제안이 없습니다.",
+            "没有指令优化提案。",
         ],
     ),
     (
@@ -12493,6 +14092,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "No previous session found for this workspace.",
+        [
+            "No se encontró ninguna sesión anterior para este espacio de trabajo.",
+            "Aucune session précédente trouvée pour cet espace de travail.",
+            "Keine frühere Sitzung für diesen Arbeitsbereich gefunden.",
+            "このワークスペースの以前のセッションが見つかりません。",
+            "이 작업 공간의 이전 세션을 찾을 수 없습니다.",
+            "未找到此工作区的先前会话。",
+        ],
+    ),
+    (
         "No prompt history",
         [
             "No hay historia rápida",
@@ -12523,6 +14133,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "プロバイダーの構成なし",
             "설정된 공급자 없음",
             "没有配置提供者",
+        ],
+    ),
+    (
+        "No queued prompt found with id #{0}.",
+        [
+            "No se encontró ninguna solicitud en cola con el identificador #{0}.",
+            "Aucune requête en attente avec l’identifiant #{0}.",
+            "Keine Anfrage mit der ID #{0} in der Warteschlange gefunden.",
+            "ID #{0} のプロンプトはキューにありません。",
+            "ID #{0}인 대기 중 프롬프트를 찾을 수 없습니다.",
+            "未找到 ID 为 #{0} 的排队提示。",
         ],
     ),
     (
@@ -12702,6 +14323,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "No supported native model providers are available.",
+        [
+            "No hay proveedores de modelos nativos compatibles disponibles.",
+            "Aucun fournisseur de modèles natifs pris en charge n’est disponible.",
+            "Keine unterstützten nativen Modellanbieter verfügbar.",
+            "対応するネイティブモデルのプロバイダーがありません。",
+            "지원되는 네이티브 모델 제공업체가 없습니다.",
+            "没有可用的受支持原生模型提供商。",
+        ],
+    ),
+    (
         "No tool history",
         [
             "No historial de herramientas",
@@ -12780,6 +14412,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Not checked",
+        [
+            "Sin comprobar",
+            "Non vérifié",
+            "Nicht geprüft",
+            "未確認",
+            "확인 안 됨",
+            "未检查",
+        ],
+    ),
+    (
         "Not recorded",
         [
             "No se registró",
@@ -12810,6 +14453,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "注: ネイティブのコスト表示は、旧TS使用量DBではなくローカルセッション統計を読み取ります。",
             "참고: 네이티브 비용은 기존 TS 사용량 DB 대신 로컬 세션 통계를 읽습니다.",
             "注：原生费用读取本地会话统计，不读取旧版 TS 用量数据库。",
+        ],
+    ),
+    (
+        "Nothing to expand",
+        [
+            "Nada que expandir",
+            "Rien à développer",
+            "Nichts zum Aufklappen",
+            "展開する内容がありません",
+            "펼칠 내용 없음",
+            "没有可展开的内容",
         ],
     ),
     (
@@ -12857,6 +14511,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "O other · P reserve · . remaining",
+        [
+            "O otros · P reserva · . restante",
+            "O autre · P réserve · . restant",
+            "O Sonstiges · P Reserve · . verbleibend",
+            "O その他 · P 予約枠 · . 残り",
+            "O 기타 · P 예약 · . 남음",
+            "O 其他 · P 预留 · . 剩余",
+        ],
+    ),
+    (
+        "OS credential store",
+        [
+            "Almacén de credenciales del sistema",
+            "Stockage d’identifiants du système",
+            "Anmeldedatenspeicher des Betriebssystems",
+            "OS の認証情報ストア",
+            "OS 자격 증명 저장소",
+            "操作系统凭据存储",
+        ],
+    ),
+    (
         "Objective and budget",
         [
             "Objetivo y presupuesto",
@@ -12865,6 +14541,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "目的と予算",
             "목표 및 예산",
             "目标和预算",
+        ],
+    ),
+    (
+        "Objective?",
+        [
+            "¿Objetivo?",
+            "Objectif ?",
+            "Ziel?",
+            "目標は？",
+            "목표는 무엇인가요?",
+            "目标是什么？",
         ],
     ),
     (
@@ -12892,6 +14579,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ワンタスクインテリジェンスオーバーライド",
             "One-task 인텔리전트",
             "单任务智能覆盖",
+        ],
+    ),
+    (
+        "Only OS credential store connections can be rotated.",
+        [
+            "Solo se pueden renovar las conexiones del almacén de credenciales del sistema.",
+            "Seules les connexions du stockage d’identifiants du système peuvent être renouvelées.",
+            "Nur Verbindungen im Anmeldedatenspeicher des Betriebssystems können erneuert werden.",
+            "OS の認証情報ストアに保存された接続のみ更新できます。",
+            "OS 자격 증명 저장소의 연결만 교체할 수 있습니다.",
+            "只能轮换操作系统凭据存储中的连接。",
         ],
     ),
     (
@@ -12936,6 +14634,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "MCPサーバマネージャを開くか、スクリプト",
             "MCP 서버 관리자 열기 또는 스크립트",
             "打开或脚本 MCP 服务器管理器",
+        ],
+    ),
+    (
+        "Open review comments prevent leaving plan mode: {0}. Use `/plan comments`.",
+        [
+            "Comentarios pendientes que impiden salir del modo de planificación: {0}. Usa `/plan comments`.",
+            "Commentaires ouverts empêchant de quitter le mode plan : {0}. Utilisez `/plan comments`.",
+            "Offene Kommentare verhindern das Verlassen des Planmodus: {0}. Verwende `/plan comments`.",
+            "未解決のレビューコメントが {0} 件あるため、計画モードを終了できません。`/plan comments` を使用してください。",
+            "해결되지 않은 검토 댓글 {0}개로 인해 계획 모드를 종료할 수 없습니다. `/plan comments`를 사용하세요.",
+            "有 {0} 条未解决的审阅评论，无法退出规划模式。请使用 `/plan comments`。",
         ],
     ),
     (
@@ -13108,6 +14817,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Otro", "Autre", "Andere", "その他", "기타", "其他"],
     ),
     (
+        "Other / overhead",
+        [
+            "Otros / sobrecarga",
+            "Autres / surcoût",
+            "Sonstiges / Zusatzaufwand",
+            "その他 / オーバーヘッド",
+            "기타 / 오버헤드",
+            "其他 / 开销",
+        ],
+    ),
+    (
         "Output",
         ["Salida", "Sortie", "Ausgabe", "出力", "출력", "输出"],
     ),
@@ -13202,6 +14922,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     (
         "Parent",
         ["Principal", "Parent", "Übergeordnet", "親", "상위", "父级"],
+    ),
+    (
+        "Paste a secret reference",
+        [
+            "Pega una referencia secreta",
+            "Collez une référence secrète",
+            "Geheimnisreferenz einfügen",
+            "シークレット参照を貼り付け",
+            "비밀 참조 붙여넣기",
+            "粘贴机密引用",
+        ],
+    ),
+    (
+        "Paste a valid 1Password secret reference (op://vault/item/field).",
+        [
+            "Pega una referencia secreta válida de 1Password (op://vault/item/field).",
+            "Collez une référence secrète 1Password valide (op://vault/item/field).",
+            "Fügen Sie eine gültige 1Password-Geheimnisreferenz ein (op://vault/item/field).",
+            "有効な 1Password のシークレット参照（op://vault/item/field）を貼り付けてください。",
+            "올바른 1Password 비밀 참조(op://vault/item/field)를 붙여넣으세요.",
+            "请粘贴有效的 1Password 机密引用（op://vault/item/field）。",
+        ],
     ),
     (
         "Paste from clipboard",
@@ -13572,6 +15314,23 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Planning, TDD, debugging, and delivery workflows for coding agents.",
+        [
+            "Flujos de planificación, TDD, depuración y entrega para agentes de programación.",
+            "Processus de planification, TDD, débogage et livraison pour les agents de programmation.",
+            "Planung, TDD, Fehlersuche und Auslieferung für Programmieragenten.",
+            "コーディングエージェント向けの計画、TDD、デバッグ、リリースのワークフロー。",
+            "코딩 에이전트를 위한 계획, TDD, 디버깅, 배포 워크플로.",
+            "适用于编程代理的规划、TDD、调试和交付工作流。",
+        ],
+    ),
+    (
+        "Platform",
+        [
+            "Platform", "Platform", "Platform", "Platform", "Platform", "Platform",
+        ],
+    ),
+    (
         "Platform / operations",
         [
             "Plataforma / operaciones",
@@ -13701,6 +15460,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "続行するEnterを押して下さい...escはPgUp/PgDnスクロールをスキップします",
             "프레스 Enter 계속... esc 건너뛰기 PgUp/PgDn 스크롤",
             "按Enter继续... esc跳过PgUp/PgDn卷",
+        ],
+    ),
+    (
+        "Press Esc again to clear input",
+        [
+            "Pulsa Esc de nuevo para borrar la entrada",
+            "Appuyez à nouveau sur Esc pour effacer la saisie",
+            "Drücken Sie erneut Esc, um die Eingabe zu löschen",
+            "もう一度 Esc を押すと入力を消去します",
+            "Esc를 다시 누르면 입력을 지웁니다",
+            "再次按 Esc 清空输入",
+        ],
+    ),
+    (
+        "Press Esc again to rewind files",
+        [
+            "Pulsa Esc de nuevo para restaurar los archivos",
+            "Appuyez à nouveau sur Esc pour restaurer les fichiers",
+            "Drücken Sie erneut Esc, um Dateien zurückzusetzen",
+            "もう一度 Esc を押すとファイルを巻き戻します",
+            "Esc를 다시 누르면 파일을 되돌립니다",
+            "再次按 Esc 回退文件",
         ],
     ),
     (
@@ -14016,6 +15797,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Provider sign-in",
+        [
+            "Inicio de sesión del proveedor",
+            "Connexion au fournisseur",
+            "Anbieteranmeldung",
+            "プロバイダーへのログイン",
+            "제공업체 로그인",
+            "提供商登录",
+        ],
+    ),
+    (
+        "Provider sign-in: {0}",
+        [
+            "Inicio de sesión del proveedor: {0}",
+            "Connexion au fournisseur : {0}",
+            "Anbieteranmeldung: {0}",
+            "プロバイダーへのログイン: {0}",
+            "제공업체 로그인: {0}",
+            "提供商登录：{0}",
+        ],
+    ),
+    (
         "Provider: openai-codex",
         [
             "Proveedor: openai-codex",
@@ -14035,6 +15838,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "プロバイダー: {0}",
             "공급자: {0}",
             "提供商: {0}",
+        ],
+    ),
+    (
+        "Provider: {0}  (↑/↓ to choose)",
+        [
+            "Proveedor: {0}  (↑/↓ para elegir)",
+            "Fournisseur : {0}  (↑/↓ pour choisir)",
+            "Anbieter: {0}  (↑/↓ zum Auswählen)",
+            "プロバイダー: {0}（↑/↓ で選択）",
+            "제공업체: {0}  (↑/↓로 선택)",
+            "提供商：{0}（↑/↓ 选择）",
         ],
     ),
     (
@@ -14156,6 +15970,50 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ターン終了後のフォローアップ",
             "턴 끝 후에 냉각된 후",
             "回合结束后排队后续",
+        ],
+    ),
+    (
+        "Queued prompt #{0} is already in that position.",
+        [
+            "La solicitud en cola #{0} ya está en esa posición.",
+            "La requête en attente #{0} est déjà à cette position.",
+            "Anfrage #{0} steht bereits an dieser Position.",
+            "キュー内のプロンプト #{0} はすでにその位置にあります。",
+            "대기 중인 프롬프트 #{0}는 이미 해당 위치에 있습니다.",
+            "排队提示 #{0} 已在该位置。",
+        ],
+    ),
+    (
+        "Queued prompt #{0} is already processing.",
+        [
+            "La solicitud en cola #{0} ya se está procesando.",
+            "La requête en attente #{0} est déjà en cours de traitement.",
+            "Anfrage #{0} wird bereits verarbeitet.",
+            "キュー内のプロンプト #{0} はすでに処理中です。",
+            "대기 중인 프롬프트 #{0}는 이미 처리 중입니다.",
+            "排队提示 #{0} 已在处理中。",
+        ],
+    ),
+    (
+        "Queued prompt #{0} is starting; try again if it re-queues.",
+        [
+            "La solicitud en cola #{0} está iniciándose; vuelve a intentarlo si regresa a la cola.",
+            "La requête en attente #{0} démarre ; réessayez si elle est remise en attente.",
+            "Anfrage #{0} startet; versuchen Sie es erneut, falls sie wieder eingereiht wird.",
+            "キュー内のプロンプト #{0} を開始しています。再びキューに入った場合は再試行してください。",
+            "대기 중인 프롬프트 #{0}가 시작됩니다. 다시 대기열에 들어가면 재시도하세요.",
+            "排队提示 #{0} 正在启动；若重新入队，请重试。",
+        ],
+    ),
+    (
+        "Queued prompt #{0} {1}.",
+        [
+            "Solicitud en cola #{0}: {1}.",
+            "Requête en attente #{0} : {1}.",
+            "Anfrage #{0}: {1}.",
+            "キュー内のプロンプト #{0}: {1}。",
+            "대기 중인 프롬프트 #{0}: {1}.",
+            "排队提示 #{0}：{1}。",
         ],
     ),
     (
@@ -14284,6 +16142,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Ran command",
+        [
+            "Se ejecutó el comando",
+            "Commande exécutée",
+            "Befehl ausgeführt",
+            "コマンドを実行しました",
+            "명령 실행 완료",
+            "已执行命令",
+        ],
+    ),
+    (
         "Ran {0}",
         [
             "Ran {0}",
@@ -14292,6 +16161,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ナン {0}",
             "린 {0}",
             "小兰{0}",
+        ],
+    ),
+    (
+        "Ran {0} tool call",
+        [
+            "Se ejecutó {0} llamada a herramientas",
+            "{0} appel d’outil exécuté",
+            "{0} Werkzeugaufruf ausgeführt",
+            "ツール呼び出しを {0} 件実行しました",
+            "도구 호출 {0}회 실행 완료",
+            "已执行 {0} 次工具调用",
+        ],
+    ),
+    (
+        "Ran {0} tool calls",
+        [
+            "Se ejecutaron {0} llamadas a herramientas",
+            "{0} appels d’outils exécutés",
+            "{0} Werkzeugaufrufe ausgeführt",
+            "ツール呼び出しを {0} 件実行しました",
+            "도구 호출 {0}회 실행 완료",
+            "已执行 {0} 次工具调用",
         ],
     ),
     (
@@ -14429,6 +16320,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     (
         "Ready",
         ["Listo", "Prêt", "Bereit", "準備完了", "준비됨", "就绪"],
+    ),
+    (
+        "Ready via sign-in",
+        [
+            "Listo mediante inicio de sesión",
+            "Prêt via la connexion",
+            "Über Anmeldung bereit",
+            "ログイン経由で利用可能",
+            "로그인으로 사용 가능",
+            "已通过登录就绪",
+        ],
     ),
     (
         "Ready when you are.",
@@ -14790,6 +16692,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Remote installs require `/plugins marketplace install <id> --trust` (except pure local paths).\n\n",
+        [
+            "Las instalaciones remotas requieren `/plugins marketplace install <id> --trust` (excepto las rutas locales).\n\n",
+            "Les installations distantes nécessitent `/plugins marketplace install <id> --trust` (sauf les chemins locaux).\n\n",
+            "Remoteinstallationen erfordern `/plugins marketplace install <id> --trust` (außer lokalen Pfaden).\n\n",
+            "リモートからのインストールには `/plugins marketplace install <id> --trust` が必要です（ローカルパスを除く）。\n\n",
+            "원격 설치에는 `/plugins marketplace install <id> --trust`가 필요합니다 (로컬 경로 제외).\n\n",
+            "远程安装需要 `/plugins marketplace install <id> --trust`（本地路径除外）。\n\n",
+        ],
+    ),
+    (
         "Remote runner attach token minted for {0}",
         [
             "Corredor remoto adjunta token minted para {0}",
@@ -14893,6 +16806,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Quitar", "Retirer", "Entfernen", "削除", "제거", "移除"],
     ),
     (
+        "Remove it in Connections to prevent new uses. Existing clients must be closed.",
+        [
+            "Elimínalo en Conexiones para impedir nuevos usos. Debes cerrar los clientes existentes.",
+            "Supprimez-la dans Connexions pour empêcher de nouvelles utilisations. Les clients existants doivent être fermés.",
+            "Entfernen Sie sie unter Verbindungen, um neue Nutzungen zu verhindern. Bestehende Clients müssen geschlossen werden.",
+            "新たな使用を防ぐには「接続」で削除してください。既存のクライアントは閉じる必要があります。",
+            "새 사용을 막으려면 연결에서 삭제하세요. 기존 클라이언트는 닫아야 합니다.",
+            "在“连接”中移除以阻止新的使用。必须关闭现有客户端。",
+        ],
+    ),
+    (
         "Remove the last N user turns, or restore files from a checkpoint",
         [
             "Quitar las últimas vueltas del usuario N, o restaurar archivos de un puesto de control",
@@ -14956,6 +16880,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "背景モニター{0}を削除します。",
             "제거된 배경 감시자 {0}.",
             "取消背景显示器{0}.",
+        ],
+    ),
+    (
+        "Removed queued {0} #{1}.",
+        [
+            "Se eliminó {0} #{1} de la cola.",
+            "Élément en attente {0} #{1} supprimé.",
+            "{0} Nr. {1} aus der Warteschlange entfernt.",
+            "キュー内の {0} #{1} を削除しました。",
+            "대기 중인 {0} #{1}를 삭제했습니다.",
+            "已移除排队的 {0} #{1}。",
         ],
     ),
     (
@@ -15432,6 +17367,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Restored {0} queued prompt to the composer.",
+        [
+            "Se ha restaurado {0} mensaje de la cola en el editor.",
+            "{0} message en attente a été restauré dans l’éditeur.",
+            "{0} eingereihte Eingabe wurde im Editor wiederhergestellt.",
+            "待機中のプロンプト {0} 件を入力欄に戻しました。",
+            "대기 중인 프롬프트 {0}개를 입력창으로 복원했습니다.",
+            "已将 {0} 条排队提示恢复到输入框。",
+        ],
+    ),
+    (
+        "Restored {0} queued prompts to the composer.",
+        [
+            "Se han restaurado {0} mensajes de la cola en el editor.",
+            "{0} messages en attente ont été restaurés dans l’éditeur.",
+            "{0} eingereihte Eingaben wurden im Editor wiederhergestellt.",
+            "待機中のプロンプト {0} 件を入力欄に戻しました。",
+            "대기 중인 프롬프트 {0}개를 입력창으로 복원했습니다.",
+            "已将 {0} 条排队提示恢复到输入框。",
+        ],
+    ),
+    (
         "Restored {0} queued prompt{1} to the composer.",
         [
             "Restaurado {0} queued prompt{1} al compositor.",
@@ -15568,6 +17525,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Review comments on an earlier plan: {0}. Recreate stale comments before leaving plan mode.",
+        [
+            "Comentarios sobre un plan anterior: {0}. Vuelve a crear los comentarios obsoletos antes de salir del modo de planificación.",
+            "Commentaires sur un plan précédent : {0}. Recréez les commentaires obsolètes avant de quitter le mode plan.",
+            "Kommentare zu einem früheren Plan: {0}. Erstelle veraltete Kommentare vor dem Verlassen des Planmodus neu.",
+            "以前の計画に対するレビューコメント: {0} 件。計画モードを終了する前に、古いコメントを作成し直してください。",
+            "이전 계획에 대한 검토 댓글: {0}개. 계획 모드를 종료하기 전에 오래된 댓글을 다시 작성하세요.",
+            "旧版计划的审阅评论：{0} 条。退出规划模式前，请重新创建过时的评论。",
+        ],
+    ),
+    (
         "Review summary · Enter saves a new conversation",
         [
             "Resumen de revisión · Enter ahorra una nueva conversación",
@@ -15620,6 +17588,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ワークスペースの信頼を取り消す",
             "작업 공간 신뢰 철회",
             "撤销工作区信任",
+        ],
+    ),
+    (
+        "Revoked",
+        [
+            "Revocado",
+            "Révoqué",
+            "Widerrufen",
+            "失効済み",
+            "취소됨",
+            "已撤销",
         ],
     ),
     (
@@ -15892,6 +17871,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Run command",
+        [
+            "Ejecutar comando",
+            "Exécuter la commande",
+            "Befehl ausführen",
+            "コマンドを実行",
+            "명령 실행",
+            "执行命令",
+        ],
+    ),
+    (
         "Run deixic-code to start a session.",
         [
             "Ejecute código desixic para iniciar una sesión.",
@@ -15944,6 +17934,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "操業 {0}",
             "실행 {0}",
             "运行{0}",
+        ],
+    ),
+    (
+        "Run {0} tool call",
+        [
+            "Ejecutar {0} llamada a herramientas",
+            "Exécuter {0} appel d’outil",
+            "{0} Werkzeugaufruf ausführen",
+            "ツール呼び出しを {0} 件実行",
+            "도구 호출 {0}회 실행",
+            "执行 {0} 次工具调用",
+        ],
+    ),
+    (
+        "Run {0} tool calls",
+        [
+            "Ejecutar {0} llamadas a herramientas",
+            "Exécuter {0} appels d’outils",
+            "{0} Werkzeugaufrufe ausführen",
+            "ツール呼び出しを {0} 件実行",
+            "도구 호출 {0}회 실행",
+            "执行 {0} 次工具调用",
         ],
     ),
     (
@@ -16010,6 +18022,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "実行時間制限",
             "시간 제한",
             "运行时间限制",
+        ],
+    ),
+    (
+        "S system · D schemas · R results · C conversation",
+        [
+            "S sistema · D esquemas · R resultados · C conversación",
+            "S système · D schémas · R résultats · C conversation",
+            "S System · D Schemata · R Ergebnisse · C Gespräch",
+            "S システム · D スキーマ · R 結果 · C 会話",
+            "S 시스템 · D 스키마 · R 결과 · C 대화",
+            "S 系统 · D 架构 · R 结果 · C 对话",
         ],
     ),
     (
@@ -16362,6 +18385,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Search files",
+        [
+            "Buscar archivos",
+            "Rechercher des fichiers",
+            "Dateien durchsuchen",
+            "ファイルを検索",
+            "파일 검색",
+            "搜索文件",
+        ],
+    ),
+    (
+        "Search for {0}",
+        [
+            "Buscar {0}",
+            "Rechercher {0}",
+            "Nach {0} suchen",
+            "{0} を検索",
+            "{0} 검색",
+            "搜索 {0}",
+        ],
+    ),
+    (
         "Search local session transcripts (user/assistant text and tool results).",
         [
             "Buscar transcripciones de sesión local (user/assistant texto y resultados de herramientas).",
@@ -16395,6 +18440,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Search web",
+        [
+            "Buscar en la web",
+            "Rechercher sur le web",
+            "Im Web suchen",
+            "ウェブを検索",
+            "웹 검색",
+            "搜索网页",
+        ],
+    ),
+    (
         "Search workspace files",
         [
             "Buscar archivos del espacio de trabajo",
@@ -16414,6 +18470,39 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "検索済み",
             "검색됨",
             "已搜索",
+        ],
+    ),
+    (
+        "Searched files",
+        [
+            "Se buscaron archivos",
+            "Recherche de fichiers effectuée",
+            "Dateien durchsucht",
+            "ファイルを検索しました",
+            "파일 검색 완료",
+            "已搜索文件",
+        ],
+    ),
+    (
+        "Searched for {0}",
+        [
+            "Se buscó {0}",
+            "Recherche de {0} effectuée",
+            "Nach {0} gesucht",
+            "{0} を検索しました",
+            "{0} 검색 완료",
+            "已搜索 {0}",
+        ],
+    ),
+    (
+        "Searched web",
+        [
+            "Se buscó en la web",
+            "Recherche web effectuée",
+            "Im Web gesucht",
+            "ウェブを検索しました",
+            "웹 검색 완료",
+            "已搜索网页",
         ],
     ),
     (
@@ -16458,6 +18547,39 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "テーマを選択",
             "테마 선택",
             "选择主题",
+        ],
+    ),
+    (
+        "Select a connection before rotating a key.",
+        [
+            "Selecciona una conexión antes de renovar una clave.",
+            "Sélectionnez une connexion avant de renouveler une clé.",
+            "Wählen Sie vor dem Erneuern eines Schlüssels eine Verbindung aus.",
+            "キーを更新する前に接続を選択してください。",
+            "키를 교체하기 전에 연결을 선택하세요.",
+            "轮换密钥前请选择连接。",
+        ],
+    ),
+    (
+        "Select a connection before setting a default.",
+        [
+            "Selecciona una conexión antes de establecerla como predeterminada.",
+            "Sélectionnez une connexion avant de la définir par défaut.",
+            "Wählen Sie eine Verbindung aus, bevor Sie sie als Standard festlegen.",
+            "既定に設定する前に接続を選択してください。",
+            "기본값으로 설정하기 전에 연결을 선택하세요.",
+            "设置默认值前请选择连接。",
+        ],
+    ),
+    (
+        "Select it explicitly with MAESTRO_CONNECTION, or set a default in Connections.",
+        [
+            "Selecciónalo explícitamente con MAESTRO_CONNECTION o establece un valor predeterminado en Conexiones.",
+            "Sélectionnez-la explicitement avec MAESTRO_CONNECTION ou définissez une valeur par défaut dans Connexions.",
+            "Wählen Sie sie ausdrücklich mit MAESTRO_CONNECTION aus oder legen Sie unter Verbindungen einen Standard fest.",
+            "MAESTRO_CONNECTION で明示的に選択するか、「接続」で既定値を設定してください。",
+            "MAESTRO_CONNECTION으로 직접 선택하거나 연결에서 기본값을 설정하세요.",
+            "请通过 MAESTRO_CONNECTION 明确选择它，或在“连接”中设置默认值。",
         ],
     ),
     (
@@ -17437,6 +19559,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Skills, agents, and conventions for the Vercel platform.",
+        [
+            "Habilidades, agentes y convenciones para la plataforma Vercel.",
+            "Compétences, agents et conventions pour la plateforme Vercel.",
+            "Skills, Agenten und Konventionen für die Vercel-Plattform.",
+            "Vercel プラットフォーム向けのスキル、エージェント、規約。",
+            "Vercel 플랫폼용 스킬, 에이전트, 규약.",
+            "适用于 Vercel 平台的技能、代理和约定。",
+        ],
+    ),
+    (
         "Skills: {0}",
         [
             "Habilidades: {0}",
@@ -17857,6 +19990,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Subscription",
+        [
+            "Suscripción",
+            "Abonnement",
+            "Abonnement",
+            "サブスクリプション",
+            "구독",
+            "订阅",
+        ],
+    ),
+    (
         "Summarize conversation",
         [
             "Summarize conversation",
@@ -18059,6 +20203,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "System message",
+        [
+            "Mensaje del sistema",
+            "Message système",
+            "Systemnachricht",
+            "システムメッセージ",
+            "시스템 메시지",
+            "系统消息",
+        ],
+    ),
+    (
         "System prompt",
         [
             "Inmediación del sistema",
@@ -18070,6 +20225,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     ("Tab", ["Tab", "Tab", "Tab", "Tab", "Tab", "Tab"]),
+    (
+        "Tab / Shift-Tab: move   Esc: cancel without granting access",
+        [
+            "Tab / Shift-Tab: mover   Esc: cancelar sin conceder acceso",
+            "Tab / Shift-Tab : déplacer   Esc : annuler sans accorder d’accès",
+            "Tab / Shift-Tab: wechseln   Esc: ohne Zugriffsfreigabe abbrechen",
+            "Tab / Shift-Tab: 移動   Esc: アクセスを許可せずキャンセル",
+            "Tab / Shift-Tab: 이동   Esc: 권한을 부여하지 않고 취소",
+            "Tab / Shift-Tab：移动   Esc：取消且不授予权限",
+        ],
+    ),
     (
         "Task",
         ["Tarea", "Tâche", "Aufgabe", "タスク", "작업", "任务"],
@@ -18120,6 +20286,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "エージェントは実行されません。",
             "에이전트는 실행되지 않습니다.",
             "特工没有逃跑",
+        ],
+    ),
+    (
+        "The native client reads the credential when you select this connection.",
+        [
+            "El cliente nativo lee la credencial cuando seleccionas esta conexión.",
+            "Le client natif lit l’identifiant lorsque vous sélectionnez cette connexion.",
+            "Der native Client liest die Anmeldedaten, wenn Sie diese Verbindung auswählen.",
+            "この接続を選択すると、ネイティブクライアントが認証情報を読み取ります。",
+            "이 연결을 선택하면 네이티브 클라이언트가 자격 증명을 읽습니다.",
+            "选择此连接时，原生客户端会读取凭据。",
         ],
     ),
     (
@@ -18640,6 +20817,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "トラスト・ディレクトリ",
             "Trust 디렉토리",
             "信任目录",
+        ],
+    ),
+    (
+        "Trust tiers: **official** (EvalOps) · **curated** (reviewed third-party) · **community**.\n",
+        [
+            "Niveles de confianza: **oficial** (EvalOps) · **seleccionado** (terceros revisados) · **comunidad**.\n",
+            "Niveaux de confiance : **officiel** (EvalOps) · **sélectionné** (tiers examinés) · **communauté**.\n",
+            "Vertrauensstufen: **offiziell** (EvalOps) · **ausgewählt** (geprüfte Drittanbieter) · **Community**.\n",
+            "信頼レベル: **公式**（EvalOps）· **厳選**（審査済みサードパーティ）· **コミュニティ**。\n",
+            "신뢰 등급: **공식** (EvalOps) · **선별** (검토된 타사) · **커뮤니티**.\n",
+            "信任级别：**官方**（EvalOps）· **精选**（经审核的第三方）· **社区**。\n",
         ],
     ),
     (
@@ -20925,6 +23113,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Use `/harness rollback <revision>` to restore a saved snapshot.\n",
+        [
+            "Usa `/harness rollback <revision>` para restaurar una instantánea guardada.\n",
+            "Utilisez `/harness rollback <revision>` pour restaurer un instantané enregistré.\n",
+            "Stellen Sie mit `/harness rollback <revision>` eine gespeicherte Momentaufnahme wieder her.\n",
+            "`/harness rollback <revision>` で保存済みスナップショットを復元できます。\n",
+            "`/harness rollback <revision>`으로 저장된 스냅샷을 복원하세요.\n",
+            "使用 `/harness rollback <revision>` 恢复已保存的快照。\n",
+        ],
+    ),
+    (
+        "Use `/refine propose <scope> <kind> <name> <content> --evidence <text>` to stage a reviewed change.\n",
+        [
+            "Usa `/refine propose <scope> <kind> <name> <content> --evidence <text>` para preparar un cambio para revisión.\n",
+            "Utilisez `/refine propose <scope> <kind> <name> <content> --evidence <text>` pour préparer une modification à examiner.\n",
+            "Bereiten Sie mit `/refine propose <scope> <kind> <name> <content> --evidence <text>` eine Änderung zur Prüfung vor.\n",
+            "`/refine propose <scope> <kind> <name> <content> --evidence <text>` で変更をレビュー用に準備できます。\n",
+            "`/refine propose <scope> <kind> <name> <content> --evidence <text>`로 검토할 변경을 준비하세요.\n",
+            "使用 `/refine propose <scope> <kind> <name> <content> --evidence <text>` 准备待审核的更改。\n",
+        ],
+    ),
+    (
         "Use `/tools` to review the enabled tool surface.",
         [
             "Utilice `/tools` para revisar la superficie de herramientas habilitada.",
@@ -20980,6 +23190,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "User message",
+        [
+            "Mensaje del usuario",
+            "Message utilisateur",
+            "Benutzernachricht",
+            "ユーザーのメッセージ",
+            "사용자 메시지",
+            "用户消息",
+        ],
+    ),
+    (
         "Validated scenario {0} ({1} assertion(s)).",
         [
             "Escenario validado {0} ({1} aserción(s)).",
@@ -21022,6 +23243,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "必要な価値。 使用法: deixicコード構成セット<key> <value>",
             "견적 요청 사용법: deixic 부호 설정 <key> <value>",
             "所需价值。 用法:deixic-code配置集 <key><value>",
+        ],
+    ),
+    (
+        "Verified",
+        [
+            "Verificado",
+            "Vérifié",
+            "Verifiziert",
+            "検証済み",
+            "검증됨",
+            "已验证",
         ],
     ),
     (
@@ -21495,6 +23727,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Workload identity",
+        [
+            "Identidad de carga de trabajo",
+            "Identité de charge de travail",
+            "Workload-Identität",
+            "ワークロード ID",
+            "워크로드 ID",
+            "工作负载身份",
+        ],
+    ),
+    (
         "Workspace files refreshed",
         [
             "Archivos de espacio de trabajo actualizados",
@@ -21604,6 +23847,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "すでにこのワークスペースの評価を共有しました。 7日後に別の共有ができます。",
             "당신은 이미이 작업 공간에 대한 평가를 공유. 7 일 후에 또 다른 것을 공유할 수 있습니다.",
             "您已经共享了此工作空间的评分 。 7天后你可以再分享一个",
+        ],
+    ),
+    (
+        "Your password stays out of chat, tool results, and saved task history.",
+        [
+            "Tu contraseña no aparece en el chat, los resultados de herramientas ni el historial guardado de tareas.",
+            "Votre mot de passe n’apparaît ni dans le chat, ni dans les résultats des outils, ni dans l’historique enregistré des tâches.",
+            "Ihr Passwort erscheint weder im Chat noch in Werkzeugergebnissen oder im gespeicherten Aufgabenverlauf.",
+            "パスワードはチャット、ツールの結果、保存されたタスク履歴に含まれません。",
+            "비밀번호는 채팅, 도구 결과, 저장된 작업 기록에 포함되지 않습니다.",
+            "您的密码不会出现在聊天、工具结果或保存的任务历史中。",
         ],
     ),
     (
@@ -21728,6 +23982,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "[{0}] Allow model use   (Space to choose, Enter to save)",
+        [
+            "[{0}] Permitir uso de modelos   (Space para elegir, Enter para guardar)",
+            "[{0}] Autoriser l’utilisation des modèles   (Space pour choisir, Enter pour enregistrer)",
+            "[{0}] Modellnutzung erlauben   (Space zum Auswählen, Enter zum Speichern)",
+            "[{0}] モデルの使用を許可（Space で選択、Enter で保存）",
+            "[{0}] 모델 사용 허용   (Space로 선택, Enter로 저장)",
+            "[{0}] 允许使用模型（Space 选择，Enter 保存）",
+        ],
+    ),
+    (
         "[−] collapse",
         [
             "[−] contraer",
@@ -21783,6 +24048,10 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "active",
+        ["activo", "actif", "aktiv", "有効", "활성", "活动中"],
+    ),
+    (
         "after /",
         [
             "después /",
@@ -21802,6 +24071,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "ターン終了後",
             "회전 끝 후에",
             "回合结束后",
+        ],
+    ),
+    (
+        "agents",
+        [
+            "agentes",
+            "agents",
+            "Agenten",
+            "エージェント",
+            "에이전트",
+            "代理",
         ],
     ),
     (
@@ -21886,6 +24166,28 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "applied",
+        [
+            "aplicado",
+            "appliqué",
+            "übernommen",
+            "適用済み",
+            "적용됨",
+            "已应用",
+        ],
+    ),
+    (
+        "approvals:{0}",
+        [
+            "aprobaciones:{0}",
+            "approbations:{0}",
+            "Freigaben:{0}",
+            "承認:{0}",
+            "승인:{0}",
+            "审批:{0}",
+        ],
+    ),
+    (
         "approve",
         ["Aprobar", "Approuver", "Genehmigen", "承認", "승인", "批准"],
     ),
@@ -21920,6 +24222,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "次のツール境界で",
             "다음 도구 경계에서",
             "下一个工具边界",
+        ],
+    ),
+    (
+        "attach:{0}",
+        [
+            "adjuntos:{0}",
+            "pièces jointes:{0}",
+            "Anhänge:{0}",
+            "添付:{0}",
+            "첨부:{0}",
+            "附件:{0}",
         ],
     ),
     (
@@ -21958,12 +24271,12 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     (
         "blocked",
         [
-            "Bloqueado",
-            "Bloqué",
-            "Blockiert",
+            "bloqueado",
+            "bloqué",
+            "blockiert",
             "ブロック中",
             "차단됨",
-            "已阻止",
+            "受阻",
         ],
     ),
     (
@@ -22100,6 +24413,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Comando", "Commande", "Befehl", "コマンド", "명령", "命令"],
     ),
     (
+        "commands",
+        [
+            "comandos",
+            "commandes",
+            "Befehle",
+            "コマンド",
+            "명령",
+            "命令",
+        ],
+    ),
+    (
         "compact",
         [
             "Compacto",
@@ -22108,6 +24432,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "コンパクト",
             "간략하게",
             "紧凑",
+        ],
+    ),
+    (
+        "complete",
+        [
+            "completado",
+            "terminé",
+            "abgeschlossen",
+            "完了",
+            "완료",
+            "已完成",
         ],
     ),
     (
@@ -22178,6 +24513,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "接続ソースファイルは通常のファイルではありません",
             "연결 소스 파일은 일반 파일이 아닙니다.",
             "连接源文件不是普通文件",
+        ],
+    ),
+    (
+        "connections",
+        [
+            "conexiones",
+            "connexions",
+            "Verbindungen",
+            "接続",
+            "연결",
+            "连接",
         ],
     ),
     (
@@ -22475,6 +24821,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "directory",
+        [
+            "carpeta",
+            "dossier",
+            "Verzeichnis",
+            "ディレクトリ",
+            "디렉터리",
+            "目录",
+        ],
+    ),
+    (
         "disabled",
         [
             "Desactivado",
@@ -22604,6 +24961,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "esc 閉じる",
             "esc 닫기",
             "关闭",
+        ],
+    ),
+    (
+        "estimated (model tokenizer unavailable)",
+        [
+            " estimado (tokenizador del modelo no disponible)",
+            "estimation (tokeniseur du modèle indisponible)",
+            "geschätzt (Modell-Tokenizer nicht verfügbar)",
+            "推定（モデルのトークナイザーが利用不可）",
+            "추정 (모델 토크나이저 사용 불가)",
+            "估算（模型分词器不可用）",
         ],
     ),
     (
@@ -22777,7 +25145,7 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     ),
     (
         "file",
-        ["Archivo", "Fichier", "Datei", "ファイル", "파일", "文件"],
+        ["archivo", "fichier", "Datei", "ファイル", "파일", "文件"],
     ),
     (
         "file changes",
@@ -22923,6 +25291,7 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     ("high", ["Alto", "Élevé", "Hoch", "高", "높음", "高"]),
+    ("hooks", ["hooks", "hooks", "Hooks", "フック", "훅", "钩子"]),
     (
         "hooks:{0}",
         [
@@ -23131,6 +25500,18 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "管理されたセットアップ ワーカーは失敗しました",
             "관리 설정 worker 실패",
             "管理设置工人失败",
+        ],
+    ),
+    ("mcp", ["MCP", "MCP", "MCP", "MCP", "MCP", "MCP"]),
+    (
+        "measured with the model tokenizer",
+        [
+            "medido con el tokenizador del modelo",
+            "mesuré avec le tokeniseur du modèle",
+            "mit dem Modell-Tokenizer gemessen",
+            "モデルのトークナイザーで計測",
+            "모델 토크나이저로 측정",
+            "使用模型分词器测量",
         ],
     ),
     ("medium", ["Medio", "Moyen", "Mittel", "中", "중간", "中"]),
@@ -23363,6 +25744,10 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Modelo", "Modèle", "Modell", "モデル", "모델", "模型"],
     ),
     (
+        "model ",
+        ["modelo ", "modèle ", "Modell ", "モデル ", "모델 ", "模型 "],
+    ),
+    (
         "moved down",
         [
             "movido",
@@ -23470,6 +25855,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "no components",
+        [
+            "sin componentes",
+            "aucun composant",
+            "keine Komponenten",
+            "構成要素なし",
+            "구성 요소 없음",
+            "无组件",
+        ],
+    ),
+    (
         "no summary",
         [
             "no resumen",
@@ -23509,9 +25905,9 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     ),
     (
         "off",
-        ["Desactivado", "Désactivé", "Aus", "オフ", "끔", "关闭"],
+        ["desactivado", "désactivé", "aus", "オフ", "꺼짐", "关闭"],
     ),
-    ("on", ["Activado", "Activé", "Ein", "オン", "켬", "开启"]),
+    ("on", ["activado", "activé", "ein", "オン", "켜짐", "开启"]),
     (
         "on-failure",
         [
@@ -23572,11 +25968,22 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "paused",
+        [
+            "pausado",
+            "en pause",
+            "pausiert",
+            "一時停止中",
+            "일시 중지됨",
+            "已暂停",
+        ],
+    ),
+    (
         "pending",
         [
-            "Pendiente",
-            "En attente",
-            "Ausstehend",
+            "pendiente",
+            "en attente",
+            "ausstehend",
             "保留中",
             "대기 중",
             "待处理",
@@ -23747,6 +26154,7 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "静默",
         ],
     ),
+    ("read", ["leído", "lu", "gelesen", "既読", "읽음", "已读"]),
     (
         "read-only",
         [
@@ -23771,6 +26179,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "パブリックA2A URLを要求せずに既存のプラットフォームのハートビートをリフレッシュ",
             "공공 A2A URL를 요구하는 없이 기존 플랫폼 심박수를 새로 고침하십시오",
             "刷新已有的平台心跳而不需要公众的A2AURL",
+        ],
+    ),
+    (
+        "rejected",
+        [
+            "rechazado",
+            "rejeté",
+            "abgelehnt",
+            "却下済み",
+            "거부됨",
+            "已拒绝",
         ],
     ),
     (
@@ -23910,6 +26329,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Quitar", "Retirer", "Entfernen", "削除", "제거", "移除"],
     ),
     (
+        "resource",
+        [
+            "recurso",
+            "ressource",
+            "Ressource",
+            "リソース",
+            "리소스",
+            "资源",
+        ],
+    ),
+    (
         "resume the session writer",
         [
             "reanudar la sesión escritor",
@@ -24006,6 +26436,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ["Sesión", "Session", "Sitzung", "セッション", "세션", "会话"],
     ),
     (
+        "session {0}",
+        [
+            "sesión {0}",
+            "session {0}",
+            "Sitzung {0}",
+            "セッション {0}",
+            "세션 {0}",
+            "会话 {0}",
+        ],
+    ),
+    (
         "sessions dir: {0}",
         [
             "directorio de sesiones: {0}",
@@ -24014,6 +26455,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "セッションディレクトリ: {0}",
             "세션 디렉터리: {0}",
             "会话目录：{0}",
+        ],
+    ),
+    (
+        "skills",
+        [
+            "habilidades",
+            "compétences",
+            "Skills",
+            "スキル",
+            "스킬",
+            "技能",
         ],
     ),
     (
@@ -24212,6 +26664,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "state.jsonトークンUsageBySessionId {0}は有効でなければなりません",
             "state.json TokenUsageBySessionId {0} 유효해야 합니다",
             "state.json 按会话编号 {0}必须是有效的",
+        ],
+    ),
+    (
+        "step {0}/{1}",
+        [
+            "paso {0}/{1}",
+            "étape {0}/{1}",
+            "Schritt {0}/{1}",
+            "ステップ {0}/{1}",
+            "단계 {0}/{1}",
+            "步骤 {0}/{1}",
         ],
     ),
     (
@@ -24645,6 +27108,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "unread",
+        [
+            "sin leer",
+            "non lu",
+            "ungelesen",
+            "未読",
+            "읽지 않음",
+            "未读",
+        ],
+    ),
+    (
         "unsupported --format: {0} (use json|md|text)",
         [
             "unsupported --format: {0} (use json sometidamd sometidatext)",
@@ -24730,6 +27204,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "詳細",
             "자세히",
             "详细",
+        ],
+    ),
+    (
+        "version ",
+        [
+            "versión ",
+            "version ",
+            "Version ",
+            "バージョン ",
+            "버전 ",
+            "版本 ",
         ],
     ),
     (
@@ -24832,6 +27317,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "workspace",
+        [
+            "espacio de trabajo",
+            "espace de travail",
+            "Arbeitsbereich",
+            "ワークスペース",
+            "작업 공간",
+            "工作区",
+        ],
+    ),
+    (
         "workspace manifest at {0} must use schemaVersion {1}",
         [
             "espacio de trabajo manifiesto en {0} debe utilizar schemaVersion {1}",
@@ -24887,6 +27383,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "{0} API key",
+        [
+            "Clave de API de {0}",
+            "Clé API {0}",
+            "{0}-API-Schlüssel",
+            "{0} API キー",
+            "{0} API 키",
+            "{0} API 密钥",
+        ],
+    ),
+    (
         "{0} Actions Require Approval",
         [
             "{0} acciones requieren aprobación",
@@ -24906,6 +27413,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "{0} ローカルに輸出するために押します。",
             "{0} 로컬로 수출하기.",
             "{0} 按 a 输出当地。",
+        ],
+    ),
+    (
+        "{0} Refresh failed: {1}",
+        [
+            "{0} No se pudo actualizar: {1}",
+            "{0} Échec de l’actualisation : {1}",
+            "{0} Aktualisierung fehlgeschlagen: {1}",
+            "{0} 更新に失敗しました: {1}",
+            "{0} 새로 고침 실패: {1}",
+            "{0} 刷新失败：{1}",
         ],
     ),
     (
@@ -25019,14 +27537,58 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "{0} file",
+        [
+            "{0} archivo",
+            "{0} fichier",
+            "{0} Datei",
+            "{0} 個のファイル",
+            "파일 {0}개",
+            "{0} 个文件",
+        ],
+    ),
+    (
+        "{0} file: {1}",
+        [
+            "{0} archivo: {1}",
+            "{0} fichier : {1}",
+            "{0} Datei: {1}",
+            "{0} 個のファイル: {1}",
+            "파일 {0}개: {1}",
+            "{0} 个文件：{1}",
+        ],
+    ),
+    (
         "{0} files",
         [
             "{0} archivos",
             "{0} fichiers",
             "{0} Dateien",
-            "{0} ファイル",
-            "{0} 파일",
-            "{0}个文件",
+            "{0} 個のファイル",
+            "파일 {0}개",
+            "{0} 个文件",
+        ],
+    ),
+    (
+        "{0} files: {1}",
+        [
+            "{0} archivos: {1}",
+            "{0} fichiers : {1}",
+            "{0} Dateien: {1}",
+            "{0} 個のファイル: {1}",
+            "파일 {0}개: {1}",
+            "{0} 个文件：{1}",
+        ],
+    ),
+    (
+        "{0} is now the default for its provider.",
+        [
+            "{0} es ahora la conexión predeterminada de su proveedor.",
+            "{0} est désormais la connexion par défaut de son fournisseur.",
+            "{0} ist jetzt die Standardverbindung für den Anbieter.",
+            "{0} をプロバイダーの既定の接続に設定しました。",
+            "{0}가 해당 제공업체의 기본 연결로 설정되었습니다.",
+            "{0} 现已成为其提供商的默认连接。",
         ],
     ),
     (
@@ -25038,6 +27600,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "{0}マッチングスキル",
             "{0} 어울리는 기술 (s).",
             "{0} 匹配技能(s).",
+        ],
+    ),
+    (
+        "{0} mode: {1}",
+        [
+            "Modo de {0}: {1}",
+            "Mode {0} : {1}",
+            "Modus {0}: {1}",
+            "{0} のモード: {1}",
+            "{0} 모드: {1}",
+            "{0} 模式：{1}",
         ],
     ),
     (
@@ -25371,6 +27944,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "{0} was removed.",
+        [
+            "Se eliminó {0}.",
+            "{0} a été supprimé.",
+            "{0} wurde entfernt.",
+            "{0} を削除しました。",
+            "{0}를 삭제했습니다.",
+            "已移除 {0}。",
+        ],
+    ),
+    (
         "{0} web for {1}",
         [
             "{0} web para {1}",
@@ -25439,12 +28023,23 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
     (
         "{0} · {1}k context · {2}",
         [
-            "{0} · contexto {1}k · {2}",
-            "{0} · {1}k contexte · {2}",
+            "{0} · contexto de {1}k · {2}",
+            "{0} · contexte de {1}k · {2}",
             "{0} · {1}k Kontext · {2}",
-            "{0}・{1}k コンテキスト・{2}",
+            "{0} · {1}k コンテキスト · {2}",
             "{0} · {1}k 컨텍스트 · {2}",
-            "{0} · {1}k 语境 \\ {2}",
+            "{0} · {1}k 上下文 · {2}",
+        ],
+    ),
+    (
+        "{0} ○ {1} (disabled)",
+        [
+            "{0} ○ {1} (desactivado)",
+            "{0} ○ {1} (désactivé)",
+            "{0} ○ {1} (deaktiviert)",
+            "{0} ○ {1}（無効）",
+            "{0} ○ {1} (비활성화됨)",
+            "{0} ○ {1}（已禁用）",
         ],
     ),
     (
@@ -25987,6 +28582,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "× Failed",
+        [
+            "× Falló",
+            "× Échec",
+            "× Fehlgeschlagen",
+            "× 失敗",
+            "× 실패",
+            "× 失败",
+        ],
+    ),
+    (
         "… more queued input",
         [
             "... más información queued",
@@ -26006,6 +28612,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "... すべて表示 {0} モデル (Tab)",
             "... 모든 {0} 모델을 보여줍니다 (Tab)",
             "...显示所有{0}型号(Tab)",
+        ],
+    ),
+    (
+        "↑ ↓ select  ← → change  Enter confirm  Esc cancel",
+        [
+            "↑ ↓ elegir  ← → cambiar  Enter confirmar  Esc cancelar",
+            "↑ ↓ choisir  ← → modifier  Enter confirmer  Esc annuler",
+            "↑ ↓ auswählen  ← → ändern  Enter bestätigen  Esc abbrechen",
+            "↑ ↓ 選択  ← → 変更  Enter 確定  Esc キャンセル",
+            "↑ ↓ 선택  ← → 변경  Enter 확인  Esc 취소",
+            "↑ ↓ 选择  ← → 更改  Enter 确认  Esc 取消",
         ],
     ),
     (
@@ -26083,6 +28700,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "◀ {0} ランニング ・ {1} 必要性入力 /workers",
             "{0} 실행 · {1} 입력 /workers",
             "↗ {0} 运行... {1} 需要输入 /workers",
+        ],
+    ),
+    (
+        "✓ Passed  ",
+        [
+            "✓ Correcto  ",
+            "✓ Réussi  ",
+            "✓ Bestanden  ",
+            "✓ 成功  ",
+            "✓ 통과  ",
+            "✓ 通过  ",
         ],
     ),
 ];

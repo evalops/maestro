@@ -181,14 +181,14 @@ impl WelcomeScreen {
 
         if let Some(ref version) = self.version {
             lines.push(Line::from(vec![
-                Span::raw("version "),
+                Span::raw(maestro_ui::localization::tr("version ")),
                 Span::styled(version.clone(), Style::default().fg(Color::DarkGray)),
             ]));
         }
 
         if let Some(ref model) = self.model {
             lines.push(Line::from(vec![
-                Span::raw("model "),
+                Span::raw(maestro_ui::localization::tr("model ")),
                 Span::styled(model.clone(), Style::default().fg(Color::DarkGray)),
             ]));
         }
@@ -198,7 +198,10 @@ impl WelcomeScreen {
             lines.push(Line::from(location.clone()));
         }
         if let Some(session_id) = &self.session_id {
-            lines.push(Line::from(format!("session {session_id}")));
+            lines.push(Line::from(maestro_ui::localization::format(
+                "session {0}",
+                std::slice::from_ref(session_id),
+            )));
         }
 
         let _ = self.show_hints;

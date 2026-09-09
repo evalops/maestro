@@ -23,9 +23,9 @@ Current version: `2026-08-07`
 
 Source of truth:
 
-- generated constants: [packages/tui-rs/src/headless/generated_protocol.rs](../../packages/tui-rs/src/headless/generated_protocol.rs)
+- generated constants: [packages/local-host-rs/src/headless/generated_protocol.rs](../../packages/local-host-rs/src/headless/generated_protocol.rs)
 - runtime message shapes: [src/cli/headless-protocol.ts](../../src/cli/headless-protocol.ts)
-- transport implementation: [packages/tui-rs/src/headless_server.rs](../../packages/tui-rs/src/headless_server.rs)
+- transport implementation: [packages/local-host-rs/src/headless_server.rs](../../packages/local-host-rs/src/headless_server.rs)
 - hosted runner contract: [docs/protocols/hosted-runner-contract.md](./hosted-runner-contract.md)
 - hosted runner retention: [docs/protocols/hosted-runner-retention.md](./hosted-runner-retention.md)
 - conformance suite: [docs/protocols/headless-conformance.md](./headless-conformance.md)

@@ -83,14 +83,19 @@ impl RewindPicker {
             .take(MAX_LISTED)
             .map(|entry| entry.path.as_str())
             .collect();
-        let mut summary = format!(
-            "{} file{}: {}",
-            total,
-            if total == 1 { "" } else { "s" },
-            listed.join(", ")
+        let mut summary = maestro_ui::localization::format(
+            if total == 1 {
+                "{0} file: {1}"
+            } else {
+                "{0} files: {1}"
+            },
+            &[total.to_string(), listed.join(", ")],
         );
         if total > MAX_LISTED {
-            summary.push_str(&format!(", +{} more", total - MAX_LISTED));
+            summary.push_str(&maestro_ui::localization::format(
+                ", +{0} more",
+                &[(total - MAX_LISTED).to_string()],
+            ));
         }
         summary
     }

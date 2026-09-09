@@ -2352,7 +2352,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 })
             };
             if let Some(prompt) = loop_prompt {
-                self.state.status.replace(format!("Loop: \"{prompt}\""));
+                self.state.status.replace(
+                    self.state
+                        .locale
+                        .format("Loop: \"{0}\"", std::slice::from_ref(&prompt)),
+                );
                 self.submit_prompt(prompt).await?;
                 needs_redraw = true;
             }
@@ -2373,9 +2377,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 match self.goal_store.enforce_limits() {
                     Ok(Some(reason)) => {
                         self.goal_auto_continue_armed = false;
-                        self.state
-                            .status
-                            .replace("Goal auto-continue stopped (wall-clock budget)".to_string());
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Goal auto-continue stopped (wall-clock budget)")
+                                .to_string(),
+                        );
                         self.state.add_system_message(self.state.locale.format("Goal auto-continue stopped: {0}. Use `/goal resume` to start a new time window.", std::slice::from_ref(&(reason))));
                         needs_redraw = true;
                     }
@@ -2403,7 +2410,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     // but do not increment auto_continue_count or call submit.
                     self.goal_auto_continue_armed = false;
                     self.state.status.replace(
-                        "Goal auto-continue waiting for agent (sign in to EvalOps Identity, then configure a provider)".to_string(),
+                        self.state.locale.translate("Goal auto-continue waiting for agent (sign in to EvalOps Identity, then configure a provider)").to_string(),
                     );
                     needs_redraw = true;
                 } else if let Some(prompt) = self.goal_store.continuation_prompt() {
@@ -2422,13 +2429,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             .map(|g| g.max_turns)
                             .unwrap_or(0);
                         let _ = self.goal_store.note_auto_continue_submitted();
-                        self.state
-                            .status
-                            .replace(format!("Goal auto-continue stopped (safety max {max})"));
+                        self.state.status.replace(self.state.locale.format(
+                            "Goal auto-continue stopped (safety max {0})",
+                            &[(max).to_string()],
+                        ));
                         self.state.add_system_message(self.state.locale.format("Goal auto-continue hit safety max_turns={0}. Mark goals done with the `update_goal` tool (or `/goal complete`). Use `/goal resume` or `/goal auto on` to re-arm.", &[(max).to_string()]));
                         needs_redraw = true;
                     } else {
-                        self.state.status.replace("Goal auto-continue".to_string());
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Goal auto-continue")
+                                .to_string(),
+                        );
                         match self
                             .submit_prompt_with_kind(prompt, crate::agent::PromptKind::Prompt)
                             .await
@@ -2446,7 +2459,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                                 // Agent missing or session blocked — do not burn
                                 // the safety counter. Leave disarmed.
                                 self.state.status.replace(
-                                    "Goal auto-continue skipped (agent unavailable)".to_string(),
+                                    self.state
+                                        .locale
+                                        .translate("Goal auto-continue skipped (agent unavailable)")
+                                        .to_string(),
                                 );
                                 needs_redraw = true;
                             }
@@ -3436,7 +3452,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                         "Goal {0} marked **complete** (via `update_goal`). Auto-continue stopped.",
                         std::slice::from_ref(&(g.id)),
                     ));
-                    self.state.status.replace(format!("Goal {} complete", g.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} complete", std::slice::from_ref(&g.id)),
+                    );
                 }
             }
             Some(g) if matches!(g.status, crate::goal::GoalStatus::Blocked) => {
@@ -3450,7 +3470,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                         "Goal {0} marked **blocked** (via `update_goal`): {1}",
                         &[(g.id).clone(), (reason).to_string()],
                     ));
-                    self.state.status.replace(format!("Goal {} blocked", g.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} blocked", std::slice::from_ref(&g.id)),
+                    );
                 }
             }
             None => {
@@ -3468,7 +3492,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     )
                 {
                     self.state.add_system_message(self.state.locale.format("Goal {0} finished (`update_goal` complete or `/goal complete`). Auto-continue stopped.", &[prev_id.as_deref().unwrap_or("?").to_string()]));
-                    self.state.status.replace("Goal complete".into());
+                    self.state
+                        .status
+                        .replace(self.state.locale.translate("Goal complete").into());
                 }
             }
             _ => {

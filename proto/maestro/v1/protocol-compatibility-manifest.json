@@ -17,19 +17,19 @@
   },
   "generatedFrom": [
     "proto/maestro/v1/headless.proto",
-    "packages/tui-rs/src/headless/generated_protocol.rs",
-    "packages/tui-rs/src/headless/messages.rs",
+    "packages/local-host-rs/src/headless/generated_protocol.rs",
+    "packages/local-host-rs/src/headless/messages.rs",
     "packages/runtime-contracts-rs/src/protocol.rs",
     "packages/runtime-contracts-rs/fixtures/headless-protocol-v1.json",
     "packages/runtime-contracts-rs/src/receipts.rs",
     "packages/runtime-contracts-rs/fixtures/runtime-receipt-v1.json",
     "packages/runtime-contracts-rs/fixtures/runtime-receipt-contract-v1.json",
-    "packages/tui-rs/src/transcript.rs",
-    "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+    "packages/local-host-rs/src/transcript.rs",
+    "packages/local-host-rs/src/hosted_runner/thread_protocol.rs",
     "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
-    "packages/tui-rs/src/hosted_runner_cli.rs",
-    "packages/tui-rs/src/hosted_runner.rs",
-    "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs"
+    "packages/local-host-rs/src/hosted_runner_cli.rs",
+    "packages/local-host-rs/src/hosted_runner.rs",
+    "packages/local-host-rs/src/hosted_runner/rendezvous_protocol.rs"
   ],
   "compatibility": {
     "headless": {

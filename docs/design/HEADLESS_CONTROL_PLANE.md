@@ -42,7 +42,7 @@ Current Maestro files and responsibilities:
   - global `requestId -> ActionApprovalService`
 - `src/server/client-tools-service.ts`
   - global `toolCallId -> pending client tool resolver`
-- `packages/tui-rs/src/headless/remote_transport.rs`
+- `packages/local-host-rs/src/headless/remote_transport.rs`
   - remote HTTP/SSE client for the current headless server contract
 
 This is a good foundation, but it leaves lifecycle gaps:
@@ -501,7 +501,7 @@ Update:
 
 - `src/server/routes.ts`
 - `src/server/handlers/headless-sessions.ts`
-- `packages/tui-rs/src/headless/remote_transport.rs`
+- `packages/local-host-rs/src/headless/remote_transport.rs`
 
 Deliverables:
 
@@ -564,9 +564,9 @@ Add remote transport and supervisor tests for:
 
 Likely homes:
 
-- `packages/tui-rs/src/headless/remote_transport.rs`
-- `packages/tui-rs/src/headless/supervisor.rs`
-- `packages/tui-rs/src/headless/session.rs`
+- `packages/local-host-rs/src/headless/remote_transport.rs`
+- `packages/local-host-rs/src/headless/supervisor.rs`
+- `packages/local-host-rs/src/headless/session.rs`
 
 ## Decision Notes
 
@@ -580,5 +580,5 @@ Likely homes:
 - `src/server/handlers/headless-sessions.ts`
 - `src/server/approval-store.ts`
 - `src/server/client-tools-service.ts`
-- `packages/tui-rs/src/headless/remote_transport.rs`
+- `packages/local-host-rs/src/headless/remote_transport.rs`
 - `https://github.com/openai/codex/tree/main/codex-rs/app-server`

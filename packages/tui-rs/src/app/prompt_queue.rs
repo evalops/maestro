@@ -362,9 +362,10 @@ impl App {
         self.state.set_input(&restored.content);
         self.update_slash_state();
         self.editing_queued_follow_up = Some(restored.clone());
-        self.state
-            .status
-            .replace(format!("Editing queued follow-up #{}.", restored.id));
+        self.state.status.replace(self.state.locale.format(
+            "Editing queued follow-up #{0}.",
+            &[(restored.id).to_string()],
+        ));
         Ok(true)
     }
 
@@ -507,11 +508,12 @@ impl App {
             None
         };
         self.state.status = Some(self.state.locale.format(
-            "Restored {0} queued prompt{1} to the composer.",
-            &[
-                (batch.len()).to_string(),
-                (if batch.len() == 1 { "" } else { "s" }).to_string(),
-            ],
+            if batch.len() == 1 {
+                "Restored {0} queued prompt to the composer."
+            } else {
+                "Restored {0} queued prompts to the composer."
+            },
+            &[batch.len().to_string()],
         ));
     }
 

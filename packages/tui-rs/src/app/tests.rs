@@ -3288,10 +3288,8 @@ fn open_plan_comments_block_approval() {
     });
     app.approve_plan();
     assert!(
-        app.state
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("1 open review comment"))
+        app.state.error.as_deref().is_some_and(|error| error
+            == "Open review comments prevent leaving plan mode: 1. Use `/plan comments`.")
     );
 }
 
@@ -3434,7 +3432,7 @@ fn stale_plan_comments_cannot_be_resolved_or_approved() {
         app.state
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("Plan changed"))
+            .is_some_and(|error| error == "Review comments on an earlier plan: 1. Recreate stale comments before leaving plan mode.")
     );
 
     app.handle_plan_review(PlanReviewAction::List);

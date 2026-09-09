@@ -7,8 +7,8 @@ use std::process::Stdio;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 
-use maestro_tui::checkpoints::{CheckpointStore, restore_latest};
-use maestro_tui::session::SessionManager;
+use maestro_local_host::checkpoints::{CheckpointStore, restore_latest};
+use maestro_local_host::session::SessionManager;
 
 use crate::http::{RequestHead, json_response, read_request_body};
 use crate::{

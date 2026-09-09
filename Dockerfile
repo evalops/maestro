@@ -9,6 +9,7 @@ COPY vendor/zstd-sys-2.0.16+zstd.1.5.7 ./vendor/zstd-sys-2.0.16+zstd.1.5.7
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/local-host-rs ./packages/local-host-rs
 COPY packages/sandbox-rs ./packages/sandbox-rs
 COPY packages/workspace-rs ./packages/workspace-rs
 COPY packages/codex-rs ./packages/codex-rs
@@ -40,6 +41,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/local-host-rs ./packages/local-host-rs
 COPY packages/sandbox-rs ./packages/sandbox-rs
 COPY packages/workspace-rs ./packages/workspace-rs
 COPY packages/codex-rs ./packages/codex-rs

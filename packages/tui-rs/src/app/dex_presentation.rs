@@ -141,8 +141,12 @@ impl App {
                 "A tiny bow from Dex.",
                 "Dex is all ears.",
             ];
-            self.dex_delight.notice =
-                Some(REACTIONS[self.dex_delight.pet_notice_index].to_string());
+            self.dex_delight.notice = Some(
+                self.state
+                    .locale
+                    .translate(REACTIONS[self.dex_delight.pet_notice_index])
+                    .to_string(),
+            );
             self.dex_delight.pet_notice_index =
                 (self.dex_delight.pet_notice_index + 1) % REACTIONS.len();
         }

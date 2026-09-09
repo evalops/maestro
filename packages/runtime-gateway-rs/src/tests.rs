@@ -4682,7 +4682,7 @@ fn capsule_deadline_cannot_leave_an_ambient_validator_process_running() {
             // starting the intentionally short capsule deadline so fixture
             // setup is not charged against the 2-second execution budget.
             let _executor_warmup =
-                maestro_tui::tools::ToolExecutor::new(scope.display().to_string());
+                maestro_local_host::tools::ToolExecutor::new(scope.display().to_string());
 
             let mut request = valid_code_writer_capsule();
             request["capsule"]["deadlineAt"] =
@@ -6197,7 +6197,7 @@ fn a2a_push_private_ip_check_includes_remaining_special_use_ranges() {
 fn a2a_push_private_ip_check_includes_ranges_that_only_net_guard_covered() {
     // These reached this call site while `a2a_push_ip_is_private` kept its own
     // copy of the range list. It now delegates to
-    // `maestro_tui::tools::net_guard::is_blocked_ip`.
+    // `maestro_local_host::tools::net_guard::is_blocked_ip`.
     for literal in [
         "192.0.2.1",          // documentation TEST-NET-1
         "198.51.100.1",       // documentation TEST-NET-2
@@ -13830,7 +13830,7 @@ fn enterprise_policy_admin_routes_are_implemented() {
 }
 #[test]
 fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
-    use maestro_tui::checkpoints::{Checkpoint, CheckpointStore, EntryKind, FileEntry};
+    use maestro_local_host::checkpoints::{Checkpoint, CheckpointStore, EntryKind, FileEntry};
     use sha2::{Digest, Sha256};
 
     let temp = unique_test_dir("maestro-undo-checkpoint");
