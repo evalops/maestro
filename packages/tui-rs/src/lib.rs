@@ -1408,3 +1408,7 @@ pub mod code_authority;
 
 /// Session-backed product issue drafts and the product feedback client.
 pub(crate) mod bug_report;
+
+pub mod localization;
+pub mod mcp_catalog;
+pub mod transcript_copy;

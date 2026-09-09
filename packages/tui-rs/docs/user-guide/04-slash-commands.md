@@ -37,7 +37,8 @@ This page lists **built-in** commands only. Skills and prompt templates can add 
 | `/zen` | | Toggle zen mode (minimal UI) |
 | `/compact-tools [on\|off\|toggle]` | | Toggle tool output folding |
 | `/footer [style]` | | Footer style: `rich`, `solo`, `history`, `clear` |
-| `/copy` | | Copy last message to clipboard |
+| `/copy [prompt\|response\|prompts\|responses\|turns <first-last>\|session\|all]` | | Copy conversation text or the session ID |
+| `/language [en\|es\|fr\|de\|ja\|ko\|zh-CN]` | | Choose and save the display language |
 | `/hotkeys […]` | `/keys`, `/shortcuts` | Show or manage keyboard shortcuts |
 
 ---
@@ -180,3 +181,44 @@ HTTPS origin. New logins request the narrow `product_issues:write` permission;
 existing web clients retain `console:write`. Installations with an explicit
 `IDENTITY_ALLOWED_PRODUCT_SCOPES` override must include `product_issues:write`.
 A missing permission leaves the draft saved and asks you to sign in again.
+
+## Connection presets, copying, and display languages
+
+`/mcp` opens the connection manager. Press `c` to browse 40 connection presets,
+then type a name, category, or search words. Use the arrow keys and Enter to add
+a connection to your user configuration. The detail area shows the endpoint or
+local command and its setup documentation. A check mark means configured, not
+authenticated. Existing connections are kept when you select the same preset
+again. No preset is installed by browsing alone.
+
+Back in the server list, `o` starts browser authentication through the existing
+MCP OAuth flow. Use `r` to retry, Space to enable or disable a server, and Enter
+to inspect its tools. Space in the tool view toggles the selected tool. Managed
+connections remain controlled by their owning configuration. Some providers
+require client registration or account permissions before authentication works;
+consult the displayed documentation. Presets describe connection setup, not a
+claim that your account is connected. Local presets require their listed tools.
+
+The same presets are available through `deixic-code mcp registry list` and
+`deixic-code mcp registry add linear`. Installation preserves other servers and
+refuses to overwrite an existing definition.
+
+`/copy` keeps its previous default: copy the latest assistant response. Use
+`/copy prompt` for the latest user prompt, `/copy prompts` or `/copy responses`
+for one side of the conversation, `/copy turns 2-4` for an inclusive turn range,
+and `/copy session` for the saved session ID. Each turn starts with a user
+prompt and includes the assistant replies before the next prompt. Numbering
+starts at one in the current transcript; compacted-away history is not
+reconstructed. `/copy all` copies the current conversation. Multi-message
+copies include role labels. System notices, side questions, tool payloads, and
+reasoning are excluded. Invalid or unavailable ranges leave the clipboard alone.
+
+`/language` opens the language picker, also available under Settings → Appearance
+and keyboard. You can enter `/language ja` directly. The preference is saved in
+the existing `ui.json` file and applies immediately. Initial locales are English,
+Spanish, French, German, Japanese, Korean, and Simplified Chinese. Translation
+currently covers the connection manager's navigation and empty states, language
+controls, and clipboard success/failure labels. Other text, including provider
+errors and preset descriptions, remains English. Commands, copied conversation
+text, model selection, and agent prompts are unchanged. Unknown saved language
+codes fall back to English.

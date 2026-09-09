@@ -220,6 +220,8 @@ pub struct RequestConfig {
     /// Enable prompt caching for system prompt (Anthropic only)
     /// When true, the system prompt will be marked for caching
     pub cache_system_prompt: bool,
+    /// Immutable preparation proof; dispatch rejects changes after preparation.
+    pub cache_topology: Option<crate::cache_topology::PreparedPrompt>,
 }
 
 impl Default for RequestConfig {
@@ -232,6 +234,7 @@ impl Default for RequestConfig {
             tools: Arc::new(Vec::new()),
             thinking: None,
             cache_system_prompt: false,
+            cache_topology: None,
         }
     }
 }

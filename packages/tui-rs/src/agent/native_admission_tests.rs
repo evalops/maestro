@@ -531,6 +531,7 @@ fn test_request_config_building() {
         tools: tools.into(),
         thinking: None,
         cache_system_prompt: true,
+        cache_topology: None,
     };
 
     assert_eq!(request_config.model, "claude-sonnet-4-5-20250514");

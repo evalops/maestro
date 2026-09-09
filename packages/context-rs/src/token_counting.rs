@@ -85,6 +85,8 @@ pub struct RequestCacheSnapshot {
     pub thinking_sha256: String,
     pub tools_sha256: String,
     pub prepared_at_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_topology: Option<maestro_ai::cache_topology::CacheTopology>,
 }
 
 impl RequestCacheSnapshot {
@@ -105,6 +107,10 @@ impl RequestCacheSnapshot {
                     .as_bytes(),
             ),
             prepared_at_seconds,
+            cache_topology: config
+                .cache_topology
+                .as_ref()
+                .map(|prepared| prepared.topology().clone()),
         }
     }
 

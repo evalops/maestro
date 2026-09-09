@@ -79,6 +79,7 @@ mod anthropic;
 pub mod app_message;
 #[cfg(feature = "bedrock")]
 mod bedrock;
+pub mod cache_topology;
 mod client;
 mod error;
 mod google;

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod boundary;
+pub mod cache_topology;
 pub mod contracts;
 pub mod delegation;
 mod launch_spec;

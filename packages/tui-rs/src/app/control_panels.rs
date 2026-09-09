@@ -5,6 +5,25 @@ use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::state::OutputDetail;
 
 impl App {
+    pub(super) fn apply_language(&mut self, locale: crate::localization::Locale) {
+        let mut prefs = crate::ui_prefs::UiPrefs::load_default();
+        prefs.display_language = Some(locale.code().into());
+        if let Err(error) = prefs.save_default() {
+            self.state.error = Some(format!(
+                "{}: {error}",
+                self.state
+                    .locale
+                    .text(crate::localization::TextKey::SaveFailed)
+            ));
+            return;
+        }
+        self.state.locale = locale;
+        self.mcp_manager.locale = locale;
+        self.ui_prefs = prefs;
+        self.state.error = None;
+        self.show_control_panel(ControlPanel::Language);
+    }
+
     pub(super) fn apply_output_detail(&mut self, detail: OutputDetail) {
         let mut prefs = crate::ui_prefs::UiPrefs::load_default();
         prefs.set_output_detail(detail);
@@ -26,7 +45,24 @@ impl App {
                     .description(description),
             );
         };
+        let locale = self.state.locale;
+        use crate::localization::TextKey;
         let title = match panel {
+            ControlPanel::Language => {
+                for choice in crate::localization::Locale::ALL {
+                    add(
+                        &format!("language {}", choice.code()),
+                        choice.name(),
+                        format!(
+                            "{}{}",
+                            choice.code(),
+                            if choice == locale { " ✓" } else { "" }
+                        ),
+                    );
+                }
+                locale.text(TextKey::Language).to_string()
+            }
+
             ControlPanel::Settings => {
                 add(
                     "settings account",
@@ -45,7 +81,7 @@ impl App {
                 );
                 add(
                     "settings appearance",
-                    "Appearance and keyboard",
+                    locale.text(TextKey::Appearance),
                     format!("Output: {}", self.state.output_detail().as_str()),
                 );
                 add(
@@ -53,7 +89,7 @@ impl App {
                     "Advanced",
                     "Diagnostics and runtime limits".into(),
                 );
-                "Settings".into()
+                locale.text(TextKey::Settings).into()
             }
             ControlPanel::Account => {
                 add(
@@ -109,6 +145,11 @@ impl App {
                 format!("Permissions · {}", self.state.approval_mode.label())
             }
             ControlPanel::Appearance => {
+                add(
+                    "language",
+                    locale.text(TextKey::Language),
+                    locale.name().into(),
+                );
                 add(
                     "settings output",
                     "Output detail",

@@ -6940,3 +6940,56 @@ async fn configuration_visibility_uses_live_oauth_scope_and_rejects_stale_origin
         1
     );
 }
+
+#[test]
+fn display_language_saves_reloads_and_does_not_change_model_or_transcript() {
+    if crate::config::test_reexec_for_process_isolation() {
+        return;
+    }
+    let temp = tempdir().unwrap();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    let mut app = new_test_app();
+    app.state
+        .add_user_message("Keep this prompt unchanged".into());
+    let model = app.current_model.clone();
+    let messages = app.state.messages.len();
+    app.apply_language(crate::localization::Locale::Japanese);
+    assert_eq!(app.state.locale, crate::localization::Locale::Japanese);
+    assert_eq!(app.current_model, model);
+    assert_eq!(app.state.messages.len(), messages);
+    assert_eq!(
+        app.state.messages.last().unwrap().content,
+        "Keep this prompt unchanged"
+    );
+    assert_eq!(
+        new_test_app().state.locale,
+        crate::localization::Locale::Japanese
+    );
+    let ui_path = temp.path().join("ui.json");
+    std::fs::remove_file(&ui_path).unwrap();
+    std::fs::create_dir(&ui_path).unwrap();
+    app.apply_language(crate::localization::Locale::Spanish);
+    assert_eq!(app.state.locale, crate::localization::Locale::Japanese);
+    assert!(app.state.error.is_some());
+}
+
+#[test]
+fn catalog_typing_does_not_trigger_manager_actions() {
+    if crate::config::test_reexec_for_process_isolation() {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let temp = tempdir().unwrap();
+        std::env::set_var("MAESTRO_HOME", temp.path());
+        let mut app = new_test_app();
+        app.active_modal = ActiveModal::McpManager;
+        app.mcp_manager.enter_catalog();
+        for ch in "linear".chars() {
+            app.handle_mcp_manager_key(KeyCode::Char(ch)).await.unwrap();
+        }
+        assert_eq!(app.active_modal, ActiveModal::McpManager);
+        assert!(app.mcp_manager.in_catalog());
+        assert_eq!(app.mcp_manager.selected_catalog().unwrap().id, "linear");
+        assert!(!temp.path().join("mcp.json").exists());
+    });
+}
