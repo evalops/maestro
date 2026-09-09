@@ -1111,6 +1111,46 @@ impl OpenAiClient {
             .zip(self.managed_workspace_id.as_deref())
     }
 
+    pub(crate) fn cache_scope(
+        &self,
+    ) -> Result<Option<maestro_runtime_contracts::cache_topology::CacheScope>> {
+        let Some((organization_id, workspace_id)) = self.managed_gateway_scope() else {
+            return Ok(None);
+        };
+        let Some(encoded) = self.managed_inference_authorization.as_deref() else {
+            return Ok(None);
+        };
+        let (authorization, _) = parse_managed_inference_authorization(encoded)?;
+        let context = managed_inference_context(&authorization)?;
+        let session_id = context
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|session| !session.trim().is_empty())
+            .context("managed cache topology requires an admitted session")?
+            .to_owned();
+        Ok(Some(
+            maestro_runtime_contracts::cache_topology::CacheScope {
+                organization_id: organization_id.into(),
+                workspace_id: workspace_id.into(),
+                session_id,
+            },
+        ))
+    }
+
+    pub(crate) fn cache_namespace(&self) -> Result<String> {
+        if let Some(scope) = self.cache_scope()? {
+            return Ok(scope.namespace());
+        }
+        // Older managed callers expose tenant scope but no session authority.
+        // Keep tenant separation for local diagnostics without inventing a session.
+        Ok(self.managed_gateway_scope().map_or_else(
+            || "local".into(),
+            |scope| {
+                maestro_runtime_contracts::cache_topology::digest(&("unattested-managed.v1", scope))
+            },
+        ))
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.managed_request_lineage =
             lineage_id.map(|lineage_id| ManagedRequestLineage { lineage_id });
@@ -1910,12 +1950,21 @@ impl OpenAiClient {
         } else {
             self.build_chat_request_body(messages, config)
         };
+        let legacy_affinity = if config.cache_topology.is_none() && !self.managed_gateway {
+            std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY").ok()
+        } else {
+            None
+        };
+        let affinity = config
+            .cache_topology
+            .as_ref()
+            .and_then(|prepared| prepared.affinity())
+            .or(legacy_affinity.as_deref());
+        // Hosted affinity is derived by the gateway from admitted scope and the resolved route.
         apply_prompt_cache_key(
             &mut body,
             self.route_provider.as_deref(),
-            std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY")
-                .ok()
-                .as_deref(),
+            if self.managed_gateway { None } else { affinity },
         );
         if let Some(object) = body.as_object_mut() {
             object.extend(self.request_extensions.clone());
@@ -1968,8 +2017,39 @@ impl OpenAiClient {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
+        crate::cache_topology::validate_prepared(messages, config)?;
+        if let Some(prepared) = &config.cache_topology {
+            prepared.validate_namespace(&self.cache_namespace()?)?;
+        }
+        if config.cache_topology.is_some()
+            && self.request_extensions.keys().any(|key| {
+                matches!(
+                    key.as_str(),
+                    "model"
+                        | "messages"
+                        | "input"
+                        | "system"
+                        | "instructions"
+                        | "tools"
+                        | "thinking"
+                        | "reasoning"
+                        | "reasoning_effort"
+                        | "tool_choice"
+                        | "cache_control"
+                        | "session_id"
+                        | "prompt_cache_key"
+                        | "prompt_cache_retention"
+                        | "prompt_cache_options"
+                        | "cache_prompt"
+                        | "cache_topology"
+                )
+            })
+        {
+            anyhow::bail!("cache topology forbids late prompt extensions");
+        }
+
         let is_responses_api = self.authorized_responses_api_for(&config.model)?;
-        let body = self.managed_request(self.build_request_body_for_api(
+        let mut body = self.managed_request(self.build_request_body_for_api(
             messages,
             config,
             is_responses_api,
@@ -1985,6 +2065,25 @@ impl OpenAiClient {
                 body.get(required).is_some() && body.get(forbidden).is_none(),
                 "managed inference request body does not match authorized endpoint"
             );
+        }
+
+        if let Some(scope) = self
+            .cache_scope()?
+            .filter(|_| crate::cache_topology::supports_hosted_wire_topology(&body))
+        {
+            use maestro_runtime_contracts::cache_topology::{
+                CacheTopology, HostedCacheTopology, wire_shape,
+            };
+            let mut topology = CacheTopology::prepare(
+                wire_shape(&body, scope.namespace()).map_err(anyhow::Error::msg)?,
+                None,
+            )
+            .map_err(anyhow::Error::msg)?;
+            if let Some(prepared) = &config.cache_topology {
+                topology.generation = prepared.topology().generation;
+                topology.transition = prepared.topology().transition;
+            }
+            body["cache_topology"] = serde_json::to_value(HostedCacheTopology { scope, topology })?;
         }
 
         // Get the appropriate API URL for this model, honoring any custom
@@ -3594,6 +3693,18 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                 .is_none()
             );
             assert_eq!(body["managed_inference_authorization"], authorization);
+            let topology: maestro_runtime_contracts::cache_topology::HostedCacheTopology =
+                serde_json::from_value(body["cache_topology"].clone()).unwrap();
+            topology
+                .topology
+                .validate(
+                    &maestro_runtime_contracts::cache_topology::wire_shape(
+                        &body,
+                        topology.scope.namespace(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
         }
     }
 
@@ -3712,6 +3823,21 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
         assert_eq!(headers["x-organization-id"], "org_123");
         assert_eq!(headers["x-workspace-id"], "workspace_456");
         assert_eq!(body["lineage_id"], "lineage-explicit");
+        let topology: maestro_runtime_contracts::cache_topology::HostedCacheTopology =
+            serde_json::from_value(body["cache_topology"].clone()).expect("typed cache contract");
+        assert_eq!(topology.scope.organization_id, "org_123");
+        assert_eq!(topology.scope.workspace_id, "workspace_456");
+        topology
+            .topology
+            .validate(
+                &maestro_runtime_contracts::cache_topology::wire_shape(
+                    &body,
+                    topology.scope.namespace(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
         assert_eq!(
             body["managed_inference_authorization"],
             serde_json::from_str::<serde_json::Value>(&authorization)
@@ -6205,5 +6331,120 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
             ApiError::ContextWindowExceeded => {}
             _ => panic!("Expected ContextWindowExceeded"),
         }
+    }
+    #[tokio::test]
+    async fn cache_topology_legacy_managed_requests_do_not_claim_session_authority() {
+        let (mut client, request_rx) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+        client.set_managed_inference_authorization(None);
+        client.set_managed_request_lineage(Some("lineage-receipt".into()));
+        assert!(client.cache_scope().unwrap().is_none());
+        assert_ne!(client.cache_namespace().unwrap(), "local");
+        let stream = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "gpt-5.6".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_stream_events(stream).await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::ProviderError { .. })),
+            "{events:?}"
+        );
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let body = captured_request_body(&request);
+        assert!(body.get("cache_topology").is_none());
+        assert!(body.get("managed_inference_authorization").is_none());
+    }
+
+    #[tokio::test]
+    async fn cache_topology_preserves_translating_and_model_fallback_routes() {
+        for (provider, candidate_model) in [
+            ("google", "openai/gpt-5.6-terra"),
+            ("azure-openai", "openai/gpt-5.6-terra"),
+            ("openai", "different-fallback-model"),
+        ] {
+            let (mut client, request_rx) =
+                managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+            let mut authorization: serde_json::Value =
+                serde_json::from_str(&managed_authorization_fixture("lineage-receipt")).unwrap();
+            let mut fallback = authorization["claims"]["providerCandidates"][0].clone();
+            fallback["provider"] = provider.into();
+            fallback["model"] = candidate_model.into();
+            authorization["claims"]["providerCandidates"]
+                .as_array_mut()
+                .unwrap()
+                .push(fallback);
+            client.set_managed_inference_authorization(Some(authorization.to_string()));
+            let stream = client.stream(&[], &RequestConfig::default()).await.unwrap();
+            let events = collect_stream_events(stream).await;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, StreamEvent::ProviderError { .. })),
+                "{events:?}"
+            );
+            let request = request_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let body = captured_request_body(&request);
+            assert!(body.get("cache_topology").is_none());
+            assert_eq!(body["managed_inference_authorization"], authorization);
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_topology_rejects_late_changes_before_opening_http() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("hello"),
+        }];
+        let mut config = RequestConfig::default();
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &messages,
+                &config,
+                "local".into(),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut client =
+            super::OpenAiClient::with_base_url("test-key", "http://127.0.0.1:1").unwrap();
+        client
+            .request_extensions
+            .insert("instructions".into(), serde_json::json!("late injection"));
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject extension");
+        assert!(error.to_string().contains("late prompt extensions"));
+        client.request_extensions.clear();
+        client
+            .request_extensions
+            .insert("session_id".into(), serde_json::json!("late affinity"));
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject affinity override");
+        assert!(error.to_string().contains("late prompt extensions"));
+        client.request_extensions.clear();
+        config.system = Some("late change".into());
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject mutation");
+        assert!(error.to_string().contains("prepared cache topology"));
     }
 }

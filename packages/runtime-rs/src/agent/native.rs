@@ -6319,7 +6319,7 @@ impl NativeAgentRunner {
             })?;
         }
 
-        let config = RequestConfig {
+        let mut config = RequestConfig {
             model,
             max_tokens,
             temperature: if self.config.thinking_enabled {
@@ -6330,6 +6330,7 @@ impl NativeAgentRunner {
             system,
             tools,
             thinking,
+            cache_topology: None,
             // Enable prompt caching for Anthropic models
             cache_system_prompt: self
                 .client
@@ -6340,6 +6341,24 @@ impl NativeAgentRunner {
             .runtime_audit
             .write()
             .unwrap_or_else(|p| p.into_inner());
+        if include_tools {
+            let namespace = self
+                .client
+                .as_ref()
+                .map(|client| client.cache_namespace())
+                .transpose()?
+                .unwrap_or_else(|| "local".into());
+            let previous = audit
+                .request_cache
+                .as_ref()
+                .and_then(|snapshot| snapshot.cache_topology.as_ref());
+            config.cache_topology = Some(maestro_ai::cache_topology::PreparedPrompt::prepare(
+                request_messages,
+                &config,
+                namespace,
+                previous,
+            )?);
+        }
         let snapshot = maestro_context::token_counting::RequestCacheSnapshot::from_request(
             &config,
             std::time::SystemTime::now()
@@ -6347,11 +6366,13 @@ impl NativeAgentRunner {
                 .unwrap_or_default()
                 .as_secs(),
         );
-        audit.cache_reuse = audit
-            .request_cache
-            .as_ref()
-            .map(|previous| snapshot.compare(previous));
-        audit.request_cache = Some(snapshot);
+        if include_tools {
+            audit.cache_reuse = audit
+                .request_cache
+                .as_ref()
+                .map(|previous| snapshot.compare(previous));
+            audit.request_cache = Some(snapshot);
+        }
         audit.request_context = Some(super::RequestContextUsage::from_request(
             request_messages,
             &config,
@@ -6449,6 +6470,16 @@ impl NativeAgentRunner {
                 provider_model_name(&model)
             };
         }
+        config.cache_system_prompt = false;
+        let namespace = self
+            .client
+            .as_ref()
+            .map(|client| client.cache_namespace())
+            .transpose()?
+            .unwrap_or_else(|| "local".into());
+        config.cache_topology = Some(maestro_ai::cache_topology::PreparedPrompt::auxiliary(
+            messages, &config, namespace,
+        )?);
         Ok(config)
     }
 

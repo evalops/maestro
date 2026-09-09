@@ -15,6 +15,9 @@ use crate::state::OutputDetail;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiPrefs {
+    /// Display locale; unknown future locales fall back without losing other preferences.
+    #[serde(default)]
+    pub display_language: Option<String>,
     /// Suppresses the introductory walkthrough only; never proves runtime readiness.
     #[serde(default)]
     pub onboarding_seen: bool,
@@ -48,6 +51,13 @@ pub struct UiPrefs {
 }
 
 impl UiPrefs {
+    pub fn locale(&self) -> crate::localization::Locale {
+        self.display_language
+            .as_deref()
+            .and_then(crate::localization::Locale::parse)
+            .unwrap_or_default()
+    }
+
     /// Return the persisted output detail, using the legacy default if absent or unknown.
     pub fn output_detail(&self) -> OutputDetail {
         self.output_detail
@@ -118,6 +128,26 @@ fn save_to_path(prefs: &UiPrefs, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn display_language_roundtrips_and_unknown_language_keeps_other_preferences() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ui.json");
+        let mut prefs = UiPrefs::default();
+        prefs.set_footer_style(FooterStyle::Solo);
+        for locale in crate::localization::Locale::ALL {
+            prefs.display_language = Some(locale.code().into());
+            save_to_path(&prefs, &path).unwrap();
+            let loaded = load_from_path(&path).unwrap();
+            assert_eq!(loaded.locale(), locale);
+            assert_eq!(loaded.footer_style(), FooterStyle::Solo);
+        }
+        prefs.display_language = Some("future".into());
+        save_to_path(&prefs, &path).unwrap();
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.locale(), crate::localization::Locale::English);
+        assert_eq!(loaded.footer_style(), FooterStyle::Solo);
+    }
 
     #[test]
     fn output_detail_roundtrip_preserves_other_preferences() {

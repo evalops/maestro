@@ -88,6 +88,10 @@ impl OpenAiClient {
         self.base.managed_gateway_scope()
     }
 
+    pub(crate) fn cache_namespace(&self) -> Result<String> {
+        self.base.cache_namespace()
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.base.set_managed_request_lineage(lineage_id);
     }

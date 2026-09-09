@@ -6,33 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-pub struct McpCatalogEntry {
-    pub id: &'static str,
-    pub description: &'static str,
-    pub command: &'static str,
-    pub args: &'static [&'static str],
-}
-
-const MCP_CATALOG: &[McpCatalogEntry] = &[
-    McpCatalogEntry {
-        id: "context7",
-        description: "Current library documentation and examples",
-        command: "npx",
-        args: &["-y", "@upstash/context7-mcp"],
-    },
-    McpCatalogEntry {
-        id: "playwright",
-        description: "Browser automation through Playwright",
-        command: "npx",
-        args: &["-y", "@playwright/mcp@latest"],
-    },
-];
-
-#[must_use]
-pub fn catalog_entries() -> &'static [McpCatalogEntry] {
-    MCP_CATALOG
-}
+pub use crate::mcp_catalog::{McpCatalogEntry, catalog_entries};
 
 pub async fn run_mcp_config(args: &[String]) -> Result<i32> {
     let command = args.first().map(String::as_str).unwrap_or("list");
@@ -370,27 +344,19 @@ fn help_text() -> &'static str {
 
 fn registry_command(args: &[String], cwd: &Path) -> Result<String> {
     match args.first().map(String::as_str).unwrap_or("list") {
-        "list" => Ok(MCP_CATALOG
+        "list" => Ok(catalog_entries()
             .iter()
             .map(|entry| format!("{:<14} {}", entry.id, entry.description))
             .collect::<Vec<_>>()
             .join("\n")),
         "add" => {
             let id = required(args, 1, "catalog server name")?;
-            let entry = MCP_CATALOG
+            let entry = catalog_entries()
                 .iter()
                 .find(|entry| entry.id == id)
                 .with_context(|| format!("unknown MCP catalog entry: {id}"))?;
             let (path, _) = target_path(args, cwd)?;
-            mutate_server(
-                &path,
-                entry.id,
-                Some(json!({
-                    "transport": "stdio",
-                    "command": entry.command,
-                    "args": entry.args,
-                })),
-            )?;
+            insert_catalog_entry(&path, entry)?;
             Ok(format!(
                 "Added {} from the MCP registry in {}",
                 entry.id,
@@ -399,6 +365,10 @@ fn registry_command(args: &[String], cwd: &Path) -> Result<String> {
         }
         other => bail!("unknown MCP registry command: {other}"),
     }
+}
+
+fn insert_catalog_entry(path: &Path, entry: &McpCatalogEntry) -> Result<()> {
+    mutate_server_with_replace(path, entry.id, Some(entry.configuration()), false)
 }
 
 fn permissions_command(args: &[String]) -> Result<String> {
@@ -815,6 +785,15 @@ fn mutate_existing_server(
 }
 
 fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
+    mutate_server_with_replace(path, name, value, true)
+}
+
+fn mutate_server_with_replace(
+    path: &Path,
+    name: &str,
+    value: Option<Value>,
+    replace: bool,
+) -> Result<()> {
     if name.is_empty()
         || !name
             .chars()
@@ -838,6 +817,9 @@ fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
         .context("mcpServers must be an object")?;
     match value {
         Some(value) => {
+            if !replace && servers.contains_key(name) {
+                bail!("MCP server {name} already exists; its configuration was kept");
+            }
             servers.insert(name.to_string(), value);
         }
         None => {
@@ -851,6 +833,31 @@ fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn catalog_install_preserves_existing_configuration_and_rejects_invalid_json() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("mcp.json");
+        let entry = catalog_entries().iter().find(|e| e.id == "linear").unwrap();
+        insert_catalog_entry(&path, entry).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(
+            insert_catalog_entry(&path, entry)
+                .unwrap_err()
+                .to_string()
+                .contains("already exists")
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let config: Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(config["mcpServers"]["linear"]["transport"], "http");
+        assert_eq!(
+            config["mcpServers"]["linear"]["url"],
+            "https://mcp.linear.app/mcp"
+        );
+        fs::write(&path, "{invalid").unwrap();
+        assert!(insert_catalog_entry(&path, entry).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{invalid");
+    }
 
     #[test]
     fn mutations_preserve_other_servers_and_use_env_references() {

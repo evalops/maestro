@@ -542,6 +542,8 @@ pub const MAX_ALERT_HISTORY: usize = 50;
 /// we might make fields private and use methods for access. But for internal
 /// use, direct field access is simpler and faster.
 pub struct AppState {
+    /// Display-only language, independent of model context.
+    pub locale: crate::localization::Locale,
     /// All messages in the conversation.
     /// Ordered chronologically (oldest first).
     /// We use `Vec` because we frequently append and iterate, rarely remove.
@@ -748,6 +750,7 @@ impl AppState {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            locale: crate::localization::Locale::default(),
             messages: Vec::new(), // Empty message list
             message_layout_cache: RefCell::new(MessageLayoutCache::default()),
             textarea: TextArea::new(), // Empty input area

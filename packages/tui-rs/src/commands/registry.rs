@@ -1689,12 +1689,39 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::RefreshWorkspace))),
     ));
 
+    registry.register(
+        Command::new(
+            "language",
+            "Choose the display language",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                if ctx.raw_args.trim().is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::OpenPanel(
+                        ControlPanel::Language,
+                    )));
+                }
+                let locale =
+                    crate::localization::Locale::parse(ctx.raw_args.trim()).ok_or_else(|| {
+                        CommandError::new(
+                            "Supported display languages: en, es, fr, de, ja, ko, zh-CN",
+                        )
+                    })?;
+                Ok(CommandOutput::Action(CommandAction::SetLanguage(locale)))
+            }),
+        )
+        .usage("/language [en|es|fr|de|ja|ko|zh-CN]"),
+    );
+
     // Copy command
     registry.register(Command::new(
         "copy",
-        "Copy last message to clipboard",
+        "Copy a response, prompts, turns, or the session ID",
         CommandCategory::Ui,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
+        Box::new(|ctx| {
+            let target = crate::transcript_copy::CopyTarget::parse(ctx.raw_args.trim())
+                .map_err(CommandError::new)?;
+            Ok(CommandOutput::Action(CommandAction::CopyTranscript(target)))
+        }),
     ));
 
     // A2A peer pairing command

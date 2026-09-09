@@ -2340,7 +2340,19 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         .await
         .unwrap();
         let snapshot = agent.runtime_audit_snapshot();
+        let topology = snapshot
+            .request_cache
+            .as_ref()
+            .unwrap()
+            .cache_topology
+            .as_ref()
+            .unwrap();
+        assert_eq!(topology.generation, index + 1);
         if index > 0 {
+            assert_eq!(
+                topology.transition,
+                maestro_ai::cache_topology::CacheTransition::ToolsChanged
+            );
             assert_eq!(
                 snapshot.cache_reuse,
                 Some(maestro_context::token_counting::CacheReuse::ToolsChanged)

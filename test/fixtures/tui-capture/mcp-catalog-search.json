@@ -1,0 +1,29 @@
+{
+  "name": "mcp-catalog-search",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/mcp"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "MCP servers"
+    },
+    {
+      "text": "c"
+    },
+    {
+      "wait": "Type to search"
+    },
+    {
+      "text": "linear"
+    },
+    {
+      "wait": "(?s)linear.*mcp.linear.app/mcp.*Search: linear"
+    }
+  ]
+}

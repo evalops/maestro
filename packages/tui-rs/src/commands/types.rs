@@ -240,6 +240,8 @@ pub enum CommandAction {
     RefreshWorkspace,
     /// Copy the last message to system clipboard
     CopyLastMessage,
+    CopyTranscript(crate::transcript_copy::CopyTarget),
+    SetLanguage(crate::localization::Locale),
     /// Set the current UI theme
     SetTheme(String),
     /// Set the current model
@@ -248,7 +250,9 @@ pub enum CommandAction {
     Boost,
     /// Review uncommitted changes with a different model (second opinion).
     /// `None` lets the app pick a model from a different provider.
-    RubberDuck { model: Option<String> },
+    RubberDuck {
+        model: Option<String>,
+    },
     /// Set the current model and persist it as the user default
     SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)
@@ -268,9 +272,14 @@ pub enum CommandAction {
     /// Show a token breakdown of the current session's context by category
     ShowContext,
     /// Exclude or include a registered tool schema for this session.
-    SetContextTool { name: String, excluded: bool },
+    SetContextTool {
+        name: String,
+        excluded: bool,
+    },
     /// Audit the prompt and tool surface that will be sent to the model.
-    ShowPromptAudit { json: bool },
+    ShowPromptAudit {
+        json: bool,
+    },
     /// Change the transcript's turn-level Focus projection.
     SetFocus(Option<bool>),
     /// Export current session
@@ -304,11 +313,20 @@ pub enum CommandAction {
     /// Show the active interactive sandbox policy
     ShowSandbox,
     /// Invoke a skill as a slash command (Grok-style `/skillname args`)
-    InvokeSkill { name: String, args: String },
+    InvokeSkill {
+        name: String,
+        args: String,
+    },
     /// Invoke a flat markdown prompt/command template as a slash command
-    InvokePromptTemplate { name: String, args: String },
+    InvokePromptTemplate {
+        name: String,
+        args: String,
+    },
     /// Invoke an executable script (Droid-style `.composer/commands/`) as a slash command
-    InvokeExecCommand { name: String, args: String },
+    InvokeExecCommand {
+        name: String,
+        args: String,
+    },
     /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
     MagicTrace(MagicTraceAction),
     /// Direct user controls for existing workers.
@@ -332,7 +350,9 @@ pub enum CommandAction {
     /// Manage files queued for the next prompt (`/attach`).
     Attach(AttachAction),
     /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
-    Init { force: bool },
+    Init {
+        force: bool,
+    },
 }
 
 /// Product-level hosted Computer controls exposed by `/computer` in the TUI.
@@ -862,6 +882,7 @@ pub enum ModalType {
 /// Navigation within existing runtime, session, and configuration owners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlPanel {
+    Language,
     Settings,
     Account,
     Permissions,

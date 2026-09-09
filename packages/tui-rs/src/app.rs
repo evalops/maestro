@@ -1578,6 +1578,7 @@ impl App {
 
         let ui_prefs = crate::ui_prefs::UiPrefs::load_default();
         state.set_output_detail(ui_prefs.output_detail());
+        state.locale = ui_prefs.locale();
         let configured_animations = app_config
             .tui
             .as_ref()

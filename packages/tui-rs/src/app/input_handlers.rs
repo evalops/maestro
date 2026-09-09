@@ -740,22 +740,43 @@ impl App {
     }
 
     pub(super) async fn handle_mcp_manager_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.mcp_manager.in_catalog() {
+            match code {
+                KeyCode::Esc => self.mcp_manager.leave_catalog(),
+                KeyCode::Up => self.mcp_manager.move_up(),
+                KeyCode::Down => self.mcp_manager.move_down(),
+                KeyCode::Backspace => self.mcp_manager.search_backspace(),
+                KeyCode::Char(ch) if !ch.is_control() => self.mcp_manager.search_character(ch),
+                KeyCode::Enter => {
+                    if let Some(entry) = self.mcp_manager.selected_catalog() {
+                        if self.mcp_manager.catalog_entry_configured(entry.id) {
+                            self.state.status = Some(format!(
+                                "{}: {}",
+                                entry.id,
+                                self.state
+                                    .locale
+                                    .text(crate::localization::TextKey::Configured)
+                            ));
+                        } else if self
+                            .apply_mcp_manager_config(vec![
+                                "registry".into(),
+                                "add".into(),
+                                entry.id.into(),
+                            ])
+                            .await
+                        {
+                            self.mcp_manager.leave_catalog();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         match code {
-            KeyCode::Esc if self.mcp_manager.in_catalog() => self.mcp_manager.leave_catalog(),
             KeyCode::Esc => self.active_modal = ActiveModal::None,
             KeyCode::Up => self.mcp_manager.move_up(),
             KeyCode::Down => self.mcp_manager.move_down(),
-            KeyCode::Enter if self.mcp_manager.in_catalog() => {
-                if let Some(entry) = self.mcp_manager.selected_catalog() {
-                    self.apply_mcp_manager_config(vec![
-                        "registry".to_string(),
-                        "add".to_string(),
-                        entry.id.to_string(),
-                    ])
-                    .await;
-                    self.mcp_manager.leave_catalog();
-                }
-            }
             KeyCode::Enter => self.mcp_manager.toggle_tools(),
             KeyCode::Char('r' | 'R') => {
                 if let Some(name) = self
@@ -826,10 +847,10 @@ impl App {
                         ));
                         return Ok(());
                     }
-                    self.active_modal = ActiveModal::None;
-                    self.state
-                        .set_input(&format!("/mcp config auth {}", status.name));
-                    self.update_slash_state();
+                    self.handle_mcp_action(crate::commands::McpAction::Configure {
+                        args: vec!["auth".into(), status.name],
+                    })
+                    .await;
                 }
             }
             KeyCode::Char('x' | 'X') => {
@@ -875,14 +896,18 @@ impl App {
         Ok(())
     }
 
-    async fn apply_mcp_manager_config(&mut self, args: Vec<String>) {
+    async fn apply_mcp_manager_config(&mut self, args: Vec<String>) -> bool {
         match crate::mcp_config_cli::apply_mcp_config(&args) {
             Ok(message) => {
                 self.state.status = Some(message);
                 self.last_mcp_status_refresh = None;
                 self.refresh_mcp_badges_with_force(true).await;
+                true
             }
-            Err(error) => self.state.status = Some(format!("MCP configuration failed: {error}")),
+            Err(error) => {
+                self.state.status = Some(format!("MCP configuration failed: {error}"));
+                false
+            }
         }
     }
 

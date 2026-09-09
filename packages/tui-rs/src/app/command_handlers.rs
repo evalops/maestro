@@ -361,32 +361,9 @@ impl App {
                 self.workspace_refresh_pending = true;
                 self.state.status = Some("Refreshing workspace files...".to_string());
             }
-            CommandAction::CopyLastMessage => {
-                if let Some(msg) = self
-                    .state
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|m| m.is_assistant_reply() && !m.content.is_empty())
-                {
-                    match self.clipboard.copy(&msg.content) {
-                        Ok(()) => {
-                            let chars: Vec<char> = msg.content.chars().collect();
-                            let preview = if chars.len() > 50 {
-                                format!("{}...", chars[..47].iter().collect::<String>())
-                            } else {
-                                msg.content.clone()
-                            };
-                            self.state.status = Some(format!("Copied: {preview}"));
-                        }
-                        Err(e) => {
-                            self.state.error = Some(format!("Failed to copy: {e}"));
-                        }
-                    }
-                } else {
-                    self.state.status = Some("No message to copy".to_string());
-                }
-            }
+            CommandAction::CopyLastMessage => self.copy_transcript(&crate::transcript_copy::CopyTarget::Response),
+            CommandAction::CopyTranscript(target) => self.copy_transcript(&target),
+            CommandAction::SetLanguage(locale) => self.apply_language(locale),
             CommandAction::SetTheme(theme_name) => {
                 if let Err(e) = crate::themes::set_theme_by_name(&theme_name) {
                     self.state.error = Some(format!("Failed to set theme: {e}"));
@@ -2159,6 +2136,7 @@ Manual snapshot: `/magic-trace stop`",
                 }
             }
             McpAction::Status => {
+                self.mcp_manager.locale = self.state.locale;
                 self.active_modal = ActiveModal::McpManager;
                 self.last_mcp_status_refresh = None;
                 self.refresh_mcp_badges_with_force(true).await;
@@ -3860,4 +3838,35 @@ pub(crate) fn unanswered_tool_call_contracts(
         }
     }
     contracts
+}
+
+impl App {
+    fn copy_transcript(&mut self, target: &crate::transcript_copy::CopyTarget) {
+        match crate::transcript_copy::copy_text(
+            target,
+            &self.state.messages,
+            self.session_manager.current_session_id(),
+        ) {
+            Ok(text) => match self.clipboard.copy(&text) {
+                Ok(()) => {
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .text(crate::localization::TextKey::Copied)
+                            .into(),
+                    );
+                    self.state.error = None;
+                }
+                Err(error) => {
+                    self.state.error = Some(format!(
+                        "{}: {error}",
+                        self.state
+                            .locale
+                            .text(crate::localization::TextKey::CopyFailed)
+                    ));
+                }
+            },
+            Err(error) => self.state.error = Some(error),
+        }
+    }
 }
