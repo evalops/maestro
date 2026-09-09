@@ -1,0 +1,5 @@
+# Unified patches contain significant blank context lines.
+*.patch whitespace=-blank-at-eol
+# Preserve these published archive bytes; the provenance guard checks them.
+zstd-sys-2.0.16+zstd.1.5.7/wasm-shim/stdio.h whitespace=-blank-at-eof
+zstd-sys-2.0.16+zstd.1.5.7/zdict.h whitespace=-blank-at-eof

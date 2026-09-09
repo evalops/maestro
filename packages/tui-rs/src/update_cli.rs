@@ -1169,11 +1169,51 @@ fn release_install_context(executable: &Path) -> Option<InstallContext> {
     })
 }
 
+// Older native package launchers did not export installation metadata. Resolve
+// only the two published packages in recognizable global package layouts; never
+// turn an arbitrary executable or a local development checkout into an install.
+fn legacy_package_install_context(executable: &Path) -> Option<InstallContext> {
+    let executable = dunce::canonicalize(executable).ok()?;
+    let root = executable.ancestors().nth(4)?;
+    let normalized = root.to_string_lossy().replace('\\', "/");
+    if !normalized.contains("/lib/node_modules/")
+        && !normalized.contains("/.bun/install/global/node_modules/")
+    {
+        return None;
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("package.json")).ok()?).ok()?;
+    let name = metadata.get("name")?.as_str()?;
+    if !matches!(name, "@evalops/maestro" | "@evalops/deixic-code")
+        || !normalized.ends_with(&format!("/node_modules/{name}"))
+        || metadata.pointer("/bin/maestro")?.as_str()? != "bin/maestro"
+        || !root.join("bin/maestro").is_file()
+    {
+        return None;
+    }
+    package_install_context_from(&executable, root, name.to_owned(), None)
+}
+
+fn legacy_package_version(executable: &Path) -> Option<String> {
+    let InstallContext::Package { launcher, .. } = legacy_package_install_context(executable)?
+    else {
+        return None;
+    };
+    let root = launcher.parent()?.parent()?;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("package.json")).ok()?).ok()?;
+    let version = metadata.get("version")?.as_str()?;
+    Version::parse(version)
+        .ok()
+        .map(|version| version.to_string())
+}
+
 fn install_context() -> Option<InstallContext> {
     let executable = env::current_exe().ok()?;
     match env::var("MAESTRO_INSTALL_METHOD").ok().as_deref() {
         Some("package") => package_install_context(&executable),
         Some("release") => release_install_context(&executable),
+        None => legacy_package_install_context(&executable),
         _ => None,
     }
 }
@@ -2085,7 +2125,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     }
     let context = install_context()?;
     let channel = UpdateChannel::from_environment().ok()?;
-    let current = env::var("MAESTRO_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
+    let current = current_version();
     let urls = trusted_startup_update_urls(&context, channel);
     let total_timeout = env_duration(
         "MAESTRO_STARTUP_UPDATE_TIMEOUT_MS",
@@ -2213,7 +2253,10 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
 }
 
 fn current_version() -> String {
-    env::var("MAESTRO_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned())
+    env::var("MAESTRO_VERSION")
+        .ok()
+        .or_else(|| legacy_package_version(&env::current_exe().ok()?))
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 }
 
 fn install_method(context: Option<&InstallContext>) -> Option<String> {
@@ -3363,6 +3406,55 @@ mod tests {
                     .join("bin/maestro"),
             }
         );
+    }
+
+    #[test]
+    fn legacy_package_context_recovers_global_launchers_without_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        for (layout, name, manager) in [
+            ("lib/node_modules", "@evalops/maestro", "npm"),
+            ("lib/node_modules", "@evalops/deixic-code", "npm"),
+            (
+                ".bun/install/global/node_modules",
+                "@evalops/maestro",
+                "bun",
+            ),
+        ] {
+            let root = temporary.path().join(layout).join(name);
+            let executable = root.join("vendor/maestro/linux-x64/maestro");
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::create_dir_all(root.join("bin")).unwrap();
+            fs::write(&executable, b"native binary").unwrap();
+            fs::write(root.join("bin/maestro"), b"legacy launcher").unwrap();
+            let metadata = serde_json::json!({"name": name, "version": "0.10.65", "bin": {"maestro": "bin/maestro"}});
+            fs::write(root.join("package.json"), metadata.to_string()).unwrap();
+            assert_eq!(
+                legacy_package_version(&executable).as_deref(),
+                Some("0.10.65")
+            );
+            let context = legacy_package_install_context(&executable).unwrap();
+            assert!(
+                matches!(context, InstallContext::Package { manager: actual, package, prefix: Some(_), .. } if actual == manager && package == name)
+            );
+            // Identity, layout, and launcher are all required; partial metadata
+            // must not redirect an update to a different global package.
+            fs::write(
+                root.join("package.json"),
+                r#"{"name":"unrelated","bin":{"maestro":"bin/maestro"}}"#,
+            )
+            .unwrap();
+            assert!(legacy_package_install_context(&executable).is_none());
+            fs::write(root.join("package.json"), metadata.to_string()).unwrap();
+            fs::remove_file(root.join("bin/maestro")).unwrap();
+            assert!(legacy_package_install_context(&executable).is_none());
+        }
+        assert!(legacy_package_install_context(Path::new("/tmp/maestro")).is_none());
+        let local = temporary
+            .path()
+            .join("node_modules/@evalops/maestro/vendor/maestro/linux-x64/maestro");
+        fs::create_dir_all(local.parent().unwrap()).unwrap();
+        fs::write(&local, b"local binary").unwrap();
+        assert!(legacy_package_install_context(&local).is_none());
     }
 
     #[test]

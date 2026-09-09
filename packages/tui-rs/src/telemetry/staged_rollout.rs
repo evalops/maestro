@@ -183,13 +183,22 @@ fn append_local_telemetry(path: PathBuf, encoded: &str) {
 ///
 /// This is intentionally distinct from [`ExternalTurnEvent`]: the latter is
 /// the backwards-compatible custom exporter format, while this type has a
-/// UUID idempotency key, a finite provider/error taxonomy, and no tenant or
-/// content-bearing fields.
+/// UUID idempotency key and native session correlation for Session History.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FirstPartyTurnTelemetryEvent {
     schema_version: u16,
     event_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partial_reported_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivery: Option<DeliverySnapshot>,
     #[serde(rename = "type")]
     event_type: FirstPartyEventType,
     timestamp: String,
@@ -236,6 +245,52 @@ struct FirstPartyToolOutcomes {
     unknown: u32,
     measured_execution_count: u32,
     execution_duration_ms: u64,
+}
+
+/// Queue observations attached to the next turn; no extra upload lifecycle.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeliverySnapshot {
+    pending_events: u32,
+    rejected_events: u32,
+    oldest_pending_age_seconds: u64,
+    queue_capacity: u32,
+}
+
+fn delivery_snapshot(outbox: &Path, scope: &TelemetryIdentityScope) -> DeliverySnapshot {
+    let pending = outbox_paths(outbox)
+        .into_iter()
+        .filter(|path| {
+            read_bounded_outbox_record(path).is_some_and(|record| record.identity_scope == *scope)
+        })
+        .collect::<Vec<_>>();
+    let oldest_pending_age_seconds = pending
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            let micros: i64 = name.split_once('_')?.0.parse().ok()?;
+            Some(
+                chrono::Utc::now()
+                    .timestamp_micros()
+                    .saturating_sub(micros)
+                    .max(0) as u64
+                    / 1_000_000,
+            )
+        })
+        .max()
+        .unwrap_or(0);
+    let rejected_events = outbox_paths(&dead_letter_dir(outbox))
+        .into_iter()
+        .filter(|path| {
+            read_bounded_outbox_record(path).is_some_and(|record| record.identity_scope == *scope)
+        })
+        .count() as u32;
+    DeliverySnapshot {
+        pending_events: pending.len() as u32,
+        rejected_events,
+        oldest_pending_age_seconds,
+        queue_capacity: OUTBOX_CAPACITY as u32,
+    }
 }
 
 impl FirstPartyToolOutcomes {
@@ -434,6 +489,21 @@ enum FirstPartyErrorCategory {
 impl FirstPartyTurnTelemetryEvent {
     fn is_server_valid(&self) -> bool {
         self.schema_version == 1
+            && [&self.session_id, &self.turn_id, &self.model_id]
+                .into_iter()
+                .all(|value| {
+                    value
+                        .as_ref()
+                        .is_none_or(|v| !v.is_empty() && v.len() <= 1024 && v.trim() == v)
+                })
+            && self.partial_reported_cost_usd.is_none_or(|cost| {
+                cost.is_finite()
+                    && (0.0..=MAX_COST_USD).contains(&cost)
+                    && self.reported_cost_usd.is_none()
+                    && self.measurements.as_ref().is_some_and(|m| {
+                        m.responses_with_cost > 0 && m.responses_with_cost < m.response_count
+                    })
+            })
             && chrono::DateTime::parse_from_rfc3339(&self.timestamp).is_ok()
             && self.turn_number <= MAX_COUNT
             && self.tool_count <= MAX_COUNT
@@ -514,6 +584,17 @@ fn first_party_event(external: &ExternalTurnEvent) -> Option<FirstPartyTurnTelem
     Some(FirstPartyTurnTelemetryEvent {
         schema_version: 1,
         event_id: Uuid::new_v4(),
+        session_id: None,
+        turn_id: None,
+        model_id: None,
+        delivery: None,
+        partial_reported_cost_usd: external.measurements.as_ref().and_then(|m| {
+            (m.responses_with_cost > 0
+                && m.responses_with_cost < m.response_count
+                && external.cost_usd.is_finite()
+                && external.cost_usd >= 0.0)
+                .then_some(external.cost_usd)
+        }),
         event_type: FirstPartyEventType::CanonicalTurn,
         timestamp,
         turn_number: external.turn_number.min(MAX_COUNT),
@@ -1021,6 +1102,22 @@ fn record_first_party_event_with<E: Clone + Into<FirstPartyTelemetryEvent>>(
     verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
     schedule_drain: impl FnOnce(),
 ) -> OnboardingCollectionStatus {
+    record_first_party_event_at(
+        event,
+        origin,
+        verified_session,
+        schedule_drain,
+        &first_party_outbox_dir(),
+    )
+}
+
+fn record_first_party_event_at<E: Clone + Into<FirstPartyTelemetryEvent>>(
+    event: &E,
+    origin: Option<TelemetryIdentityScope>,
+    verified_session: impl FnOnce() -> Option<FirstPartyDeliverySession>,
+    schedule_drain: impl FnOnce(),
+    outbox: &Path,
+) -> OnboardingCollectionStatus {
     if first_party_telemetry_disabled() {
         return OnboardingCollectionStatus::Disabled;
     }
@@ -1033,7 +1130,7 @@ fn record_first_party_event_with<E: Clone + Into<FirstPartyTelemetryEvent>>(
     if identity.identity_scope != origin {
         return OnboardingCollectionStatus::Unavailable;
     }
-    if persist_first_party_event(&first_party_outbox_dir(), &origin, event).is_none() {
+    if persist_first_party_event(outbox, &origin, event).is_none() {
         return OnboardingCollectionStatus::Failed;
     }
     schedule_drain();
@@ -1060,8 +1157,9 @@ pub(crate) fn test_record_visibility_with_session(
     event: &VisibilityEvent,
     origin: Option<TelemetryIdentityScope>,
     session: crate::credential_mode::PlatformSession,
+    outbox: &Path,
 ) -> OnboardingCollectionStatus {
-    record_first_party_event_with(
+    record_first_party_event_at(
         event,
         origin,
         || {
@@ -1074,6 +1172,7 @@ pub(crate) fn test_record_visibility_with_session(
             })
         },
         || {},
+        outbox,
     )
 }
 
@@ -1087,7 +1186,7 @@ pub fn onboarding_identity_scope() -> Option<TelemetryIdentityScope> {
     TelemetryIdentityScope::new(&session.organization_id, session.workspace_id.as_deref())
 }
 
-/// Persist and export the content-free projection of a completed native turn.
+/// Persist completed native turn measurements and session correlation.
 ///
 /// Every eligible, non-opted-out turn is queued for the fixed first-party
 /// endpoint. Sampling still controls local receipts and custom exports. The Identity
@@ -1108,9 +1207,13 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
         return;
     };
 
-    if let (Some(identity_scope), Some(first_party)) =
+    if let (Some(identity_scope), Some(mut first_party)) =
         (event.identity_scope.as_ref(), first_party_event(&external))
     {
+        first_party.session_id = Some(event.session_id.clone());
+        first_party.turn_id = Some(event.turn_id.clone());
+        first_party.model_id = Some(event.model.id.clone());
+        first_party.delivery = Some(delivery_snapshot(&first_party_outbox_dir(), identity_scope));
         if persist_first_party_event(&first_party_outbox_dir(), identity_scope, &first_party)
             .is_some()
         {
