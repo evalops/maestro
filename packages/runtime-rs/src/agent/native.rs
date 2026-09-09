@@ -10543,14 +10543,34 @@ impl NativeAgentRunner {
         );
         let is_error = result.is_error();
 
-        if let Some(path) = content.saved_path {
-            self.semantic_continuation
+        // Bash bounds its own model projection before the outer clamp runs.
+        // Retain its original capture, not just a possible spill of that tail.
+        let captured_path = match &result.receipt.details {
+            super::protocol::ToolReceiptDetails::BuiltIn(crate::ToolDetails::Bash(details))
+                if matches!(result.receipt.source, ExecutionSource::Native) =>
+            {
+                details.full_output_path.clone()
+            }
+            _ => None,
+        };
+        for path in captured_path.into_iter().chain(
+            content
+                .saved_path
+                .map(|path| path.to_string_lossy().into_owned()),
+        ) {
+            let outputs = &mut self
+                .semantic_continuation
                 .get_or_insert_with(Default::default)
-                .tool_outputs
-                .push(super::compaction::ToolOutputReference {
+                .tool_outputs;
+            if !outputs
+                .iter()
+                .any(|output| output.tool_call_id == call_id && output.path == path)
+            {
+                outputs.push(super::compaction::ToolOutputReference {
                     tool_call_id: call_id.clone(),
-                    path: path.to_string_lossy().into_owned(),
+                    path,
                 });
+            }
         }
         let content = content.content;
 
