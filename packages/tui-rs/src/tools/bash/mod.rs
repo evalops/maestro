@@ -914,6 +914,7 @@ struct StreamCapture {
     temp_path: Option<PathBuf>,
     temp_file: Option<tokio::fs::File>,
     version: BashVersion,
+    capture_error: Option<String>,
 }
 
 impl StreamCapture {
@@ -927,6 +928,7 @@ impl StreamCapture {
             temp_path: None,
             temp_file: None,
             version,
+            capture_error: None,
         }
     }
 
@@ -935,8 +937,13 @@ impl StreamCapture {
         self.total_lines += chunk.iter().filter(|b| **b == b'\n').count();
         self.last_byte = chunk.last().copied();
 
-        if let Some(file) = &mut self.temp_file {
-            file.write_all(chunk).await?;
+        if self.capture_error.is_some() {
+            // Keep the already captured prefix and bounded tail. Do not grow
+            // memory without bound when the backing filesystem is unavailable.
+        } else if let Some(file) = &mut self.temp_file {
+            if let Err(error) = file.write_all(chunk).await {
+                self.capture_error = Some(error.to_string());
+            }
         } else {
             self.buffer.extend_from_slice(chunk);
         }
@@ -946,32 +953,36 @@ impl StreamCapture {
             self.tail.pop_front();
         }
 
-        if self.temp_file.is_none()
+        if self.capture_error.is_none()
+            && self.temp_file.is_none()
             && (self.total_bytes > MAX_OUTPUT_SIZE || self.total_lines > MAX_OUTPUT_LINES)
         {
             let temp_path = match get_temp_file_path(self.version).await {
                 Ok(path) => path,
                 Err(error) => {
-                    eprintln!("Failed to prepare temp output directory: {error}");
-                    self.buffer.clear();
+                    self.capture_error = Some(error.to_string());
                     return Ok(());
                 }
             };
-            match create_capture_file(&temp_path, self.version).await {
-                Ok(mut file) => {
-                    file.write_all(&self.buffer).await?;
-                    self.buffer.clear();
-                    self.temp_path = Some(temp_path);
-                    self.temp_file = Some(file);
-                }
-                Err(e) => {
-                    eprintln!("Failed to write temp output file: {e}");
-                    self.buffer.clear();
-                }
-            }
+            self.spill_to_path(temp_path).await;
         }
 
         Ok(())
+    }
+
+    async fn spill_to_path(&mut self, path: PathBuf) {
+        match create_capture_file(&path, self.version).await {
+            Ok(mut file) => {
+                self.temp_path = Some(path);
+                if let Err(error) = file.write_all(&self.buffer).await {
+                    self.capture_error = Some(error.to_string());
+                } else {
+                    self.buffer.clear();
+                }
+                self.temp_file = Some(file);
+            }
+            Err(error) => self.capture_error = Some(error.to_string()),
+        }
     }
 
     async fn flush(&mut self) -> std::io::Result<()> {
@@ -979,7 +990,9 @@ impl StreamCapture {
             self.total_lines += 1;
         }
         if let Some(file) = &mut self.temp_file {
-            file.flush().await?;
+            if let Err(error) = file.flush().await {
+                self.capture_error = Some(error.to_string());
+            }
         }
         Ok(())
     }
@@ -990,7 +1003,8 @@ impl StreamCapture {
     }
 
     fn has_full_output(&self) -> bool {
-        self.total_bytes == 0 || self.temp_path.is_some() || !self.buffer.is_empty()
+        self.capture_error.is_none()
+            && (self.total_bytes == 0 || self.temp_path.is_some() || !self.buffer.is_empty())
     }
 }
 
@@ -1126,6 +1140,90 @@ struct CombinedOutput {
     output: String,
     was_truncated: bool,
     temp_path: Option<String>,
+    capture_error: Option<String>,
+}
+
+#[cfg(test)]
+mod capture_recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_spill_creation_keeps_buffered_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let blocker = root.path().join("not-a-directory");
+        tokio::fs::write(&blocker, b"fixture").await.unwrap();
+        let mut capture = StreamCapture::new(BashVersion::Current);
+        capture
+            .append_chunk(b"beginning and middle evidence")
+            .await
+            .unwrap();
+        capture.spill_to_path(blocker.join("output.txt")).await;
+        assert!(capture.capture_error.is_some());
+        assert_eq!(capture.buffer, b"beginning and middle evidence");
+        assert!(capture.temp_path.is_none());
+        assert!(!capture.has_full_output());
+    }
+
+    #[tokio::test]
+    async fn capture_failure_preserves_prefix_and_bounds_later_memory() {
+        let mut capture = StreamCapture::new(BashVersion::Current);
+        capture.append_chunk(b"original evidence").await.unwrap();
+        capture.capture_error = Some("injected storage failure".into());
+        capture
+            .append_chunk(&vec![b'x'; MAX_OUTPUT_SIZE * 2])
+            .await
+            .unwrap();
+        assert_eq!(capture.buffer, b"original evidence");
+        assert!(capture.tail.len() <= MAX_OUTPUT_SIZE);
+        assert!(!capture.has_full_output());
+        let empty = StreamCapture::new(BashVersion::Current);
+        let combined = build_combined_output(&capture, &empty, BashVersion::Current).await;
+        assert!(combined.capture_error.is_some());
+        assert!(combined.temp_path.is_none());
+        assert!(combined.output.contains("original evidence"));
+        assert!(combined.output.contains("injected storage failure"));
+    }
+
+    #[tokio::test]
+    async fn failed_combination_keeps_source_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("stdout");
+        tokio::fs::write(&path, b"recoverable evidence")
+            .await
+            .unwrap();
+        let mut stdout = StreamCapture::new(BashVersion::Current);
+        stdout.temp_path = Some(path.clone());
+        stdout.total_bytes = MAX_OUTPUT_SIZE + 1;
+        let mut stderr = StreamCapture::new(BashVersion::Current);
+        stderr.temp_path = Some(root.path().join("missing"));
+        stderr.total_bytes = 1;
+        let combined = build_combined_output(&stdout, &stderr, BashVersion::Current).await;
+        assert!(combined.capture_error.is_some());
+        assert!(combined.temp_path.is_none());
+        assert_eq!(
+            tokio::fs::read(&path).await.unwrap(),
+            b"recoverable evidence"
+        );
+        assert!(combined.output.contains(&path.display().to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn failed_spill_write_returns_explicit_incomplete_capture() {
+        let mut capture = StreamCapture::new(BashVersion::Current);
+        capture.temp_file = Some(
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .await
+                .unwrap(),
+        );
+        capture.append_chunk(b"evidence").await.unwrap();
+        capture.flush().await.unwrap();
+        assert!(capture.capture_error.is_some());
+        assert_eq!(capture.tail_string(), "evidence");
+        assert!(!capture.has_full_output());
+    }
 }
 
 async fn build_combined_output(
@@ -1155,11 +1253,12 @@ async fn build_combined_output(
     }
 
     let was_truncated = total_bytes > MAX_OUTPUT_SIZE || total_lines > MAX_OUTPUT_LINES;
-    if !was_truncated {
+    if !was_truncated && stdout.capture_error.is_none() && stderr.capture_error.is_none() {
         return CombinedOutput {
             output,
             was_truncated: false,
             temp_path: None,
+            capture_error: None,
         };
     }
 
@@ -1197,19 +1296,23 @@ async fn build_combined_output(
                 .temp_path
                 .as_ref()
                 .map_or_else(|| StreamSource::Memory(&stdout.buffer), StreamSource::File);
-            if append_stream(file, stdout_source).await.is_ok() {
+            let combined_result: std::io::Result<()> = async {
+                append_stream(file, stdout_source).await?;
                 if stderr_has_output && stdout_has_output {
-                    let _ = file.write_all(b"\n--- stderr ---\n").await;
+                    file.write_all(b"\n--- stderr ---\n").await?;
                 }
                 let stderr_source = stderr
                     .temp_path
                     .as_ref()
                     .map_or_else(|| StreamSource::Memory(&stderr.buffer), StreamSource::File);
-                if append_stream(file, stderr_source).await.is_ok() {
-                    let _ = file.flush().await;
-                    saved_path = combined_path.map(|path| path.display().to_string());
-                    combined_cleanup = None;
-                }
+                append_stream(file, stderr_source).await?;
+                file.flush().await?;
+                file.sync_all().await
+            }
+            .await;
+            if combined_result.is_ok() {
+                saved_path = combined_path.map(|path| path.display().to_string());
+                combined_cleanup = None;
             }
         }
     }
@@ -1217,21 +1320,45 @@ async fn build_combined_output(
     if let Some(path) = combined_cleanup {
         let _ = tokio::fs::remove_file(path).await;
     }
-    if let Some(path) = &stdout.temp_path {
-        let _ = tokio::fs::remove_file(path).await;
-    }
-    if let Some(path) = &stderr.temp_path {
-        let _ = tokio::fs::remove_file(path).await;
+    if saved_path.is_some() {
+        for path in [&stdout.temp_path, &stderr.temp_path].into_iter().flatten() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 
     let notice = match saved_path.as_ref() {
         Some(path) => format!("{stats}\nFull output saved to: {path}"),
-        None => stats,
+        None => {
+            let mut note = format!(
+                "{stats}\nFull output capture incomplete; do not retry a side-effecting command solely to recover output."
+            );
+            for (name, capture) in [("stdout", stdout), ("stderr", stderr)] {
+                if let Some(error) = &capture.capture_error {
+                    note.push_str(&format!("\n{name} capture error: {error}"));
+                }
+                if let Some(path) = &capture.temp_path {
+                    note.push_str(&format!(
+                        "\nRecoverable {name} file retained at: {}",
+                        path.display()
+                    ));
+                }
+                if !capture.buffer.is_empty() {
+                    note.push_str(&format!(
+                        "\nRetained {name} prefix:\n{}",
+                        String::from_utf8_lossy(&capture.buffer)
+                    ));
+                }
+            }
+            note
+        }
     };
 
     CombinedOutput {
         output: format!("{notice}\n\n{trimmed_output}"),
         was_truncated: true,
+        capture_error: saved_path
+            .is_none()
+            .then(|| "Full output capture incomplete".to_string()),
         temp_path: saved_path,
     }
 }
@@ -2034,6 +2161,7 @@ impl BashTool {
                 if combined.was_truncated {
                     details = details.with_truncation(combined.temp_path.clone());
                 }
+                details.capture_error = combined.capture_error.clone().map(String::into_boxed_str);
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
@@ -2060,6 +2188,8 @@ impl BashTool {
                 }
 
                 ToolResult {
+                    // Capture failure does not undo an executed side effect.
+                    // Keep its status separate in details.capture_error.
                     success: status.success(),
                     output: combined.output,
                     error: if status.success() {

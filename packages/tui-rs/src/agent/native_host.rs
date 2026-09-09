@@ -682,7 +682,25 @@ impl NativeExecutionHost for TuiNativeExecutionHost {
         tool_name: &str,
         spill_dir: Option<&Path>,
     ) -> String {
-        crate::tool_output::clamp_for_model(content, tool_name, spill_dir).into_model_text()
+        self.project_tool_output(content, tool_name, spill_dir)
+            .content
+    }
+
+    fn project_tool_output(
+        &self,
+        content: &str,
+        tool_name: &str,
+        spill_dir: Option<&Path>,
+    ) -> maestro_runtime::agent::native_host::NativeToolOutput {
+        let payload = crate::tool_output::clamp_for_model(content, tool_name, spill_dir);
+        let saved_path = match &payload {
+            crate::tool_output::ModelToolPayload::Spilled { path, .. } => Some(path.clone()),
+            crate::tool_output::ModelToolPayload::Inline(_) => None,
+        };
+        maestro_runtime::agent::native_host::NativeToolOutput {
+            content: payload.into_model_text(),
+            saved_path,
+        }
     }
 
     fn model_tool_spill_dir(&self, cwd: &str, session_id: &str) -> std::path::PathBuf {

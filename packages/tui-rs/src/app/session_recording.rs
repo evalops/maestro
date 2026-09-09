@@ -12,7 +12,54 @@ fn session_contains_entry_id(path: &std::path::Path, id: &str) -> Result<bool> {
     Ok(false)
 }
 
+fn read_request_cache(
+    path: &std::path::Path,
+) -> Option<maestro_context::token_counting::RequestCacheSnapshot> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut latest = None;
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { return None };
+        if let Ok(SessionEntry::Custom(entry)) = serde_json::from_str(&line) {
+            if entry.custom_type == "request_cache_snapshot_v1" {
+                latest = entry
+                    .data
+                    .and_then(|data| serde_json::from_value(data).ok());
+            }
+        }
+    }
+    latest
+}
+
 impl App {
+    pub(super) fn restore_request_cache(&self, agent: &NativeAgent) {
+        let snapshot = self
+            .session_manager
+            .current_session_path()
+            .and_then(|path| read_request_cache(&path));
+        agent.restore_request_cache(snapshot);
+    }
+
+    pub(super) fn persist_request_cache(&mut self) {
+        let Some(snapshot) = self
+            .native_agent
+            .as_ref()
+            .and_then(|agent| agent.runtime_audit_snapshot().request_cache)
+        else {
+            return;
+        };
+        let Ok(data) = serde_json::to_value(snapshot) else {
+            return;
+        };
+        self.write_session_entry(SessionEntry::Custom(CustomEntry {
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "request_cache_snapshot_v1".into(),
+            data: Some(data),
+        }));
+    }
+
     pub(super) fn active_session_count(&self) -> Option<usize> {
         let sessions = self.session_manager.list_all_sessions().ok()?;
         let cutoff = SystemTime::now().checked_sub(Duration::from_hours(1))?;
@@ -647,6 +694,39 @@ impl App {
 #[cfg(test)]
 mod lifecycle_receipt_tests {
     use super::*;
+
+    #[test]
+    fn cache_snapshot_reopens_only_the_selected_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let snapshot = maestro_context::token_counting::RequestCacheSnapshot::from_request(
+            &maestro_ai::RequestConfig::default(),
+            42,
+        );
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some("cache-fixture".into()),
+            parent_id: None,
+            timestamp: "2026-09-08T00:00:00Z".into(),
+            custom_type: "request_cache_snapshot_v1".into(),
+            data: Some(serde_json::to_value(&snapshot).unwrap()),
+        });
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(read_request_cache(&path), Some(snapshot));
+        assert_eq!(
+            read_request_cache(&directory.path().join("another-session.jsonl")),
+            None
+        );
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom\",\"customType\":\"request_cache_snapshot_v1\",\"data\":false}\n",
+        )
+        .unwrap();
+        assert_eq!(read_request_cache(&path), None);
+    }
 
     #[test]
     fn session_entry_id_prevents_lifecycle_replay_duplication() {

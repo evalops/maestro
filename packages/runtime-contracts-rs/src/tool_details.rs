@@ -56,6 +56,10 @@ pub struct BashDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_output_path: Option<String>,
 
+    /// Output persistence failed even if the command itself exited successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_error: Option<Box<str>>,
+
     /// Working directory where command was executed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -1182,6 +1186,27 @@ impl ToolDetails {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_failure_is_separate_from_command_execution_status() {
+        let mut details = BashDetails::success("write-once-command");
+        details.capture_error = Some("storage unavailable".into());
+        let json = details.to_json();
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["capture_error"], "storage unavailable");
+        let restored = BashDetails::from_json(&json).unwrap();
+        assert!(restored.succeeded());
+        assert_eq!(
+            restored.capture_error.as_deref(),
+            Some("storage unavailable")
+        );
+        assert!(
+            BashDetails::success("old-session")
+                .to_json()
+                .get("capture_error")
+                .is_none()
+        );
+    }
 
     #[test]
     fn test_bash_details_success() {

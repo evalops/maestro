@@ -833,8 +833,12 @@ impl App {
         let mut excluded = Vec::new();
         let mut basis = "Visible transcript estimate; provider request framing is not included.";
         let mut report_model = self.current_model.clone();
+        let mut cache_explanation = "No comparison is available for the current request.";
         if let Some(agent) = &self.native_agent {
             let snapshot = agent.runtime_audit_snapshot();
+            if let Some(reason) = snapshot.cache_reuse {
+                cache_explanation = reason.explanation();
+            }
             excluded.extend(snapshot.excluded_context_tools);
             if let Some(request) = snapshot.request_context {
                 report_model = request.model;
@@ -871,6 +875,7 @@ impl App {
         });
         let mut report = breakdown.render(Some(&report_model), context_window);
         report.push_str(&format!("\n\n{basis}"));
+        report.push_str(&format!("\n\nPrompt cache estimate: {cache_explanation} Provider-reported cache usage is shown separately in /usage."));
         tool_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         if !tool_rows.is_empty() {
             report.push_str("\n\nTool schemas:");

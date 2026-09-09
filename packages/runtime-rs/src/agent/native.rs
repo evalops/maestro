@@ -1210,6 +1210,8 @@ pub struct NativeAgent {
 
 #[derive(Clone)]
 pub struct RuntimeAuditSnapshot {
+    pub request_cache: Option<maestro_context::token_counting::RequestCacheSnapshot>,
+    pub cache_reuse: Option<maestro_context::token_counting::CacheReuse>,
     pub request_context: Option<super::RequestContextUsage>,
     pub excluded_context_tools: HashSet<String>,
     pub prompt_revision: u64,
@@ -1415,6 +1417,8 @@ impl NativeAgent {
         let active_tool_names =
             initial_active_tool_names(tool_profile, &tools, &external_tools, allowed_tools);
         let runtime_audit = Arc::new(RwLock::new(RuntimeAuditSnapshot {
+            request_cache: None,
+            cache_reuse: None,
             request_context: None,
             excluded_context_tools: HashSet::new(),
             prompt_revision: 0,
@@ -2056,6 +2060,19 @@ impl NativeAgent {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Restore diagnostic hashes from this session, before its first request.
+    pub fn restore_request_cache(
+        &self,
+        snapshot: Option<maestro_context::token_counting::RequestCacheSnapshot>,
+    ) {
+        let mut audit = self
+            .runtime_audit
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        audit.request_cache = snapshot;
+        audit.cache_reuse = None;
     }
 
     /// Continue from current context without a new user message
@@ -3923,13 +3940,15 @@ impl NativeAgentRunner {
     }
 
     fn refresh_runtime_audit_with_prompt(&self, system_prompt: Option<String>) {
-        let excluded_context_tools = self
+        let previous = self
             .runtime_audit
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .excluded_context_tools
             .clone();
+        let excluded_context_tools = previous.excluded_context_tools;
         let snapshot = RuntimeAuditSnapshot {
+            request_cache: previous.request_cache,
+            cache_reuse: None,
             request_context: None,
             excluded_context_tools: excluded_context_tools.clone(),
             prompt_revision: self.runtime_prompt_revision,
@@ -6100,11 +6119,23 @@ impl NativeAgentRunner {
         owns_persistent_tool_spills: bool,
     ) {
         self.owns_persistent_tool_spills = owns_persistent_tool_spills && session_id.is_some();
-        if self.hooks.hook_session_id().await == session_id.as_deref().map(str::to_owned) {
+        let previous_session = self.hooks.hook_session_id().await;
+        if previous_session == session_id {
             self.hooks
                 .hook_set_session_context(session_id, transcript_path)
                 .await;
             return;
+        }
+        if previous_session.is_some() {
+            let mut audit = self
+                .runtime_audit
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            audit.request_cache = None;
+            audit.cache_reuse = None;
+            if let Some(record) = &mut self.semantic_continuation {
+                record.tool_outputs.clear();
+            }
         }
         self.runtime_audit
             .write()
@@ -6305,10 +6336,23 @@ impl NativeAgentRunner {
                 .as_ref()
                 .is_some_and(|client| client.provider() == AiProvider::Anthropic),
         };
-        self.runtime_audit
+        let mut audit = self
+            .runtime_audit
             .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .request_context = Some(super::RequestContextUsage::from_request(
+            .unwrap_or_else(|p| p.into_inner());
+        let snapshot = maestro_context::token_counting::RequestCacheSnapshot::from_request(
+            &config,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+        audit.cache_reuse = audit
+            .request_cache
+            .as_ref()
+            .map(|previous| snapshot.compare(previous));
+        audit.request_cache = Some(snapshot);
+        audit.request_context = Some(super::RequestContextUsage::from_request(
             request_messages,
             &config,
             self.compactor.counter(),
@@ -6572,6 +6616,7 @@ impl NativeAgentRunner {
             }
             self.semantic_continuation = Some(record.clone());
         }
+        self.compactor.attach_output_references(result);
     }
 
     async fn enhance_compaction(
@@ -8633,7 +8678,8 @@ impl NativeAgentRunner {
                             // Use token-aware compaction that respects turn boundaries
                             eprintln!("[agent] Performing context compaction...");
                             let compaction_started = Instant::now();
-                            let result = self.compactor.compact_with_tokens(&self.messages);
+                            let mut result = self.compactor.compact_with_tokens(&self.messages);
+                            self.retain_continuation(&mut result);
                             if result.was_compacted() {
                                 let _ = self.event_tx.send(FromAgent::CompactionMeasured {
                                     duration_ms: compaction_started
@@ -10447,7 +10493,7 @@ impl NativeAgentRunner {
             );
             return ContentBlock::ToolResult {
                 tool_use_id: call_id,
-                content,
+                content: content.content,
                 is_error: Some(true),
             };
         }
@@ -10496,6 +10542,17 @@ impl NativeAgentRunner {
             spill_dir.as_deref(),
         );
         let is_error = result.is_error();
+
+        if let Some(path) = content.saved_path {
+            self.semantic_continuation
+                .get_or_insert_with(Default::default)
+                .tool_outputs
+                .push(super::compaction::ToolOutputReference {
+                    tool_call_id: call_id.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                });
+        }
+        let content = content.content;
 
         let hook_outcome = if approved {
             // Execute hooks only for tools that were allowed to run.

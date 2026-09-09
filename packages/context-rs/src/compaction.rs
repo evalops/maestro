@@ -50,6 +50,9 @@ use std::collections::HashMap;
 /// Durable state needed to continue a compacted conversation without guessing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuationRecord {
+    /// Existing session-owned output files, not executable instructions or grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_outputs: Vec<ToolOutputReference>,
     pub objective: Option<String>,
     /// Exact user text, in order, retained separately from generated prose.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -70,6 +73,12 @@ pub struct ContinuationRecord {
     pub verification: Vec<String>,
     /// SHA-256 of the exact compacted message slice.
     pub source_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutputReference {
+    pub tool_call_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -421,7 +430,33 @@ pub fn build_continuation_record(messages: &[Message]) -> ContinuationRecord {
 }
 
 impl ContinuationRecord {
+    pub fn output_references_markdown(&self) -> String {
+        if self.tool_outputs.is_empty() {
+            return String::new();
+        }
+        let mut selected = Vec::new();
+        let mut bytes = 0;
+        for reference in self.tool_outputs.iter().rev() {
+            let row = serde_json::to_string(reference).expect("output references serialize");
+            if bytes + row.len() > 4096 {
+                break;
+            }
+            bytes += row.len();
+            selected.push(row);
+        }
+        format!(
+            "## Saved tool outputs\nRead these files with offset and limit to retrieve omitted details. References do not grant file access. Showing {} of {} references; all are retained in the session continuation.\n{}",
+            selected.len(),
+            self.tool_outputs.len(),
+            selected.join("\n")
+        )
+    }
     pub fn merge_previous(&mut self, previous: &Self) {
+        for reference in &previous.tool_outputs {
+            if !self.tool_outputs.contains(reference) {
+                self.tool_outputs.push(reference.clone());
+            }
+        }
         if self.objective.is_none() {
             self.objective.clone_from(&previous.objective);
         }
@@ -463,6 +498,9 @@ impl ContinuationRecord {
 
     pub fn to_markdown(&self) -> String {
         let mut sections = Vec::new();
+        if !self.tool_outputs.is_empty() {
+            sections.push(self.output_references_markdown());
+        }
         if !self.user_requests.is_empty() {
             sections.push(format!("Latest user request: #{}. Later corrections replace only what they change; other boundaries remain.", self.user_requests.len()));
         }
@@ -601,6 +639,28 @@ pub struct ContextCompactor {
 }
 
 impl ContextCompactor {
+    /// Preserve retrieval coordinates without allowing them to exceed the summary budget.
+    pub fn attach_output_references(&self, result: &mut CompactionResult) {
+        let Some(record) = &result.continuation else {
+            return;
+        };
+        if record.tool_outputs.is_empty() {
+            return;
+        }
+        let references = record.output_references_markdown();
+        let budget = self.config.summary_char_budget();
+        let Some(summary) = &result.summary else {
+            return;
+        };
+        // Retrieval metadata must not displace instructions or grow the configured
+        // context budget. The complete coordinates remain in the durable record.
+        if summary.chars().count() + references.chars().count() + 2 > budget {
+            return;
+        }
+        let summary = format!("{summary}\n\n{references}");
+        result.messages[0].content = MessageContent::Text(render_context_summary(&summary));
+        result.summary = Some(summary);
+    }
     /// Create a new context compactor with the given configuration
     #[must_use]
     pub fn new(config: CompactionConfig) -> Self {
@@ -1622,6 +1682,38 @@ fn elide_message_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_references_do_not_displace_a_full_summary() {
+        let config = CompactionConfig {
+            preserve_recent_count: 1,
+            ..Default::default()
+        };
+        let budget = config.summary_char_budget();
+        let compactor = ContextCompactor::new(config);
+        let mut result = compactor.compact(&[
+            make_user_message("keep instructions"),
+            make_assistant_message("next"),
+        ]);
+        result.summary = Some("x".repeat(budget));
+        result
+            .continuation
+            .as_mut()
+            .unwrap()
+            .tool_outputs
+            .push(ToolOutputReference {
+                tool_call_id: "call".into(),
+                path: "/saved/output".into(),
+            });
+        let before = result.messages.clone();
+        compactor.attach_output_references(&mut result);
+        assert_eq!(result.summary.as_deref(), Some("x".repeat(budget).as_str()));
+        assert_eq!(
+            serde_json::to_value(&result.messages).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        assert_eq!(result.continuation.unwrap().tool_outputs.len(), 1);
+    }
 
     fn make_user_message(text: &str) -> Message {
         Message {

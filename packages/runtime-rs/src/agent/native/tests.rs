@@ -45,6 +45,8 @@ use tokio::net::TcpListener;
 
 fn empty_runtime_audit() -> Arc<RwLock<RuntimeAuditSnapshot>> {
     Arc::new(RwLock::new(RuntimeAuditSnapshot {
+        request_cache: None,
+        cache_reuse: None,
         request_context: None,
         excluded_context_tools: HashSet::new(),
         prompt_revision: 0,
@@ -2337,6 +2339,14 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         .await
         .unwrap();
         let snapshot = agent.runtime_audit_snapshot();
+        if index > 0 {
+            assert_eq!(
+                snapshot.cache_reuse,
+                Some(maestro_context::token_counting::CacheReuse::ToolsChanged)
+            );
+        } else {
+            assert!(snapshot.cache_reuse.is_none());
+        }
         let report = snapshot.request_context.unwrap();
         counts.push(
             report

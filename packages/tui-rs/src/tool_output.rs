@@ -317,6 +317,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_output_remains_retrievable_after_compaction_and_continuation_replay() {
+        use maestro_ai::{Message, MessageContent, Role};
+        use maestro_context::compaction::{
+            CompactionConfig, ContextCompactor, ContinuationRecord, ToolOutputReference,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let original = format!(
+            "{}\nunique-middle-evidence\n{}",
+            "a".repeat(50_000),
+            "z".repeat(50_000)
+        );
+        let ModelToolPayload::Spilled { path, .. } =
+            clamp_for_model(&original, "read", Some(dir.path()))
+        else {
+            panic!("must spill")
+        };
+        let compactor = ContextCompactor::new(CompactionConfig {
+            preserve_recent_count: 1,
+            ..Default::default()
+        });
+        let mut result = compactor.compact(&[
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("inspect output".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("continue".into()),
+            },
+        ]);
+        result
+            .continuation
+            .as_mut()
+            .unwrap()
+            .tool_outputs
+            .push(ToolOutputReference {
+                tool_call_id: "call-1".into(),
+                path: path.to_string_lossy().into_owned(),
+            });
+        compactor.attach_output_references(&mut result);
+        assert!(
+            result
+                .summary
+                .as_ref()
+                .unwrap()
+                .contains(&path.to_string_lossy().to_string())
+        );
+        let replay: ContinuationRecord = serde_json::from_str(
+            &serde_json::to_string(result.continuation.as_ref().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let mut next = ContinuationRecord::default();
+        next.merge_previous(&replay);
+        assert_eq!(next.tool_outputs, replay.tool_outputs);
+        let restored = std::fs::read_to_string(&next.tool_outputs[0].path).unwrap();
+        assert_eq!(restored, original);
+        assert!(
+            restored
+                .lines()
+                .nth(1)
+                .unwrap()
+                .contains("unique-middle-evidence")
+        );
+    }
+
+    #[test]
     fn clamp_tool_output_respects_line_limit() {
         let limits = ToolOutputLimits {
             max_chars: 0,

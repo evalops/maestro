@@ -986,6 +986,10 @@ fn compaction_continuation_round_trips_in_session_jsonl_shape() {
         auto: true,
         custom_instructions: None,
         continuation: Some(ContinuationRecord {
+            tool_outputs: vec![maestro_context::compaction::ToolOutputReference {
+                tool_call_id: "call-1".into(),
+                path: "/session-owned/output.txt".into(),
+            }],
             objective: Some("Ship the workflow".to_string()),
             user_requests: vec![],
             constraints: vec!["Do not deploy".to_string()],

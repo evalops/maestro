@@ -46,14 +46,92 @@ pub struct CacheIdentity<'a> {
     pub skills_sha256: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CacheReuse {
     Reusable,
     ModelChanged,
     SystemPromptChanged,
     ThinkingChanged,
     SkillsChanged,
+    ToolsChanged,
     LikelyExpired,
+}
+
+impl CacheReuse {
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::Reusable => {
+                "Model, system prompt, thinking, and tools match; cache reuse is not confirmed."
+            }
+            Self::ModelChanged => "Model changed.",
+            Self::SystemPromptChanged => "System prompt or instructions changed.",
+            Self::ThinkingChanged => "Thinking settings changed.",
+            Self::SkillsChanged => "Skills changed.",
+            Self::ToolsChanged => "Tool schemas changed.",
+            Self::LikelyExpired => {
+                "At least five minutes since the previous request; cache may have expired."
+            }
+        }
+    }
+}
+
+/// Diagnostic request identity, persisted by the existing session owner.
+/// This predicts reuse; it never substitutes for provider-reported cache usage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestCacheSnapshot {
+    pub model: String,
+    pub system_sha256: String,
+    pub thinking_sha256: String,
+    pub tools_sha256: String,
+    pub prepared_at_seconds: u64,
+}
+
+impl RequestCacheSnapshot {
+    pub fn from_request(config: &maestro_ai::RequestConfig, prepared_at_seconds: u64) -> Self {
+        use sha2::{Digest, Sha256};
+        let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        Self {
+            model: config.model.clone(),
+            system_sha256: hash(config.system.as_deref().unwrap_or_default().as_bytes()),
+            thinking_sha256: hash(
+                serde_json::to_string(&config.thinking)
+                    .expect("thinking settings serialize")
+                    .as_bytes(),
+            ),
+            tools_sha256: hash(
+                serde_json::to_string(config.tools.as_ref())
+                    .expect("tool schemas serialize")
+                    .as_bytes(),
+            ),
+            prepared_at_seconds,
+        }
+    }
+
+    pub fn compare(&self, previous: &Self) -> CacheReuse {
+        fn identity(value: &RequestCacheSnapshot) -> CacheIdentity<'_> {
+            CacheIdentity {
+                model: &value.model,
+                system_prompt_sha256: &value.system_sha256,
+                thinking: &value.thinking_sha256,
+                skills_sha256: "", // Effective skill text is part of the request prompt.
+            }
+        }
+        let reason = cache_reuse(
+            &identity(previous),
+            &identity(self),
+            self.prepared_at_seconds
+                .saturating_sub(previous.prepared_at_seconds),
+            300,
+        );
+        if matches!(reason, CacheReuse::Reusable | CacheReuse::LikelyExpired)
+            && self.tools_sha256 != previous.tools_sha256
+        {
+            CacheReuse::ToolsChanged
+        } else {
+            reason
+        }
+    }
 }
 
 /// Explain cache reuse before resuming a session. Content is compared only by
@@ -147,6 +225,48 @@ pub fn count_tokens_with_metadata(text: &str, model: Option<&str>) -> TokenCount
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_cache_snapshot_roundtrip_explains_real_request_changes() {
+        let mut config = maestro_ai::RequestConfig::default();
+        let initial = RequestCacheSnapshot::from_request(&config, 10);
+        let restored: RequestCacheSnapshot =
+            serde_json::from_str(&serde_json::to_string(&initial).unwrap()).unwrap();
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 11).compare(&restored),
+            CacheReuse::Reusable
+        );
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 311).compare(&restored),
+            CacheReuse::LikelyExpired
+        );
+        config.thinking = Some(maestro_ai::ThinkingConfig::enabled(2048));
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 11).compare(&restored),
+            CacheReuse::ThinkingChanged
+        );
+        config.thinking = None;
+        config.tools = std::sync::Arc::new(vec![maestro_ai::Tool::new("read", "Read a file")]);
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 11).compare(&restored),
+            CacheReuse::ToolsChanged
+        );
+        config.system = Some("new instruction".into());
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 11).compare(&restored),
+            CacheReuse::SystemPromptChanged
+        );
+        config.model = "changed-model".into();
+        assert_eq!(
+            RequestCacheSnapshot::from_request(&config, 11).compare(&restored),
+            CacheReuse::ModelChanged
+        );
+        assert!(
+            !serde_json::to_string(&RequestCacheSnapshot::from_request(&config, 11))
+                .unwrap()
+                .contains("new instruction")
+        );
+    }
 
     #[test]
     fn o200k_counts_known_values() {
