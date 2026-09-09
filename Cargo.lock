@@ -3632,6 +3632,7 @@ dependencies = [
  "maestro-context",
  "maestro-presentation",
  "maestro-runtime",
+ "maestro-runtime-contracts",
  "maestro-sandbox",
  "maestro-session",
  "maestro-session-history",

@@ -2483,10 +2483,14 @@ impl OpenAiClient {
                                                 .and_then(|d| d.get("cached_tokens"))
                                                 .and_then(serde_json::Value::as_u64);
                                             // Extract reasoning tokens from output_tokens_details
-                                            let _reasoning_tokens = usage
+                                            let reasoning_tokens = usage
                                                 .get("output_tokens_details")
                                                 .and_then(|d| d.get("reasoning_tokens"))
                                                 .and_then(serde_json::Value::as_u64);
+                                            if let Some(tokens) = reasoning_tokens {
+                                                let _ =
+                                                    tx.send(StreamEvent::ReasoningUsage { tokens });
+                                            }
                                             if let Some(cost_usd) = usage
                                                 .get("cost")
                                                 .and_then(serde_json::Value::as_f64)
@@ -3336,6 +3340,34 @@ mod tests {
         })
         .await
         .expect("Responses stream should terminate")
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_usage_is_reported_without_double_counting_output() {
+        let events = collect_responses_sse(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":20}}}}\n\n"
+        ).await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ReasoningUsage { tokens: 20 }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::Usage {
+                input_tokens: 100,
+                output_tokens: 30,
+                ..
+            }
+        )));
+        let unknown = collect_responses_sse("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30}}}\n\n").await;
+        assert!(
+            !unknown
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ReasoningUsage { .. }))
+        );
     }
 
     #[tokio::test]

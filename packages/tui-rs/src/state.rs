@@ -977,6 +977,7 @@ impl AppState {
             | FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
             | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::OperationObservation { .. }
             | FromAgent::TurnStarted
             | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::ContextCalibration { .. }

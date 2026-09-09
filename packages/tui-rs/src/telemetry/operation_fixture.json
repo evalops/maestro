@@ -1,0 +1,31 @@
+{
+  "kind": "side_question",
+  "parentTurnId": "turn-a",
+  "completionObserved": true,
+  "messageCount": 4,
+  "inputSizeBytes": 120,
+  "outputSizeBytes": 12,
+  "mcpServerCount": null,
+  "contextSourceCount": null,
+  "thinkingLevel": "high",
+  "preparationDurationMs": 25,
+  "retryDelayMs": 100,
+  "rateLimitCount": 1,
+  "approvalWaitMs": 30,
+  "approvalsMeasured": 1,
+  "boostSuggested": true,
+  "boostRequested": true,
+  "boostApplied": true,
+  "attempts": [{
+    "responseId": "response-a",
+    "modelId": "model-a",
+    "modelProvider": "openai",
+    "durationMs": 50,
+    "usage": {"input": 10, "output": 3, "cache_read": 2, "cache_write": 0, "thinking": 1},
+    "reportedCostUsd": 0.25,
+    "gatewayRequestId": "request-a",
+    "gatewayRecordId": "record-a",
+    "gatewayLineageId": "lineage-a"
+  }],
+  "omittedAttempts": 0
+}

@@ -1,3 +1,9 @@
+#[path = "delivery_accounting.rs"]
+mod delivery_accounting;
+#[path = "journal.rs"]
+mod journal;
+pub(crate) use journal::TurnJournal;
+
 use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -188,6 +194,8 @@ fn append_local_telemetry(path: PathBuf, encoded: &str) {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FirstPartyTurnTelemetryEvent {
     schema_version: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<super::operation::OperationDiagnostics>,
     event_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
@@ -251,6 +259,8 @@ struct FirstPartyToolOutcomes {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DeliverySnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accounting: Option<delivery_accounting::DeliveryAccounting>,
     pending_events: u32,
     rejected_events: u32,
     oldest_pending_age_seconds: u64,
@@ -286,6 +296,12 @@ fn delivery_snapshot(outbox: &Path, scope: &TelemetryIdentityScope) -> DeliveryS
         })
         .count() as u32;
     DeliverySnapshot {
+        accounting: delivery_accounting::read(outbox, scope).or_else(|| {
+            with_outbox_lock(outbox, || {
+                delivery_accounting::update(outbox, scope, |_| {})?;
+                delivery_accounting::read(outbox, scope)
+            })
+        }),
         pending_events: pending.len() as u32,
         rejected_events,
         oldest_pending_age_seconds,
@@ -504,6 +520,9 @@ enum FirstPartyErrorCategory {
 impl FirstPartyTurnTelemetryEvent {
     fn is_server_valid(&self) -> bool {
         self.schema_version == 1
+            && self.diagnostics.as_ref().is_none_or(|d| {
+                d.is_valid() && (d.completion_observed || self.reported_cost_usd.is_none())
+            })
             && [&self.session_id, &self.turn_id, &self.model_id]
                 .into_iter()
                 .all(|value| {
@@ -516,7 +535,12 @@ impl FirstPartyTurnTelemetryEvent {
                     && (0.0..=MAX_COST_USD).contains(&cost)
                     && self.reported_cost_usd.is_none()
                     && self.measurements.as_ref().is_some_and(|m| {
-                        m.responses_with_cost > 0 && m.responses_with_cost < m.response_count
+                        m.responses_with_cost > 0
+                            && (m.responses_with_cost < m.response_count
+                                || self
+                                    .diagnostics
+                                    .as_ref()
+                                    .is_some_and(|d| !d.completion_observed))
                     })
             })
             && chrono::DateTime::parse_from_rfc3339(&self.timestamp).is_ok()
@@ -598,6 +622,7 @@ fn first_party_event(external: &ExternalTurnEvent) -> Option<FirstPartyTurnTelem
 
     Some(FirstPartyTurnTelemetryEvent {
         schema_version: 1,
+        diagnostics: None,
         event_id: Uuid::new_v4(),
         session_id: None,
         turn_id: None,
@@ -826,7 +851,17 @@ fn trim_outbox_paths_to_capacity(
         .filter(|path| preserve != Some(path.as_path()))
         .take(excess)
     {
-        fs::remove_file(path).ok()?;
+        let scope = read_bounded_outbox_record(&path).map(|r| r.identity_scope);
+        fs::remove_file(&path).ok()?;
+        if let Some(scope) = scope {
+            if delivery_accounting::update(path.parent()?, &scope, |a| {
+                a.evicted = a.evicted.saturating_add(1);
+            })
+            .is_none()
+            {
+                tracing::warn!("telemetry eviction accounting could not be persisted");
+            }
+        }
     }
     Some(())
 }
@@ -874,7 +909,15 @@ where
         ));
         // Write first. If the filesystem cannot admit the new record, retain
         // every existing durable event instead of evicting one for nothing.
-        writer(&path, &encoded).ok()?;
+        if writer(&path, &encoded).is_err() {
+            let _ = delivery_accounting::update(outbox_dir, identity_scope, |a| {
+                a.write_failures = a.write_failures.saturating_add(1);
+            });
+            return None;
+        }
+        let _ = delivery_accounting::update(outbox_dir, identity_scope, |a| {
+            a.queued = a.queued.saturating_add(1);
+        });
         trim_outbox_paths_to_capacity(outbox_paths(outbox_dir), OUTBOX_CAPACITY, Some(&path))?;
         Some(path)
     })
@@ -970,7 +1013,15 @@ fn drain_first_party_outbox_to_endpoint(
                 // A failed delete is harmless: the server idempotency key is
                 // the UUID embedded in this same durable record, so a later
                 // retry is a safe duplicate rather than a new event.
-                let _ = fs::remove_file(path);
+                let _ = with_outbox_lock(outbox_dir, || {
+                    if path.exists() {
+                        fs::remove_file(&path).ok()?;
+                        delivery_accounting::update(outbox_dir, &record.identity_scope, |a| {
+                            a.acknowledged = a.acknowledged.saturating_add(1);
+                        })?;
+                    }
+                    Some(())
+                });
             }
             Ok(response) if is_permanent_client_rejection(response.status()) => {
                 // A closed-schema rejection can never become valid through a
@@ -1208,6 +1259,40 @@ pub fn onboarding_identity_scope() -> Option<TelemetryIdentityScope> {
 /// bearer is loaded only by a background worker and is never written to the
 /// outbox or sent to a configured custom exporter.
 pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
+    record_canonical_turn_event_inner(event, true);
+}
+
+fn canonical_cloud_projection(event: &CanonicalTurnEvent) -> Option<FirstPartyTurnTelemetryEvent> {
+    let mut first_party = first_party_event(&event.external_projection())?;
+    first_party.session_id = (!event.session_id.is_empty()).then(|| event.session_id.clone());
+    first_party.turn_id = Some(event.turn_id.clone());
+    first_party.diagnostics = event.diagnostics.clone();
+    if event
+        .diagnostics
+        .as_ref()
+        .is_some_and(|d| !d.completion_observed)
+    {
+        first_party.reported_cost_usd = None;
+        first_party.partial_reported_cost_usd = event
+            .measurements
+            .as_ref()
+            .filter(|m| m.responses_with_cost > 0)
+            .map(|_| event.cost_usd);
+    }
+    first_party.model_id = Some(event.model.id.clone());
+    while serde_json::to_vec(&first_party).ok()?.len() > OUTBOX_MAX_EVENT_BYTES.saturating_sub(2048)
+    {
+        let diagnostics = first_party.diagnostics.as_mut()?;
+        if diagnostics.attempts.is_empty() {
+            return None;
+        }
+        diagnostics.attempts.pop();
+        diagnostics.omitted_attempts = diagnostics.omitted_attempts.saturating_add(1);
+    }
+    Some(first_party)
+}
+
+fn record_canonical_turn_event_inner(event: &CanonicalTurnEvent, persist: bool) {
     if first_party_telemetry_disabled() {
         return;
     }
@@ -1222,12 +1307,11 @@ pub fn record_canonical_turn_event(event: &CanonicalTurnEvent) {
         return;
     };
 
-    if let (Some(identity_scope), Some(mut first_party)) =
-        (event.identity_scope.as_ref(), first_party_event(&external))
-    {
-        first_party.session_id = (!event.session_id.is_empty()).then(|| event.session_id.clone());
-        first_party.turn_id = Some(event.turn_id.clone());
-        first_party.model_id = Some(event.model.id.clone());
+    if let (true, Some(identity_scope), Some(mut first_party)) = (
+        persist,
+        event.identity_scope.as_ref(),
+        canonical_cloud_projection(event),
+    ) {
         first_party.delivery = Some(delivery_snapshot(&first_party_outbox_dir(), identity_scope));
         if persist_first_party_event(&first_party_outbox_dir(), identity_scope, &first_party)
             .is_some()
