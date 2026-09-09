@@ -8839,64 +8839,14 @@ impl NativeAgentRunner {
                     } => {
                         saw_stream_terminal = true;
                         stop_reason = reason;
-                        // Check for context overflow
-                        if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
-                            eprintln!("[agent] Context overflow detected (MaxTokens)");
-                            // Use token-aware compaction that respects turn boundaries
-                            eprintln!("[agent] Performing context compaction...");
-                            let compaction_started = Instant::now();
-                            let mut result = self.compactor.compact_with_tokens(&self.messages);
-                            self.retain_continuation(&mut result);
-                            if result.was_compacted() {
-                                let _ = self.event_tx.send(FromAgent::CompactionMeasured {
-                                    duration_ms: compaction_started
-                                        .elapsed()
-                                        .as_millis()
-                                        .min(u64::MAX as u128)
-                                        as u64,
-                                });
-                                let split_note = if result.was_turn_split() {
-                                    " (turn was split)"
-                                } else {
-                                    ""
-                                };
-                                eprintln!(
-                                    "[agent] Compacted {} messages{}",
-                                    result.compacted_count, split_note
+                        // An output limit does not imply that the input context is full.
+                        // Even valid JSON tool arguments can be only a prefix of the
+                        // intended operation. Return explicit failures without execution.
+                        if matches!(stop_reason, Some(StopReason::MaxTokens)) {
+                            for (_, _, _, refusal) in &mut pending_tool_calls {
+                                *refusal = Some(
+                                    "not_executed: provider output was truncated at its token limit; request the complete tool call again".to_owned(),
                                 );
-                                // Notify the UI about compaction with details
-                                let status_msg = if let Some(ref cut_point) = result.cut_point {
-                                    format!(
-                                        "Context compacted: {} messages summarized (~{} tokens → ~{} tokens){}",
-                                        result.compacted_count,
-                                        cut_point.tokens_before,
-                                        cut_point.tokens_after,
-                                        split_note
-                                    )
-                                } else {
-                                    format!(
-                                        "Context compacted: {} messages summarized",
-                                        result.compacted_count
-                                    )
-                                };
-                                emit_compaction_event(
-                                    &self.event_tx,
-                                    &self.messages,
-                                    result.summary.as_deref().unwrap_or(&status_msg),
-                                    result.cut_point.as_ref(),
-                                    result.continuation.as_ref(),
-                                    true,
-                                );
-                                let _ = self.event_tx.send(FromAgent::Status {
-                                    message: status_msg,
-                                });
-                                self.messages = Arc::new(result.messages);
-                                self.prepare_compacted_checkpoint(&config)?;
-                                self.emit_conversation_snapshot();
-                            }
-                            // Hooks can also handle overflow
-                            if self.hooks.hook_handle_overflow().await {
-                                eprintln!("[agent] Hooks handling overflow");
                             }
                         }
                         break;
@@ -8961,9 +8911,13 @@ impl NativeAgentRunner {
                         .lock()
                         .map_err(|_| anyhow::anyhow!("process budget poisoned"))?
                         .observe_usage(
-                            // Managed Gateway uses OpenAI usage semantics:
-                            // cached tokens are a subset of input_tokens.
-                            usage.input_tokens,
+                            // Provider adapters normalize input into disjoint buckets.
+                            // Cached tokens still consume the process token budget.
+                            usage
+                                .input_tokens
+                                .checked_add(usage.cache_read_tokens)
+                                .and_then(|tokens| tokens.checked_add(usage.cache_write_tokens))
+                                .ok_or_else(|| anyhow::anyhow!("process input usage overflow"))?,
                             usage.output_tokens,
                             usage.cost.map(process_provider_cost_micros).transpose()?,
                         )
