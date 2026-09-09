@@ -464,6 +464,89 @@ static CREDENTIAL_PATTERNS: LazyLock<Vec<CredentialPattern>> = LazyLock::new(|| 
     ]
 });
 
+/// Detect likely credentials in source being published, without returning a
+/// value or retaining it in the vault. Source code needs narrower assignment
+/// matching than transcript redaction to avoid treating variable names as keys.
+#[must_use]
+pub fn publication_secret_kind(line: &str) -> Option<CredentialType> {
+    static PRIVATE_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+        let header = [
+            "-----BEGIN ",
+            "(?:(?:RSA |EC |DSA |OPENSSH )?PRIVATE",
+            " KEY|PGP PRIVATE",
+            " KEY BLOCK)-----",
+        ]
+        .concat();
+        Regex::new(&header).expect("valid private key header")
+    });
+    if PRIVATE_HEADER.is_match(line) {
+        return Some(CredentialType::PrivateKey);
+    }
+    static EXTRA_PREFIXES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:github_pat_[A-Za-z0-9_]{40,}|npm_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{40,}|AGE-SECRET-KEY-1[A-Z0-9]{40,})")
+            .expect("valid publication prefixes")
+    });
+    if EXTRA_PREFIXES.is_match(line) {
+        return Some(CredentialType::Secret);
+    }
+    // Keep transcript streaming patterns unchanged. Publication also checks
+    // short hexadecimal API-key assignments, which need no decimal digit.
+    static HEX_KEY_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)(api[_-]?key|apikey|secret)(['"\s:=]+)([A-Za-z0-9_-]+)"#)
+            .expect("valid hexadecimal key assignment")
+    });
+    if HEX_KEY_ASSIGNMENT.captures_iter(line).any(|capture| {
+        capture.get(3).is_some_and(|value| {
+            value.as_str().len() >= 16
+                && value.as_str().bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    }) {
+        return Some(CredentialType::ApiKey);
+    }
+    for pattern in CREDENTIAL_PATTERNS.iter() {
+        for captures in pattern.regex.captures_iter(line) {
+            let index = match pattern.replace {
+                ReplaceKind::Full => return Some(pattern.kind),
+                ReplaceKind::KeyValue => 3,
+                ReplaceKind::Bearer => 1,
+                ReplaceKind::Basic | ReplaceKind::Authorization | ReplaceKind::UriUserInfo => 2,
+            };
+            let Some(value) = captures.get(index).map(|value| value.as_str()) else {
+                continue;
+            };
+            if value.starts_with('$') || value.starts_with("op://") || value.starts_with("{{") {
+                continue;
+            }
+            // Credential assignments can contain hex keys made only of
+            // letters; they need neither decimal digits nor base64 entropy.
+            if value.len() >= 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Some(pattern.kind);
+            }
+            // Known provider formats above do not need this heuristic. For
+            // generic assignments require a substantial, mixed candidate.
+            if value.len() < 16 || !value.bytes().any(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            let mut counts = [0usize; 256];
+            for byte in value.bytes() {
+                counts[usize::from(byte)] += 1;
+            }
+            let entropy = counts
+                .iter()
+                .filter(|count| **count > 0)
+                .map(|count| {
+                    let probability = *count as f64 / value.len() as f64;
+                    -probability * probability.log2()
+                })
+                .sum::<f64>();
+            if entropy >= 3.5 {
+                return Some(pattern.kind);
+            }
+        }
+    }
+    None
+}
+
 /// Generate a short unique ID for credential references
 fn generate_id() -> String {
     let mut rng = rand::rng();
@@ -1735,6 +1818,28 @@ pub struct CredentialStats {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn publication_detection_covers_hexadecimal_credentials_without_digits() {
+        let value = ["ebfacefa", "cedeafbe"].concat();
+        assert!(publication_secret_kind(&format!("api_key = \"{value}\"")).is_some());
+        assert!(
+            publication_secret_kind(&format!("password = \"{}\"", value.to_uppercase())).is_some()
+        );
+        assert!(publication_secret_kind(&format!("checksum = \"{value}\"")).is_none());
+        assert!(publication_secret_kind("api_key = feedface").is_none());
+    }
+
+    #[test]
+    fn publication_detection_uses_formats_and_entropy_without_echoing_values() {
+        let token = ["ghp_", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6"].concat();
+        assert!(publication_secret_kind(&token).is_some());
+        assert!(publication_secret_kind("password = service_configuration").is_none());
+        assert!(publication_secret_kind("token = $SERVICE_TOKEN").is_none());
+        assert!(publication_secret_kind("password = op://vault/item/field").is_none());
+        let assignment = format!("password = \"{}\"", "aB3dE6gH9jK2mN5pQ8sT");
+        assert!(publication_secret_kind(&assignment).is_some());
+    }
 
     #[test]
     fn test_store_and_resolve() {
