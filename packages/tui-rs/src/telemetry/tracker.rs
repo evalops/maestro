@@ -147,6 +147,9 @@ impl TurnTracker {
                 }
                 None
             }
+            FromAgent::RequestContextPrepared { .. } => None,
+            FromAgent::TurnStarted => None,
+            FromAgent::RequestRetryScheduled { .. } => None,
             FromAgent::CompactionMeasured { duration_ms } => {
                 if let Some(turn) = &mut self.current_turn {
                     turn.record_compaction_duration(*duration_ms);

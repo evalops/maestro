@@ -1154,6 +1154,9 @@ impl AppState {
             FromAgent::Compaction { .. }
             | FromAgent::StreamObservation { .. }
             | FromAgent::RequestRetryObservation
+            | FromAgent::RequestContextPrepared { .. }
+            | FromAgent::TurnStarted
+            | FromAgent::RequestRetryScheduled { .. }
             | FromAgent::CompactionMeasured { .. } => {}
 
             // Session info updated

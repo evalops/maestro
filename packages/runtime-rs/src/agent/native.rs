@@ -1219,7 +1219,12 @@ pub struct RuntimeAuditSnapshot {
     pub prompt_revision: u64,
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
+    pub max_output_tokens: u32,
+    pub context_window: Option<u64>,
 }
+
+/// Input headroom retained when clamping a response to the model context window.
+pub const REQUEST_CONTEXT_SAFETY_TOKENS: u64 = 64;
 
 #[derive(Default)]
 struct ActiveCancellation {
@@ -1441,6 +1446,10 @@ impl NativeAgent {
                 goal_tools_visible,
                 include_ide_tools,
             ),
+            max_output_tokens: config.max_tokens,
+            context_window: config
+                .context_window
+                .or_else(|| host.model_context_window(&config.model)),
         }));
 
         // Tool execution, hook loading, identity binding, and policy all live
@@ -3643,7 +3652,6 @@ fn clamp_output_to_remaining_context(
     context_tokens: u64,
     estimated_input_tokens: u64,
 ) -> Option<u32> {
-    const REQUEST_CONTEXT_SAFETY_TOKENS: u64 = 64;
     let remaining = context_tokens
         .saturating_sub(estimated_input_tokens)
         .saturating_sub(REQUEST_CONTEXT_SAFETY_TOKENS);
@@ -3997,6 +4005,11 @@ impl NativeAgentRunner {
                 !excluded_context_tools.contains(&definition.tool.name.to_ascii_lowercase())
             })
             .collect(),
+            max_output_tokens: self.config.max_tokens,
+            context_window: self
+                .config
+                .context_window
+                .or_else(|| self.tool_executor.model_context_window(&self.config.model)),
         };
         *self
             .runtime_audit
@@ -5502,6 +5515,18 @@ impl NativeAgentRunner {
                                         attempt,
                                         reason,
                                     } => {
+                                        let _ =
+                                            self.event_tx.send(FromAgent::RequestRetryScheduled {
+                                                attempt,
+                                                delay_ms: delay
+                                                    .as_millis()
+                                                    .try_into()
+                                                    .unwrap_or(u64::MAX),
+                                                rate_limited: matches!(
+                                                    error_kind,
+                                                    super::retry::ErrorKind::RateLimited { .. }
+                                                ),
+                                            });
                                         if current_prompt_uses_codex
                                             && !self.codex_current_prompt_started
                                         {
@@ -8590,6 +8615,7 @@ impl NativeAgentRunner {
     }
 
     async fn run_loop_inner(&mut self, step_budget: &mut TurnStepBudget) -> Result<()> {
+        let _ = self.event_tx.send(FromAgent::TurnStarted);
         if self.model_route.uses_app_server() {
             return self.run_loop_via_codex_app_server(step_budget).await;
         }
@@ -8627,6 +8653,9 @@ impl NativeAgentRunner {
             let provider_messages =
                 resolve_provider_history_shared(&request_messages, &self.credential_vault)?;
             let config = self.build_config(&provider_messages, true).await?;
+            let _ = self.event_tx.send(FromAgent::RequestContextPrepared {
+                response_id: response_id.clone(),
+            });
             let request_id = if let Some(tail) = config
                 .cache_topology
                 .as_ref()

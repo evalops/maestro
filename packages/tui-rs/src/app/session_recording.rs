@@ -32,6 +32,230 @@ fn read_request_cache(
 }
 
 impl App {
+    pub(super) fn new_session_event(
+        &self,
+        lane: maestro_runtime_contracts::SessionEventLane,
+        kind: &str,
+        phase: maestro_runtime_contracts::SessionEventPhase,
+    ) -> Option<maestro_runtime_contracts::SessionEvent> {
+        let session_id = self.state.session_id.as_deref()?;
+        Some(maestro_runtime_contracts::SessionEvent::new(
+            uuid::Uuid::new_v4().to_string(),
+            Utc::now().to_rfc3339(),
+            session_id,
+            lane,
+            kind,
+            phase,
+        ))
+    }
+
+    pub(super) fn record_session_event(&mut self, event: maestro_runtime_contracts::SessionEvent) {
+        if self.session_manager.writer().is_none() {
+            return;
+        }
+        let Ok(data) = serde_json::to_value(&event) else {
+            return;
+        };
+        self.write_session_entry(SessionEntry::Custom(CustomEntry {
+            id: Some(event.event_id.clone()),
+            parent_id: None,
+            timestamp: event.timestamp.clone(),
+            custom_type: maestro_runtime_contracts::SESSION_EVENT_CUSTOM_TYPE.into(),
+            data: Some(data),
+        }));
+    }
+
+    pub(super) fn record_context_budget_snapshot(
+        &mut self,
+        phase: maestro_context::ContextBudgetPhase,
+        compaction_id: Option<String>,
+    ) {
+        if self.session_manager.writer().is_none() {
+            return;
+        }
+        let Some(agent) = &self.native_agent else {
+            return;
+        };
+        let audit = agent.runtime_audit_snapshot();
+        let Some(request) = audit.request_context else {
+            return;
+        };
+        let timestamp = Utc::now().to_rfc3339();
+        let snapshot_id = uuid::Uuid::new_v4().to_string();
+        let confidence = match maestro_context::token_counting::count_tokens_with_metadata(
+            "",
+            Some(&request.model),
+        )
+        .confidence
+        {
+            maestro_context::token_counting::CountConfidence::Measured => {
+                maestro_context::BudgetCountConfidence::Measured
+            }
+            maestro_context::token_counting::CountConfidence::Estimated => {
+                maestro_context::BudgetCountConfidence::Estimated
+            }
+        };
+        let snapshot = maestro_context::ContextBudgetSnapshot {
+            schema_version: maestro_context::CONTEXT_BUDGET_SCHEMA.into(),
+            snapshot_id: snapshot_id.clone(),
+            timestamp: timestamp.clone(),
+            model: request.model,
+            phase,
+            compaction_id,
+            context_window: audit.context_window,
+            system_prompt: request.system,
+            tool_schemas: request.tools.iter().map(|(_, tokens)| tokens).sum(),
+            tool_results: request.tool_results,
+            conversation: request.conversation,
+            other: request.other,
+            response_reserve: u64::from(audit.max_output_tokens),
+            safety_margin: maestro_runtime::agent::REQUEST_CONTEXT_SAFETY_TOKENS,
+            confidence,
+        };
+        let Ok(data) = serde_json::to_value(&snapshot) else {
+            return;
+        };
+        self.write_session_entry(SessionEntry::Custom(CustomEntry {
+            id: Some(snapshot_id),
+            parent_id: None,
+            timestamp,
+            custom_type: maestro_context::CONTEXT_BUDGET_CUSTOM_TYPE.into(),
+            data: Some(data),
+        }));
+    }
+
+    pub(super) fn record_agent_session_events(&mut self, message: &FromAgent) {
+        use maestro_runtime_contracts::{SessionEventLane as Lane, SessionEventPhase as Phase};
+
+        macro_rules! record {
+            ($event:expr) => {
+                if let Some(event) = $event {
+                    self.record_session_event(event);
+                }
+            };
+        }
+        match message {
+            FromAgent::ResponseStart { response_id } => {
+                let mut event =
+                    self.new_session_event(Lane::Model, "model.request.started", Phase::Started);
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(response_id.clone());
+                }
+                record!(event);
+            }
+            FromAgent::TurnStarted => {
+                record!(self.new_session_event(Lane::User, "turn.started", Phase::Started,));
+            }
+            FromAgent::RequestContextPrepared { .. } => {
+                self.record_context_budget_snapshot(
+                    maestro_context::ContextBudgetPhase::PreparedRequest,
+                    None,
+                );
+            }
+            FromAgent::ResponseEnd { response_id, .. } => {
+                let mut event = self.new_session_event(
+                    Lane::Model,
+                    "model.response.completed",
+                    Phase::Completed,
+                );
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(response_id.clone());
+                }
+                record!(event);
+            }
+            FromAgent::TurnCompleted { response_id, .. } => {
+                let mut event =
+                    self.new_session_event(Lane::User, "turn.completed", Phase::Completed);
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(response_id.clone());
+                }
+                record!(event);
+            }
+            FromAgent::TurnInterrupted { response_id, .. } => {
+                let mut event =
+                    self.new_session_event(Lane::User, "turn.cancelled", Phase::Cancelled);
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(response_id.clone());
+                }
+                record!(event);
+            }
+            FromAgent::ToolCall {
+                call_id,
+                tool,
+                requires_approval: true,
+                ..
+            } => {
+                let mut event = self.new_session_event(
+                    Lane::Tools,
+                    "tool.approval.requested",
+                    Phase::Requested,
+                );
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(call_id.clone());
+                    event.name = Some(tool.clone());
+                }
+                record!(event);
+            }
+            FromAgent::ToolStart { call_id } => {
+                let mut event = self.new_session_event(Lane::Tools, "tool.started", Phase::Started);
+                if let Some(event) = &mut event {
+                    event.correlation_id = Some(call_id.clone());
+                }
+                record!(event);
+            }
+            FromAgent::RequestRetryScheduled {
+                attempt,
+                delay_ms,
+                rate_limited,
+            } => {
+                let mut event =
+                    self.new_session_event(Lane::Runtime, "retry.scheduled", Phase::Requested);
+                if let Some(event) = &mut event {
+                    event.attempt = Some(*attempt);
+                    event.delay_ms = Some(*delay_ms);
+                }
+                record!(event);
+                if *rate_limited {
+                    let mut event =
+                        self.new_session_event(Lane::Runtime, "rate_limit.hit", Phase::Info);
+                    if let Some(event) = &mut event {
+                        event.attempt = Some(*attempt);
+                        event.delay_ms = Some(*delay_ms);
+                    }
+                    record!(event);
+                }
+            }
+            FromAgent::RequestRetryObservation => {
+                record!(self.new_session_event(Lane::Runtime, "retry.started", Phase::Started,));
+            }
+            FromAgent::CompactionMeasured { duration_ms } => {
+                let mut event =
+                    self.new_session_event(Lane::Runtime, "compaction.measured", Phase::Completed);
+                if let Some(event) = &mut event {
+                    event.duration_ms = Some(*duration_ms);
+                }
+                record!(event);
+            }
+            FromAgent::Compaction { auto, .. } => {
+                let mut event =
+                    self.new_session_event(Lane::Runtime, "compaction.completed", Phase::Completed);
+                if let Some(event) = &mut event {
+                    event.automatic = Some(*auto);
+                }
+                record!(event);
+            }
+            FromAgent::CodexTransportReceipt {
+                transport_restarted: true,
+                ..
+            } => record!(self.new_session_event(
+                Lane::Runtime,
+                "session.restarted",
+                Phase::Completed,
+            )),
+            _ => {}
+        }
+    }
+
     pub(super) fn restore_request_cache(&self, agent: &NativeAgent) {
         let snapshot = self
             .session_manager
@@ -149,6 +373,13 @@ impl App {
         self.flush_session();
 
         self.state.session_id = Some(session_id.clone());
+        if let Some(event) = self.new_session_event(
+            maestro_runtime_contracts::SessionEventLane::Runtime,
+            "session.created",
+            maestro_runtime_contracts::SessionEventPhase::Completed,
+        ) {
+            self.record_session_event(event);
+        }
         // The session now has an id, so replace the placeholder scope with the
         // id-derived one. Children can only be started by a model turn, and a
         // turn cannot begin before this point, so no child is ever stamped with
@@ -322,6 +553,48 @@ impl App {
                 error,
             ));
             return false;
+        }
+        let (status, phase) = match event.status {
+            crate::tools::SubagentStatus::Queued => (
+                "queued",
+                maestro_runtime_contracts::SessionEventPhase::Requested,
+            ),
+            crate::tools::SubagentStatus::Running => (
+                "running",
+                maestro_runtime_contracts::SessionEventPhase::Started,
+            ),
+            crate::tools::SubagentStatus::Completed => (
+                "completed",
+                maestro_runtime_contracts::SessionEventPhase::Completed,
+            ),
+            crate::tools::SubagentStatus::Failed => (
+                "failed",
+                maestro_runtime_contracts::SessionEventPhase::Failed,
+            ),
+            crate::tools::SubagentStatus::Cancelled => (
+                "cancelled",
+                maestro_runtime_contracts::SessionEventPhase::Cancelled,
+            ),
+            crate::tools::SubagentStatus::TimedOut => (
+                "timed_out",
+                maestro_runtime_contracts::SessionEventPhase::Cancelled,
+            ),
+            crate::tools::SubagentStatus::Interrupted => (
+                "interrupted",
+                maestro_runtime_contracts::SessionEventPhase::Cancelled,
+            ),
+        };
+        let mut timeline_event = self.new_session_event(
+            maestro_runtime_contracts::SessionEventLane::Worker,
+            &format!("worker.{status}"),
+            phase,
+        );
+        if let Some(timeline_event) = &mut timeline_event {
+            timeline_event.correlation_id = Some(event.subagent_id.clone());
+            timeline_event.attempt = Some(event.attempt);
+        }
+        if let Some(timeline_event) = timeline_event {
+            self.record_session_event(timeline_event);
         }
         if let Err(error) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(

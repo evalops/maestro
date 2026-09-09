@@ -1319,6 +1319,8 @@ mod tests {
             thinking_level_changes: Vec::new(),
             model_changes: Vec::new(),
             compactions: Vec::new(),
+            session_events: Vec::new(),
+            context_budget_snapshots: Vec::new(),
             lifecycle_notifications: Vec::new(),
             pending_lifecycle_agent_notes: Vec::new(),
             usage_entries: Vec::new(),

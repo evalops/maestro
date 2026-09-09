@@ -52,6 +52,8 @@ fn empty_runtime_audit() -> Arc<RwLock<RuntimeAuditSnapshot>> {
         prompt_revision: 0,
         system_prompt: None,
         tools: Vec::new(),
+        max_output_tokens: 16_384,
+        context_window: Some(128_000),
     }))
 }
 
@@ -2394,10 +2396,15 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
                 .unwrap();
         }
         agent.prompt("Say done.".into(), vec![]).await.unwrap();
+        let mut observed_prepared_context = false;
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 match events.recv().await.unwrap() {
                     FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::RequestContextPrepared { .. } => {
+                        assert!(agent.runtime_audit_snapshot().request_context.is_some());
+                        observed_prepared_context = true;
+                    }
                     FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
                         panic!("{message}")
                     }
@@ -2407,6 +2414,7 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         })
         .await
         .unwrap();
+        assert!(observed_prepared_context);
         let snapshot = agent.runtime_audit_snapshot();
         let topology = snapshot
             .request_cache
