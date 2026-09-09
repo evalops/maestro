@@ -176,40 +176,6 @@ pub(crate) fn validate_prepared(messages: &[Message], config: &RequestConfig) ->
     Ok(())
 }
 
-/// Version 1 attests only route bundles that preserve the declared wire shape.
-/// Translating codecs, unknown providers, and model-changing fallbacks retain
-/// their existing behavior without a hosted attestation.
-pub(crate) fn supports_hosted_wire_topology(body: &serde_json::Value) -> bool {
-    let Some(model) = body.get("model").and_then(serde_json::Value::as_str) else {
-        return false;
-    };
-    let supported = |candidate: &serde_json::Value| {
-        let provider = candidate
-            .get("provider_ref")
-            .unwrap_or(candidate)
-            .get("provider")
-            .and_then(serde_json::Value::as_str)
-            .and_then(crate::ProviderRegistry::descriptor);
-        provider.is_some_and(|provider| {
-            matches!(
-                provider.protocol,
-                crate::ProviderProtocol::OpenAi | crate::ProviderProtocol::OpenAiCompatible
-            )
-        }) && candidate
-            .get("model")
-            .is_none_or(|value| value.as_str() == Some(model))
-    };
-    if let Some(candidates) = body.get("provider_candidates") {
-        return candidates
-            .as_array()
-            .is_some_and(|candidates| !candidates.is_empty() && candidates.iter().all(supported));
-    }
-    if body.get("provider_refs").is_some() {
-        return false;
-    }
-    body.get("provider_ref").is_some_and(supported)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,22 +230,6 @@ mod tests {
         let mut mutated = config.clone();
         mutated.system = Some("changed standing instruction".into());
         assert!(next.validate(&[], &mutated).is_err());
-    }
-
-    #[test]
-    fn cache_topology_hosted_support_checks_every_authorized_candidate() {
-        use serde_json::json;
-        let mut body = json!({"model":"m", "provider_candidates":[
-            {"model":"m","provider_ref":{"provider":"openai"}},
-            {"model":"m","provider_ref":{"provider":"openrouter"}}
-        ]});
-        assert!(supports_hosted_wire_topology(&body));
-        body["provider_candidates"][1]["provider_ref"]["provider"] = json!("google");
-        assert!(!supports_hosted_wire_topology(&body));
-        body["provider_candidates"][1]["provider_ref"]["provider"] = json!("openai");
-        body["provider_candidates"][1]["model"] = json!("other");
-        assert!(!supports_hosted_wire_topology(&body));
-        assert!(!supports_hosted_wire_topology(&json!({"model":"m"})));
     }
 
     #[test]

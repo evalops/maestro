@@ -304,6 +304,8 @@ pub struct CanonicalTurnEvent {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnMeasurements {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_estimation: Option<maestro_context::context_usage::ContextEstimationMeasurements>,
     pub first_output_ms: Option<u64>,
     pub compaction_duration_ms: Option<u64>,
     pub stream_stall_count: Option<u32>,
@@ -596,6 +598,16 @@ impl TurnCollector {
     pub fn record_request_retry(&mut self) {
         self.measurements.request_retry_count =
             self.measurements.request_retry_count.saturating_add(1);
+    }
+
+    pub fn record_context_calibration(
+        &mut self,
+        observation: &maestro_context::context_usage::ContextCalibration,
+    ) {
+        self.measurements
+            .context_estimation
+            .get_or_insert_with(Default::default)
+            .record(observation);
     }
 
     pub fn record_compaction_duration(&mut self, duration_ms: u64) {

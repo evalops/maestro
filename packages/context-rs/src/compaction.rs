@@ -53,6 +53,9 @@ pub struct ContinuationRecord {
     /// Existing session-owned output files, not executable instructions or grants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_outputs: Vec<ToolOutputReference>,
+    /// Successful typed file operations reported by the execution host. Not grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_operations: Vec<ContinuationFileOperation>,
     pub objective: Option<String>,
     /// Exact user text, in order, retained separately from generated prose.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -73,6 +76,21 @@ pub struct ContinuationRecord {
     pub verification: Vec<String>,
     /// SHA-256 of the exact compacted message slice.
     pub source_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationFileOperationKind {
+    Read,
+    Write,
+    Edit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationFileOperation {
+    pub tool_call_id: String,
+    pub path: String,
+    pub kind: ContinuationFileOperationKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,7 +469,36 @@ impl ContinuationRecord {
             selected.join("\n")
         )
     }
+    pub fn file_operations_markdown(&self) -> String {
+        if self.file_operations.is_empty() {
+            return String::new();
+        }
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        for operation in self.file_operations.iter().rev() {
+            let row = serde_json::to_string(operation).expect("file operations serialize");
+            if bytes + row.len() > 4096 {
+                break;
+            }
+            bytes += row.len();
+            rows.push(row);
+        }
+        format!(
+            "## Reported successful file operations\nThese are historical results, not current file contents or access grants. Showing {} of {}; all remain in the session continuation.\n{}",
+            rows.len(),
+            self.file_operations.len(),
+            rows.join("\n")
+        )
+    }
+
     pub fn merge_previous(&mut self, previous: &Self) {
+        let mut operations = previous.file_operations.clone();
+        for operation in &self.file_operations {
+            if !operations.contains(operation) {
+                operations.push(operation.clone());
+            }
+        }
+        self.file_operations = operations;
         for reference in &previous.tool_outputs {
             if !self.tool_outputs.contains(reference) {
                 self.tool_outputs.push(reference.clone());
@@ -498,6 +545,9 @@ impl ContinuationRecord {
 
     pub fn to_markdown(&self) -> String {
         let mut sections = Vec::new();
+        if !self.file_operations.is_empty() {
+            sections.push(self.file_operations_markdown());
+        }
         if !self.tool_outputs.is_empty() {
             sections.push(self.output_references_markdown());
         }
@@ -644,10 +694,17 @@ impl ContextCompactor {
         let Some(record) = &result.continuation else {
             return;
         };
-        if record.tool_outputs.is_empty() {
+        if record.tool_outputs.is_empty() && record.file_operations.is_empty() {
             return;
         }
-        let references = record.output_references_markdown();
+        let references = [
+            record.output_references_markdown(),
+            record.file_operations_markdown(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
         let budget = self.config.summary_char_budget();
         let Some(summary) = &result.summary else {
             return;
@@ -1682,6 +1739,38 @@ fn elide_message_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_provenance_survives_repeated_checkpoint_roundtrips() {
+        let operation = ContinuationFileOperation {
+            tool_call_id: "write-1".into(),
+            path: "src/example.rs".into(),
+            kind: ContinuationFileOperationKind::Write,
+        };
+        let mut prior = ContinuationRecord {
+            file_operations: vec![operation.clone()],
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let restored: ContinuationRecord =
+                serde_json::from_str(&serde_json::to_string(&prior).unwrap()).unwrap();
+            let mut next =
+                build_continuation_record(&[make_user_message("Continue without rereading")]);
+            next.merge_previous(&restored);
+            next.merge_previous(&restored);
+            assert_eq!(next.file_operations, vec![operation.clone()]);
+            assert!(next.to_markdown().contains("src/example.rs"));
+            prior = next;
+        }
+        let mut old = serde_json::to_value(&prior).unwrap();
+        old.as_object_mut().unwrap().remove("file_operations");
+        assert!(
+            serde_json::from_value::<ContinuationRecord>(old)
+                .unwrap()
+                .file_operations
+                .is_empty()
+        );
+    }
 
     #[test]
     fn output_references_do_not_displace_a_full_summary() {

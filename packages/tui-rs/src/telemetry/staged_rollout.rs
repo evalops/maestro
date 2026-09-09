@@ -321,6 +321,8 @@ enum FirstPartyCollection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FirstPartyTurnMeasurements {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_estimation: Option<maestro_context::context_usage::ContextEstimationMeasurements>,
     collection: FirstPartyCollection,
     first_output_ms: Option<u64>,
     compaction_duration_ms: Option<u64>,
@@ -341,6 +343,7 @@ struct FirstPartyTurnMeasurements {
 impl FirstPartyTurnMeasurements {
     fn from_observed(m: &TurnMeasurements) -> Self {
         Self {
+            context_estimation: m.context_estimation.clone(),
             collection: FirstPartyCollection::AllEligible,
             first_output_ms: m.first_output_ms.map(|v| v.min(MAX_DURATION_MS)),
             compaction_duration_ms: m.compaction_duration_ms.map(|v| v.min(MAX_DURATION_MS)),
@@ -378,6 +381,18 @@ impl FirstPartyTurnMeasurements {
             && self.compacted_input_tokens <= MAX_TOKEN_COUNT
             && self.response_count <= MAX_COUNT
             && self.responses_with_usage <= self.response_count
+            && self.context_estimation.as_ref().is_none_or(|m| {
+                m.responses > 0
+                    && m.responses <= u64::from(self.responses_with_usage)
+                    && m.underestimated_responses <= m.responses
+                    && m.estimated_input_tokens <= MAX_TOKEN_COUNT
+                    && m.observed_input_tokens <= MAX_TOKEN_COUNT
+                    && m.absolute_error_tokens
+                        <= m.estimated_input_tokens
+                            .saturating_add(m.observed_input_tokens)
+                    && m.absolute_error_tokens
+                        >= m.estimated_input_tokens.abs_diff(m.observed_input_tokens)
+            })
             && self.responses_with_cost <= self.response_count
             && {
                 let counts = [
