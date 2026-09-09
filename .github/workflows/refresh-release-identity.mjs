@@ -83,12 +83,17 @@ function normalizedSession(value) {
 
 export async function renewReleaseIdentity(tokens, config, save, fetcher = fetch) {
   const current = normalizedSession(tokens);
-  const response = await fetcher(`${issuer}/v1/tokens/refresh`, {
+  const response = await fetcher(`${issuer}/token`, {
     method: "POST",
     redirect: "error",
     signal: AbortSignal.timeout(15000),
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ refresh_token: current.refresh }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: "conductor-chrome-extension",
+      grant_type: "refresh_token",
+      refresh_token: current.refresh,
+      resource,
+    }),
   });
   if (!response.ok) {
     throw new Error(`Release-test Identity renewal failed (${response.status}); re-enroll if revoked.`);
@@ -104,6 +109,7 @@ export async function renewReleaseIdentity(tokens, config, save, fetcher = fetch
     !body.access_token ||
     typeof body.refresh_token !== "string" ||
     !body.refresh_token ||
+    body.token_type?.toLowerCase() !== "bearer" ||
     !Number.isFinite(body.expires_in) ||
     body.expires_in <= 0
   ) {

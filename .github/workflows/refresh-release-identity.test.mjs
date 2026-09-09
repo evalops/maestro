@@ -24,7 +24,7 @@ const claims = {
   exp: Math.floor(Date.now() / 1000) + 300,
 };
 
-test("native refresh rotates and saves before access validation", async () => {
+test("gateway refresh rotates and saves before access validation", async () => {
   const calls = [];
   let saved;
   const renewed = await renewReleaseIdentity(
@@ -33,9 +33,18 @@ test("native refresh rotates and saves before access validation", async () => {
     async (tokens) => { saved = tokens; },
     async (url, options) => {
       calls.push({ url, options });
-      if (url.endsWith("/v1/tokens/refresh")) {
-        assert.deepEqual(JSON.parse(options.body), { refresh_token: "old-refresh" });
-        return Response.json({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 300 });
+      if (url.endsWith("/token")) {
+        assert.equal(options.headers["content-type"], "application/x-www-form-urlencoded");
+        assert.deepEqual(
+          Object.fromEntries(options.body),
+          {
+            client_id: "conductor-chrome-extension",
+            grant_type: "refresh_token",
+            refresh_token: "old-refresh",
+            resource: "https://llm-gateway.evalops.dev",
+          },
+        );
+        return Response.json({ access_token: "new-access", refresh_token: "new-refresh", token_type: "Bearer", expires_in: 300 });
       }
       assert.equal(options.headers.authorization, "Bearer new-access");
       return Response.json(claims);
