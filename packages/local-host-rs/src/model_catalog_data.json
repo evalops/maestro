@@ -1,5 +1,5 @@
 {
-  "generated_at": 1788939087,
+  "generated_at": 1789025450,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1438,7 +1438,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 943718
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -2236,7 +2236,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 163840,
-        "output_tokens": 16384
+        "output_tokens": 16000
       },
       "verification": {
         "state": "catalog",
@@ -2483,7 +2483,26 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 393216
+        "output_tokens": 384000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek: DeepSeek V4.1 Flash",
+      "provider": "openrouter",
+      "description": "DeepSeek V4.1 Flash is a sparse mixture-of-experts model from DeepSeek, and the cost-efficient tier of the V4.1…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 384000
       },
       "verification": {
         "state": "catalog",
@@ -3775,7 +3794,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 204800,
-        "output_tokens": 128000
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -4231,7 +4250,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 235929
+        "output_tokens": 100352
       },
       "verification": {
         "state": "catalog",
@@ -4360,7 +4379,7 @@
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
-        "vision": false,
+        "vision": true,
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
@@ -4433,25 +4452,6 @@
       "name": "Nous: Hermes 4 405B",
       "provider": "openrouter",
       "description": "Hermes 4 is a large-scale reasoning model built on Meta-Llama-3.1-405B and released by Nous Research. It introduces a…",
-      "capabilities": {
-        "protocol": "openai-chat",
-        "tools": false,
-        "vision": false,
-        "reasoning": true,
-        "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 117964
-      },
-      "verification": {
-        "state": "catalog",
-        "source": "openrouter"
-      }
-    },
-    {
-      "id": "nousresearch/hermes-4-70b",
-      "name": "Nous: Hermes 4 70B",
-      "provider": "openrouter",
-      "description": "Hermes 4 70B is a hybrid reasoning model from Nous Research, built on Meta-Llama-3.1-70B. It introduces the same…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": false,
@@ -6318,7 +6318,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 32000
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -6698,7 +6698,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 81920
+        "output_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -7477,7 +7477,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 471859
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
