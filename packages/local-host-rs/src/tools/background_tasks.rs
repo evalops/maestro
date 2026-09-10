@@ -108,6 +108,7 @@ const DEFAULT_LOG_SEGMENTS: usize = 2;
 const MAX_LOG_SEGMENTS: usize = 10;
 const MIN_LOG_BYTES: u64 = 50_000;
 const MAX_MONITORS: usize = 32;
+const MAX_COMPLETED_TASKS: usize = 128;
 const MAX_MONITORS_PER_TASK: usize = 8;
 const MAX_MONITOR_PATTERN_BYTES: usize = 256;
 const MAX_MONITOR_REGEX_BYTES: usize = 1024 * 1024;
@@ -166,6 +167,24 @@ fn max_running_tasks() -> usize {
         .and_then(|raw| raw.trim().parse().ok())
         .filter(|n: &usize| *n > 0)
         .unwrap_or(DEFAULT_MAX_RUNNING_TASKS)
+}
+
+/// Keep recent terminal metadata for log lookup without retaining every command
+/// ever launched in this process. Running tasks must never be evicted.
+fn prune_completed_tasks(tasks: &mut HashMap<String, BackgroundTask>) {
+    let mut terminal = tasks
+        .values()
+        .filter(|task| !matches!(task.status, BackgroundTaskStatus::Running))
+        .map(|task| (task.finished_at.unwrap_or(task.started_at), task.id.clone()))
+        .collect::<Vec<_>>();
+    let overflow = terminal.len().saturating_sub(MAX_COMPLETED_TASKS);
+    if overflow == 0 {
+        return;
+    }
+    terminal.sort_unstable();
+    for (_, id) in terminal.into_iter().take(overflow) {
+        tasks.remove(&id);
+    }
 }
 
 fn running_task_count() -> usize {
@@ -1198,6 +1217,7 @@ pub async fn start(
 
     if let Ok(mut tasks) = TASKS.write() {
         tasks.insert(id.clone(), task.clone());
+        prune_completed_tasks(&mut tasks);
     }
     store_rotation_observer(&id, observer);
 
@@ -1222,6 +1242,9 @@ pub async fn start(
                     BackgroundTaskStatus::Exited
                 };
             }
+        }
+        if let Ok(mut tasks) = TASKS.write() {
+            prune_completed_tasks(&mut tasks);
         }
         emit_task_lifecycle(&id, &lifecycle_command, status_label, Some(exit_code));
         for handle in drain_handles {
@@ -1275,6 +1298,7 @@ pub fn stop(id: &str) -> Result<BackgroundTask, String> {
     task.status = BackgroundTaskStatus::Stopped;
     task.finished_at = Some(SystemTime::now());
     let stopped = task.clone();
+    prune_completed_tasks(&mut tasks);
     remove_rotation_observer(id);
     remove_task_monitors(id);
     drop(tasks);
@@ -1310,6 +1334,48 @@ pub async fn wait_for_rotation(id: &str, timeout: Duration) -> Result<LogRotatio
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn completed_task_retention_is_bounded_across_many_commands() {
+        let mut tasks = HashMap::new();
+        for index in 0..1024 {
+            let id = format!("task-{index:04}");
+            let task = BackgroundTask {
+                id: id.clone(),
+                pid: None,
+                command: "x".repeat(4096),
+                cwd: ".".into(),
+                log_path: "test.log".into(),
+                log_write_failed: false,
+                log_write_error: None,
+                status: BackgroundTaskStatus::Running,
+                started_at: SystemTime::UNIX_EPOCH,
+                finished_at: None,
+                exit_code: None,
+            };
+            tasks.insert(id.clone(), task);
+            prune_completed_tasks(&mut tasks);
+            assert!(tasks.contains_key(&id));
+            if index != 0 {
+                let task = tasks.get_mut(&id).unwrap();
+                task.status = if index % 2 == 0 {
+                    BackgroundTaskStatus::Exited
+                } else {
+                    BackgroundTaskStatus::Stopped
+                };
+                task.finished_at = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(index));
+                prune_completed_tasks(&mut tasks);
+            }
+            assert!(tasks.len() <= MAX_COMPLETED_TASKS + 1);
+            assert!(
+                tasks.contains_key("task-0000"),
+                "running tasks must survive eviction"
+            );
+        }
+        assert_eq!(tasks.len(), MAX_COMPLETED_TASKS + 1);
+        assert!(tasks.contains_key("task-1023"));
+        assert!(!tasks.contains_key("task-0001"));
+    }
 
     // ========================================================================
     // logs_dir Tests

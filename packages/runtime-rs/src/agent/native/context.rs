@@ -60,6 +60,7 @@ impl NativeAgentRunner {
         // Drop it before changing identity so the next turn resolves the
         // session-aware persistent binding instead of reusing that thread.
         self.codex_session = None;
+        self.codex_correlations.reset();
         self.tool_executor.reset_coding_turn();
         if self.hooks.hook_session_id().await.is_some() {
             let _ = self.hooks.hook_on_session_end(reason).await;
@@ -378,6 +379,7 @@ impl NativeAgentRunner {
         let restored_prefix_len = messages.len();
         self.messages = messages;
         self.codex_session = None;
+        self.codex_correlations.reset();
         self.codex_history_restore_prefix_len = Some(restored_prefix_len);
         self.codex_current_prompt_started = false;
         self.notify_extensions_user_turn_start();
@@ -622,7 +624,7 @@ impl NativeAgentRunner {
         *summary = result?;
         Ok(())
     }
-    pub(super) fn retain_continuation(
+    pub(super) fn prepare_continuation(
         &mut self,
         result: &mut crate::agent::compaction::CompactionResult,
     ) {
@@ -630,7 +632,6 @@ impl NativeAgentRunner {
             if let Some(previous) = &self.semantic_continuation {
                 record.merge_previous(previous);
             }
-            self.semantic_continuation = Some(record.clone());
         }
         self.compactor.attach_output_references(result);
     }
@@ -640,7 +641,7 @@ impl NativeAgentRunner {
         response_usage: &mut TokenUsage,
         response_saw_usage: &mut bool,
     ) -> crate::agent::compaction::CompactionResult {
-        self.retain_continuation(&mut result);
+        self.prepare_continuation(&mut result);
         if std::env::var("MAESTRO_SEMANTIC_COMPACTION").as_deref() != Ok("1")
             || result.compacted_count == 0
             || self.client.is_none()

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::managed_setup::{McpDecision, McpPolicy};
@@ -22,6 +22,7 @@ use super::config::{
     McpServerConfig, McpTransport, expand_env_vars_for_scope, server_requires_workspace_approval,
 };
 use super::http::HttpConnection;
+use super::notifications::{MAX_POLL_NOTIFICATIONS, NotificationQueue, notification_channel};
 use super::protocol::{
     ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
     McpResource, McpResponse, McpTool, McpToolAnnotations, McpToolFingerprint, McpToolResult,
@@ -184,7 +185,7 @@ enum ConnectionBackend {
     Stdio {
         process: Child,
         stdin: tokio::process::ChildStdin,
-        notification_rx: mpsc::UnboundedReceiver<McpNotification>,
+        notification_rx: NotificationQueue,
     },
     /// HTTP/SSE connection
     Http(HttpConnection),
@@ -379,7 +380,7 @@ impl McpConnection {
             .ok_or_else(|| McpError::ConnectionFailed("Failed to get stdout".to_string()))?;
 
         // Set up response reader
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = notification_channel();
         let pending = self.pending.clone();
 
         // Spawn stdout reader task
@@ -632,7 +633,12 @@ impl McpConnection {
         let server = self.server_name().to_string();
         let mut events = Vec::new();
 
-        while let Some(notification) = self.try_recv_notification() {
+        // A chatty server may refill the queue while metadata refresh awaits.
+        // Bound one poll as well as the transport queue itself.
+        for _ in 0..MAX_POLL_NOTIFICATIONS {
+            let Some(notification) = self.try_recv_notification() else {
+                break;
+            };
             if notification.is_tools_list_changed() {
                 let revoked = self.refresh_tools_reporting_revocations().await?;
                 events.push(McpRuntimeEvent::ToolsListChanged {
@@ -1598,6 +1604,52 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn headless_stdio_flood_does_not_block_responses_or_grow_notifications() {
+        let mut config = stub_config("headless-flood");
+        config.command = Some("python3".into());
+        config.args = vec!["-u".into(), "-c".into(), r"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05', 'capabilities':{}, 'serverInfo':{'name':'fixture', 'version':'1'}}
+    elif method == 'tools/list':
+        result = {'tools':[]}
+    elif method == 'resources/list':
+        result = {'resources':[]}
+    else:
+        result = {'prompts':[]}
+        print(json.dumps({'jsonrpc':'2.0', 'method':'notifications/tools/list_changed'}))
+        for _ in range(2048):
+            print(json.dumps({'jsonrpc':'2.0', 'method':'notifications/message', 'params':{'level':'info', 'data':'x'*1024}}))
+    print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+".into()];
+        config.timeout = Some(10_000);
+        let mut connection = McpConnection::new(config);
+        // No TUI or notification consumer runs while initialization receives
+        // the flood. The final response proves stdout was not backpressured.
+        connection
+            .connect()
+            .await
+            .expect("response behind notification flood");
+        let events = connection.poll_notifications().await.unwrap();
+        assert!(
+            events.len() <= MAX_POLL_NOTIFICATIONS,
+            "headless diagnostics must be bounded"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, McpRuntimeEvent::ToolsListChanged { .. }))
+        );
+        connection.disconnect().await;
+    }
+
     fn repository_http_config(transport: McpTransport) -> McpServerConfig {
         let mut config = stub_config("repository-http");
         config.transport = transport;
@@ -1766,7 +1818,7 @@ mod tests {
             .spawn()
             .expect("spawn healthy MCP stub");
         let stdin = process.stdin.take().expect("stub stdin");
-        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (_notification_tx, notification_rx) = notification_channel();
 
         let mut connection = McpConnection::new(stub_config("healthy-pre-cancelled"));
         connection.backend = Some(ConnectionBackend::Stdio {
@@ -1822,7 +1874,7 @@ mod tests {
         let stdin = dead_process.stdin.take().expect("stub stdin");
         drop(dead_process.stdout.take());
         dead_process.wait().await.expect("wait for exited stub");
-        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (_notification_tx, notification_rx) = notification_channel();
 
         let mut connection = McpConnection::new(config);
         connection.backend = Some(ConnectionBackend::Stdio {
@@ -1931,7 +1983,7 @@ mod tests {
             .spawn()
             .expect("spawn non-reading MCP stub");
         let stdin = process.stdin.take().expect("stub stdin");
-        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (_notification_tx, notification_rx) = notification_channel();
 
         let mut connection = McpConnection::new(stub_config("blocked-writer"));
         connection.backend = Some(ConnectionBackend::Stdio {
@@ -1995,7 +2047,7 @@ mod tests {
         // SAFETY: `duplicate` is a fresh, valid descriptor returned by dup.
         let filler = unsafe { OwnedFd::from_raw_fd(duplicate) };
 
-        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (_notification_tx, notification_rx) = notification_channel();
         let mut connection = McpConnection::new(stub_config("saturated-cancel-writer"));
         connection.backend = Some(ConnectionBackend::Stdio {
             process,

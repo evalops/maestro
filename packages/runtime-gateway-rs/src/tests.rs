@@ -10347,6 +10347,28 @@ async fn a2a_task_store_evicts_old_terminal_tasks() {
     assert!(stored.contains_key("working-task"));
     assert!(!stored.contains_key("terminal-task-0"));
     assert!(stored.contains_key(&newest_terminal_task_id));
+    let histories = state.a2a_task_event_history.lock().await;
+    assert_eq!(
+        histories.len(),
+        stored.len(),
+        "evicted tasks must release replay payloads"
+    );
+    assert!(!histories.contains_key("terminal-task-0"));
+    assert!(histories.contains_key("working-task"));
+    drop(histories);
+    drop(stored);
+    let evicted =
+        serde_json::json!({"id":"terminal-task-0", "status":{"state":"TASK_STATE_COMPLETED"}});
+    publish_a2a_task_update(&state, &evicted).await;
+    assert!(
+        !state
+            .a2a_task_event_history
+            .lock()
+            .await
+            .contains_key("terminal-task-0")
+    );
+    let stored = state.a2a_tasks.lock().await;
+
     assert_eq!(
         stored
             .values()
@@ -14857,8 +14879,9 @@ async fn platform_a2a_push_applies_concurrent_status_and_artifacts_without_lost_
     drop(tasks_guard);
 
     for callback in callbacks {
-        callback
+        tokio::time::timeout(Duration::from_secs(5), callback)
             .await
+            .expect("publication must not reacquire the task lock")
             .expect("callback task should join")
             .expect("callback should be accepted");
     }
@@ -14909,4 +14932,24 @@ async fn platform_a2a_push_applies_concurrent_status_and_artifacts_without_lost_
         );
         saw_completed |= completed;
     }
+}
+
+#[tokio::test]
+async fn platform_a2a_push_evicts_terminal_payloads_and_replay_history() {
+    let state = test_app_state_with_sessions(HashMap::new());
+    let auth = crate::a2a::PlatformA2APushServiceAuth {
+        organization_id: "org-retention".into(),
+        workspace_id: "workspace-retention".into(),
+    };
+    for index in 0..A2A_TERMINAL_TASK_STORE_LIMIT + 16 {
+        crate::a2a::record_platform_a2a_push_payload(&state, serde_json::json!({
+            "task": {"id":format!("callback-{index:04}"), "status":{"state":"TASK_STATE_COMPLETED", "timestamp":format!("{index:04}")}, "artifacts":[{"parts":[{"text":"x".repeat(4096)}]}]}
+        }), &auth).await.unwrap();
+    }
+    let tasks = state.a2a_tasks.lock().await;
+    let histories = state.a2a_task_event_history.lock().await;
+    assert_eq!(tasks.len(), A2A_TERMINAL_TASK_STORE_LIMIT);
+    assert_eq!(histories.len(), tasks.len());
+    assert!(!tasks.contains_key("callback-0000"));
+    assert!(!histories.contains_key("callback-0000"));
 }

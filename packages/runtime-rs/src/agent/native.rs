@@ -1589,9 +1589,7 @@ impl NativeAgent {
             system_prompt_revision: 0,
             runtime_prompt_revision: 0,
             runtime_audit: Arc::clone(&runtime_audit),
-            codex_file_change_paths_by_item: HashMap::new(),
-            codex_native_tools_by_item: HashMap::new(),
-            codex_native_pending_completions: HashMap::new(),
+            codex_correlations: CodexTurnCorrelations::default(),
         };
 
         let host = runner.tool_executor.clone();
@@ -2609,25 +2607,27 @@ struct NativeAgentRunner {
 
     runtime_audit: Arc<RwLock<RuntimeAuditSnapshot>>,
 
-    /// File-change correlation for Codex items, keyed by item id.
-    ///
-    /// v2 `item/fileChange/requestApproval` often carries only `itemId`. Paths
-    /// and per-path metadata (kind, content, move_path, …) arrive on earlier
-    /// item notifications; this map correlates them so the action firewall and
-    /// path-sensitive policy hooks see the same full change set.
-    codex_file_change_paths_by_item: CodexFileChangeItemCache,
-
-    /// Approved Codex-native operations awaiting their authoritative
-    /// `item/completed` notification, keyed by Codex item id.
-    codex_native_tools_by_item: HashMap<String, CodexNativeToolCorrelation>,
-
-    /// Native operation completions that arrived before their approval could
-    /// record an item correlation, keyed by Codex item id.
-    codex_native_pending_completions: HashMap<String, bool>,
+    /// Item metadata belongs to one Codex turn, including late same-turn
+    /// approvals. Never carry patches or unfinished approvals into another turn.
+    codex_correlations: CodexTurnCorrelations,
 }
 
 /// itemId → path → per-path patch metadata (may be an empty object).
 type CodexFileChangeItemCache = HashMap<String, Map<String, Value>>;
+
+#[derive(Default)]
+struct CodexTurnCorrelations {
+    file_changes: CodexFileChangeItemCache,
+    approved: HashMap<String, CodexNativeToolCorrelation>,
+    pending_completions: HashMap<String, bool>,
+}
+
+impl CodexTurnCorrelations {
+    fn reset(&mut self) {
+        // Drop both entries and high-water allocations from large patch turns.
+        *self = Self::default();
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CodexNativeToolCorrelation {

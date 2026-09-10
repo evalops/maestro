@@ -1964,6 +1964,7 @@ impl ToolExecutor {
     /// Call this before checking annotations for MCP tools.
     pub async fn ensure_mcp_annotations(&self) -> Result<(), String> {
         let _ = self.ensure_mcp_client().await?;
+        self.poll_mcp_updates().await?;
         Ok(())
     }
 
