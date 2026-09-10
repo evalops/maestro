@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
+use super::expansion::{SwarmTaskContext, SwarmTaskOutcome, expanded_plan, files_overlap};
 use super::plan_parser::validate_plan;
 use super::types::{
     SwarmConfig, SwarmEvent, SwarmPlan, SwarmState, SwarmStatus, SwarmTask, TaskResult, TaskStatus,
@@ -39,6 +40,10 @@ impl SwarmExecutor {
     pub fn new(plan: SwarmPlan, config: SwarmConfig) -> Result<Self> {
         // Validate the plan
         validate_plan(&plan)?;
+        anyhow::ensure!(
+            config.max_concurrency > 0,
+            "Swarm concurrency must be positive"
+        );
 
         let state = SwarmState::new(plan, config);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -107,6 +112,31 @@ impl SwarmExecutor {
         F: Fn(SwarmTask) -> Fut + Send + Sync + Clone + 'static,
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
+        let max_tasks = self.state.read().await.plan.tasks.len();
+        self.run_expanding(max_tasks, move |context| {
+            let executor = task_executor.clone();
+            async move { executor(context.task).await.map(SwarmTaskOutcome::from) }
+        })
+        .await
+    }
+
+    /// Execute an owner-admitted graph that can grow after each successful task.
+    ///
+    /// `max_tasks` bounds all tasks, including completed discovery tasks. Each
+    /// expansion is validated atomically and becomes a barrier for the source's
+    /// existing consumers. Callbacks receive dependency results outside the
+    /// parent conversation. The caller still owns admission, persistence,
+    /// idempotency, effect cancellation, and final acceptance; this scheduler
+    /// is an in-process cache and cannot recover a process crash itself.
+    pub async fn run_expanding<F, Fut>(
+        &self,
+        max_tasks: usize,
+        task_executor: F,
+    ) -> Result<SwarmState>
+    where
+        F: Fn(SwarmTaskContext) -> Fut + Send + Sync + Clone + 'static,
+        Fut: std::future::Future<Output = Result<SwarmTaskOutcome>> + Send,
+    {
         let start_time = Instant::now();
         let mut spawned_tasks = Vec::new();
         let mut terminal_event = None;
@@ -114,6 +144,14 @@ impl SwarmExecutor {
         // Initialize
         {
             let mut state = self.state.write().await;
+            anyhow::ensure!(
+                state.status == SwarmStatus::Initializing,
+                "Swarm execution has already started"
+            );
+            anyhow::ensure!(
+                max_tasks > 0 && state.plan.tasks.len() <= max_tasks,
+                "Initial plan exceeds swarm task budget"
+            );
             state.status = SwarmStatus::Running;
             state.started_at = Some(
                 std::time::SystemTime::now()
@@ -154,19 +192,49 @@ impl SwarmExecutor {
                 break;
             }
 
-            // Find tasks we can start
-            let ready_tasks: Vec<SwarmTask> = state
+            if !state.failed_tasks.is_empty() && !state.config.continue_on_failure {
+                drop(state);
+                let mut state = self.state.write().await;
+                for task in &mut state.plan.tasks {
+                    if task.status == TaskStatus::Pending {
+                        task.status = TaskStatus::Skipped;
+                    }
+                }
+                state.status = SwarmStatus::Failed;
+                terminal_event = Some(SwarmEvent::Failed {
+                    error: "A swarm task failed".into(),
+                });
+                break;
+            }
+
+            // Reserve declared scopes against running tasks and this batch.
+            let running_tasks: Vec<_> = state
                 .plan
                 .tasks
                 .iter()
-                .filter(|t| {
-                    t.status == TaskStatus::Pending
-                        && !state.running_tasks.contains_key(&t.id)
-                        && t.can_start(&state.completed_tasks)
-                })
-                .take(state.config.max_concurrency - state.running_tasks.len())
-                .cloned()
+                .filter(|task| state.running_tasks.contains_key(&task.id))
                 .collect();
+            let mut ready_tasks = Vec::<SwarmTask>::new();
+            let capacity = state
+                .config
+                .max_concurrency
+                .saturating_sub(state.running_tasks.len());
+            for task in &state.plan.tasks {
+                if ready_tasks.len() == capacity {
+                    break;
+                }
+                if task.status != TaskStatus::Pending
+                    || state.running_tasks.contains_key(&task.id)
+                    || !task.can_start(&state.completed_tasks)
+                    || running_tasks
+                        .iter()
+                        .any(|running| files_overlap(task, running))
+                    || ready_tasks.iter().any(|ready| files_overlap(task, ready))
+                {
+                    continue;
+                }
+                ready_tasks.push(task.clone());
+            }
 
             let can_start_more = state.can_start_more();
             let running_count = state.running_tasks.len();
@@ -186,36 +254,30 @@ impl SwarmExecutor {
                     break;
                 }
 
-                // Check for stuck state (tasks pending but blocked by failed deps)
+                // Failure blocks every transitive consumer, even when unrelated
+                // work is allowed to continue. Never spin on a skipped dependency.
                 let mut state = self.state.write().await;
-                let mut stuck = false;
-
-                // Collect info needed to check dependencies (to avoid borrow conflicts)
-                let failed_tasks = state.failed_tasks.clone();
-                let continue_on_failure = state.config.continue_on_failure;
-
-                for task in &mut state.plan.tasks {
-                    if task.status == TaskStatus::Pending {
-                        // Check if any dependency failed
-                        let dep_failed = task.dependencies.iter().any(|d| failed_tasks.contains(d));
-
-                        if dep_failed && !continue_on_failure {
+                let mut blocked = state.failed_tasks.clone();
+                loop {
+                    let before = blocked.len();
+                    for task in &mut state.plan.tasks {
+                        if task.status == TaskStatus::Skipped
+                            || (task.status == TaskStatus::Pending
+                                && task.dependencies.iter().any(|id| blocked.contains(id)))
+                        {
                             task.status = TaskStatus::Skipped;
-                            stuck = true;
+                            blocked.insert(task.id.clone());
                         }
                     }
+                    if before == blocked.len() {
+                        break;
+                    }
                 }
-
-                if stuck && !continue_on_failure {
-                    state.status = SwarmStatus::Failed;
-                    drop(state);
-                    terminal_event = Some(SwarmEvent::Failed {
-                        error: "Tasks blocked by failed dependencies".to_string(),
-                    });
-                    break;
-                }
-
-                drop(state);
+                state.status = SwarmStatus::Failed;
+                terminal_event = Some(SwarmEvent::Failed {
+                    error: "Tasks blocked by failed dependencies or an unschedulable plan".into(),
+                });
+                break;
             }
 
             // Start ready tasks
@@ -254,12 +316,28 @@ impl SwarmExecutor {
                         s.config.task_timeout_ms
                     };
 
+                    let dependency_results = {
+                        let s = state.read().await;
+                        task.dependencies
+                            .iter()
+                            .filter_map(|id| {
+                                s.plan
+                                    .get_task(id)
+                                    .and_then(|dependency| dependency.result.clone())
+                                    .map(|result| (id.clone(), result))
+                            })
+                            .collect()
+                    };
+                    let context = SwarmTaskContext {
+                        task,
+                        dependency_results,
+                    };
                     let task_id_for_handle = task_id.clone();
                     let handle = tokio::spawn(async move {
                         let result = if let Some(timeout_ms) = timeout {
                             match tokio::time::timeout(
                                 Duration::from_millis(timeout_ms),
-                                executor(task),
+                                executor(context),
                             )
                             .await
                             {
@@ -267,42 +345,66 @@ impl SwarmExecutor {
                                 Err(_) => Err(anyhow::anyhow!("Task timed out")),
                             }
                         } else {
-                            executor(task).await
+                            executor(context).await
                         };
 
                         // Update state
                         let mut s = state.write().await;
                         s.running_tasks.remove(&task_id);
 
-                        match result {
-                            Ok(task_result) => {
-                                s.completed_tasks.insert(task_id.clone());
-                                if let Some(t) = s.plan.get_task_mut(&task_id) {
-                                    t.status = TaskStatus::Completed;
-                                    t.result = Some(task_result.clone());
+                        let outcome = result.map(|mut outcome| {
+                            if outcome.result.success && !outcome.follow_up_tasks.is_empty() {
+                                match expanded_plan(
+                                    &s.plan,
+                                    &task_id,
+                                    outcome.follow_up_tasks,
+                                    max_tasks,
+                                ) {
+                                    Ok(plan) => s.plan = plan,
+                                    Err(error) => {
+                                        outcome.result.success = false;
+                                        outcome.result.error =
+                                            Some(format!("Task expansion rejected: {error}"));
+                                    }
                                 }
-                                let _ = event_tx.send(SwarmEvent::TaskCompleted {
-                                    task_id,
-                                    result: task_result,
-                                });
                             }
-                            Err(e) => {
-                                s.failed_tasks.insert(task_id.clone());
-                                if let Some(t) = s.plan.get_task_mut(&task_id) {
-                                    t.status = TaskStatus::Failed;
-                                    t.result = Some(TaskResult {
-                                        success: false,
-                                        output: String::new(),
-                                        files_modified: Vec::new(),
-                                        duration_ms: 0,
-                                        error: Some(e.to_string()),
-                                    });
-                                }
-                                let _ = event_tx.send(SwarmEvent::TaskFailed {
-                                    task_id,
-                                    error: e.to_string(),
-                                });
-                            }
+                            outcome.result
+                        });
+                        let task_result = match outcome {
+                            Ok(result) => result,
+                            Err(error) => TaskResult {
+                                success: false,
+                                output: String::new(),
+                                files_modified: Vec::new(),
+                                duration_ms: 0,
+                                error: Some(error.to_string()),
+                            },
+                        };
+                        if task_result.success {
+                            s.completed_tasks.insert(task_id.clone());
+                        } else {
+                            s.failed_tasks.insert(task_id.clone());
+                        }
+                        if let Some(task) = s.plan.get_task_mut(&task_id) {
+                            task.status = if task_result.success {
+                                TaskStatus::Completed
+                            } else {
+                                TaskStatus::Failed
+                            };
+                            task.result = Some(task_result.clone());
+                        }
+                        if task_result.success {
+                            let _ = event_tx.send(SwarmEvent::TaskCompleted {
+                                task_id,
+                                result: task_result,
+                            });
+                        } else {
+                            let _ = event_tx.send(SwarmEvent::TaskFailed {
+                                task_id,
+                                error: task_result
+                                    .error
+                                    .unwrap_or_else(|| "Task reported failure".into()),
+                            });
                         }
                     });
                     spawned_tasks.push(SpawnedTask {
@@ -321,6 +423,7 @@ impl SwarmExecutor {
         // handle before publishing the terminal event or returning state so a
         // caller cannot release its owner while a child is still settling.
         self.drain_spawned_tasks(&mut spawned_tasks).await;
+        let terminal_emitted = terminal_event.is_some();
         if let Some(event) = terminal_event {
             self.emit(event).await;
         }
@@ -338,17 +441,14 @@ impl SwarmExecutor {
             .filter(|t| t.status == TaskStatus::Skipped)
             .count();
 
-        let final_status = state.status;
-        if state.failed_tasks.is_empty() || final_status == SwarmStatus::Cancelled {
-            // Keep current status
-        } else if !state.config.continue_on_failure {
-            state.status = SwarmStatus::Failed;
-        } else if final_status != SwarmStatus::Cancelled {
-            state.status = SwarmStatus::Completed;
-        }
-
-        if state.status == SwarmStatus::Running {
-            state.status = SwarmStatus::Completed;
+        // Continuing independent work never converts failed verification into
+        // aggregate success. Cancellation retains its explicit terminal state.
+        if state.status != SwarmStatus::Cancelled {
+            state.status = if failed > 0 || skipped > 0 || state.status == SwarmStatus::Failed {
+                SwarmStatus::Failed
+            } else {
+                SwarmStatus::Completed
+            };
         }
 
         let result = state.clone();
@@ -360,6 +460,13 @@ impl SwarmExecutor {
                 failed,
                 skipped,
                 duration_ms,
+            })
+            .await;
+        }
+
+        if result.status == SwarmStatus::Failed && !terminal_emitted {
+            self.emit(SwarmEvent::Failed {
+                error: format!("Swarm finished with {failed} failed and {skipped} skipped tasks"),
             })
             .await;
         }
