@@ -4,7 +4,7 @@ use base64::{
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
 use maestro_local_host::agent::{
-    FromAgent, NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseMessage,
+    FromAgent, NativeAgentConfig, ToolDefinition, ToolResponseMessage,
 };
 use maestro_local_host::ai::Tool;
 use maestro_runtime::{

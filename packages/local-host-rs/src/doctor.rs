@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+#[path = "managed_inference_readiness.rs"]
+mod managed_inference_readiness;
+
 use crate::ai::{ProviderProtocol, ProviderRegistry, ResolvedProvider, op_secret};
 use crate::model_catalog::{
     ModelInfo, find_model, has_provider_mismatch, protocol_name, verify_model_offline,
@@ -741,6 +744,8 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
     }
     checks.push(identity_check);
     checks.push(managed_setup_check(&readiness, live).await);
+    checks
+        .push(managed_inference_readiness::check(&readiness, &requested, &process_env, live).await);
     checks.push(match resolved {
         Ok(provider) if provider.credential.is_some() => check(
             "provider",

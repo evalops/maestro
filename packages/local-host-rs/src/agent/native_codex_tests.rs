@@ -1840,6 +1840,8 @@ async fn codex_pre_turn_failure_fixture() {
 #[test]
 fn codex_pre_turn_failures_preserve_retry_prompt_and_discard_terminal_give_up() {
     let root = tempfile::tempdir().expect("fixture root");
+    let maestro_home = root.path().join("maestro-home");
+    let codex_home = root.path().join("codex-home");
     let script = root.path().join("app-server.js");
     std::fs::write(
         &script,
@@ -1894,6 +1896,10 @@ else if(x.method==='turn/start'){
             .env("MAESTRO_CODEX_FAILURE_LOG", log)
             .env("MAESTRO_CODEX_FAILURE_ITEMS", items)
             .env("MAESTRO_CODEX_FAILURE_MARKER", marker)
+            .env("MAESTRO_HOME", &maestro_home)
+            .env("CODEX_HOME", &codex_home)
+            .env("MAESTRO_OAUTH_STORAGE_MODE", "file")
+            .env("MAESTRO_DISABLE_KEYCHAIN", "1")
             .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
             .env("OPENAI_CODEX_TOKEN", "fixture-token")
             .env("RUST_BACKTRACE", "1")
@@ -2040,6 +2046,14 @@ else if(x.method==='turn/start'){
     assert!(
         restored_items.contains("second prompt"),
         "the successfully started prompt must remain provider history: {restored_items}"
+    );
+    let binding_dir = maestro_home.join("codex/thread-bindings");
+    assert!(
+        std::fs::read_dir(&binding_dir)
+            .expect("fixture-owned Codex thread bindings")
+            .next()
+            .is_some(),
+        "fixture children must persist their bindings under the owned Maestro home"
     );
 }
 
