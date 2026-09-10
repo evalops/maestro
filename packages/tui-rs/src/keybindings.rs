@@ -210,14 +210,24 @@ fn load_rust_tui_keybindings_from_path(
     terminal_name: &str,
     in_tmux: bool,
 ) -> RustTuiKeybindings {
-    let mut defaults = default_shortcuts(terminal_name, in_tmux);
-    let Some(path) = config_path else {
-        return shortcuts_to_bindings(&defaults);
-    };
+    let overrides = config_path
+        .map(read_rust_tui_keybinding_overrides)
+        .unwrap_or_default();
+    let (resolved, _) = resolve_rust_tui_shortcuts(&overrides, terminal_name, in_tmux);
+    shortcuts_to_bindings(&resolved)
+}
 
-    let overrides = read_rust_tui_keybinding_overrides(path);
+fn resolve_rust_tui_shortcuts(
+    overrides: &HashMap<RustTuiKeybindingAction, RustTuiKeybindingShortcut>,
+    terminal_name: &str,
+    in_tmux: bool,
+) -> (
+    HashMap<RustTuiKeybindingAction, RustTuiKeybindingShortcut>,
+    Vec<KeybindingConfigIssue>,
+) {
+    let mut defaults = default_shortcuts(terminal_name, in_tmux);
     let mut resolved = defaults.clone();
-    for (action, shortcut) in &overrides {
+    for (action, shortcut) in overrides {
         resolved.insert(*action, *shortcut);
     }
 
@@ -247,6 +257,7 @@ fn load_rust_tui_keybindings_from_path(
         }
     }
     let overridden_actions: HashSet<RustTuiKeybindingAction> = overrides.keys().copied().collect();
+    let mut issues = Vec::new();
     let mut changed = true;
     while changed {
         changed = false;
@@ -268,6 +279,21 @@ fn load_rust_tui_keybindings_from_path(
             }
             for action in actions {
                 if overridden_actions.contains(action) && resolved[action] != defaults[action] {
+                    let conflicts = actions
+                        .iter()
+                        .filter(|candidate| *candidate != action)
+                        .map(|candidate| action_name(*candidate))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    issues.push(KeybindingConfigIssue {
+                        severity: "warning",
+                        message: format!(
+                            "Rust TUI override \"{}: {}\" conflicts with {conflicts} and falls back to {}.",
+                            action_name(*action),
+                            shortcut_name(resolved[action]),
+                            shortcut_name(defaults[action]),
+                        ),
+                    });
                     resolved.insert(*action, defaults[action]);
                     changed = true;
                 }
@@ -275,7 +301,7 @@ fn load_rust_tui_keybindings_from_path(
         }
     }
 
-    shortcuts_to_bindings(&resolved)
+    (resolved, issues)
 }
 
 fn tui_edit_last_follow_up_shortcut_from_env() -> &'static str {
@@ -311,21 +337,12 @@ fn default_tui_shortcuts() -> HashMap<&'static str, &'static str> {
 }
 
 fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
-    let queued_follow_up =
-        match shortcut_for_binding(queued_follow_up_edit_binding_for_terminal_name(
+    let queued_follow_up = shortcut_name(shortcut_for_binding(
+        queued_follow_up_edit_binding_for_terminal_name(
             &std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "wezterm".to_string()),
             std::env::var_os("TMUX").is_some(),
-        )) {
-            RustTuiKeybindingShortcut::CtrlP => "ctrl+p",
-            RustTuiKeybindingShortcut::CtrlK => "ctrl+k",
-            RustTuiKeybindingShortcut::CtrlO => "ctrl+o",
-            RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
-            RustTuiKeybindingShortcut::AltUp => "alt+up",
-            RustTuiKeybindingShortcut::ShiftLeft => "shift+left",
-            RustTuiKeybindingShortcut::AltP => "alt+p",
-            RustTuiKeybindingShortcut::CtrlShiftP => "ctrl+shift+p",
-            RustTuiKeybindingShortcut::AltShiftP => "alt+shift+p",
-        };
+        ),
+    ));
 
     HashMap::from([
         ("cycle-model", "ctrl+p"),
@@ -580,11 +597,19 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
     );
 
     let tui_defaults = default_tui_shortcuts();
-    let rust_defaults = default_rust_shortcuts();
+    let typed_rust_overrides = rust_overrides
+        .iter()
+        .filter_map(|(action, shortcut)| {
+            Some((parse_action_name(action)?, parse_shortcut_name(shortcut)?))
+        })
+        .collect();
     let (tui_conflicts, resolved_tui) =
         collect_conflict_issues("TUI", &tui_overrides, &tui_defaults);
-    let (rust_conflicts, resolved_rust) =
-        collect_conflict_issues("Rust TUI", &rust_overrides, &rust_defaults);
+    let (resolved_rust, rust_conflicts) = resolve_rust_tui_shortcuts(
+        &typed_rust_overrides,
+        &std::env::var("TERM_PROGRAM").unwrap_or_default(),
+        std::env::var_os("TMUX").is_some(),
+    );
     issues.extend(tui_conflicts);
     issues.extend(rust_conflicts);
 
@@ -592,9 +617,9 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
         .iter()
         .filter(|(action, shortcut)| resolved_tui.get(*action) == Some(*shortcut))
         .count();
-    let rust_active_overrides = rust_overrides
+    let rust_active_overrides = typed_rust_overrides
         .iter()
-        .filter(|(action, shortcut)| resolved_rust.get(*action) == Some(*shortcut))
+        .filter(|(action, shortcut)| resolved_rust.get(action) == Some(shortcut))
         .count();
 
     KeybindingConfigReport {
@@ -779,6 +804,31 @@ fn read_rust_tui_keybinding_overrides(
     overrides
 }
 
+fn action_name(value: RustTuiKeybindingAction) -> &'static str {
+    match value {
+        RustTuiKeybindingAction::CommandPalette => "command-palette",
+        RustTuiKeybindingAction::FileSearch => "file-search",
+        RustTuiKeybindingAction::ToggleToolOutputs => "toggle-tool-outputs",
+        RustTuiKeybindingAction::EditLastQueuedFollowUp => "edit-last-follow-up",
+        RustTuiKeybindingAction::CycleModel => "cycle-model",
+        RustTuiKeybindingAction::CycleModelBackward => "cycle-model-backward",
+    }
+}
+
+fn shortcut_name(value: RustTuiKeybindingShortcut) -> &'static str {
+    match value {
+        RustTuiKeybindingShortcut::CtrlK => "ctrl+k",
+        RustTuiKeybindingShortcut::CtrlP => "ctrl+p",
+        RustTuiKeybindingShortcut::CtrlO => "ctrl+o",
+        RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
+        RustTuiKeybindingShortcut::AltUp => "alt+up",
+        RustTuiKeybindingShortcut::ShiftLeft => "shift+left",
+        RustTuiKeybindingShortcut::AltP => "alt+p",
+        RustTuiKeybindingShortcut::CtrlShiftP => "ctrl+shift+p",
+        RustTuiKeybindingShortcut::AltShiftP => "alt+shift+p",
+    }
+}
+
 fn parse_action_name(value: &str) -> Option<RustTuiKeybindingAction> {
     match value {
         "cycle-model" => Some(RustTuiKeybindingAction::CycleModel),
@@ -888,11 +938,51 @@ mod tests {
         let bindings = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
         assert_eq!(bindings.file_search, ctrl(KeyCode::Char('p')));
         assert_ne!(bindings.cycle_model, bindings.file_search);
+        assert!(inspect_keybindings_config_at_path(&path).issues.is_empty());
         assert_eq!(bindings.cycle_model_backward, alt(KeyCode::Char('p')));
         fs::write(&path, r#"{"version":1,"rustBindings":{"cycle-model":"alt+p","cycle-model-backward":"ctrl+p"}}"#).unwrap();
         let bindings = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
         assert_eq!(bindings.cycle_model, alt(KeyCode::Char('p')));
         assert_eq!(bindings.cycle_model_backward, ctrl(KeyCode::Char('p')));
+        assert!(inspect_keybindings_config_at_path(&path).issues.is_empty());
+    }
+
+    #[test]
+    fn validation_preserves_legacy_palette_override_like_runtime() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("keybindings.json");
+        fs::write(&path, r#"{"version":1,"rustBindings":{"command-palette":"ctrl+p","file-search":"ctrl+o","toggle-tool-outputs":"ctrl+t","edit-last-follow-up":"alt+up"}}"#).unwrap();
+        let bindings = load_rust_tui_keybindings_from_path(Some(&path), "ghostty", false);
+        assert_eq!(bindings.command_palette, ctrl(KeyCode::Char('p')));
+        assert_eq!(
+            bindings.cycle_model,
+            binding_for_shortcut(RustTuiKeybindingShortcut::CtrlShiftP)
+        );
+        let report = inspect_keybindings_config_at_path(&path);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(report.rust_active_overrides, 4);
+        assert_eq!(summarize_keybindings_config_issues_at_path(&path), None);
+    }
+
+    #[test]
+    fn validation_still_reports_explicit_model_cycle_conflicts() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("keybindings.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"rustBindings":{"command-palette":"ctrl+p","cycle-model":"ctrl+p"}}"#,
+        )
+        .unwrap();
+        let bindings = load_rust_tui_keybindings_from_path(Some(&path), "ghostty", false);
+        assert_eq!(bindings.command_palette, ctrl(KeyCode::Char('k')));
+        assert_eq!(bindings.cycle_model, ctrl(KeyCode::Char('p')));
+        let report = inspect_keybindings_config_at_path(&path);
+        assert_eq!(report.rust_active_overrides, 1);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(
+            report.issues[0].message,
+            "Rust TUI override \"command-palette: ctrl+p\" conflicts with cycle-model and falls back to ctrl+k."
+        );
     }
 
     #[test]
