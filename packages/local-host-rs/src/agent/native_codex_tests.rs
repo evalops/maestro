@@ -1779,9 +1779,12 @@ async fn codex_pre_turn_failure_fixture() {
             let marker = std::path::PathBuf::from(
                 std::env::var("MAESTRO_CODEX_FAILURE_MARKER").expect("failure marker"),
             );
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            // Startup includes model discovery before turn/start can be sent.
+            // Match the adjacent cancellation fixture's startup budget, then
+            // keep the terminal snapshot deadline and cancellation assertions.
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 while !marker.exists() {
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             })
             .await
@@ -1856,7 +1859,7 @@ function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.st
 function fail(x){send({id:x.id,error:{code:-32000,message:'429 rate limit retry-after: 0 seconds'}})}
 rl.on('line',line=>{fs.appendFileSync(log,line+'\n');const x=JSON.parse(line);
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
-else if(x.method==='model/list'){send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}})}
+else if(x.method==='model/list'){const respond=()=>send({id:x.id,result:{data:[{id:'gpt-5.5',model:'gpt-5.5',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'},{reasoningEffort:'high'},{reasoningEffort:'xhigh'}]}],nextCursor:null}});if(scenario==='cancelled-start'){setTimeout(respond,3000)}else{respond()}}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread'}}})}
 else if(x.method==='thread/resume'){send({id:x.id,result:{thread:{id:x.params.threadId}}})}
 else if(x.method==='thread/inject_items'){
