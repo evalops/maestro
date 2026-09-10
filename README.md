@@ -75,6 +75,25 @@ Provider credentials stay in the gateway. Explicit model settings and
 `--model` continue to select another model, and using your own provider key
 still requires Deixic login.
 
+## Build a local product reference
+
+The Maestro Product Kit gives a browser product a scoped Platform operating-thread
+client through a local BFF. From a fresh Mono checkout:
+
+```sh
+make tools
+export PATH="$PWD/.local/bin:$PATH"
+deixic product new ./incident-product
+deixic product test ./incident-product
+DEIXIC_PRODUCT_FIXTURE=1 deixic product dev ./incident-product
+```
+
+The starter's fixture keeps its messages, controls, and receipts in the local
+process. Authenticated development reads one configured Platform channel before
+the browser server starts. See the [Deixic CLI product-kit guide](../../tools/dx/README.md#maestro-product-kit)
+for server-only configuration, local preview, domain capability adapters, and
+hosted verification.
+
 ## Develop
 
 Rust owns every agent/runtime path:
@@ -106,7 +125,7 @@ The terminal is titled **Dex Code**; its little companion is Dex.
 
 Use `/dex appearance` to choose glasses, a beanie, an antenna, a sprout, cat ears,
 a tiny crown, a bow, or an accent color.
-Arrow keys select an option; Enter saves it across sessions. Click Dex or run
+Arrow keys select an option; Enter saves it across sessions. Select Dex or run
 `/dex pet` for a brief reaction and a small rotating greeting. `/dex quiet` hides
 the character, and `/dex motion-off` keeps it still. Cosmetic choices never change the model or
 its permissions.

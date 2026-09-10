@@ -75,6 +75,8 @@ struct RuntimeTestHost {
     checkpoint_barrier: Option<Arc<(tokio::sync::Notify, tokio::sync::Notify, AtomicBool)>>,
     completed_tool_executions: Arc<AtomicUsize>,
     tool_definitions: Arc<Vec<ToolDefinition>>,
+    reserved_tools: HashSet<String>,
+    mcp_permission_tools: HashSet<String>,
     code_authority: bool,
     sandbox_policy: bool,
     max_output_tokens: u32,
@@ -115,6 +117,8 @@ impl RuntimeTestHost {
             checkpoint_barrier: None,
             completed_tool_executions: Arc::new(AtomicUsize::new(0)),
             tool_definitions: Arc::new(tool_definitions),
+            reserved_tools: HashSet::new(),
+            mcp_permission_tools: HashSet::new(),
             code_authority: true,
             sandbox_policy: false,
             max_output_tokens: 16_384,
@@ -209,8 +213,8 @@ impl NativeExecutionHost for RuntimeTestHost {
             .any(|definition| definition.tool.name.eq_ignore_ascii_case(name))
     }
 
-    fn is_reserved_tool(&self, _name: &str) -> bool {
-        false
+    fn is_reserved_tool(&self, name: &str) -> bool {
+        self.reserved_tools.contains(&name.to_ascii_lowercase())
     }
 
     fn goal_tools_visible(&self) -> bool {
@@ -245,8 +249,9 @@ impl NativeExecutionHost for RuntimeTestHost {
                 .unwrap_or(false)
     }
 
-    fn mcp_permission_allows(&self, _name: &str) -> bool {
-        false
+    fn mcp_permission_allows(&self, name: &str) -> bool {
+        self.mcp_permission_tools
+            .contains(&name.to_ascii_lowercase())
     }
 
     fn requires_approval(&self, name: &str, args: &Value) -> bool {
@@ -272,8 +277,9 @@ impl NativeExecutionHost for RuntimeTestHost {
         }
     }
 
-    fn is_mcp_tool(&self, _name: &str) -> bool {
-        false
+    fn is_mcp_tool(&self, name: &str) -> bool {
+        self.mcp_permission_tools
+            .contains(&name.to_ascii_lowercase())
     }
 
     fn tool_annotations(&self, _name: &str) -> Option<NativeToolAnnotations> {
@@ -934,13 +940,8 @@ impl NativeAgent {
             return new_runtime_test_agent(config, client)
                 .map(|(agent, events)| (Self(agent), events));
         }
-        let mut host = RuntimeTestHost::new(config.cwd.clone(), client.clone())
+        let host = RuntimeTestHost::new(config.cwd.clone(), client.clone())
             .with_code_authority(config.approval_mode != ApprovalMode::Selective);
-        if !external_tool_definitions.is_empty() {
-            let mut definitions = host.tool_definitions.as_ref().clone();
-            definitions.extend(external_tool_definitions.clone());
-            host.tool_definitions = Arc::new(definitions);
-        }
         let host = NativeExecutionHostHandle::new(Arc::new(host));
         let resolved = NativeResolvedClient {
             provider_name: client.provider_name().to_owned(),
@@ -977,6 +978,96 @@ impl NativeAgent {
     async fn shutdown(self) {
         self.0.shutdown().await;
     }
+}
+
+fn external_tool_definition(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool: Tool::new(name, "Caller-owned test tool").with_schema(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false
+        })),
+        requires_approval: true,
+    }
+}
+
+#[test]
+fn external_tool_names_reject_duplicates_and_reserved_names() {
+    let client = UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+        "runtime-test/tool-validation",
+        Vec::new(),
+    ));
+    let mut host = RuntimeTestHost::new(".", client);
+    host.reserved_tools.insert("runtime_reserved".to_owned());
+    let host = NativeExecutionHostHandle::new(Arc::new(host));
+
+    let duplicate = validate_tools_with_host(
+        &host,
+        None,
+        &[
+            external_tool_definition("caller_tool"),
+            external_tool_definition("CALLER_TOOL"),
+        ],
+    )
+    .expect_err("case-insensitive duplicate external names must be rejected");
+    assert!(duplicate.to_string().contains("multiple owners"));
+
+    let host_collision = validate_tools_with_host(&host, None, &[external_tool_definition("BASH")])
+        .expect_err("case-insensitive host tool collision must be rejected");
+    assert!(
+        host_collision
+            .to_string()
+            .contains("host, MCP, or reserved tool")
+    );
+
+    let reserved =
+        validate_tools_with_host(&host, None, &[external_tool_definition("RUNTIME_RESERVED")])
+            .expect_err("reserved external name must be rejected");
+    assert!(reserved.to_string().contains("host, MCP, or reserved tool"));
+}
+
+#[test]
+fn ungoverned_external_tool_cannot_claim_dynamic_mcp_tool_with_remembered_grant() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let name = "mcp__project__apply";
+    let client = UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+        "runtime-test/mcp-collision",
+        Vec::new(),
+    ));
+    let config = NativeAgentConfig {
+        model: "runtime-test/mcp-collision".to_owned(),
+        cwd: workspace.path().display().to_string(),
+        ..NativeAgentConfig::default()
+    };
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client.clone());
+    host.mcp_permission_tools.insert(name.to_owned());
+    assert!(
+        host.is_mcp_tool(name) && host.mcp_permission_allows(name),
+        "fixture must model a dynamic MCP tool with a remembered grant"
+    );
+    let executions = Arc::clone(&host.completed_tool_executions);
+    let result = super::NativeAgent::start_with_resolved_client(
+        config,
+        NativeExecutionHostHandle::new(Arc::new(host)),
+        vec![external_tool_definition("MCP__PROJECT__APPLY")],
+        CredentialVault::new(),
+        None,
+        NativeResolvedClient {
+            provider_name: client.provider_name().to_owned(),
+            client: Some(client),
+            model_route: NativeModelRoute::DirectProvider,
+        },
+    );
+
+    let error = match result {
+        Ok(_) => panic!("external tool must not overwrite a host MCP tool"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("host, MCP, or reserved tool"));
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "rejected external tools must never reach host dispatch"
+    );
 }
 
 #[test]
