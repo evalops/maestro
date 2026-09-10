@@ -354,6 +354,28 @@ impl NativeAgent {
         )
     }
 
+    /// Construct an agent with caller-owned tools and a deterministic client.
+    ///
+    /// This constructor is available only to the local test-support feature.
+    /// Production embeddings resolve an authenticated provider through
+    /// [`Self::new_with_tools`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_with_tools_and_test_client(
+        config: NativeAgentConfig,
+        external_tool_definitions: Vec<ToolDefinition>,
+        client: UnifiedClient,
+    ) -> Result<(Self, tokio::sync::mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::start(
+            config,
+            external_tool_definitions,
+            CredentialVault::new(),
+            None,
+            Some(ClientOverride::UnverifiedTest(client)),
+            None,
+            None,
+        )
+    }
+
     pub fn new_with_governed_tools_and_credential_vault(
         config: NativeAgentConfig,
         allowed_tools: &HashSet<String>,

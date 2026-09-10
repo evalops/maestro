@@ -5,6 +5,20 @@ edition = "2021"
 license = "MIT"
 description = "Local native execution host for Deixic Code"
 
+[[example]]
+name = "embedding"
+path = "examples/embedding.rs"
+
+[[example]]
+name = "embedding-test-kit"
+path = "examples/embedding_test_kit.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "embedding"
+path = "tests/embedding.rs"
+required-features = ["test-support"]
+
 [lib]
 name = "maestro_local_host"
 path = "src/lib.rs"

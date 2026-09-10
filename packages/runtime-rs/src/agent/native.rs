@@ -870,20 +870,23 @@ fn effective_tool_definitions(
     definitions
 }
 
-fn validate_governed_tools_with_host(
-    host: NativeExecutionHostHandle,
-    allowed_tools: &HashSet<String>,
+fn validate_tools_with_host(
+    host: &NativeExecutionHostHandle,
+    allowed_tools: Option<&HashSet<String>>,
     external_tool_definitions: &[ToolDefinition],
 ) -> Result<()> {
-    for name in allowed_tools {
-        let normalized = name.to_ascii_lowercase();
-        if !host.has_native_tool(&normalized) || host.is_reserved_tool(name) {
-            return Err(anyhow::anyhow!("Unknown allowed tool `{name}`"));
+    if let Some(allowed_tools) = allowed_tools {
+        for name in allowed_tools {
+            let normalized = name.to_ascii_lowercase();
+            if !host.has_native_tool(&normalized) || host.is_reserved_tool(name) {
+                return Err(anyhow::anyhow!("Unknown allowed tool `{name}`"));
+            }
         }
     }
-    let native_names = allowed_tools
+    let native_names = host
+        .tool_definitions()
         .iter()
-        .map(|name| name.to_ascii_lowercase())
+        .map(|definition| definition.tool.name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let mut external_names = HashSet::new();
     for definition in external_tool_definitions {
@@ -891,14 +894,14 @@ fn validate_governed_tools_with_host(
         if name.is_empty() {
             return Err(anyhow::anyhow!("External tool name must not be empty"));
         }
-        if native_names.contains(&name) || host.is_reserved_tool(&name) {
+        if native_names.contains(&name) || host.is_mcp_tool(&name) || host.is_reserved_tool(&name) {
             return Err(anyhow::anyhow!(
-                "Governed client tool name `{name}` collides with a reserved native name"
+                "External tool name `{name}` collides with a host, MCP, or reserved tool"
             ));
         }
         if !external_names.insert(name.clone()) {
             return Err(anyhow::anyhow!(
-                "Ambiguous governed client tool name `{name}` has multiple owners"
+                "Ambiguous external tool name `{name}` has multiple owners"
             ));
         }
     }
@@ -1416,13 +1419,11 @@ impl NativeAgent {
         allowed_tools: Option<&HashSet<String>>,
         resolved_client: NativeResolvedClient,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
-        if let Some(allowed_tools) = allowed_tools {
-            validate_governed_tools_with_host(
-                host.clone(),
-                allowed_tools,
-                &external_tool_definitions,
-            )?;
-        }
+        // Caller-owned tools must not overwrite host-owned dispatch or inherit
+        // an approval grant for a host or dynamic MCP tool. Validate every
+        // host definition, not only the active governed subset, before
+        // building the registry.
+        validate_tools_with_host(&host, allowed_tools, &external_tool_definitions)?;
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = host.model_allowed(&policy_id) {
             return Err(anyhow::anyhow!(reason));
@@ -1629,11 +1630,7 @@ impl NativeAgent {
         allowed_tools: HashSet<String>,
         external_tool_definitions: Vec<ToolDefinition>,
     ) -> Result<()> {
-        validate_governed_tools_with_host(
-            self.host.clone(),
-            &allowed_tools,
-            &external_tool_definitions,
-        )?;
+        validate_tools_with_host(&self.host, Some(&allowed_tools), &external_tool_definitions)?;
         self.command_tx
             .send(AgentCommand::ReplaceGovernedTools {
                 allowed_tools,

@@ -25,6 +25,7 @@ pub mod color_utils;
 pub mod config;
 pub mod credential_mode;
 pub mod doctor;
+pub mod embedding;
 pub mod evalops_cli;
 pub mod goal;
 pub mod harness;
