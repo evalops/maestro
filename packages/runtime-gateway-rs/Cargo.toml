@@ -35,4 +35,5 @@ tokio-util = "0.7"
 zip.workspace = true
 
 [dev-dependencies]
+maestro-local-host = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

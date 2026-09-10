@@ -3530,7 +3530,6 @@ fn create_response_consumer_script(
     acknowledge: bool,
     acknowledgement_delay: Option<&str>,
 ) -> PathBuf {
-    let script_path = directory.join(name);
     let action = if acknowledge {
         if let Some(delay) = acknowledgement_delay {
             format!(
@@ -3543,6 +3542,17 @@ fn create_response_consumer_script(
     } else {
         "sleep 1.1; exit 0".to_string()
     };
+    create_response_consumer_script_with_action(directory, name, log_path, &action)
+}
+
+#[cfg(unix)]
+fn create_response_consumer_script_with_action(
+    directory: &Path,
+    name: &str,
+    log_path: &Path,
+    action: &str,
+) -> PathBuf {
+    let script_path = directory.join(name);
     std::fs::write(
         &script_path,
         format!(
@@ -12328,12 +12338,12 @@ async fn response_4097_is_backpressured_and_first_live_key_dispatches_once() {
     let workspace = tempdir().expect("workspace");
     let fixtures = tempdir().expect("fixtures");
     let log_path = fixtures.path().join("capacity.log");
-    let script = create_response_consumer_script(
+    // This exercises capacity while the child is alive, not child-exit recovery.
+    let script = create_response_consumer_script_with_action(
         fixtures.path(),
         "capacity-child.sh",
         &log_path,
-        false,
-        None,
+        ":",
     );
     let supervisor = connected_supervisor_for_script(&script).await;
     let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(

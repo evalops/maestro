@@ -625,29 +625,33 @@ fn test_cache_evict_expired_multiple_entries() {
 #[test]
 fn test_cache_evict_expired_partial() {
     let config = CacheConfig {
-        ttl: Duration::from_millis(50),
+        ttl: Duration::from_secs(1),
         ..Default::default()
     };
     let mut cache = ToolResultCache::new(config);
 
-    // Add first entry
+    // Insert an entry whose monotonic age is already beyond the TTL.  Setting
+    // the fixture explicitly keeps this partial-eviction assertion independent
+    // of scheduler delays between two wall-clock sleeps.
     let key1 = CacheKey::new("read", &serde_json::json!({"id": 1}));
-    cache.put(key1, CachedResult::new("1", false));
+    let mut expired = CachedResult::new("1", false);
+    expired.created_at = Some(
+        Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("fixture age must be representable"),
+    );
+    cache.put(key1.clone(), expired);
 
-    // Wait a bit but not enough to expire
-    std::thread::sleep(Duration::from_millis(30));
-
-    // Add second entry
+    // A newly created entry remains below the one-second TTL.
     let key2 = CacheKey::new("read", &serde_json::json!({"id": 2}));
-    cache.put(key2, CachedResult::new("2", false));
-
-    // Wait for first to expire but not second
-    std::thread::sleep(Duration::from_millis(30));
+    cache.put(key2.clone(), CachedResult::new("2", false));
 
     cache.evict_expired();
 
-    // First should be evicted, second should remain
+    // First should be evicted, second should remain.
     assert_eq!(cache.stats().entries, 1);
+    assert!(!cache.entries.contains_key(&key1));
+    assert!(cache.entries.contains_key(&key2));
 }
 
 #[test]

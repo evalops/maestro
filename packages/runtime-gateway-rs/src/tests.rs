@@ -11322,10 +11322,20 @@ async fn failed_post_commit_inbox_cleanup_is_reconciled_from_durable_session_sta
     let mut initial = request.to_vec();
     let head = parse_request_head(&initial).expect("request should parse");
     let (_client, mut server) = tcp_stream_pair().await;
-    let response = handle_session_endpoint(&mut server, &mut initial, &head, &state).await;
+    let response = {
+        let _guard = ENV_LOCK.lock().await;
+        let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+        clear_env(RUNTIME_GATEWAY_ENV_NAMES);
+        let response = handle_session_endpoint(&mut server, &mut initial, &head, &state).await;
+        restore_env(snapshot);
+        response
+    };
     let response = String::from_utf8(response).expect("response should be utf-8");
 
-    assert!(response.starts_with("HTTP/1.1 204 No Content\r\n"));
+    assert!(
+        response.starts_with("HTTP/1.1 204 No Content\r\n"),
+        "post-commit inbox cleanup should preserve its successful deletion response: {response}"
+    );
     assert!(!state.sessions.lock().await.sessions.contains_key("peer"));
     assert!(
         state
