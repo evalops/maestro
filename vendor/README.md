@@ -31,11 +31,11 @@ build configuration. This establishes source equivalence, not memory safety of
 the entire dependency.
 
 After an intentional reviewed source edit, regenerate the patches using
-`python3 scripts/update-vendored-zstd-patches.py` from the Mono root. That command
+`python3 scripts/ci/update-vendored-zstd-patches.py` from the Mono root. That command
 requires locally cached archives matching the recorded published checksums; it
 does not update upstream hashes or supply-chain approvals. Run
 `make bazel-cargo-dependency-manifest-check` and
-`python3 scripts/test-vendored-zstd.py` with the normal shared Cargo target.
+`python3 scripts/ci/test-vendored-zstd.py` with the normal shared Cargo target.
 
 The focused suite covers initialized-prefix rejection and preservation,
 compile-fail dictionary lifetimes, allocator overflow/null/zeroing, comparator
