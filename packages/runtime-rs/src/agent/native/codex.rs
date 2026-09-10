@@ -114,6 +114,7 @@ impl NativeAgentRunner {
         &mut self,
         step_budget: &mut TurnStepBudget,
     ) -> Result<()> {
+        self.codex_correlations.reset();
         let model = crate::agent::codex_app_server_turns::codex_thread_model_id(&self.config.model);
         let started = Instant::now();
         let span = crate::model_span("openai-codex", &model);
@@ -121,6 +122,7 @@ impl NativeAgentRunner {
             .run_loop_via_codex_app_server_inner(step_budget)
             .instrument(span.clone())
             .await;
+        self.codex_correlations.reset();
         let outcome = if result.is_ok() { "success" } else { "error" };
         record_outcome(
             &span,
@@ -152,7 +154,6 @@ impl NativeAgentRunner {
         // Keep policy decisions on the same immutable snapshot so a later
         // same-turn item/tool/call cannot widen the governed execution set.
         let turn_start_active_tool_names = self.active_tool_names.clone();
-        self.codex_native_pending_completions.clear();
 
         let response_id = Uuid::new_v4().to_string();
         let _ = self.event_tx.send(FromAgent::ResponseStart {
@@ -546,7 +547,7 @@ impl NativeAgentRunner {
             if let Some(params) = note.params.as_ref() {
                 remember_codex_file_change_item_paths(
                     params,
-                    &mut self.codex_file_change_paths_by_item,
+                    &mut self.codex_correlations.file_changes,
                 );
             }
         }
@@ -570,12 +571,12 @@ impl NativeAgentRunner {
             }
             remember_codex_file_change_completion_paths(
                 &note,
-                &mut self.codex_file_change_paths_by_item,
+                &mut self.codex_correlations.file_changes,
             );
             if let Some(event) = project_or_defer_codex_native_completion(
                 &note,
-                &mut self.codex_native_tools_by_item,
-                &mut self.codex_native_pending_completions,
+                &mut self.codex_correlations.approved,
+                &mut self.codex_correlations.pending_completions,
                 self.tool_executor.managed_policy_metadata(),
             ) {
                 let _ = self.event_tx.send(event);
@@ -907,14 +908,14 @@ impl NativeAgentRunner {
                 if let Some(params) = request.params.as_ref() {
                     remember_codex_file_change_item_paths(
                         params,
-                        &mut self.codex_file_change_paths_by_item,
+                        &mut self.codex_correlations.file_changes,
                     );
                 }
                 let policy_tool = codex_native_policy_tool(&request.method);
                 let policy_args = codex_native_policy_hook_args(
                     &request.method,
                     request.params.as_ref(),
-                    &self.codex_file_change_paths_by_item,
+                    &self.codex_correlations.file_changes,
                 );
                 let policy_call_id = Uuid::new_v4().to_string();
                 let hook_denial = match run_pre_tool_use_hook(
@@ -953,7 +954,7 @@ impl NativeAgentRunner {
                     &request.method,
                     request.params.as_ref(),
                     Some(&self.workflow_state.snapshot()),
-                    Some(&self.codex_file_change_paths_by_item),
+                    Some(&self.codex_correlations.file_changes),
                 );
                 let firewall_denial = match &firewall_decision {
                     CodexNativeFirewallDecision::Block { reason } => Some(reason.clone()),
@@ -973,7 +974,7 @@ impl NativeAgentRunner {
                 if let Some(reason) = denial_reason {
                     discard_deferred_codex_native_completion(
                         request.params.as_ref(),
-                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_correlations.pending_completions,
                     );
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: format!("Declined Codex-native {} ({reason})", request.method),
@@ -994,12 +995,12 @@ impl NativeAgentRunner {
                         request.params.as_ref(),
                         &policy_call_id,
                         policy_tool,
-                        &mut self.codex_native_tools_by_item,
+                        &mut self.codex_correlations.approved,
                     );
                     if let Some(event) = project_deferred_codex_native_completion(
                         request.params.as_ref(),
-                        &mut self.codex_native_pending_completions,
-                        &mut self.codex_native_tools_by_item,
+                        &mut self.codex_correlations.pending_completions,
+                        &mut self.codex_correlations.approved,
                         self.tool_executor.managed_policy_metadata(),
                     ) {
                         let _ = self.event_tx.send(event);
@@ -1041,7 +1042,7 @@ impl NativeAgentRunner {
                     ToolResponseWait::Cancelled => {
                         discard_deferred_codex_native_completion(
                             request.params.as_ref(),
-                            &mut self.codex_native_pending_completions,
+                            &mut self.codex_correlations.pending_completions,
                         );
                         let cancelled_ids = HashSet::from([policy_call_id.clone()]);
                         self.tool_response_coordinator
@@ -1056,7 +1057,7 @@ impl NativeAgentRunner {
                     ToolResponseWait::Closed => {
                         discard_deferred_codex_native_completion(
                             request.params.as_ref(),
-                            &mut self.codex_native_pending_completions,
+                            &mut self.codex_correlations.pending_completions,
                         );
                         let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
                             method: request.method.clone(),
@@ -1085,12 +1086,12 @@ impl NativeAgentRunner {
                         request.params.as_ref(),
                         &policy_call_id,
                         policy_tool,
-                        &mut self.codex_native_tools_by_item,
+                        &mut self.codex_correlations.approved,
                     );
                     if let Some(event) = project_deferred_codex_native_completion(
                         request.params.as_ref(),
-                        &mut self.codex_native_pending_completions,
-                        &mut self.codex_native_tools_by_item,
+                        &mut self.codex_correlations.pending_completions,
+                        &mut self.codex_correlations.approved,
                         self.tool_executor.managed_policy_metadata(),
                     ) {
                         let _ = self.event_tx.send(event);
@@ -1098,7 +1099,7 @@ impl NativeAgentRunner {
                 } else {
                     discard_deferred_codex_native_completion(
                         request.params.as_ref(),
-                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_correlations.pending_completions,
                     );
                 }
                 request.respond(approval_decision(approved));
@@ -1165,7 +1166,7 @@ impl NativeAgentRunner {
 
         let compaction_started = Instant::now();
         let mut result = self.compactor.compact_with_tokens(&self.messages);
-        self.retain_continuation(&mut result);
+        self.prepare_continuation(&mut result);
         if !result.was_compacted() {
             return;
         }
@@ -1188,8 +1189,14 @@ impl NativeAgentRunner {
             result.continuation.as_ref(),
             true,
         );
+        // Adopt provenance only with its compacted message history. A
+        // cancelled preparation must not become the next merge's input.
+        if let Some(record) = result.continuation {
+            self.semantic_continuation = Some(record);
+        }
         self.messages = Arc::new(result.messages);
         self.codex_session = None;
+        self.codex_correlations.reset();
         self.codex_history_restore_prefix_len = Some(self.messages.len());
         let _ = self.event_tx.send(FromAgent::Status {
             message: status_message,

@@ -813,6 +813,7 @@ impl NativeAgentRunner {
                                     .await
                                     {
                                         self.codex_session = None;
+                                        self.codex_correlations.reset();
                                         codex_auth_resumed = true;
                                         continue;
                                     }
@@ -862,6 +863,7 @@ impl NativeAgentRunner {
                                             && !self.codex_current_prompt_started
                                         {
                                             self.codex_session = None;
+                                            self.codex_correlations.reset();
                                             codex_transport_restarted = true;
                                             let _ =
                                                 self.event_tx.send(FromAgent::CodexSessionState {
@@ -1172,6 +1174,7 @@ impl NativeAgentRunner {
                             } = resolved;
                             // Admit the replacement before discarding the live transport.
                             self.codex_session = None;
+                            self.codex_correlations.reset();
                             self.codex_active_turn_id = None;
                             self.preserve_explicit_intelligence_choice();
                             let requested_thinking = crate::agent::model_dynamics::thinking_level(
@@ -1328,6 +1331,7 @@ impl NativeAgentRunner {
                     self.reset_user_note_consumption();
                     self.messages_mut().clear();
                     self.codex_session = None;
+                    self.codex_correlations.reset();
                     self.codex_history_restore_prefix_len = None;
                     self.codex_current_prompt_started = false;
                     self.pending_messages.clear();
@@ -1346,6 +1350,7 @@ impl NativeAgentRunner {
                     let restored_prefix_len = messages.len();
                     self.messages = Arc::new(messages);
                     self.codex_session = None;
+                    self.codex_correlations.reset();
                     self.codex_history_restore_prefix_len = Some(restored_prefix_len);
                     self.codex_current_prompt_started = false;
                     self.compact_codex_history_for_boundary();
@@ -1366,6 +1371,7 @@ impl NativeAgentRunner {
                     // the current shared-history representation.
                     self.messages = history_storage(messages);
                     self.codex_session = None;
+                    self.codex_correlations.reset();
                     self.codex_history_restore_prefix_len = Some(restored_prefix_len);
                     self.codex_current_prompt_started = false;
                     self.compact_codex_history_for_boundary();

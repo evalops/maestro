@@ -1983,6 +1983,11 @@ impl NativeAgentRunner {
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: status_msg,
                     });
+                    // Adopt provenance only with its compacted message history. A
+                    // cancelled preparation must not become the next merge's input.
+                    if let Some(record) = result.continuation {
+                        self.semantic_continuation = Some(record);
+                    }
                     self.messages = Arc::new(result.messages);
                     self.prepare_compacted_checkpoint(&config)?;
                     self.emit_conversation_snapshot();

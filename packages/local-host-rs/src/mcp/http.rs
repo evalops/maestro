@@ -14,7 +14,7 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::{Client, StatusCode, header};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::auth::{ManagedMcpAuth, requires_hosted_orb_auth};
@@ -22,6 +22,7 @@ use super::client::{McpApiCapabilities, McpError};
 use super::config::{
     McpServerConfig, McpTransport, expand_env_vars_for_scope, server_requires_workspace_approval,
 };
+use super::notifications::{NotificationQueue, notification_channel};
 use super::protocol::{
     ClientInfo, InitializeResult, MCP_PROTOCOL_VERSION, McpIncomingMessage, McpNotification,
     McpPrompt, McpRequest, McpResource, McpResponse, McpTool, McpToolResult, PromptGetResult,
@@ -162,9 +163,9 @@ pub struct HttpConnection {
     /// Negotiated MCP protocol version for Streamable HTTP requests
     protocol_version: Option<String>,
     /// SSE notification receiver (for SSE transport)
-    notification_rx: Option<mpsc::UnboundedReceiver<McpNotification>>,
+    notification_rx: Option<NotificationQueue>,
     /// Notification sender used by Streamable HTTP response streams
-    notification_tx: mpsc::UnboundedSender<McpNotification>,
+    notification_tx: NotificationQueue,
     /// Pending SSE requests
     pending_sse: Arc<Mutex<HashMap<u64, oneshot::Sender<McpResponse>>>>,
     /// SSE task handle
@@ -208,7 +209,7 @@ impl HttpConnection {
         let client = Client::builder().timeout(timeout).build().map_err(|e| {
             McpError::ConnectionFailed(format!("Failed to create HTTP client: {e}"))
         })?;
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = notification_channel();
         let transport_mode = if config.transport == McpTransport::Http {
             HttpTransportMode::Streamable
         } else {
@@ -242,7 +243,7 @@ impl HttpConnection {
         self.prepare_repository_client().await?;
         self.ensure_repository_request_allowed()?;
         if self.notification_rx.is_none() {
-            let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+            let (notification_tx, notification_rx) = notification_channel();
             self.notification_tx = notification_tx;
             self.notification_rx = Some(notification_rx);
         }
@@ -338,7 +339,7 @@ impl HttpConnection {
     /// Connect via SSE (persistent streaming connection)
     async fn connect_sse(&mut self) -> Result<(), McpError> {
         // Start SSE event stream
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = notification_channel();
         self.notification_tx = tx.clone();
         self.notification_rx = Some(rx);
 

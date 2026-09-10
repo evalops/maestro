@@ -64,6 +64,7 @@ mod auth;
 mod client;
 mod config;
 mod http;
+mod notifications;
 mod oauth;
 mod permissions;
 mod prompt_formatting;

@@ -7447,3 +7447,202 @@ async fn calibration_is_bound_to_each_completed_primary_request() {
         assert!(observation.estimated_input_tokens > 0);
     }
 }
+
+#[tokio::test]
+async fn cancelled_prepared_compaction_does_not_duplicate_user_history() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let scripted = crate::ai::ScriptedClient::new(
+        "cancel-compaction",
+        vec![
+            crate::ai::ScriptedResponse::text("Done."),
+            crate::ai::ScriptedResponse::text("Done."),
+        ],
+    );
+    let barrier = Arc::new((
+        tokio::sync::Notify::new(),
+        tokio::sync::Notify::new(),
+        AtomicBool::new(false),
+    ));
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), UnifiedClient::Scripted(scripted));
+    host.checkpoint_barrier = Some(Arc::clone(&barrier));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    let sentinel = format!("original-boundary: {}", "retain this context ".repeat(100));
+    agent.replace_history(
+        (0..20)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: MessageContent::text(if index == 0 {
+                    sentinel.clone()
+                } else {
+                    format!("history-{index}: {}", "prior context ".repeat(100))
+                }),
+            })
+            .collect(),
+    );
+    agent.prompt("Continue".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+        .await
+        .unwrap();
+    agent.cancel();
+    barrier.1.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnInterrupted { .. }) {
+                return;
+            }
+        }
+        panic!("missing interruption");
+    })
+    .await
+    .unwrap();
+    agent.prompt("Resume".into(), vec![]).await.unwrap();
+    let record = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::Compaction {
+                    continuation: Some(record),
+                    ..
+                } => return record,
+                FromAgent::ProviderError { message, .. } => panic!("{message}"),
+                _ => {}
+            }
+        }
+        panic!("missing resumed compaction");
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    assert_eq!(
+        record
+            .user_requests
+            .iter()
+            .filter(|request| **request == sentinel)
+            .count(),
+        1,
+        "a cancelled prepared checkpoint must not retain the original history twice"
+    );
+}
+
+/// Manual soak test: drains the real actor stream, retains only scalar metrics,
+/// and uses a scripted provider so no credentials or paid requests are needed.
+#[tokio::test]
+#[ignore = "manual repeated-turn memory measurement"]
+async fn many_turns_memory_probe() {
+    let turns: usize = std::env::var("MAESTRO_MEMORY_TURNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2000);
+    let reset_every: usize = std::env::var("MAESTRO_MEMORY_RESET_EVERY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let workspace = tempfile::tempdir().unwrap();
+    let scripted = crate::ai::ScriptedClient::new(
+        "memory-soak",
+        (0..turns)
+            .map(|_| crate::ai::ScriptedResponse::text("Done."))
+            .collect(),
+    );
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(4096),
+        ..Default::default()
+    };
+    let (agent, mut events) =
+        new_runtime_test_agent(config, UnifiedClient::Scripted(scripted.clone())).unwrap();
+    let mut messages_bytes = 0;
+    let mut continuation_bytes = 0;
+    let mut retained_requests = 0;
+    let started = Instant::now();
+    eprintln!(
+        "MEMORY_PROBE pid={} turns={turns} reset_every={reset_every}",
+        std::process::id()
+    );
+    tokio::time::timeout(Duration::from_secs(600), async {
+        for turn in 0..turns {
+            if reset_every > 0 && turn % reset_every == 0 {
+                agent.clear_history();
+                continuation_bytes = 0;
+                retained_requests = 0;
+            }
+            agent.prompt(format!("request-{turn}: {}", "Keep the task local and preserve the evidence. ".repeat(8)), vec![]).await.unwrap();
+            while let Some(event) = events.recv().await {
+                match event {
+                    FromAgent::ConversationSnapshot { messages, .. } => {
+                        messages_bytes = serde_json::to_vec(&messages).unwrap().len();
+                    }
+                    FromAgent::Compaction { continuation: Some(record), .. } => {
+                        continuation_bytes = serde_json::to_vec(&record).unwrap().len();
+                        retained_requests = record.user_requests.len();
+                        assert!(retained_requests <= if reset_every > 0 { reset_every } else { turn + 1 }, "compaction duplicated requests");
+                    }
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => panic!("turn {turn}: {message}"),
+                    FromAgent::TurnInterrupted { reason, .. } => panic!("turn {turn}: {reason}"),
+                    _ => {}
+                }
+            }
+            if (turn + 1) % 100 == 0 || turn + 1 == turns {
+                eprintln!("MEMORY_SAMPLE turn={} elapsed_ms={} messages_bytes={messages_bytes} continuation_bytes={continuation_bytes} retained_requests={retained_requests}", turn + 1, started.elapsed().as_millis());
+            }
+        }
+    }).await.unwrap();
+    agent.shutdown().await;
+    assert_eq!(scripted.remaining(), 0);
+}
+
+#[test]
+fn codex_turn_boundary_releases_patches_and_rejects_stale_item_approvals() {
+    let mut correlations = CodexTurnCorrelations::default();
+    for turn in 0..2000 {
+        correlations.reset();
+        assert_eq!(correlations.file_changes.capacity(), 0);
+        assert!(correlations.approved.is_empty());
+        assert!(correlations.pending_completions.is_empty());
+        if turn > 0 {
+            let stale = json!({"itemId": format!("item-{}", turn - 1)});
+            assert!(
+                codex_native_file_change_paths(&stale, Some(&correlations.file_changes)).is_empty(),
+                "prior-turn metadata must not authorize a new approval"
+            );
+        }
+        let id = format!("item-{turn}");
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".into(),
+            params: Some(
+                json!({"item":{"id": id, "type":"fileChange", "status":"completed",
+                "changes":[{"path":"/tmp/workspace/file.rs", "kind":{"type":"update", "content":"x".repeat(64*1024)}}]}}),
+            ),
+        };
+        remember_codex_file_change_completion_paths(&notification, &mut correlations.file_changes);
+        assert_eq!(
+            codex_native_file_change_paths(
+                &json!({"itemId": id}),
+                Some(&correlations.file_changes)
+            ),
+            ["/tmp/workspace/file.rs"],
+            "same-turn late approvals retain their policy metadata"
+        );
+        correlations.approved.insert(
+            id.clone(),
+            CodexNativeToolCorrelation {
+                call_id: id.clone(),
+                tool_name: "codex_file_change".into(),
+            },
+        );
+        correlations.pending_completions.insert(id, true);
+    }
+    correlations.reset();
+    assert_eq!(correlations.file_changes.capacity(), 0);
+}
