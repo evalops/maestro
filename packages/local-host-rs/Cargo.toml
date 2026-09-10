@@ -35,7 +35,7 @@ maestro-presentation.workspace = true
 async-trait = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }
 tokio-rustls.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 futures.workspace = true
 
 # AI provider client layer (packages/ai-rs); re-exported at crate::ai
