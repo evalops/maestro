@@ -13,6 +13,6 @@ cargo run --manifest-path products/maestro/Cargo.toml \
   --features test-support
 ```
 
-Caller-owned tools are model-visible definitions. When a call reaches the approval boundary, the embedding receives `FromAgent::ToolCall` and returns one `EmbeddedToolResponse` for the matching call ID. The response is marked `ExecutionSource::RemoteClient`, so caller-supplied text remains an external result in the native loop.
+Caller-owned tools are model-visible definitions. Use `EmbeddedAgentBuilder::start_runner` when the caller needs to return an external result. The runner emits `EmbeddedRunEvent::AwaitingTool`, binds the pending call to the runner, and accepts `external_result` only for a registered external tool. The raw `EmbeddedAgentSession` surface can deny a tool call. Caller-supplied results by call ID remain behind a feature-gated trusted runtime-gateway compatibility bridge. The owning gateway transport must enforce admission and tool ownership; this is not the supported embedding API.
 
 Use the existing runtime-gateway and hosted-runner paths for Platform-managed work. They establish the admitted model, tenant scope, policy, effect execution, and receipts. The local embedding builder does not perform Platform admission or issue Platform receipts.

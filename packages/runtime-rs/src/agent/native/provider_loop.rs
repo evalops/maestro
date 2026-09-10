@@ -1365,7 +1365,7 @@ impl NativeAgentRunner {
                                 approval_started.elapsed(),
                                 approval_error,
                             );
-                            let (approved, result, source) = match response {
+                            let (approved, mut result, source) = match response {
                                 ToolResponseWait::Response(response) => response,
                                 ToolResponseWait::Cancelled => {
                                     self.take_active_operation_interruption();
@@ -1396,6 +1396,19 @@ impl NativeAgentRunner {
                                     return Err(closed_tool_response_failure(&call.call_id));
                                 }
                             };
+                            let is_external_tool = self
+                                .external_tools
+                                .contains(&call.tool_name.to_ascii_lowercase());
+                            if approved && result.is_some() && !is_external_tool {
+                                let message = "Caller-supplied tool results are accepted only for registered external tools.";
+                                let _ = self.event_tx.send(FromAgent::Error {
+                                    message: message.to_string(),
+                                    fatal: false,
+                                    terminal: false,
+                                    retryable: false,
+                                });
+                                result = Some(ToolResult::failure(message));
+                            }
                             if approved && result.is_none() {
                                 let (args, extra_context) =
                                     match rerun_deferred_pre_tool_use(&self.hooks, &call).await {

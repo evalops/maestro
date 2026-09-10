@@ -26,6 +26,9 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+#[cfg(feature = "test-support")]
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use maestro_runtime::{TelemetryConfig, TelemetryGuard};
@@ -55,6 +58,51 @@ use crate::headless::messages::{
     UtilityFileSearchMatch,
 };
 use crate::headless::{HEADLESS_PROTOCOL_VERSION, native_server_capabilities};
+
+/// Test-only provider override for the local SDK conformance fixture.
+///
+/// The fixture is an executable built with `test-support`; it enters the
+/// production `run_headless_server` loop and therefore uses the same stdio
+/// parser and event bridge as `maestro --headless`. This value has no
+/// production environment switch and cannot be installed in a shipped build.
+#[cfg(feature = "test-support")]
+static LOCAL_SDK_CONFORMANCE_CLIENT: OnceLock<crate::ai::UnifiedClient> = OnceLock::new();
+
+/// Run the local SDK protocol fixture with a deterministic provider.
+///
+/// This is deliberately available only with `test-support`. The fixed script
+/// covers a native approval-gated `bash` call, a completed follow-up response,
+/// and a pending response that the client cancels. It never resolves a network
+/// credential or changes the production headless command surface.
+#[cfg(feature = "test-support")]
+pub async fn run_scripted_local_sdk_conformance_server() -> Result<i32> {
+    let client = crate::ai::UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+        "local-sdk-conformance",
+        vec![
+            crate::ai::ScriptedResponse {
+                blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                    id: "local-sdk-tool-call".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({
+                        "command": "printf local-sdk-native-tool"
+                    }),
+                }],
+                stop_reason: crate::ai::StopReason::ToolUse,
+                error: None,
+            },
+            crate::ai::ScriptedResponse::text("LOCAL_SDK_CONFORMANCE_COMPLETED"),
+            crate::ai::ScriptedResponse {
+                blocks: vec![crate::ai::ScriptedBlock::Pending],
+                stop_reason: crate::ai::StopReason::EndTurn,
+                error: None,
+            },
+        ],
+    ));
+    LOCAL_SDK_CONFORMANCE_CLIENT
+        .set(client)
+        .map_err(|_| anyhow::anyhow!("local SDK conformance provider already installed"))?;
+    run_headless_server(Some("gpt-4o".to_string())).await
+}
 
 /// Shared headless runtime metadata updated from Init / SessionInfo.
 #[derive(Debug, Default, Clone)]
@@ -408,6 +456,16 @@ impl HeadlessState {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .client_tool_bindings
                     .clear();
+                #[cfg(feature = "test-support")]
+                if let Some(client) = LOCAL_SDK_CONFORMANCE_CLIENT.get().cloned() {
+                    NativeAgent::new_with_test_client(config, client).context(
+                        "Failed to create scripted native agent for local SDK conformance",
+                    )?
+                } else {
+                    NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
+                        .context("Failed to create native agent for headless server")?
+                }
+                #[cfg(not(feature = "test-support"))]
                 NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
                     .context("Failed to create native agent for headless server")?
             };

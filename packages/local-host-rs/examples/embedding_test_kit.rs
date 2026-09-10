@@ -1,9 +1,9 @@
 //! Run a caller-owned tool through the deterministic embedding test kit.
 
 use anyhow::Result;
-use maestro_local_host::agent::{FromAgent, ToolDefinition, ToolResult};
+use maestro_local_host::agent::{ToolDefinition, ToolResult};
 use maestro_local_host::ai::{ScriptedBlock, ScriptedResponse, StopReason, Tool};
-use maestro_local_host::embedding::{EmbeddedToolResponse, test_kit::ScriptedEmbeddingBuilder};
+use maestro_local_host::embedding::{EmbeddedRunProgress, test_kit::ScriptedEmbeddingBuilder};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,42 +32,22 @@ async fn main() -> Result<()> {
     let mut session = ScriptedEmbeddingBuilder::new(script)
         .working_directory(&cwd)
         .external_tools([tool])
-        .start()?;
+        .start_runner()?;
 
-    let result = match session.agent().prompt("Check the project status.").await {
-        Ok(()) => loop {
-            let Some(event) = session.events().recv().await else {
-                break Err(anyhow::anyhow!("embedded agent event stream ended"));
+    match session.run("Check the project status.").await? {
+        EmbeddedRunProgress::AwaitingTool(pending) => {
+            session.external_result(&pending, ToolResult::success("ready"))?;
+            let completed = match session.resume().await? {
+                EmbeddedRunProgress::Completed(completed) => completed,
+                EmbeddedRunProgress::AwaitingTool(_) => {
+                    anyhow::bail!("unexpected second tool call")
+                }
             };
-            match event {
-                FromAgent::ToolCall { call_id, tool, .. } if tool == "lookup_status" => {
-                    if let Err(error) =
-                        session
-                            .agent()
-                            .send_tool_response(EmbeddedToolResponse::external_result(
-                                call_id,
-                                ToolResult::success("ready"),
-                            ))
-                    {
-                        break Err(error);
-                    }
-                }
-                FromAgent::ResponseChunk {
-                    content,
-                    is_thinking: false,
-                    ..
-                } => print!("{content}"),
-                FromAgent::TurnCompleted { .. } => break Ok(()),
-                FromAgent::ProviderError { message, .. } => break Err(anyhow::anyhow!(message)),
-                FromAgent::TurnInterrupted { reason, .. } => {
-                    break Err(anyhow::anyhow!(reason));
-                }
-                _ => {}
-            }
-        },
-        Err(error) => Err(error),
-    };
+            print!("{}", completed.output());
+        }
+        EmbeddedRunProgress::Completed(completed) => print!("{}", completed.output()),
+    }
 
     session.shutdown().await;
-    result
+    Ok(())
 }
