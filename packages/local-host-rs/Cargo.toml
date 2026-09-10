@@ -141,6 +141,8 @@ default = []
 # Unverified NativeAgent constructor for in-crate tests plus the local
 # perf/bench binaries. Shipped maestro / deixic-code builds must not enable it.
 test-support = []
+# Exposes the legacy raw tool-response channel only to the hosted runtime gateway.
+runtime-gateway-bridge = []
 thin-scenario = []
 # Hook backends
 lua = ["mlua"]

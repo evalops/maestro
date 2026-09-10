@@ -21,7 +21,7 @@ getrandom = "0.4"
 libc.workspace = true
 maestro-a2a-ledger.workspace = true
 maestro-runtime.workspace = true
-maestro-local-host.workspace = true
+maestro-local-host = { workspace = true, features = ["runtime-gateway-bridge"] }
 pdf-extract.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true
@@ -35,5 +35,5 @@ tokio-util = "0.7"
 zip.workspace = true
 
 [dev-dependencies]
-maestro-local-host = { workspace = true, features = ["test-support"] }
+maestro-local-host = { workspace = true, features = ["runtime-gateway-bridge", "test-support"] }
 tempfile.workspace = true
