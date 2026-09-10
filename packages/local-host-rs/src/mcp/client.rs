@@ -23,6 +23,7 @@ use super::config::{
 };
 use super::http::HttpConnection;
 use super::notifications::{MAX_POLL_NOTIFICATIONS, NotificationQueue, notification_channel};
+use super::pending::{PendingRequestGuard, PendingResponses};
 use super::protocol::{
     ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
     McpResource, McpResponse, McpTool, McpToolAnnotations, McpToolFingerprint, McpToolResult,
@@ -202,7 +203,7 @@ pub struct McpConnection {
     /// Request ID counter (for stdio)
     next_id: AtomicU64,
     /// Pending requests (for stdio)
-    pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>>,
+    pending: PendingResponses,
     /// Available tools
     tools: Vec<McpTool>,
     /// Available resources
@@ -244,7 +245,7 @@ impl McpConnection {
             config,
             backend: None,
             next_id: AtomicU64::new(1),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
             tools: Vec::new(),
             resources: Vec::new(),
             prompts: Vec::new(),
@@ -397,7 +398,7 @@ impl McpConnection {
                             match message {
                                 McpIncomingMessage::Response(response) => {
                                     if let Some(id) = response.id {
-                                        let mut pending = pending.lock().await;
+                                        let mut pending = pending.lock().unwrap();
                                         if let Some(sender) = pending.remove(&id) {
                                             let _ = sender.send(response);
                                             continue;
@@ -910,7 +911,7 @@ impl McpConnection {
             None => {
                 if self.config.transport == McpTransport::Stdio && !self.initialized {
                     self.disconnect().await;
-                    self.pending.lock().await.clear();
+                    self.pending.lock().unwrap().clear();
                     self.reconnecting = false;
                 }
                 Err(McpError::Cancelled)
@@ -924,14 +925,11 @@ impl McpConnection {
 
         // Set up response channel
         let (tx, rx) = tokio::sync::oneshot::channel();
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(id, tx);
-        }
+        let _pending_request = PendingRequestGuard::register(&self.pending, id, tx);
 
         // Send request
         if let Err(send_err) = self.send_raw(&request).await {
-            let mut pending = self.pending.lock().await;
+            let mut pending = self.pending.lock().unwrap();
             pending.remove(&id);
             return Err(send_err);
         }
@@ -943,7 +941,7 @@ impl McpConnection {
             Ok(Err(_)) => Err(McpError::Protocol("Response channel closed".to_string())),
             Err(_) => {
                 // Remove from pending
-                let mut pending = self.pending.lock().await;
+                let mut pending = self.pending.lock().unwrap();
                 pending.remove(&id);
                 Err(McpError::Timeout)
             }
@@ -962,13 +960,13 @@ impl McpConnection {
 
         let id = request.id;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        let _pending_request = PendingRequestGuard::register(&self.pending, id, tx);
 
         let send_result =
             match await_stdio_delivery_or_cancellation(self.send_raw(&request), cancel).await {
                 Some(result) => result,
                 None => {
-                    self.pending.lock().await.remove(&id);
+                    self.pending.lock().unwrap().remove(&id);
                     // The write future may have already emitted a partial JSON
                     // frame. A cancellation notification cannot repair that
                     // stream, so close it and force a clean reconnect.
@@ -977,7 +975,7 @@ impl McpConnection {
                 }
             };
         if let Err(send_err) = send_result {
-            self.pending.lock().await.remove(&id);
+            self.pending.lock().unwrap().remove(&id);
             return Err(send_err);
         }
 
@@ -988,12 +986,12 @@ impl McpConnection {
                 Ok(Ok(response)) => Ok(response),
                 Ok(Err(_)) => Err(McpError::Protocol("Response channel closed".to_string())),
                 Err(_) => {
-                    self.pending.lock().await.remove(&id);
+                    self.pending.lock().unwrap().remove(&id);
                     Err(McpError::Timeout)
                 }
             },
             () = cancel.cancelled() => {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().unwrap().remove(&id);
                 let notification =
                     McpNotification::cancelled(id, "Deixic Code turn cancelled");
                 let delivery = tokio::time::timeout(
@@ -1809,6 +1807,55 @@ for line in sys.stdin:
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn abandoned_stdio_requests_release_pending_entries() {
+        let mut process = Command::new("python3")
+            .args(["-c", "import time; time.sleep(60)"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = process.stdin.take().unwrap();
+        let (_, notification_rx) = notification_channel();
+        let mut connection = McpConnection::new(stub_config("abandoned-requests"));
+        connection.backend = Some(ConnectionBackend::Stdio {
+            process,
+            stdin,
+            notification_rx,
+        });
+        let cancel = CancellationToken::new();
+        for id in 0..128 {
+            let request = McpRequest::list_tools(id);
+            if id % 2 == 0 {
+                assert!(
+                    tokio::time::timeout(
+                        Duration::from_millis(1),
+                        connection.send_request(request)
+                    )
+                    .await
+                    .is_err()
+                );
+            } else {
+                assert!(
+                    tokio::time::timeout(
+                        Duration::from_millis(1),
+                        connection.send_request_cancellable(request, &cancel)
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+        }
+        let retained = connection.pending.lock().unwrap().len();
+        connection.disconnect().await;
+        assert_eq!(
+            retained, 0,
+            "abandoned RPC futures must release pending senders"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn pre_cancelled_stdio_request_preserves_connected_transport() {
         let mut process = Command::new("sh")
             .arg("-c")
@@ -1844,7 +1891,7 @@ for line in sys.stdin:
             "pre-cancellation must not discard initialized server state"
         );
         assert!(
-            connection.pending.lock().await.is_empty(),
+            connection.pending.lock().unwrap().is_empty(),
             "pre-cancelled request must not leave a pending waiter"
         );
     }
@@ -1922,7 +1969,7 @@ for line in sys.stdin:
         assert!(connection.backend.is_none());
         assert!(!connection.initialized);
         assert!(!connection.reconnecting);
-        assert!(connection.pending.lock().await.is_empty());
+        assert!(connection.pending.lock().unwrap().is_empty());
 
         let pid = std::fs::read_to_string(&pid_file)
             .expect("read replacement child pid")
@@ -2013,7 +2060,7 @@ for line in sys.stdin:
             "a possibly partial frame must force a clean reconnect"
         );
         assert!(
-            connection.pending.lock().await.is_empty(),
+            connection.pending.lock().unwrap().is_empty(),
             "cancelled request must not leave a pending waiter"
         );
     }
@@ -2086,7 +2133,7 @@ for line in sys.stdin:
             "a partial cancellation frame must force a clean reconnect"
         );
         assert!(
-            connection.pending.lock().await.is_empty(),
+            connection.pending.lock().unwrap().is_empty(),
             "failed cancellation delivery must not retain the response waiter"
         );
     }
@@ -2603,7 +2650,7 @@ for line in sys.stdin:
         assert!(matches!(result, Err(McpError::Cancelled)));
         assert!(held_connection.initialized);
         assert!(held_connection.backend.is_none());
-        assert!(held_connection.pending.lock().await.is_empty());
+        assert!(held_connection.pending.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2648,7 +2695,7 @@ for line in sys.stdin:
         let connection = connection.lock().await;
         assert!(connection.initialized);
         assert!(connection.backend.is_none());
-        assert!(connection.pending.lock().await.is_empty());
+        assert!(connection.pending.lock().unwrap().is_empty());
     }
 
     #[test]

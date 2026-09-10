@@ -66,6 +66,7 @@ mod config;
 mod http;
 mod notifications;
 mod oauth;
+mod pending;
 mod permissions;
 mod prompt_formatting;
 pub mod protocol;

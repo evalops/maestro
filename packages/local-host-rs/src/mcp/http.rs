@@ -14,7 +14,7 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::{Client, StatusCode, header};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::auth::{ManagedMcpAuth, requires_hosted_orb_auth};
@@ -23,6 +23,7 @@ use super::config::{
     McpServerConfig, McpTransport, expand_env_vars_for_scope, server_requires_workspace_approval,
 };
 use super::notifications::{NotificationQueue, notification_channel};
+use super::pending::{PendingRequestGuard, PendingResponses};
 use super::protocol::{
     ClientInfo, InitializeResult, MCP_PROTOCOL_VERSION, McpIncomingMessage, McpNotification,
     McpPrompt, McpRequest, McpResource, McpResponse, McpTool, McpToolResult, PromptGetResult,
@@ -167,7 +168,7 @@ pub struct HttpConnection {
     /// Notification sender used by Streamable HTTP response streams
     notification_tx: NotificationQueue,
     /// Pending SSE requests
-    pending_sse: Arc<Mutex<HashMap<u64, oneshot::Sender<McpResponse>>>>,
+    pending_sse: PendingResponses,
     /// SSE task handle
     sse_task: Option<tokio::task::JoinHandle<()>>,
     /// Workspace used to re-read the trust decision from global config.
@@ -232,7 +233,7 @@ impl HttpConnection {
             protocol_version: None,
             notification_rx: Some(notification_rx),
             notification_tx,
-            pending_sse: Arc::new(Mutex::new(HashMap::new())),
+            pending_sse: Arc::new(std::sync::Mutex::new(HashMap::new())),
             sse_task: None,
             workspace_dir: workspace_dir.map(Path::to_path_buf),
         })
@@ -390,7 +391,7 @@ impl HttpConnection {
                             match message {
                                 McpIncomingMessage::Response(response) => {
                                     if let Some(id) = response.id {
-                                        let mut pending = pending.lock().await;
+                                        let mut pending = pending.lock().unwrap();
                                         if let Some(sender) = pending.remove(&id) {
                                             let _ = sender.send(response);
                                             continue;
@@ -697,7 +698,7 @@ impl HttpConnection {
 
         // A cancelled SSE waiter may already have inserted its response
         // channel; remove it before telling the server to stop work.
-        self.pending_sse.lock().await.remove(&request_id);
+        self.pending_sse.lock().unwrap().remove(&request_id);
         let delivery = tokio::time::timeout(
             Duration::from_millis(500),
             self.send_notification(&McpNotification::cancelled(
@@ -948,10 +949,7 @@ impl HttpConnection {
 
         // Set up response channel
         let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_sse.lock().await;
-            pending.insert(id, tx);
-        }
+        let _pending_request = PendingRequestGuard::register(&self.pending_sse, id, tx);
 
         // Send via HTTP POST (SSE is for receiving)
         let url = format!("{}/message", self.base_url.trim_end_matches('/'));
@@ -964,21 +962,21 @@ impl HttpConnection {
         req = self.apply_authenticated_config_headers(req).await?;
 
         if let Err(error) = self.ensure_repository_request_allowed() {
-            let mut pending = self.pending_sse.lock().await;
+            let mut pending = self.pending_sse.lock().unwrap();
             pending.remove(&id);
             return Err(error);
         }
         let response = match req.send().await {
             Ok(response) => response,
             Err(e) => {
-                let mut pending = self.pending_sse.lock().await;
+                let mut pending = self.pending_sse.lock().unwrap();
                 pending.remove(&id);
                 return Err(McpError::RequestFailed(format!("SSE send failed: {e}")));
             }
         };
 
         if !response.status().is_success() {
-            let mut pending = self.pending_sse.lock().await;
+            let mut pending = self.pending_sse.lock().unwrap();
             pending.remove(&id);
             return Err(McpError::RequestFailed(format!(
                 "HTTP error: {}",
@@ -991,7 +989,7 @@ impl HttpConnection {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => {
-                let mut pending = self.pending_sse.lock().await;
+                let mut pending = self.pending_sse.lock().unwrap();
                 pending.remove(&id);
                 Err(McpError::Protocol(
                     "SSE response channel closed".to_string(),
@@ -999,7 +997,7 @@ impl HttpConnection {
             }
             Err(_) => {
                 // Remove from pending
-                let mut pending = self.pending_sse.lock().await;
+                let mut pending = self.pending_sse.lock().unwrap();
                 pending.remove(&id);
                 Err(McpError::Timeout)
             }
@@ -2237,6 +2235,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abandoned_sse_requests_release_pending_entries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_config(McpTransport::Sse);
+        config.url = Some(format!("http://{}", listener.local_addr().unwrap()));
+        let mut connection = HttpConnection::new(config).unwrap();
+        for id in 0..16 {
+            {
+                let request = connection.send_sse_request(McpRequest::list_tools(id));
+                tokio::pin!(request);
+                let (mut socket, _) = tokio::select! {
+                    result = &mut request => panic!("request finished before POST acceptance: {result:?}"),
+                    accepted = accept_http_request(&listener) => accepted,
+                };
+                write_http_response(&mut socket, "202 Accepted", None, None, "").await;
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(5), &mut request)
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(connection.pending_sse.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_sse_authentication_releases_pending_entries() {
+        let mut connection = HttpConnection::new(test_config(McpTransport::Sse)).unwrap();
+        connection.config.auth_preset = Some("oauth".into());
+        connection.config.url = None;
+        for id in 0..128 {
+            let error = connection
+                .send_sse_request(McpRequest::list_tools(id))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("missing its URL"));
+        }
+        assert_eq!(
+            connection.pending_sse.lock().unwrap().len(),
+            0,
+            "authentication failures must not retain pending senders"
+        );
+    }
+
+    #[tokio::test]
     async fn test_send_sse_request_clears_pending_on_http_error() {
         let addr = start_error_server().await;
         let mut config = test_config(McpTransport::Sse);
@@ -2249,7 +2291,7 @@ mod tests {
         let result = conn.send_sse_request(request).await;
         assert!(matches!(result, Err(McpError::RequestFailed(_))));
 
-        let pending_len = conn.pending_sse.lock().await.len();
+        let pending_len = conn.pending_sse.lock().unwrap().len();
         assert_eq!(pending_len, 0);
     }
 
