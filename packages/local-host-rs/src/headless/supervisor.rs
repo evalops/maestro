@@ -1621,7 +1621,8 @@ impl AgentSupervisor {
 pub(crate) fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> {
     match message {
         ToAgentMessage::ToolResponse { call_id, .. }
-        | ToAgentMessage::ClientToolResult { call_id, .. } => Some(call_id),
+        | ToAgentMessage::ClientToolResult { call_id, .. }
+        | ToAgentMessage::GovernedClientToolResult { call_id, .. } => Some(call_id),
         ToAgentMessage::ServerRequestResponse { request_id, .. } => Some(request_id),
         _ => None,
     }

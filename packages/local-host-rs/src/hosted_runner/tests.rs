@@ -11661,63 +11661,52 @@ fn transport_error_releases_ownership_when_ledger_cleanup_fails() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unacknowledged_response_releases_ownership_when_ledger_cleanup_fails() {
+async fn unmatched_governed_ack_does_not_finalize_or_redispatch() {
     let workspace = tempdir().expect("workspace");
     let fixtures = tempdir().expect("fixtures");
-    let log_path = fixtures.path().join("not-expected-ledger.log");
-    let script = create_reject_then_accept_script(fixtures.path(), &log_path, None);
+    let log_path = fixtures.path().join("unmatched-governed-ack.log");
+    let script = create_delayed_identity_ack_script(
+        fixtures.path(),
+        "unmatched-governed-ack.sh",
+        &log_path,
+        "governed_client_tool_result",
+        "unrelated-call",
+    );
     let supervisor = connected_supervisor_for_script(&script).await;
     let executor = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(&supervisor));
-    let context = executor_context_with_response_key(workspace.path(), "not-expected-key");
-    let response = ToAgentMessage::GovernedClientToolResult {
-        process_tool_cost_micros: None,
-        call_id: "governed-call".to_string(),
-        content: Vec::new(),
-        is_error: false,
-        tool_execution_id: "governed-execution".to_string(),
-        client_instance_id: "conn_exec".to_string(),
-        grant_id: "grant-1".to_string(),
-        grant_version: 1,
-        grant_hash: "hash".to_string(),
-        turn_digest: "turn-digest".to_string(),
-        definition_digest: "definition-digest".to_string(),
-        args_digest: "args-digest".to_string(),
-        owner_lease_epoch: 1,
-        idempotency_key: "not-expected-key".to_string(),
-    };
+    let context = executor_context_with_response_key(workspace.path(), "identity-owner-key");
+    let response = governed_response_for_ack_test();
 
-    executor.fail_next_ledger_persistences(1);
-    let error = executor
-        .execute(&context, response.clone())
-        .expect_err("governed result has no ack id, so the consumer cannot acknowledge it");
-    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    let queued = executor
+        .execute_async(&context, response.clone())
+        .await
+        .expect("the consumer has not acknowledged this call");
+    assert!(!queued.idempotency_finalized);
+    let replay = executor
+        .reconcile_pending_async(&context, response)
+        .await
+        .expect("an unrelated acknowledgment leaves this response queued");
+    assert!(!replay.idempotency_finalized);
     assert!(
-        error
-            .message
-            .contains("response consumer did not acknowledge the control response")
-    );
-    assert!(
-        !executor
+        executor
             .queued_responses
             .lock()
             .expect("queued responses")
-            .contains_key("not-expected-key")
+            .contains_key("identity-owner-key")
     );
     assert!(
         load_executor_response_ledger(workspace.path(), "sess_test")
             .expect("response ledger")
             .iter()
-            .any(|(key, dispatched)| key == "not-expected-key" && !dispatched)
+            .any(|(key, dispatched)| key == "identity-owner-key" && !dispatched)
     );
-
-    let retry = executor
-        .execute(&context, response)
-        .expect_err("same-key retry is admitted and re-dispatches");
-    assert_eq!(retry.code, HostedRunnerErrorCode::RuntimeFailed);
-    assert!(
-        retry
-            .message
-            .contains("response consumer did not acknowledge the control response")
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("child log")
+            .lines()
+            .count(),
+        1,
+        "an unacknowledged response must not be dispatched twice"
     );
     supervisor.lock().expect("supervisor").shutdown();
 }
@@ -11828,13 +11817,19 @@ async fn assert_unique_protocol_request_owner_across_restart(
     )
     .await
     .expect("restarted hosted runner");
+    let second_connection_id =
+        if matches!(&message, ToAgentMessage::GovernedClientToolResult { .. }) {
+            "conn_identity_first"
+        } else {
+            "conn_identity_second"
+        };
     let (capability, subscription_id) =
-        attach_thread_controller(&client, &second.base_url(), "conn_identity_second").await;
+        attach_thread_controller(&client, &second.base_url(), second_connection_id).await;
     let replay = handle_message(
         second.shared.clone(),
         "sess_test",
         response_headers(
-            "conn_identity_second",
+            second_connection_id,
             &subscription_id,
             &capability,
             "identity-owner-key",
@@ -11851,7 +11846,7 @@ async fn assert_unique_protocol_request_owner_across_restart(
         second.shared.clone(),
         "sess_test",
         response_headers(
-            "conn_identity_second",
+            second_connection_id,
             &subscription_id,
             &capability,
             "identity-competing-key",
@@ -11907,6 +11902,37 @@ async fn delayed_server_request_response_has_one_idempotency_owner_across_restar
         },
         "server_request_response",
         "unique-server-request",
+    )
+    .await;
+}
+
+#[cfg(unix)]
+fn governed_response_for_ack_test() -> ToAgentMessage {
+    ToAgentMessage::GovernedClientToolResult {
+        process_tool_cost_micros: None,
+        call_id: "unique-governed-call".to_string(),
+        content: Vec::new(),
+        is_error: false,
+        tool_execution_id: "unique-governed-execution".to_string(),
+        client_instance_id: "conn_identity_first".to_string(),
+        grant_id: "grant-1".to_string(),
+        grant_version: 1,
+        grant_hash: "hash".to_string(),
+        turn_digest: "turn-digest".to_string(),
+        definition_digest: "definition-digest".to_string(),
+        args_digest: "args-digest".to_string(),
+        owner_lease_epoch: 1,
+        idempotency_key: "identity-owner-key".to_string(),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_governed_result_has_one_idempotency_owner_across_restart() {
+    assert_unique_protocol_request_owner_across_restart(
+        governed_response_for_ack_test(),
+        "governed_client_tool_result",
+        "unique-governed-call",
     )
     .await;
 }
