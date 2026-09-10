@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::managed_setup::{McpDecision, McpPolicy};
 
@@ -187,6 +188,7 @@ enum ConnectionBackend {
         process: Child,
         stdin: tokio::process::ChildStdin,
         notification_rx: NotificationQueue,
+        stdout_reader: Option<AbortOnDropHandle<()>>,
     },
     /// HTTP/SSE connection
     Http(HttpConnection),
@@ -385,7 +387,7 @@ impl McpConnection {
         let pending = self.pending.clone();
 
         // Spawn stdout reader task
-        tokio::spawn(async move {
+        let stdout_reader = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
 
@@ -414,12 +416,13 @@ impl McpConnection {
                     Err(_) => break,
                 }
             }
-        });
+        }));
 
         self.backend = Some(ConnectionBackend::Stdio {
             process: child,
             stdin,
             notification_rx,
+            stdout_reader: Some(stdout_reader),
         });
 
         // Initialize the connection
@@ -1074,7 +1077,17 @@ impl McpConnection {
     /// Disconnect from the server
     pub async fn disconnect(&mut self) {
         match self.backend.take() {
-            Some(ConnectionBackend::Stdio { mut process, .. }) => {
+            Some(ConnectionBackend::Stdio {
+                mut process,
+                stdout_reader,
+                ..
+            }) => {
+                // Descendants can inherit stdout and keep it open after the
+                // direct child exits. Stop our reader independently of EOF.
+                if let Some(reader) = stdout_reader {
+                    reader.abort();
+                    let _ = reader.await;
+                }
                 let _ = process.kill().await;
             }
             Some(ConnectionBackend::Http(mut http)) => {
@@ -1603,6 +1616,94 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn assert_stdio_reader_released(disconnect: bool) {
+        struct WorkerCleanup(std::path::PathBuf);
+        impl Drop for WorkerCleanup {
+            fn drop(&mut self) {
+                if let Some(pid) = std::fs::read_to_string(&self.0)
+                    .ok()
+                    .and_then(|pid| pid.parse::<i32>().ok())
+                    .filter(|pid| *pid > 0)
+                {
+                    // SAFETY: this PID belongs to the worker created by this fixture.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
+
+        let worker_pid = tempfile::NamedTempFile::new().unwrap();
+        let _worker_cleanup = WorkerCleanup(worker_pid.path().to_path_buf());
+        let mut config = stub_config("inherited-stdout");
+        config.command = Some("python3".into());
+        config.args = vec!["-u".into(), "-c".into(), r"
+import json, os, sys, time
+worker = os.fork()
+if worker == 0:
+    time.sleep(30)
+    os._exit(0)
+with open(sys.argv[1], 'w') as output:
+    output.write(str(worker))
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05', 'capabilities':{}, 'serverInfo':{'name':'fixture', 'version':'1'}}
+    elif method == 'tools/list':
+        result = {'tools':[]}
+    elif method == 'resources/list':
+        result = {'resources':[]}
+    else:
+        result = {'prompts':[]}
+        print(json.dumps({'jsonrpc':'2.0', 'method':'notifications/message', 'params':{'level':'info', 'data':'x'*262144}}))
+    print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+".into(), worker_pid.path().to_string_lossy().into_owned()];
+        config.timeout = Some(10_000);
+        let mut connection = McpConnection::new(config);
+        connection.connect().await.unwrap();
+        let pid: i32 = std::fs::read_to_string(worker_pid.path())
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pending = Arc::downgrade(&connection.pending);
+        if disconnect {
+            connection.disconnect().await;
+            assert_eq!(
+                pending.strong_count(),
+                1,
+                "disconnect must await reader teardown"
+            );
+        }
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while pending.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("teardown must release the reader without waiting for stdout EOF");
+        // SAFETY: signal zero only checks the fixture worker's existence.
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "worker must still hold stdout open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_disconnect_releases_reader_with_inherited_stdout() {
+        assert_stdio_reader_released(true).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_drop_releases_reader_with_inherited_stdout() {
+        assert_stdio_reader_released(false).await;
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn headless_stdio_flood_does_not_block_responses_or_grow_notifications() {
         let mut config = stub_config("headless-flood");
@@ -1822,6 +1923,7 @@ for line in sys.stdin:
             process,
             stdin,
             notification_rx,
+            stdout_reader: None,
         });
         let cancel = CancellationToken::new();
         for id in 0..128 {
@@ -1872,6 +1974,7 @@ for line in sys.stdin:
             process,
             stdin,
             notification_rx,
+            stdout_reader: None,
         });
         connection.initialized = true;
 
@@ -1928,6 +2031,7 @@ for line in sys.stdin:
             process: dead_process,
             stdin,
             notification_rx,
+            stdout_reader: None,
         });
         connection.initialized = true;
 
@@ -2037,6 +2141,7 @@ for line in sys.stdin:
             process,
             stdin,
             notification_rx,
+            stdout_reader: None,
         });
         connection.initialized = true;
 
@@ -2100,6 +2205,7 @@ for line in sys.stdin:
             process,
             stdin,
             notification_rx,
+            stdout_reader: None,
         });
         connection.initialized = true;
 
