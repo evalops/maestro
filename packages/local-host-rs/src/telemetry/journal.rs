@@ -43,28 +43,82 @@ impl TurnJournal {
         })
     }
 
+    /// A `flock` belongs to the open file description, and `fork` copies that
+    /// description into the child. `O_CLOEXEC` closes the child's copy only at
+    /// `exec`, so any process this host spawns -- a bash tool, an MCP server,
+    /// an LSP, a subagent -- holds every open journal lease for the width of
+    /// its own fork-to-exec window. During that window a dropped producer's
+    /// lease still reports `WouldBlock`, and recovery used to read that as "a
+    /// live producer owns this journal" and abandon the pending record. A probe
+    /// against this API with eight spawning threads lost the record in 245 of
+    /// 300 trials. The window is microseconds wide, so re-reading it over a
+    /// bounded interval separates a transient inherited descriptor from a
+    /// producer that is genuinely still running.
+    ///
+    /// The budget covers the whole recovery pass, not one journal. A lease a
+    /// live producer holds never unlocks, and `recover` runs on the
+    /// process-start path, so retrying several sibling journals in turn would
+    /// charge startup for every Maestro process already running.
+    const LEASE_RECLAIM_BUDGET: Duration = Duration::from_millis(60);
+    const LEASE_RECLAIM_BACKOFF: Duration = Duration::from_millis(5);
+
+    fn claim_lease(lease: &std::fs::File, deadline: Instant) -> bool {
+        loop {
+            if lease.try_lock().is_ok() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Self::LEASE_RECLAIM_BACKOFF);
+        }
+    }
+
     fn recover(outbox: &Path, journals: &Path) {
         let Ok(entries) = fs::read_dir(journals) else {
             return;
         };
+        let deadline = Instant::now() + Self::LEASE_RECLAIM_BUDGET;
         for entry in entries.flatten() {
             if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let directory = entry.path();
-            let Ok(lease) = OpenOptions::new()
+            let lease = match OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(directory.join("lease"))
-            else {
-                continue;
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!(
+                        journal = %directory.display(),
+                        %error,
+                        "telemetry journal lease could not be opened; pending records stay unsent"
+                    );
+                    continue;
+                }
             };
-            if lease.try_lock().is_err() {
+            if !Self::claim_lease(&lease, deadline) {
+                tracing::debug!(
+                    journal = %directory.display(),
+                    "telemetry journal lease is held; leaving it to its owner"
+                );
                 continue;
             }
             for path in outbox_paths(&directory) {
-                if read_bounded_outbox_record(&path).is_some() {
-                    let _ = promote(outbox, &path);
+                if read_bounded_outbox_record(&path).is_none() {
+                    tracing::warn!(
+                        record = %path.display(),
+                        "telemetry journal record is unreadable; leaving it in place"
+                    );
+                    continue;
+                }
+                if promote(outbox, &path).is_none() {
+                    tracing::warn!(
+                        record = %path.display(),
+                        "telemetry journal record could not be promoted to the outbox"
+                    );
                 }
             }
             if outbox_paths(&directory).is_empty() {
@@ -149,6 +203,50 @@ fn promote(outbox: &Path, path: &Path) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_reclaims_a_lease_a_forked_child_transiently_inherited() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Every process this host spawns inherits a copy of the open file
+        // description behind each live journal lease, and holds the flock until
+        // it reaches exec. Recovery must not read that as a live producer.
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("/bin/true").status();
+                    }
+                })
+            })
+            .collect();
+
+        let mut abandoned = 0;
+        for _ in 0..40 {
+            let root = tempfile::tempdir().unwrap();
+            let outbox = root.path().join("outbox");
+            let mut producer = TurnJournal::open_at(outbox.clone()).unwrap();
+            let event = super::super::tests::canonical_event(TurnStatus::Success);
+            producer.write(&event).unwrap();
+            drop(producer);
+            TurnJournal::recover(&outbox, &outbox.join("pending"));
+            if outbox_paths(&outbox).is_empty() {
+                abandoned += 1;
+            }
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            let _ = spawner.join();
+        }
+        assert_eq!(
+            abandoned, 0,
+            "recovery abandoned pending records whose producer had already exited"
+        );
+    }
 
     #[test]
     fn recovery_preserves_a_terminal_update_before_promotion() {
