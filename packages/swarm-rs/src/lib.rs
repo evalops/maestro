@@ -66,10 +66,12 @@
 //! ```
 
 mod executor;
+mod expansion;
 mod plan_parser;
 mod types;
 
 pub use executor::SwarmExecutor;
+pub use expansion::{SwarmTaskContext, SwarmTaskOutcome};
 pub use plan_parser::{parse_plan, parse_simple_list, validate_plan};
 pub use types::{
     AgentId, AgentMode, DispatchSource, ModelProvider, ModelTier, ReasoningEffort,
