@@ -9,6 +9,7 @@ const publicDocumentationPaths = [
 	"docs/CONTRIBUTOR_RUNBOOK.md",
 	"docs/CUSTOM_AGENTS.md",
 	"docs/DEIXIC_CODE_MIGRATION.md",
+	"docs/DYNAMIC_WORKFLOWS.md",
 	"docs/ENTERPRISE.md",
 	"docs/FEATURES.md",
 	"docs/MCP_GUIDE.md",
