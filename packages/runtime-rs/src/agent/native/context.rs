@@ -3,6 +3,45 @@
 use super::*;
 
 impl NativeAgentRunner {
+    /// Interrupted streams do not reach post-response compaction. Bound their
+    /// accumulated history at the interruption boundary, preserving the
+    /// exact original requests in the same atomic checkpoint as the summary.
+    pub(super) fn compact_interrupted_native_history(&mut self) {
+        // Accepted notes must reach a provider verbatim before they can be summarized.
+        if !self.pending_user_note_texts.is_empty()
+            || self.model_route.uses_app_server()
+            || !self.compactor.should_auto_compact(&self.messages)
+        {
+            return;
+        }
+        self.repair_orphaned_tool_calls();
+        let started = Instant::now();
+        let mut result = self.compactor.compact_with_tokens(&self.messages);
+        if !result.was_compacted() {
+            return;
+        }
+        self.prepare_continuation(&mut result);
+        let _ = self.event_tx.send(FromAgent::CompactionMeasured {
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        });
+        emit_compaction_event(
+            &self.event_tx,
+            &self.messages,
+            result
+                .summary
+                .as_deref()
+                .unwrap_or("Interrupted history compacted"),
+            result.cut_point.as_ref(),
+            result.continuation.as_ref(),
+            true,
+        );
+        if let Some(record) = result.continuation {
+            self.semantic_continuation = Some(record);
+        }
+        self.messages = Arc::new(result.messages);
+        self.emit_conversation_snapshot();
+    }
+
     /// Apply a session transition to the hook system.
     ///
     /// Dispatches `SessionEnd` for the session being left and `SessionStart`

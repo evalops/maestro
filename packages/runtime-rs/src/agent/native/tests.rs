@@ -1538,6 +1538,110 @@ async fn injected_user_note_acknowledges_history_application() {
     agent.shutdown().await;
 }
 
+#[tokio::test]
+async fn overflowing_pending_note_reaches_provider_before_consumption_ack() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        request_tx
+            .send(read_scripted_provider_request(&mut stream).await)
+            .unwrap();
+        release_rx.await.unwrap();
+        drop(stream);
+        let (mut stream, _) = listener.accept().await.unwrap();
+        request_tx
+            .send(read_scripted_provider_request(&mut stream).await)
+            .unwrap();
+        let response = chat_sse_response("note-delivery", "Done.", false);
+        let wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        );
+        stream.write_all(wire.as_bytes()).await.unwrap();
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1")).unwrap(),
+    );
+    let (agent, mut events) =
+        new_runtime_test_agent_with_host(config.clone(), RuntimeTestHost::new(config.cwd, client))
+            .unwrap();
+    let note = (0..2048)
+        .map(|i| format!("unseen-note-{i} "))
+        .collect::<String>();
+    let (applied, mut consumed) = agent.inject_user_note(note.clone()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), applied)
+        .await
+        .unwrap()
+        .unwrap();
+    agent
+        .prompt("Acknowledge the note.".into(), vec![])
+        .await
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(10), request_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == note.trim())
+    );
+    assert!(matches!(
+        consumed.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    agent.cancel();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnInterrupted { .. }) {
+                return;
+            }
+        }
+        panic!("missing interruption");
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        consumed.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    release_tx.send(()).unwrap();
+    agent
+        .prompt("Retry the note.".into(), vec![])
+        .await
+        .unwrap();
+    let retry = tokio::time::timeout(Duration::from_secs(10), request_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        retry["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == note.trim())
+    );
+    tokio::time::timeout(Duration::from_secs(10), consumed)
+        .await
+        .unwrap()
+        .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
+}
+
 #[test]
 fn codex_app_server_turn_includes_trailing_injected_notes() {
     let messages = vec![
@@ -7457,11 +7561,14 @@ async fn cancelled_prepared_compaction_does_not_duplicate_user_history() {
         context_window: Some(1024),
         ..Default::default()
     };
+    let large_response = (0..512)
+        .map(|i| format!("response-{i} "))
+        .collect::<String>();
     let scripted = crate::ai::ScriptedClient::new(
         "cancel-compaction",
         vec![
-            crate::ai::ScriptedResponse::text("Done."),
-            crate::ai::ScriptedResponse::text("Done."),
+            crate::ai::ScriptedResponse::text(large_response.clone()),
+            crate::ai::ScriptedResponse::text(large_response.clone()),
         ],
     );
     let barrier = Arc::new((
@@ -7472,23 +7579,27 @@ async fn cancelled_prepared_compaction_does_not_duplicate_user_history() {
     let mut host = RuntimeTestHost::new(config.cwd.clone(), UnifiedClient::Scripted(scripted));
     host.checkpoint_barrier = Some(Arc::clone(&barrier));
     let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
-    let sentinel = format!("original-boundary: {}", "retain this context ".repeat(100));
-    agent.replace_history(
-        (0..20)
-            .map(|index| Message {
-                role: if index % 2 == 0 {
-                    Role::User
-                } else {
-                    Role::Assistant
-                },
-                content: MessageContent::text(if index == 0 {
-                    sentinel.clone()
-                } else {
-                    format!("history-{index}: {}", "prior context ".repeat(100))
-                }),
-            })
-            .collect(),
+    let sentinel = "original-boundary: retain this context".to_owned();
+    let history = vec![Message {
+        role: Role::User,
+        content: MessageContent::text(sentinel.clone()),
+    }];
+    let compactor = crate::agent::compaction::ContextCompactor::new(
+        crate::agent::compaction::CompactionConfig::for_model("openai/gpt-4o", Some(1024)),
     );
+    assert!(!compactor.should_auto_compact(&history));
+    let mut completed = history.clone();
+    completed.push(Message {
+        role: Role::User,
+        content: MessageContent::text("Continue"),
+    });
+    completed.push(Message {
+        role: Role::Assistant,
+        content: MessageContent::text(large_response),
+    });
+    assert!(compactor.should_auto_compact(&completed));
+    assert!(compactor.compact_with_tokens(&completed).was_compacted());
+    agent.replace_history(history);
     agent.prompt("Continue".into(), vec![]).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
         .await

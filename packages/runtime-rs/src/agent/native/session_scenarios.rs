@@ -439,6 +439,13 @@ async fn session_lifecycle_fixture() {
     run(load(&path).unwrap()).await.unwrap();
 }
 
+#[tokio::test]
+async fn interrupted_turns_remain_within_context_window() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/fixtures/session-scenarios/interrupted-turns.json");
+    run(load(&path).unwrap()).await.unwrap();
+}
+
 #[test]
 fn session_scenarios_reject_invalid_contracts() {
     let valid = serde_json::json!({"schema":SCHEMA,"name":"validation","context_window":4096,"steps":[{"action":"assert","bounds":{"messages":{"max":0}}}]});

@@ -1105,6 +1105,7 @@ impl NativeAgentRunner {
                             let _ = self.event_tx.send(event);
                         }
                     } else if request_cancelled {
+                        self.compact_interrupted_native_history();
                         let _ = self.event_tx.send(FromAgent::TurnInterrupted {
                             response_id: "done".to_string(),
                             reason: "cancelled".to_string(),
@@ -1498,6 +1499,7 @@ impl NativeAgentRunner {
                             let _ = self.event_tx.send(event);
                         }
                     } else if request_cancelled {
+                        self.compact_interrupted_native_history();
                         let _ = self.event_tx.send(FromAgent::TurnInterrupted {
                             response_id: "continue".to_string(),
                             reason: "cancelled".to_string(),
