@@ -725,7 +725,22 @@ pub struct WorkflowRunOwner {
     run_id: String,
     lock_path: PathBuf,
     state: Mutex<OwnerState>,
-    _lock_file: fs::File,
+    _lock: WorkflowOwnerLock,
+}
+
+#[derive(Debug)]
+struct WorkflowOwnerLock {
+    file: fs::File,
+}
+
+impl Drop for WorkflowOwnerLock {
+    fn drop(&mut self) {
+        // A fork or duplicated handle can retain the open file description.
+        // Closing our handle alone would leave the inherited lock held.
+        if let Err(error) = self.file.unlock() {
+            eprintln!("Could not release workflow owner lock: {error}");
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -972,10 +987,10 @@ impl WorkflowStore {
         Ok((path, file))
     }
 
-    fn acquire_legacy_fence(&self, run_id: &str) -> Result<fs::File, String> {
+    fn acquire_legacy_fence(&self, run_id: &str) -> Result<WorkflowOwnerLock, String> {
         let (path, file) = self.open_owner_lock_file(run_id)?;
         match file.try_lock() {
-            Ok(()) => Ok(file),
+            Ok(()) => Ok(WorkflowOwnerLock { file }),
             Err(TryLockError::WouldBlock) => Err(format!(
                 "workflow run {run_id} is already owned by another process ({})",
                 path.display()
@@ -1004,7 +1019,7 @@ impl WorkflowStore {
                 run_id: run_id.to_string(),
                 lock_path,
                 state: Mutex::new(OwnerState::default()),
-                _lock_file: lock_file,
+                _lock: WorkflowOwnerLock { file: lock_file },
             }),
             Err(TryLockError::WouldBlock) => Err(format!(
                 "workflow run {run_id} is already owned by another process"
@@ -1529,6 +1544,48 @@ mod workflow_store_tests {
         assert!(contender.join().unwrap().is_err());
         drop(owner);
         assert!(store.acquire_run_owner(&current.id).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_fence_drop_releases_lock_with_duplicated_handle_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkflowStore::with_path(dir.path().join("runs.jsonl"));
+        let current = run();
+        let fence = store.acquire_legacy_fence(&current.id).unwrap();
+        let duplicate = fence.file.try_clone().unwrap();
+
+        assert!(store.acquire_legacy_fence(&current.id).is_err());
+        assert!(store.acquire_run_owner(&current.id).is_err());
+        drop(fence);
+
+        let next_fence = store.acquire_legacy_fence(&current.id).unwrap();
+        assert!(store.acquire_run_owner(&current.id).is_err());
+        drop(next_fence);
+        let next_owner = store.acquire_run_owner(&current.id).unwrap();
+        drop(next_owner);
+        drop(duplicate);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_owner_drop_releases_lock_with_duplicated_handle_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkflowStore::with_path(dir.path().join("runs.jsonl"));
+        let current = run();
+        let owner = store.acquire_run_owner(&current.id).unwrap();
+        let duplicate = owner._lock.file.try_clone().unwrap();
+
+        assert!(store.acquire_run_owner(&current.id).is_err());
+        assert!(store.acquire_legacy_fence(&current.id).is_err());
+        drop(owner);
+
+        let next_owner = store.acquire_run_owner(&current.id).unwrap();
+        assert!(store.acquire_legacy_fence(&current.id).is_err());
+        drop(next_owner);
+        let next_fence = store.acquire_legacy_fence(&current.id).unwrap();
+        drop(next_fence);
+        drop(duplicate);
     }
 
     #[test]
