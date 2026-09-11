@@ -47,6 +47,33 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.86] - 2026-09-11
+
+### Added
+
+- Learn from adjudicated Maestro review feedback (#8927). <!-- maestro-release-note:e76c601dc4e4 -->
+
+### Changed
+
+- Render an editable composer during startup (#9014). <!-- maestro-release-note:710baf254f57 -->
+- Add trusted Python import review replays (#9008). <!-- maestro-release-note:969138eac0a2 -->
+- Refresh bundled model catalog (#9004). <!-- maestro-release-note:8a4de8965aac -->
+
+### Fixed
+
+- Bound inventory preparation and retain cancelled phase timings (#9013). <!-- maestro-release-note:90cda95fb72b -->
+- Run learning promotion on Vertex AI (#9012). <!-- maestro-release-note:b390e10f157e -->
+- Preserve Gemini tool history across model requests (#9011). <!-- maestro-release-note:d388d235376f -->
+- Bound and scope Cosign package bootstrap (#9010). <!-- maestro-release-note:5278bcbda198 -->
+- Restore deployed migration inventory (#9009). <!-- maestro-release-note:884754f712ac -->
+- Remap Gemini sanitized tool names onto declared Dex tools (#9002). <!-- maestro-release-note:32e8a23769eb -->
+- Dispatch platform runtime without waiting on Maestro (#9001). <!-- maestro-release-note:fe94ecf01c3d -->
+- Put the turn identity on the tool-failure warns (#8954). <!-- maestro-release-note:b725f861df5b -->
+- Recover audits and remove empty-claim polling (#9003). <!-- maestro-release-note:1028e337e89c -->
+- Surface governed tool approvals and resume the same call (#9007). <!-- maestro-release-note:040d6268d01b -->
+- Keep renewed resident processes alive (#9005). <!-- maestro-release-note:eaeb630fb3d4 -->
+- Repair Grid audit integration and Rust lint failures (#8998). <!-- maestro-release-note:ea4dca8c9464 -->
+
 ## [0.10.85] - 2026-09-11
 
 ### Added
