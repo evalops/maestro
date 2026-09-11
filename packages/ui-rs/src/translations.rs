@@ -19760,6 +19760,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
         ],
     ),
     (
+        "Starting… You can type while setup finishes.",
+        [
+            "Iniciando… Puedes escribir mientras termina la configuración.",
+            "Démarrage… Vous pouvez écrire pendant la configuration.",
+            "Startet… Sie können während der Einrichtung tippen.",
+            "起動中… 設定が完了するまで入力できます。",
+            "시작 중… 설정이 완료되는 동안 입력할 수 있습니다.",
+            "正在启动… 设置完成前，您可以继续输入。",
+        ],
+    ),
+    (
         "Stash / restore / swap draft",
         [
             "Stash / restaurar / swap borrador",
@@ -19833,6 +19844,17 @@ pub(crate) const MESSAGES: &[(&str, [&str; 6])] = &[
             "次のチェックポイントのキュードを操る。現在の作業は続行します。",
             "다음 검문소에 대한 조율; 현재 작업이 계속됩니다.",
             "为下一个检查站排队;当前工作仍在继续。",
+        ],
+    ),
+    (
+        "Still starting. Your draft is here; press Enter when ready.",
+        [
+            "Todavía se está iniciando. Tu borrador sigue aquí; pulsa Enter cuando esté listo.",
+            "Démarrage en cours. Votre brouillon est conservé ; appuyez sur Enter quand le démarrage est terminé.",
+            "Der Start läuft noch. Ihr Entwurf bleibt erhalten; drücken Sie Enter, sobald der Start abgeschlossen ist.",
+            "まだ起動中です。下書きは保持されています。準備ができたら Enter を押してください。",
+            "아직 시작 중입니다. 입력한 내용은 유지됩니다. 준비되면 Enter를 누르세요.",
+            "仍在启动。草稿会保留；准备就绪后请按 Enter。",
         ],
     ),
     (
