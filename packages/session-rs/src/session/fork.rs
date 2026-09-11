@@ -43,6 +43,14 @@ pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
 /// Locate the persisted boundary before the last `turns` user messages.
 /// Offsets refer to complete JSONL entries, including tool and compaction records.
 pub fn rewind_boundary(source_path: &Path, turns: usize) -> io::Result<u64> {
+    rewind_boundary_with_turn_count(source_path, turns).map(|(boundary, _)| boundary)
+}
+
+/// Locate the boundary and count saved turns in the same bounded scan.
+pub fn rewind_boundary_with_turn_count(
+    source_path: &Path,
+    turns: usize,
+) -> io::Result<(u64, usize)> {
     if turns == 0 {
         return Err(invalid_data("rewind count must be at least one"));
     }
@@ -50,16 +58,10 @@ pub fn rewind_boundary(source_path: &Path, turns: usize) -> io::Result<u64> {
     let mut line = String::new();
     let mut offset = 0_u64;
     let mut boundaries = std::collections::VecDeque::new();
+    let mut user_turns = 0;
     while read_bounded_line(&mut reader, &mut line)? > 0 {
-        let entry = serde_json::from_str::<SessionEntry>(line.trim_end())
-            .map_err(|error| invalid_data(format!("invalid session entry: {error}")))?;
-        if matches!(
-            entry,
-            SessionEntry::Message(super::entries::MessageEntry {
-                message: super::entries::AppMessage::User { .. },
-                ..
-            })
-        ) {
+        if super::reader::is_user_message_line(&line)? {
+            user_turns += 1;
             boundaries.push_back(offset);
             if boundaries.len() > turns {
                 boundaries.pop_front();
@@ -70,6 +72,7 @@ pub fn rewind_boundary(source_path: &Path, turns: usize) -> io::Result<u64> {
     boundaries
         .front()
         .copied()
+        .map(|boundary| (boundary, user_turns))
         .ok_or_else(|| invalid_data("nothing to rewind"))
 }
 
@@ -197,34 +200,35 @@ pub fn fork_session_prefix(source_path: &Path, end: Option<u64>) -> io::Result<F
     })
 }
 
-fn read_bounded_line<R: BufRead>(reader: &mut R, line: &mut String) -> io::Result<usize> {
-    line.clear();
-    let mut total = 0;
-
+pub(super) fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut String,
+) -> io::Result<usize> {
+    // A BufRead chunk may end inside a UTF-8 codepoint. Validate the complete
+    // bounded line, retaining the allocation across calls without a second copy.
+    let mut bytes = std::mem::take(line).into_bytes();
+    bytes.clear();
     loop {
         let chunk = reader.fill_buf()?;
         if chunk.is_empty() {
-            return Ok(total);
+            break;
         }
-
         let newline = chunk.iter().position(|byte| *byte == b'\n');
         let chunk_len = newline.map_or(chunk.len(), |index| index + 1);
-        if total.saturating_add(chunk_len) > MAX_SESSION_LINE_BYTES {
+        if bytes.len().saturating_add(chunk_len) > MAX_SESSION_LINE_BYTES {
             return Err(invalid_data(format!(
                 "session line exceeds {MAX_SESSION_LINE_BYTES} bytes"
             )));
         }
-
-        let text = std::str::from_utf8(&chunk[..chunk_len])
-            .map_err(|err| invalid_data(format!("session file is not UTF-8: {err}")))?;
-        line.push_str(text);
+        bytes.extend_from_slice(&chunk[..chunk_len]);
         reader.consume(chunk_len);
-        total += chunk_len;
-
         if newline.is_some() {
-            return Ok(total);
+            break;
         }
     }
+    *line = String::from_utf8(bytes)
+        .map_err(|error| invalid_data(format!("session file is not UTF-8: {error}")))?;
+    Ok(line.len())
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -263,6 +267,71 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn rewind_scan_counts_only_user_turns_and_returns_exact_offset() {
+        let temp = TempDir::new().unwrap();
+        let path = write_source_session(temp.path());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom", "timestamp": "2026-09-10T00:00:00Z", "customType": "test",
+                "data": {"message": {"role": "user", "content": "not a user turn"}}
+            })
+        )
+        .unwrap();
+        let third_offset = file.metadata().unwrap().len();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "message", "timestamp": "2026-09-10T00:00:00Z",
+                "message": {"role": "user", "content": "third turn 🦀"}
+            })
+        )
+        .unwrap();
+        assert_eq!(
+            rewind_boundary_with_turn_count(&path, 1).unwrap(),
+            (third_offset, 3)
+        );
+        assert_eq!(rewind_boundary_with_turn_count(&path, 99).unwrap().1, 3);
+    }
+
+    #[test]
+    fn rewind_rejects_invalid_user_records_instead_of_shifting_turns() {
+        let temp = TempDir::new().unwrap();
+        let path = write_source_session(temp.path());
+        writeln!(
+            OpenOptions::new().append(true).open(&path).unwrap(),
+            "{}",
+            serde_json::json!({"type": "message", "message": {"role": "user"}})
+        )
+        .unwrap();
+        // Make the damage interior: opening a writer intentionally repairs an
+        // invalid final record, but must not hide a malformed saved boundary.
+        writeln!(OpenOptions::new().append(true).open(&path).unwrap(), "{}",
+            serde_json::json!({"type": "custom", "timestamp": "2026-09-10T00:00:00Z", "customType": "after-damage"})).unwrap();
+        assert!(SessionReader::read_file(&path).is_err());
+        assert!(rewind_boundary_with_turn_count(&path, 1).is_err());
+        let mut writer = SessionWriter::open_existing(&path).unwrap();
+        assert!(writer.saved_user_turn_count().is_err());
+    }
+
+    #[test]
+    fn bounded_lines_accept_unicode_across_buffer_boundaries() {
+        let input = "a🦀é漢字\n";
+        for size in 1..12 {
+            let mut reader = BufReader::with_capacity(size, input.as_bytes());
+            let mut line = String::new();
+            assert_eq!(
+                read_bounded_line(&mut reader, &mut line).unwrap(),
+                input.len()
+            );
+            assert_eq!(line, input);
+        }
     }
 
     #[test]

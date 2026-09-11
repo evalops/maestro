@@ -98,7 +98,9 @@ pub use maestro_local_host::service_connections;
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session {
     pub use maestro_local_host::session::*;
-    pub(crate) use maestro_session::{fork_session_prefix, model_history, rewind_boundary};
+    pub(crate) use maestro_session::{
+        fork_session_prefix, model_history, rewind_boundary_with_turn_count,
+    };
 }
 pub mod session_transfer;
 pub mod setup_cli;

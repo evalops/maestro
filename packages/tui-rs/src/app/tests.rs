@@ -3730,7 +3730,7 @@ fn write_rewind_checkpoint(
         id: id.to_string(),
         created_at: created_at.to_string(),
         prompt: format!("prompt for {id}"),
-        repo_root: repo.to_path_buf(),
+        repo_root: dunce::canonicalize(repo).unwrap(),
         head: None,
         user_turn_index: None,
         entries: vec![crate::checkpoints::FileEntry {
@@ -3748,6 +3748,35 @@ async fn press_esc(app: &mut App) {
     app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
         .await
         .unwrap();
+}
+
+#[test]
+fn ephemeral_sessions_keep_file_checkpoints_without_turn_coordinates() {
+    let mut app = new_test_app();
+    let (_temp, repo) = setup_rewind_session(&mut app);
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(app.session_manager.writer().is_none());
+    app.capture_file_checkpoint(&repo, "ephemeral edit");
+    assert!(
+        app.pending_checkpoint
+            .as_ref()
+            .is_some_and(|pending| pending.user_turn_index.is_none())
+    );
+    std::fs::write(repo.join("new.txt"), "created in ephemeral turn").unwrap();
+    app.finalize_file_checkpoint();
+    let store =
+        crate::checkpoints::CheckpointStore::new(app.session_manager.sessions_dir(), "rewind-test");
+    assert_eq!(store.list().len(), 1);
+    let restored = crate::checkpoints::restore_latest(&store).unwrap().unwrap();
+    assert!(restored.failed.is_empty());
+    assert!(!repo.join("new.txt").exists());
 }
 
 #[test]
@@ -3854,6 +3883,37 @@ async fn double_esc_on_empty_input_opens_rewind_picker() {
     press_esc(&mut app).await;
     assert_eq!(app.active_modal, ActiveModal::RewindPicker);
     assert!(app.rewind_picker.is_visible());
+}
+
+#[test]
+fn rewind_picker_conversation_uses_the_saved_turn_coordinate() {
+    let mut app = new_test_app();
+    let (_temp, repo) = setup_rewind_session(&mut app);
+    app.state.session_id = None;
+    for prompt in ["kept first request", "second request", "third request"] {
+        app.record_user_message(prompt);
+    }
+    app.session_manager.flush().unwrap();
+    let source = app.session_manager.current_session_path().unwrap();
+    let original = std::fs::read(&source).unwrap();
+    app.rewind_picker.show(vec![crate::checkpoints::Checkpoint {
+        id: "selected".into(),
+        created_at: "2026-09-10T00:00:00Z".into(),
+        prompt: "second request".into(),
+        repo_root: repo,
+        head: None,
+        user_turn_index: Some(1),
+        entries: vec![],
+    }]);
+    app.handle_rewind_picker_key(KeyCode::Char('c')).unwrap();
+    assert!(app.state.error.is_none(), "{:?}", app.state.error);
+    app.session_manager.flush().unwrap();
+    let child = crate::session::SessionReader::read_file(
+        app.session_manager.current_session_path().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(child.stats.user_messages, 1);
+    assert_eq!(std::fs::read(source).unwrap(), original);
 }
 
 #[tokio::test]
@@ -6439,6 +6499,152 @@ async fn assert_session_restore_provider_history(interactive: bool) {
     let expected = crate::agent::selective_summary::preview(&history).unwrap();
     assert_eq!(actual.history_digest, expected.history_digest);
     app.native_agent.take().unwrap().shutdown().await;
+}
+
+#[tokio::test]
+async fn resumed_continuation_survives_the_next_compaction() {
+    use crate::agent::{NativeAgent, NativeAgentConfig};
+    let temp = tempfile::tempdir().unwrap();
+    let _env_lock = crate::config::test_process_env_lock_async().await;
+    struct RestoreEnv(Vec<(String, Option<std::ffi::OsString>)>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+    let names = crate::credential_mode::TEST_IDENTITY_ENV_VARS
+        .iter()
+        .copied()
+        .chain(["MAESTRO_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL"]);
+    let restore = RestoreEnv(
+        names
+            .map(|name| (name.to_string(), std::env::var_os(name)))
+            .collect(),
+    );
+    for (name, _) in &restore.0 {
+        std::env::remove_var(name);
+    }
+    let _restore = restore;
+    crate::credential_mode::install_test_identity_env();
+    std::env::set_var("MAESTRO_HOME", temp.path());
+    std::env::set_var("OPENAI_API_KEY", "fixture");
+    // Resume reauthorizes the saved model. Serve one real streaming response
+    // locally so the normal post-response compaction boundary is exercised.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::env::set_var("OPENAI_BASE_URL", &base_url);
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(Duration::from_secs(20), async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                assert!(request.len() < 1024 * 1024);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..end]).unwrap();
+                    let length: usize = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    }).unwrap();
+                    if request.len() >= end + 4 + length { break; }
+                }
+            }
+            let chunk = serde_json::json!({
+                "id": "rewind-test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}]
+            });
+            let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }).await.unwrap();
+    });
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.current_model = "openai/gpt-4o".into();
+    app.ensure_session_started().unwrap();
+    let (_, child_path) = app.session_manager.fork_session_snapshot().unwrap();
+    let mut writer = crate::session::SessionWriter::open_existing(&child_path).unwrap();
+    let record = crate::agent::compaction::ContinuationRecord {
+        user_requests: vec!["exact original request absent from summary".into()],
+        ..Default::default()
+    };
+    writer
+        .write_entry(
+            serde_json::from_value(serde_json::json!({
+                "type": "compaction", "timestamp": "2026-09-10T00:00:00Z",
+                "summary": "earlier work", "firstKeptEntryIndex": 0,
+                "tokensBefore": 5000, "continuation": record
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    for index in 0..48 {
+        writer.write_entry(serde_json::from_value(serde_json::json!({
+            "type": "message", "timestamp": "2026-09-10T00:00:00Z",
+            "message": {"role": "user", "content": format!("request {index}: {}", "evidence ".repeat(128))}
+        })).unwrap()).unwrap();
+    }
+    writer.flush().unwrap();
+    drop(writer);
+    let saved = crate::session::SessionReader::read_file(&child_path).unwrap();
+
+    let (agent, mut events) = NativeAgent::new_with_test_client(
+        NativeAgentConfig {
+            model: "openai/gpt-4o".into(),
+            cwd: "/tmp".into(),
+            context_window: Some(4096),
+            max_tokens: 512,
+            max_tokens_source: maestro_runtime::agent::MaxTokensSource::Explicit,
+            ..Default::default()
+        },
+        crate::ai::UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("fixture", &base_url).unwrap(),
+        ),
+    )
+    .unwrap();
+    app.native_agent = Some(agent);
+    app.apply_resumed_session(&saved);
+    app.native_agent
+        .as_ref()
+        .unwrap()
+        .prompt("continue".into(), vec![])
+        .await
+        .unwrap();
+    let continuation = tokio::time::timeout(Duration::from_secs(20), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::Compaction {
+                    continuation: Some(record),
+                    ..
+                } => return record,
+                FromAgent::TurnCompleted { .. } => panic!("large restored history did not compact"),
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+        panic!("agent closed before compaction");
+    })
+    .await
+    .unwrap();
+    app.native_agent.take().unwrap().shutdown().await;
+    server.await.unwrap();
+    assert!(
+        continuation
+            .user_requests
+            .iter()
+            .any(|request| request == "exact original request absent from summary")
+    );
 }
 
 #[tokio::test]

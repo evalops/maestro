@@ -159,7 +159,10 @@ pub use branching::{
 };
 pub use entries::*;
 pub use export::{ExportFormat, ExportOptions, SessionExporter, export_session_file};
-pub use fork::{ForkedSession, fork_session_file, fork_session_prefix, rewind_boundary};
+pub use fork::{
+    ForkedSession, fork_session_file, fork_session_prefix, rewind_boundary,
+    rewind_boundary_with_turn_count,
+};
 pub use index::{IndexedSession, SessionIndexEntry, collect_sessions, default_index_path};
 pub use manager::{AuxiliaryCleanup, PreparedSessionAdoption, SessionInfo, SessionManager};
 pub use model_history::model_history;

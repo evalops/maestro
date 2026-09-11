@@ -20,7 +20,7 @@
 //! rather than hang.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::entries::{SessionEntry, SessionHeader};
@@ -74,6 +74,9 @@ pub struct SessionWriter {
     batch_size: usize,
     /// Whether the session header has been written
     header_written: bool,
+    /// Derived position/count for the exclusively owned append-only transcript.
+    /// Rebuilt on writer reopen or truncation; never another durable authority.
+    user_turn_cursor: Option<(u64, usize)>,
     /// Advisory cross-process lock held for the lifetime of this writer.
     /// See the module docs and [`SessionLock`] for why this exists.
     _lock: SessionLock,
@@ -100,6 +103,7 @@ impl SessionWriter {
             buffer: Vec::new(),
             batch_size: DEFAULT_BATCH_SIZE,
             header_written: false,
+            user_turn_cursor: None,
             _lock: lock,
         })
     }
@@ -141,6 +145,7 @@ impl SessionWriter {
             buffer: Vec::new(),
             batch_size: DEFAULT_BATCH_SIZE,
             header_written: true,
+            user_turn_cursor: None,
             _lock: lock,
         })
     }
@@ -198,6 +203,42 @@ impl SessionWriter {
 
         writer.flush()?;
         Ok(())
+    }
+
+    /// Flush and count saved user turns, scanning only newly appended JSONL.
+    /// Checkpoint capture needs this scalar, not a reconstructed conversation.
+    pub fn saved_user_turn_count(&mut self) -> Result<usize, SessionWriteError> {
+        self.flush()?;
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        let len = file.metadata()?.len();
+        let (mut offset, mut count) = self
+            .user_turn_cursor
+            .filter(|(offset, _)| *offset <= len)
+            .unwrap_or_default();
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut line = String::new();
+        // Publish the cursor only after the complete suffix validates. Failure
+        // leaves the previous cursor available for an exact retry.
+        while super::fork::read_bounded_line(&mut reader, &mut line)? > 0 {
+            if !line.ends_with('\n') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "incomplete saved session entry",
+                )
+                .into());
+            }
+            if super::reader::is_user_message_line(&line)? {
+                count += 1;
+            }
+            offset += line.len() as u64;
+        }
+        self.user_turn_cursor = Some((offset, count));
+        Ok(count)
     }
 
     /// Check if header has been written
@@ -419,6 +460,114 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn saved_turn_count_tracks_flushed_appends_and_reopen() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("count.jsonl");
+        let mut writer = SessionWriter::new(&path).unwrap();
+        assert_eq!(writer.saved_user_turn_count().unwrap(), 0);
+        // Use complete serialized message entries so the normal buffered writer
+        // and reopened reader exercise the same transcript contract.
+        for index in 0..64 {
+            let entry: SessionEntry = serde_json::from_value(serde_json::json!({
+                "type": "message", "timestamp": "2026-09-10T00:00:00Z",
+                "message": {"role": "user", "content": format!("request {index} 🦀")}
+            }))
+            .unwrap();
+            writer.write_entry(entry).unwrap();
+            assert_eq!(writer.saved_user_turn_count().unwrap(), index + 1);
+            assert_eq!(writer.saved_user_turn_count().unwrap(), index + 1);
+        }
+        drop(writer);
+        let mut reopened = open_existing_after_release(&path);
+        assert_eq!(reopened.saved_user_turn_count().unwrap(), 64);
+    }
+
+    #[test]
+    fn saved_turn_count_retries_incomplete_suffix_without_double_counting() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("count.jsonl");
+        let mut writer = SessionWriter::new(&path).unwrap();
+        let line = "{\"type\":\"message\",\"timestamp\":\"2026-09-10T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n";
+        fs::write(&path, line).unwrap();
+        assert_eq!(writer.saved_user_turn_count().unwrap(), 1);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{line}{{").unwrap();
+        assert!(writer.saved_user_turn_count().is_err());
+        writeln!(file, "\"type\":\"custom\"}}").unwrap();
+        assert_eq!(writer.saved_user_turn_count().unwrap(), 2);
+        fs::write(&path, line).unwrap();
+        assert_eq!(writer.saved_user_turn_count().unwrap(), 1);
+    }
+
+    #[test]
+    #[ignore = "measures repeated turn counting over cumulative compaction records"]
+    fn saved_turn_count_scaling_probe() {
+        let baseline = std::env::var_os("MAESTRO_SESSION_COUNT_BASELINE").is_some();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("long-session.jsonl");
+        let header: SessionHeader = serde_json::from_value(serde_json::json!({
+            "type": "session", "version": 2, "id": "count-probe",
+            "timestamp": "2026-09-10T00:00:00Z", "cwd": "/tmp", "model": "gpt-4o"
+        }))
+        .unwrap();
+        let mut writer = SessionWriter::create(&path, header).unwrap();
+        let mut elapsed = std::time::Duration::ZERO;
+        let mut requests = Vec::new();
+        for index in 0..1000 {
+            let prompt = format!("request-{index}: {}", "evidence ".repeat(28));
+            requests.push(prompt.clone());
+            writer
+                .write_entry(
+                    serde_json::from_value(serde_json::json!({
+                        "type": "message", "timestamp": "2026-09-10T00:00:00Z",
+                        "message": {"role": "user", "content": prompt}
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            if index % 25 == 24 {
+                let continuation = maestro_context::compaction::ContinuationRecord {
+                    user_requests: requests.clone(),
+                    ..Default::default()
+                };
+                writer
+                    .write_entry(
+                        serde_json::from_value(serde_json::json!({
+                            "type": "compaction", "timestamp": "2026-09-10T00:00:00Z",
+                            "summary": "earlier work", "firstKeptEntryIndex": 0,
+                            "tokensBefore": 5000, "continuation": continuation
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            writer.flush().unwrap();
+            let started = std::time::Instant::now();
+            let count = if baseline {
+                super::super::SessionReader::read_file(&path)
+                    .unwrap()
+                    .stats
+                    .user_messages
+            } else {
+                writer.saved_user_turn_count().unwrap()
+            };
+            elapsed += started.elapsed();
+            assert_eq!(count, index + 1);
+        }
+        let started = std::time::Instant::now();
+        let (boundary, count) = super::super::rewind_boundary_with_turn_count(&path, 10).unwrap();
+        assert_eq!(count, 1000);
+        assert!(boundary > 0);
+        eprintln!(
+            "TURN_COUNT_PROBE {}",
+            serde_json::json!({
+                "baseline": baseline, "turns": 1000, "saved_bytes": fs::metadata(path).unwrap().len(),
+                "count_elapsed_ms": elapsed.as_millis(), "rewind_scan_ms": started.elapsed().as_millis()
+            })
+        );
+    }
 
     #[test]
     fn writer_creates_file() {

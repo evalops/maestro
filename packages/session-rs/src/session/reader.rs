@@ -585,6 +585,22 @@ struct HeaderScanMessage<'a> {
     role: Option<Cow<'a, str>>,
 }
 
+/// Count user boundaries without deserializing cumulative checkpoint payloads.
+pub(super) fn is_user_message_line(line: &str) -> std::io::Result<bool> {
+    let invalid = |error| std::io::Error::new(std::io::ErrorKind::InvalidData, error);
+    let entry: HeaderScanEntry<'_> = serde_json::from_str(line.trim_end()).map_err(invalid)?;
+    if entry.entry_type.as_deref() != Some("message")
+        || entry.message.and_then(|message| message.role).as_deref() != Some("user")
+    {
+        return Ok(false);
+    }
+    // A damaged record must not shift file checkpoint coordinates relative to
+    // SessionReader, which validates the persisted message schema.
+    // Validate only user candidates; compaction records remain projection-only.
+    let _: SessionEntry = serde_json::from_str(line.trim_end()).map_err(invalid)?;
+    Ok(true)
+}
+
 fn apply_effective_preferences(
     header: &mut SessionHeader,
     model: Option<&str>,
