@@ -777,6 +777,22 @@ impl ThreadJournal {
     ) -> io::Result<()> {
         let mut response_idempotency_keys = metadata.keys.iter().cloned().collect::<Vec<_>>();
         response_idempotency_keys.sort();
+        // Signed renewal results belong only to live delivery. A replacement
+        // native process has no waiter to resume from this credential.
+        let durable_pending: HashMap<_, _> = metadata
+            .pending
+            .iter()
+            .filter(|(_, message)| {
+                !matches!(message, ToAgentMessage::ManagedAuthorizationResult { .. })
+            })
+            .map(|(key, message)| (key.clone(), message.clone()))
+            .collect();
+        let durable_pending_order = metadata
+            .pending_order
+            .iter()
+            .filter(|key| durable_pending.contains_key(*key))
+            .cloned()
+            .collect();
         let document = DurableThreadDocument {
             initial_actions: state.initial_actions.clone(),
             protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
@@ -802,9 +818,9 @@ impl ThreadJournal {
             response_idempotency_keys,
             response_idempotency_digests: metadata.digests.clone(),
             response_request_owners: metadata.request_owners.clone(),
-            pending_response_idempotency: metadata.pending.clone(),
+            pending_response_idempotency: durable_pending,
             response_idempotency_order: metadata.order.iter().cloned().collect(),
-            pending_response_idempotency_order: metadata.pending_order.iter().cloned().collect(),
+            pending_response_idempotency_order: durable_pending_order,
         };
         atomic_write_private_json(&self.path, &document)?;
         self.flush_watermark
@@ -1707,5 +1723,50 @@ mod tests {
             Some(StreamEnvelope::Message { message, .. })
                 if matches!(message.as_ref(), FromAgentMessage::ProviderError { .. })
         ));
+    }
+    #[test]
+    fn managed_authorization_pending_delivery_never_persists_the_capability() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut loaded = ThreadJournal::load(workspace.path(), "thread-auth", 1).unwrap();
+        loaded.pending_response_idempotency.insert(
+            "delivery-1".into(),
+            ToAgentMessage::ManagedAuthorizationResult {
+                request_id: "invocation-1".into(),
+                authorization: ManagedInferenceAuthorization::new("signed-renewal-secret-marker"),
+            },
+        );
+        loaded
+            .pending_response_idempotency_order
+            .push_back("delivery-1".into());
+        loaded
+            .journal
+            .persist(
+                &loaded.state,
+                1,
+                0,
+                &loaded.events,
+                ThreadJournalMetadataView {
+                    runner_session_id: "session-auth",
+                    runtime_model: None,
+                    runtime_provider: None,
+                    drain_runtime_failed_before_finalization: false,
+                    executor_drain_result_applied_count: 0,
+                    last_init: None,
+                    keys: &loaded.response_idempotency_keys,
+                    digests: &loaded.response_idempotency_digests,
+                    request_owners: &loaded.response_request_owners,
+                    pending: &loaded.pending_response_idempotency,
+                    order: &loaded.response_idempotency_order,
+                    pending_order: &loaded.pending_response_idempotency_order,
+                },
+                &loaded.identity_binding_failures,
+            )
+            .unwrap();
+        let durable = std::fs::read_to_string(&loaded.journal.path).unwrap();
+        assert!(!durable.contains("signed-renewal-secret-marker"));
+        drop(loaded);
+        let restored = ThreadJournal::load(workspace.path(), "thread-auth", 1).unwrap();
+        assert!(restored.pending_response_idempotency.is_empty());
+        assert!(restored.pending_response_idempotency_order.is_empty());
     }
 }

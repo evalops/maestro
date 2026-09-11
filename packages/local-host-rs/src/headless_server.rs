@@ -1709,6 +1709,27 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     )?,
                 }
             }
+            ToAgentMessage::ManagedAuthorizationResult {
+                request_id,
+                authorization,
+            } => {
+                let result = state
+                    .agent
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("no active native agent"))
+                    .and_then(|agent| {
+                        agent
+                            .managed_authorization_coordinator()
+                            .respond(&request_id, authorization)
+                    });
+                match result {
+                    Ok(()) => emit(&FromAgentMessage::ResponseAccepted { request_id })?,
+                    Err(error) => protocol_error(
+                        Some(request_id),
+                        format!("authorization result rejected: {error}"),
+                    )?,
+                }
+            }
             ToAgentMessage::ConfigurePromptExperiment { assignment } => {
                 if let Err(error) = configure_prompt_experiment(&mut state, assignment) {
                     protocol_error(None, format!("prompt experiment rejected: {error:#}"))?;
@@ -2683,6 +2704,9 @@ async fn handle_agent_event(
         }
     }
     match msg {
+        FromAgent::ManagedAuthorizationRequest { request_id } => {
+            emit(&FromAgentMessage::ManagedAuthorizationRequest { request_id })?;
+        }
         FromAgent::LocalAssistantContent { .. } => return Ok(()),
         FromAgent::ConversationSnapshot {
             protocol_version,

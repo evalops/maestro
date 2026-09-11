@@ -375,6 +375,7 @@ struct RemoteRuntimeStateSnapshot {
 impl RemoteRuntimeStateSnapshot {
     fn into_agent_state(self) -> AgentState {
         AgentState {
+            pending_managed_authorizations: Vec::new(),
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
             controller_binding_version: self.controller_binding_version,

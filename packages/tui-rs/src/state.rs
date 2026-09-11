@@ -713,6 +713,8 @@ impl AppState {
             // Managed receipts are forwarded to headless consumers but carry
             // no interactive UI content.
             FromAgent::ManagedGatewayReceipt { .. } => {}
+            // The authenticated headless controller answers this transport request.
+            FromAgent::ManagedAuthorizationRequest { .. } => {}
             // Accounting only: reported so a caller metering model output can
             // charge Codex-native operations, which never arrive as `ToolCall`.
             // It carries no text to display and needs no response.

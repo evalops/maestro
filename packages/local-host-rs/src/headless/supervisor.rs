@@ -1169,6 +1169,7 @@ impl AgentSupervisor {
 
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
         if let FromAgentMessage::ResponseAccepted { request_id } = &message {
+            self.state.handle_message(message.clone());
             return Some(SupervisorEvent::ResponseAccepted {
                 request_id: request_id.clone(),
             });
@@ -1199,7 +1200,8 @@ impl AgentSupervisor {
         // dropping those messages strands the native tool-response waiter.
         if matches!(
             &message,
-            FromAgentMessage::ClientToolRequest { .. }
+            FromAgentMessage::ManagedAuthorizationRequest { .. }
+                | FromAgentMessage::ClientToolRequest { .. }
                 | FromAgentMessage::GovernedClientToolRequest { .. }
                 | FromAgentMessage::ServerRequest { .. }
                 | FromAgentMessage::ServerRequestResolved { .. }
@@ -1623,7 +1625,8 @@ pub(crate) fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> 
         ToAgentMessage::ToolResponse { call_id, .. }
         | ToAgentMessage::ClientToolResult { call_id, .. }
         | ToAgentMessage::GovernedClientToolResult { call_id, .. } => Some(call_id),
-        ToAgentMessage::ServerRequestResponse { request_id, .. } => Some(request_id),
+        ToAgentMessage::ServerRequestResponse { request_id, .. }
+        | ToAgentMessage::ManagedAuthorizationResult { request_id, .. } => Some(request_id),
         _ => None,
     }
 }

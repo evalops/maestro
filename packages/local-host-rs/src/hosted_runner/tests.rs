@@ -15175,3 +15175,45 @@ async fn initial_action_http_delivery_is_durable_scoped_and_never_executes_twice
     assert!(prompts[0].starts_with("Explain the result."));
     restored.shutdown().await;
 }
+
+#[test]
+fn managed_authorization_pending_request_survives_replay_eviction_until_ack() {
+    let workspace = tempdir().unwrap();
+    let executor = Arc::new(StatefulRuntimeExecutor::new(AgentState {
+        pending_managed_authorizations: vec!["invocation-1".into()],
+        ..Default::default()
+    }));
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+        None,
+    );
+    let mut state = shared.state.lock().unwrap();
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ManagedAuthorizationRequest {
+            request_id: "invocation-1".into(),
+        },
+    );
+    for index in 0..=MAX_EVENTS {
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Status {
+                message: format!("progress {index}"),
+            },
+        );
+    }
+    assert!(
+        matches!(shared.controller_pending_events(&mut state).as_slice(),
+        [FromAgentMessage::ManagedAuthorizationRequest { request_id }] if request_id == "invocation-1")
+    );
+    executor
+        .state
+        .lock()
+        .unwrap()
+        .handle_message(FromAgentMessage::ResponseAccepted {
+            request_id: "invocation-1".into(),
+        });
+    assert!(shared.controller_pending_events(&mut state).is_empty());
+    assert!(state.pending_controller_events.is_empty());
+}

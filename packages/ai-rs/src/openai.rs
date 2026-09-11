@@ -1028,6 +1028,10 @@ pub struct OpenAiClient {
     managed_workspace_id: Option<String>,
     managed_request_lineage: Option<ManagedRequestLineage>,
     managed_inference_authorization: Option<String>,
+    // Clones share consumption state across rounds, retries, and auxiliary calls.
+    managed_authorization_used: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    managed_authorization_provider:
+        Option<std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>>,
     route_provider: Option<String>,
     #[cfg(test)]
     response_open_timeout_override: Option<std::time::Duration>,
@@ -1058,6 +1062,10 @@ impl OpenAiClient {
             managed_workspace_id: None,
             managed_request_lineage: None,
             managed_inference_authorization: None,
+            managed_authorization_used: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            managed_authorization_provider: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -1083,6 +1091,10 @@ impl OpenAiClient {
             managed_workspace_id: None,
             managed_request_lineage: None,
             managed_inference_authorization: None,
+            managed_authorization_used: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            managed_authorization_provider: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -1158,6 +1170,15 @@ impl OpenAiClient {
 
     pub(crate) fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
         self.managed_inference_authorization = authorization;
+        self.managed_authorization_used =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    }
+
+    pub(crate) fn set_managed_authorization_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        self.managed_authorization_provider = Some(provider);
     }
 
     fn response_open_timeout(&self) -> Option<std::time::Duration> {
@@ -2028,6 +2049,32 @@ impl OpenAiClient {
 
 impl OpenAiClient {
     pub(crate) async fn stream_with_producer(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<CancellableStream> {
+        if self.managed_gateway && self.managed_inference_authorization.is_some() {
+            let mut invocation = self.clone();
+            if self
+                .managed_authorization_used
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                let provider = self
+                    .managed_authorization_provider
+                    .as_ref()
+                    .context("managed inference authorization renewal is unavailable")?;
+                let authorization = provider.renew().await?;
+                authorization.validate().map_err(anyhow::Error::msg)?;
+                invocation.managed_inference_authorization = Some(authorization.into_inner());
+            }
+            return invocation
+                .stream_authorized_invocation(messages, config)
+                .await;
+        }
+        self.stream_authorized_invocation(messages, config).await
+    }
+
+    async fn stream_authorized_invocation(
         &self,
         messages: &[Message],
         config: &RequestConfig,

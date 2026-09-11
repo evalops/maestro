@@ -1201,6 +1201,7 @@ enum AgentCommand {
 /// preserves the local host's historical detached-task behavior; hosted owners
 /// must retain the handle until admitted work has drained.
 pub struct NativeAgent {
+    managed_authorization: Arc<super::managed_authorization::ManagedAuthorizationCoordinator>,
     host: NativeExecutionHostHandle,
     managed_run_id: String,
     /// Channel to send commands to the background runner
@@ -1437,12 +1438,18 @@ impl NativeAgent {
         }
 
         let NativeResolvedClient {
-            client,
+            mut client,
             provider_name,
             model_route,
         } = resolved_client;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let managed_authorization = Arc::new(
+            super::managed_authorization::ManagedAuthorizationCoordinator::new(event_tx.clone()),
+        );
+        if let Some(client) = client.as_mut() {
+            client.set_managed_authorization_provider(managed_authorization.clone());
+        }
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let shutdown_token = CancellationToken::new();
@@ -1537,6 +1544,7 @@ impl NativeAgent {
         // it without introducing a second loop or event transformation layer.
 
         let runner = NativeAgentRunner {
+            managed_authorization: managed_authorization.clone(),
             client,
             model_route,
             codex_session: None,
@@ -1607,6 +1615,7 @@ impl NativeAgent {
         });
 
         let agent = Self {
+            managed_authorization,
             host,
             managed_run_id,
             command_tx,
@@ -1644,7 +1653,15 @@ impl NativeAgent {
             .map_err(|_| anyhow::anyhow!("Agent command channel closed"))
     }
 
-    /// Get the sender for tool responses
+    /// Return the transient rendezvous for authenticated host authorization replies.
+    #[must_use]
+    pub fn managed_authorization_coordinator(
+        &self,
+    ) -> Arc<super::managed_authorization::ManagedAuthorizationCoordinator> {
+        self.managed_authorization.clone()
+    }
+
+    /// Get the sender for tool responses.
     #[must_use]
     pub fn tool_response_sender(&self) -> mpsc::UnboundedSender<ToolResponseMessage> {
         self.tool_response_tx.clone()
@@ -2374,6 +2391,7 @@ fn command_after_shutdown_check(
 /// }
 /// ```
 struct NativeAgentRunner {
+    managed_authorization: Arc<super::managed_authorization::ManagedAuthorizationCoordinator>,
     /// Direct AI client for HTTP-provider turns.
     ///
     /// This is absent for Codex app-server models: Codex app-server owns the

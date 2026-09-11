@@ -261,6 +261,7 @@ impl SnapshotManifest {
         let state = &snapshot.state;
         SessionReplay {
             state: AgentState {
+                pending_managed_authorizations: Vec::new(),
                 protocol_version: state.protocol_version.clone(),
                 client_protocol_version: state.client_protocol_version.clone(),
                 controller_binding_version: None,
