@@ -120,6 +120,12 @@ pub struct NativeToolAnnotations {
     pub open_world_hint: Option<bool>,
 }
 
+/// Model projection and optional file created by the existing session output owner.
+pub struct NativeToolOutput {
+    pub content: String,
+    pub saved_path: Option<PathBuf>,
+}
+
 /// Result of the host-owned action firewall.  The runtime owns how this result
 /// participates in the approval state machine; the host owns the policy that
 /// produced it.
@@ -407,6 +413,17 @@ pub trait NativeExecutionHost: Send + Sync {
         tool_name: &str,
         spill_dir: Option<&std::path::Path>,
     ) -> String;
+    fn project_tool_output(
+        &self,
+        content: &str,
+        tool_name: &str,
+        spill_dir: Option<&Path>,
+    ) -> NativeToolOutput {
+        NativeToolOutput {
+            content: self.clamp_tool_output(content, tool_name, spill_dir),
+            saved_path: None,
+        }
+    }
     fn model_tool_spill_dir(&self, cwd: &str, session_id: &str) -> PathBuf;
     fn open_todo_count(&self, output: &str) -> Option<usize>;
     fn semantic_conversation_protocol(&self) -> &str;
@@ -847,8 +864,8 @@ impl NativeExecutionHostHandle {
         content: &str,
         tool_name: &str,
         spill_dir: Option<&std::path::Path>,
-    ) -> String {
-        self.0.clamp_tool_output(content, tool_name, spill_dir)
+    ) -> NativeToolOutput {
+        self.0.project_tool_output(content, tool_name, spill_dir)
     }
 
     #[must_use]

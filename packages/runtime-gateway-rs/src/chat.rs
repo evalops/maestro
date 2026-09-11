@@ -1,4 +1,5 @@
 use super::*;
+use maestro_local_host::embedding::{EmbeddedAgent, EmbeddedAgentBuilder};
 
 pub(crate) fn is_chat_endpoint(head: &RequestHead) -> bool {
     head.method == "POST" && head.path == "/api/chat"
@@ -645,8 +646,11 @@ pub(crate) async fn handle_chat_endpoint(
         ..NativeAgentConfig::default()
     };
 
-    let (agent, mut events) = match NativeAgent::new_with_tools(config, client_tools) {
-        Ok(agent) => agent,
+    let (agent, mut events) = match EmbeddedAgentBuilder::from_config(config)
+        .external_tools(client_tools)
+        .start()
+    {
+        Ok(session) => session.into_parts(),
         Err(error) => {
             send_sse(
                 &mut stream,
@@ -660,186 +664,169 @@ pub(crate) async fn handle_chat_endpoint(
         }
     };
 
-    if let Some(session_id) = session_id.clone() {
-        agent
-            .set_session_context(Some(session_id), "chat", false)
-            .map_err(|error| error.to_string())?;
-    }
+    // The native actor can leave a client-owned tool or ordinary approval
+    // pending when the HTTP writer fails. Keep the exact IDs registered by
+    // this turn so the post-start finalizer can revoke their global resumable
+    // entries before stopping the actor.
+    let mut pending_tool_call_ids = HashSet::new();
+    let outcome = async {
+        if let Some(session_id) = session_id.clone() {
+            agent
+                .set_session_context(Some(session_id), "chat")
+                .map_err(|error| error.to_string())?;
+        }
 
-    if let Some(session_id) = session_id.as_deref() {
-        send_sse(
-            &mut stream,
-            &serde_json::json!({
-                "type": "status",
-                "status": "session",
-                "details": { "sessionId": session_id, "runtime": "rust" }
-            }),
-        )
-        .await?;
-    }
-    send_sse(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
-    send_sse(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
+        if let Some(session_id) = session_id.as_deref() {
+            send_sse(
+                &mut stream,
+                &serde_json::json!({
+                    "type": "status",
+                    "status": "session",
+                    "details": { "sessionId": session_id, "runtime": "rust" }
+                }),
+            )
+            .await?;
+        }
+        send_sse(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
+        send_sse(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
 
-    let prompt_result = agent
-        .prompt(prompt, prepared_attachments.paths.clone())
-        .await;
-    if let Err(error) = prompt_result {
-        send_sse(
-            &mut stream,
-            &serde_json::json!({ "type": "error", "message": error.to_string() }),
-        )
-        .await?;
-        send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-        let _ = stream.shutdown().await;
-        cleanup_prepared_attachments(prepared_attachments).await;
-        return Ok(());
-    }
-    let mut assistant_text = String::new();
-    let mut thinking_text = String::new();
-    let mut last_usage = None;
-    let mut response_started = false;
-    let mut thinking_started = false;
-    let mut terminal_sent = false;
-    let mut turn_completed_successfully = false;
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut assistant_tools: Vec<Value> = Vec::new();
-    let mut client_tool_call_ids: HashSet<String> = HashSet::new();
+        let prompt_result = agent
+            .prompt_with_attachments(prompt, prepared_attachments.paths.clone())
+            .await;
+        if let Err(error) = prompt_result {
+            send_sse(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error.to_string() }),
+            )
+            .await?;
+            send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+        let mut assistant_text = String::new();
+        let mut thinking_text = String::new();
+        let mut last_usage = None;
+        let mut response_started = false;
+        let mut thinking_started = false;
+        let mut terminal_sent = false;
+        let mut turn_completed_successfully = false;
+        let mut tool_names: HashMap<String, String> = HashMap::new();
+        let mut assistant_tools: Vec<Value> = Vec::new();
+        let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
-    while let Some(event) = events.recv().await {
-        let terminal_status = native_chat_terminal_status(&event);
-        let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
-        match event {
-            FromAgent::Ready { .. }
-            | FromAgent::LocalAssistantContent { .. }
-            | FromAgent::ConversationSnapshot { .. }
-            | FromAgent::ModelChanged { .. }
-            | FromAgent::BoostChanged { .. }
-            | FromAgent::ModelChangeFailed { .. }
-            // Output accounting for Codex-native operations; carries no
-            // content for a chat client to render.
-            | FromAgent::CodexNativeOperation { .. }
-            | FromAgent::CodexNativeDecision { .. }
-            | FromAgent::CodexTransportReceipt { .. }
-            | FromAgent::SessionInfo { .. } => {}
-            FromAgent::ManagedGatewayReceipt {
-                request_id,
-                record_id,
-                lineage_id,
-                record_status,
-                ..
-            } => {
-                send_sse(
-                    &mut stream,
-                    &managed_gateway_receipt_status(
-                        request_id,
-                        record_id,
-                        lineage_id,
-                        record_status,
-                    ),
-                )
-                .await?;
-            }
-            FromAgent::CodexSessionState {
-                state,
-                thread_id,
-                profile,
-            } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_session_state",
-                        "details": {
-                            "state": state,
-                            "threadId": thread_id,
-                            "profile": profile
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexTurnState {
-                state,
-                thread_id,
-                turn_id,
-            } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_turn_state",
-                        "details": {
-                            "state": state,
-                            "threadId": thread_id,
-                            "turnId": turn_id
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexUsageState { source, usage } => {
-                if usage.is_some() {
-                    last_usage = usage.clone();
+        while let Some(event) = events.recv().await {
+            let terminal_status = native_chat_terminal_status(&event);
+            let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
+            match event {
+                FromAgent::ManagedAuthorizationRequest { .. } => {
+                    // This embedded chat path has no authenticated renewal controller.
+                    return Err("Managed authorization requires a hosted controller".to_owned());
                 }
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_usage_state",
-                        "details": {
-                            "source": source,
-                            "usage": usage
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexCompatibility {
-                protocol_version,
-                resume,
-                steering,
-            } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_compatibility",
-                        "details": {
-                            "protocolVersion": protocol_version,
-                            "resume": resume,
-                            "steering": steering
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ResponseStart { .. } => {
-                response_started = true;
-                let message = composer_assistant_message(&assistant_text, &thinking_text, None);
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({ "type": "message_start", "message": message }),
-                )
-                .await?;
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "message_update",
-                        "message": message,
-                        "assistantMessageEvent": {
-                            "type": "start",
-                            "partial": message
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ResponseChunk {
-                content,
-                is_thinking,
-                ..
-            } => {
-                if !response_started {
+                FromAgent::Ready { .. }
+                | FromAgent::LocalAssistantContent { .. }
+                | FromAgent::ConversationSnapshot { .. }
+                | FromAgent::ModelChanged { .. }
+                | FromAgent::BoostChanged { .. }
+                | FromAgent::ModelChangeFailed { .. }
+                // Output accounting for Codex-native operations; carries no
+                // content for a chat client to render.
+                | FromAgent::CodexNativeOperation { .. }
+                | FromAgent::CodexNativeDecision { .. }
+                | FromAgent::CodexTransportReceipt { .. }
+                | FromAgent::SessionInfo { .. } => {}
+                FromAgent::ManagedGatewayReceipt {
+                    request_id,
+                    record_id,
+                    lineage_id,
+                    record_status,
+                    ..
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &managed_gateway_receipt_status(
+                            request_id,
+                            record_id,
+                            lineage_id,
+                            record_status,
+                        ),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexSessionState {
+                    state,
+                    thread_id,
+                    profile,
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_session_state",
+                            "details": {
+                                "state": state,
+                                "threadId": thread_id,
+                                "profile": profile
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexTurnState {
+                    state,
+                    thread_id,
+                    turn_id,
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_turn_state",
+                            "details": {
+                                "state": state,
+                                "threadId": thread_id,
+                                "turnId": turn_id
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexUsageState { source, usage } => {
+                    if usage.is_some() {
+                        last_usage = usage.clone();
+                    }
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_usage_state",
+                            "details": {
+                                "source": source,
+                                "usage": usage
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexCompatibility {
+                    protocol_version,
+                    resume,
+                    steering,
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_compatibility",
+                            "details": {
+                                "protocolVersion": protocol_version,
+                                "resume": resume,
+                                "steering": steering
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::ResponseStart { .. } => {
                     response_started = true;
                     let message = composer_assistant_message(&assistant_text, &thinking_text, None);
                     send_sse(
@@ -847,312 +834,441 @@ pub(crate) async fn handle_chat_endpoint(
                         &serde_json::json!({ "type": "message_start", "message": message }),
                     )
                     .await?;
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "message_update",
+                            "message": message,
+                            "assistantMessageEvent": {
+                                "type": "start",
+                                "partial": message
+                            }
+                        }),
+                    )
+                    .await?;
                 }
-                if is_thinking {
-                    if !thinking_started {
-                        thinking_started = true;
-                        let message =
-                            composer_assistant_message(&assistant_text, &thinking_text, None);
+                FromAgent::ResponseChunk {
+                    content,
+                    is_thinking,
+                    ..
+                } => {
+                    if !response_started {
+                        response_started = true;
+                        let message = composer_assistant_message(&assistant_text, &thinking_text, None);
                         send_sse(
                             &mut stream,
-                            &serde_json::json!({
-                                "type": "message_update",
-                                "message": message,
-                                "assistantMessageEvent": {
-                                    "type": "thinking_start",
-                                    "contentIndex": 0,
-                                    "partial": message
-                                }
-                            }),
+                            &serde_json::json!({ "type": "message_start", "message": message }),
                         )
                         .await?;
                     }
-                    thinking_text.push_str(&content);
-                    send_sse(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "message_update",
-                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
-                            "assistantMessageEvent": {
-                                "type": "thinking_delta",
-                                "contentIndex": 0,
-                                "delta": content
-                            }
-                        }),
-                    )
-                    .await?;
-                } else {
-                    assistant_text.push_str(&content);
-                    send_sse(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "message_update",
-                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
-                            "assistantMessageEvent": {
-                                "type": "text_delta",
-                                "contentIndex": 0,
-                                "delta": content
-                            }
-                        }),
-                    )
-                    .await?;
-                }
-            }
-            FromAgent::ToolCall {
-                call_id,
-                tool,
-                args,
-                requires_approval,
-                ..
-            } => {
-                tool_names.insert(call_id.clone(), tool.clone());
-                record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                // Gateway-handled session-messaging tools. The native runner is
-                // blocked on the tool-response channel (these definitions carry
-                // `requires_approval: true`), so answering here with a
-                // `ToolResult` supplies the outcome without the runner ever
-                // trying to execute an unknown tool. Tenancy is enforced inside
-                // the handler under this turn's AuthContext, and the sender is
-                // always this turn's session id, so the model cannot forge a
-                // different `from` session.
-                if is_session_messaging_tool(&tool) {
-                    let result = handle_session_messaging_tool_call(
-                        &state,
-                        &auth,
-                        session_id.as_deref(),
-                        turn_scope.as_deref(),
-                        &call_id,
-                        &tool,
-                        &args,
-                    )
-                    .await;
-                    send_sse(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "tool_execution_start",
-                            "toolCallId": call_id,
-                            "toolName": tool,
-                            "args": args
-                        }),
-                    )
-                    .await?;
-                    // `ExecutionSource::RemoteClient` keeps peer-authored text
-                    // (peer titles) inside the runner's untrusted-content
-                    // envelope. `FromAgent::ToolEnd` closes out the metadata.
-                    let _ = agent.tool_response_sender().send((
-                        call_id.clone(),
-                        true,
-                        Some(result),
-                        ExecutionSource::RemoteClient,
-                        None,
-                    ));
-                } else if client_tool_names.contains(&tool.to_lowercase()) {
-                    client_tool_call_ids.insert(call_id.clone());
-                    state
-                        .pending_tool_responses
-                        .lock()
-                        .await
-                        .insert(call_id.clone(), agent.tool_response_sender());
-                    if let Some(owner) =
-                        PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
-                    {
-                        state
-                            .pending_tool_response_sessions
-                            .lock()
-                            .await
-                            .insert(call_id.clone(), owner);
-                    }
-                    send_sse(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "tool_execution_start",
-                            "toolCallId": call_id,
-                            "toolName": tool,
-                            "args": args,
-                            "clientOwned": true
-                        }),
-                    )
-                    .await?;
-                } else if requires_approval {
-                    match approval_mode_for_session(&state, session_id.as_deref())
-                        .await
-                        .as_str()
-                    {
-                        "auto" => {
-                            let _ = agent.tool_response_sender().send((
-                                call_id.clone(),
-                                true,
-                                None,
-                                ExecutionSource::RemoteClient,
-                                None,
-                            ));
+                    if is_thinking {
+                        if !thinking_started {
+                            thinking_started = true;
+                            let message =
+                                composer_assistant_message(&assistant_text, &thinking_text, None);
                             send_sse(
                                 &mut stream,
                                 &serde_json::json!({
-                                    "type": "tool_execution_start",
-                                    "toolCallId": call_id,
-                                }),
-                            )
-                            .await?;
-                        }
-                        "fail" => {
-                            let _ = agent.tool_response_sender().send((
-                                call_id.clone(),
-                                false,
-                                None,
-                                ExecutionSource::RemoteClient,
-                                None,
-                            ));
-                            finish_tool_metadata(&mut assistant_tools, &call_id, false);
-                            send_sse(&mut stream, &approval_blocked_tool_event(&call_id, &tool))
-                                .await?;
-                        }
-                        _ => {
-                            state
-                                .pending_tool_responses
-                                .lock()
-                                .await
-                                .insert(call_id.clone(), agent.tool_response_sender());
-                            if let Some(owner) =
-                                PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
-                            {
-                                state
-                                    .pending_tool_response_sessions
-                                    .lock()
-                                    .await
-                                    .insert(call_id.clone(), owner);
-                            }
-                            send_sse(
-                                &mut stream,
-                                &serde_json::json!({
-                                    "type": "action_approval_required",
-                                    "request": {
-                                        "id": call_id,
-                                        "toolName": tool,
-                                        "args": args,
-                                        "reason": "Tool execution requires approval"
+                                    "type": "message_update",
+                                    "message": message,
+                                    "assistantMessageEvent": {
+                                        "type": "thinking_start",
+                                        "contentIndex": 0,
+                                        "partial": message
                                     }
                                 }),
                             )
                             .await?;
                         }
+                        thinking_text.push_str(&content);
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                                "assistantMessageEvent": {
+                                    "type": "thinking_delta",
+                                    "contentIndex": 0,
+                                    "delta": content
+                                }
+                            }),
+                        )
+                        .await?;
+                    } else {
+                        assistant_text.push_str(&content);
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                                "assistantMessageEvent": {
+                                    "type": "text_delta",
+                                    "contentIndex": 0,
+                                    "delta": content
+                                }
+                            }),
+                        )
+                        .await?;
                     }
-                } else {
+                }
+                FromAgent::ToolCall {
+                    call_id,
+                    tool,
+                    args,
+                    requires_approval,
+                    ..
+                } => {
+                    tool_names.insert(call_id.clone(), tool.clone());
+                    record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
+                    // Gateway-handled session-messaging tools. The native runner is
+                    // blocked on the tool-response channel (these definitions carry
+                    // `requires_approval: true`), so answering here with a
+                    // `ToolResult` supplies the outcome without the runner ever
+                    // trying to execute an unknown tool. Tenancy is enforced inside
+                    // the handler under this turn's AuthContext, and the sender is
+                    // always this turn's session id, so the model cannot forge a
+                    // different `from` session.
+                    if is_session_messaging_tool(&tool) {
+                        let result = handle_session_messaging_tool_call(
+                            &state,
+                            &auth,
+                            session_id.as_deref(),
+                            turn_scope.as_deref(),
+                            &call_id,
+                            &tool,
+                            &args,
+                        )
+                        .await;
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args
+                            }),
+                        )
+                        .await?;
+                        // `ExecutionSource::RemoteClient` keeps peer-authored text
+                        // (peer titles) inside the runner's untrusted-content
+                        // envelope. `FromAgent::ToolEnd` closes out the metadata.
+                        let _ = agent.tool_response_sender().send((
+                            call_id.clone(),
+                            true,
+                            Some(result),
+                            ExecutionSource::RemoteClient,
+                            None,
+                        ));
+                    } else if client_tool_names.contains(&tool.to_lowercase()) {
+                        client_tool_call_ids.insert(call_id.clone());
+                        pending_tool_call_ids.insert(call_id.clone());
+                        state
+                            .pending_tool_responses
+                            .lock()
+                            .await
+                            .insert(call_id.clone(), agent.tool_response_sender());
+                        if let Some(owner) =
+                            PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                        {
+                            state
+                                .pending_tool_response_sessions
+                                .lock()
+                                .await
+                                .insert(call_id.clone(), owner);
+                        }
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args,
+                                "clientOwned": true
+                            }),
+                        )
+                        .await?;
+                    } else if requires_approval {
+                        match approval_mode_for_session(&state, session_id.as_deref())
+                            .await
+                            .as_str()
+                        {
+                            "auto" => {
+                                let _ = agent.tool_response_sender().send((
+                                    call_id.clone(),
+                                    true,
+                                    None,
+                                    ExecutionSource::RemoteClient,
+                                    None,
+                                ));
+                                send_sse(
+                                    &mut stream,
+                                    &serde_json::json!({
+                                        "type": "tool_execution_start",
+                                        "toolCallId": call_id,
+                                    }),
+                                )
+                                .await?;
+                            }
+                            "fail" => {
+                                let _ = agent.tool_response_sender().send((
+                                    call_id.clone(),
+                                    false,
+                                    None,
+                                    ExecutionSource::RemoteClient,
+                                    None,
+                                ));
+                                finish_tool_metadata(&mut assistant_tools, &call_id, false);
+                                send_sse(&mut stream, &approval_blocked_tool_event(&call_id, &tool))
+                                    .await?;
+                            }
+                            _ => {
+                                pending_tool_call_ids.insert(call_id.clone());
+                                state
+                                    .pending_tool_responses
+                                    .lock()
+                                    .await
+                                    .insert(call_id.clone(), agent.tool_response_sender());
+                                if let Some(owner) =
+                                    PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                                {
+                                    state
+                                        .pending_tool_response_sessions
+                                        .lock()
+                                        .await
+                                        .insert(call_id.clone(), owner);
+                                }
+                                send_sse(
+                                    &mut stream,
+                                    &serde_json::json!({
+                                        "type": "action_approval_required",
+                                        "request": {
+                                            "id": call_id,
+                                            "toolName": tool,
+                                            "args": args,
+                                            "reason": "Tool execution requires approval"
+                                        }
+                                    }),
+                                )
+                                .await?;
+                            }
+                        }
+                    } else {
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+                FromAgent::ToolStart { call_id } => {
+                    update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
+                    let tool = tool_names
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
                     send_sse(
                         &mut stream,
                         &serde_json::json!({
                             "type": "tool_execution_start",
                             "toolCallId": call_id,
                             "toolName": tool,
-                            "args": args
+                            "args": {}
                         }),
                     )
                     .await?;
                 }
-            }
-            FromAgent::ToolStart { call_id } => {
-                update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
-                let tool = tool_names
-                    .get(&call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "tool".to_string());
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_start",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "args": {}
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ToolOutput { call_id, content } => {
-                let tool = tool_names
-                    .get(&call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "tool".to_string());
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_update",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "args": {},
-                        "partialResult": content
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ToolEnd {
-                call_id, success, ..
-            } => {
-                state.pending_tool_responses.lock().await.remove(&call_id);
-                state
-                    .pending_tool_response_sessions
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                state
-                    .completed_client_tool_results
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                finish_tool_metadata(&mut assistant_tools, &call_id, success);
-                let tool = tool_names
-                    .remove(&call_id)
-                    .unwrap_or_else(|| "tool".to_string());
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_end",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "result": { "success": success },
-                        "isError": !success
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::BatchStart { total } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "tool_batch_start",
-                        "details": { "total": total }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::BatchEnd {
-                total,
-                successes,
-                failures,
-            } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_batch_summary",
-                        "summary": format!("{successes}/{total} tools succeeded"),
-                        "summaryLabels": [],
-                        "toolCallIds": [],
-                        "toolNames": [],
-                        "callsSucceeded": successes,
-                        "callsFailed": failures
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::Error {
-                message,
-                fatal,
-                terminal,
-                ..
-            } => {
-                let request_ended = fatal || terminal;
-                if request_ended {
-                    let usage = last_usage.take();
+                FromAgent::ToolOutput { call_id, content } => {
+                    let tool = tool_names
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_update",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": {},
+                            "partialResult": content
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::ToolEnd {
+                    call_id, success, ..
+                } => {
+                    pending_tool_call_ids.remove(&call_id);
+                    state.pending_tool_responses.lock().await.remove(&call_id);
+                    state
+                        .pending_tool_response_sessions
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    state
+                        .completed_client_tool_results
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    finish_tool_metadata(&mut assistant_tools, &call_id, success);
+                    let tool = tool_names
+                        .remove(&call_id)
+                        .unwrap_or_else(|| "tool".to_string());
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_end",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "result": { "success": success },
+                            "isError": !success
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::BatchStart { total } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "tool_batch_start",
+                            "details": { "total": total }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::BatchEnd {
+                    total,
+                    successes,
+                    failures,
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_batch_summary",
+                            "summary": format!("{successes}/{total} tools succeeded"),
+                            "summaryLabels": [],
+                            "toolCallIds": [],
+                            "toolNames": [],
+                            "callsSucceeded": successes,
+                            "callsFailed": failures
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::Error {
+                    message,
+                    fatal,
+                    terminal,
+                    ..
+                } => {
+                    let request_ended = fatal || terminal;
+                    if request_ended {
+                        let usage = last_usage.take();
+                        if usage.is_some() {
+                            record_usage_entry(
+                                &state,
+                                session_id.as_deref(),
+                                &usage_provider,
+                                &usage_model,
+                                usage.as_ref(),
+                            )
+                            .await;
+                        }
+                    }
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({ "type": "error", "message": message }),
+                    )
+                    .await?;
+                    if request_ended {
+                        send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                        terminal_sent = true;
+                        break;
+                    }
+                }
+                FromAgent::Status { message } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": message,
+                            "details": {}
+                        }),
+                    )
+                    .await?;
+                }
+                // Local measurements are consumed by native telemetry, not the chat wire protocol.
+                FromAgent::StreamObservation { .. }
+                | FromAgent::RequestRetryObservation
+                | FromAgent::RequestContextPrepared { .. }
+                | FromAgent::OperationObservation { .. }
+                | FromAgent::TurnStarted
+                | FromAgent::RequestRetryScheduled { .. }
+                | FromAgent::ContextCalibration { .. }
+                | FromAgent::CompactionMeasured { .. } => {}
+                FromAgent::Compaction {
+                    summary,
+                    first_kept_entry_index,
+                    tokens_before,
+                    auto,
+                    custom_instructions,
+                    continuation,
+                    timestamp,
+                } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "compaction",
+                            "summary": summary,
+                            "firstKeptEntryIndex": first_kept_entry_index,
+                            "tokensBefore": tokens_before,
+                            "auto": auto,
+                            "customInstructions": custom_instructions,
+                            "continuation": continuation,
+                            "timestamp": timestamp
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::HookBlocked {
+                    call_id,
+                    tool,
+                    reason,
+                } => {
+                    pending_tool_call_ids.remove(&call_id);
+                    state.pending_tool_responses.lock().await.remove(&call_id);
+                    state
+                        .pending_tool_response_sessions
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    state
+                        .completed_client_tool_results
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    finish_tool_metadata(&mut assistant_tools, &call_id, false);
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_end",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "result": reason,
+                            "isError": true
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::SideQuestionStart { .. }
+                | FromAgent::SideQuestionChunk { .. }
+                | FromAgent::SideQuestionEnd { .. } => {}
+                FromAgent::ResponseEnd { usage, .. } => {
                     if usage.is_some() {
                         record_usage_entry(
                             &state,
@@ -1162,198 +1278,113 @@ pub(crate) async fn handle_chat_endpoint(
                             usage.as_ref(),
                         )
                         .await;
+                        last_usage = usage;
                     }
+                    response_started = false;
+                    thinking_started = false;
                 }
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({ "type": "error", "message": message }),
-                )
-                .await?;
-                if request_ended {
+                FromAgent::TurnCompleted { .. } => {
+                    debug_assert!(matches!(terminal_status, Some(Ok(()))));
+                    let client_tool_results =
+                        take_client_tool_results(&state, &client_tool_call_ids).await;
+                    finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
+                    let usage = last_usage.take();
+                    let message = composer_assistant_message_with_tools(
+                        &assistant_text,
+                        &thinking_text,
+                        usage,
+                        &assistant_tools,
+                    );
+                    record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({ "type": "message_end", "message": message }),
+                    )
+                    .await?;
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "turn_end",
+                            "message": message,
+                            "toolResults": []
+                        }),
+                    )
+                    .await?;
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "agent_end",
+                            "messages": [message],
+                            "stopReason": "stop"
+                        }),
+                    )
+                    .await?;
+                    send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    turn_completed_successfully = acknowledge_pending_peer_messages;
+                    break;
+                }
+                FromAgent::TurnInterrupted { reason, .. } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({ "type": "error", "message": reason }),
+                    )
+                    .await?;
+                    send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    break;
+                }
+                FromAgent::ProviderError { kind, message } => {
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "error",
+                            "message": message,
+                            "providerErrorKind": kind,
+                        }),
+                    )
+                    .await?;
                     send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
                     terminal_sent = true;
                     break;
                 }
             }
-            FromAgent::Status { message } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": message,
-                        "details": {}
-                    }),
-                )
-                .await?;
-            }
-            // Local measurements are consumed by native telemetry, not the chat wire protocol.
-            FromAgent::StreamObservation { .. }
-            | FromAgent::RequestRetryObservation
-            | FromAgent::CompactionMeasured { .. } => {}
-            FromAgent::Compaction {
-                summary,
-                first_kept_entry_index,
-                tokens_before,
-                auto,
-                custom_instructions,
-                continuation,
-                timestamp,
-            } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "compaction",
-                        "summary": summary,
-                        "firstKeptEntryIndex": first_kept_entry_index,
-                        "tokensBefore": tokens_before,
-                        "auto": auto,
-                        "customInstructions": custom_instructions,
-                        "continuation": continuation,
-                        "timestamp": timestamp
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::HookBlocked {
-                call_id,
-                tool,
-                reason,
-            } => {
-                state.pending_tool_responses.lock().await.remove(&call_id);
-                state
-                    .pending_tool_response_sessions
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                state
-                    .completed_client_tool_results
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                finish_tool_metadata(&mut assistant_tools, &call_id, false);
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_end",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "result": reason,
-                        "isError": true
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::SideQuestionStart { .. }
-            | FromAgent::SideQuestionChunk { .. }
-            | FromAgent::SideQuestionEnd { .. } => {}
-            FromAgent::ResponseEnd { usage, .. } => {
-                if usage.is_some() {
-                    record_usage_entry(
-                        &state,
-                        session_id.as_deref(),
-                        &usage_provider,
-                        &usage_model,
-                        usage.as_ref(),
-                    )
-                    .await;
-                    last_usage = usage;
-                }
-                response_started = false;
-                thinking_started = false;
-            }
-            FromAgent::TurnCompleted { .. } => {
-                debug_assert!(matches!(terminal_status, Some(Ok(()))));
-                let client_tool_results =
-                    take_client_tool_results(&state, &client_tool_call_ids).await;
-                finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
-                let usage = last_usage.take();
-                let message = composer_assistant_message_with_tools(
-                    &assistant_text,
-                    &thinking_text,
-                    usage,
-                    &assistant_tools,
-                );
-                record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({ "type": "message_end", "message": message }),
-                )
-                .await?;
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "turn_end",
-                        "message": message,
-                        "toolResults": []
-                    }),
-                )
-                .await?;
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "agent_end",
-                        "messages": [message],
-                        "stopReason": "stop"
-                    }),
-                )
-                .await?;
-                send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                turn_completed_successfully = acknowledge_pending_peer_messages;
-                break;
-            }
-            FromAgent::TurnInterrupted { reason, .. } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({ "type": "error", "message": reason }),
-                )
-                .await?;
-                send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                break;
-            }
-            FromAgent::ProviderError { kind, message } => {
-                send_sse(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "error",
-                        "message": message,
-                        "providerErrorKind": kind,
-                    }),
-                )
-                .await?;
-                send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                break;
-            }
         }
-    }
 
-    if !terminal_sent {
-        send_sse(
-            &mut stream,
-            &serde_json::json!({
-                "type": "error",
-                "message": "Agent stream closed before response completed"
-            }),
-        )
-        .await?;
-        send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-    }
+        if !terminal_sent {
+            send_sse(
+                &mut stream,
+                &serde_json::json!({
+                    "type": "error",
+                    "message": "Agent stream closed before response completed"
+                }),
+            )
+            .await?;
+            send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        }
 
-    if turn_completed_successfully {
-        acknowledge_peer_messages(
-            &state,
-            session_id.as_deref(),
-            &auth,
-            &pending_peer_message_ids,
-        )
-        .await;
-    }
+        if turn_completed_successfully {
+            acknowledge_peer_messages(
+                &state,
+                session_id.as_deref(),
+                &auth,
+                &pending_peer_message_ids,
+            )
+            .await;
+        }
 
-    let _ = stream.shutdown().await;
-    cleanup_prepared_attachments(prepared_attachments).await;
-    Ok(())
+        let _ = stream.shutdown().await;
+        Ok(())
+    }
+    .await;
+    finish_embedded_chat(
+        &state,
+        &pending_tool_call_ids,
+        agent,
+        prepared_attachments,
+        outcome,
+    )
+    .await
 }
 
 pub(crate) async fn handle_chat_websocket_endpoint(
@@ -1581,8 +1612,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         ..NativeAgentConfig::default()
     };
 
-    let (agent, mut events) = match NativeAgent::new_with_tools(config, client_tools) {
-        Ok(agent) => agent,
+    let (agent, mut events) = match EmbeddedAgentBuilder::from_config(config)
+        .external_tools(client_tools)
+        .start()
+    {
+        Ok(session) => session.into_parts(),
         Err(error) => {
             send_ws_json(
                 &mut stream,
@@ -1597,478 +1631,588 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         }
     };
 
-    if let Some(session_id) = session_id.clone() {
-        agent
-            .set_session_context(Some(session_id), "chat", false)
-            .map_err(|error| error.to_string())?;
-    }
+    // See the SSE handler above. Both transports must revoke only the
+    // registrations created by this turn before its actor is cancelled.
+    let mut pending_tool_call_ids = HashSet::new();
+    let outcome = async {
+        if let Some(session_id) = session_id.clone() {
+            agent
+                .set_session_context(Some(session_id), "chat")
+                .map_err(|error| error.to_string())?;
+        }
 
-    send_ws_json(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
-    send_ws_json(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
 
-    if let Err(error) = agent
-        .prompt(prompt, prepared_attachments.paths.clone())
-        .await
-    {
-        send_ws_json(
-            &mut stream,
-            &serde_json::json!({ "type": "error", "message": error.to_string() }),
-        )
-        .await?;
-        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-        send_ws_close(&mut stream).await?;
-        let _ = stream.shutdown().await;
-        cleanup_prepared_attachments(prepared_attachments).await;
-        return Ok(());
-    }
-    let mut assistant_text = String::new();
-    let mut thinking_text = String::new();
-    let mut last_usage = None;
-    let mut response_started = false;
-    let mut thinking_started = false;
-    let mut terminal_sent = false;
-    let mut turn_completed_successfully = false;
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut assistant_tools: Vec<Value> = Vec::new();
-    let mut client_tool_call_ids: HashSet<String> = HashSet::new();
+        if let Err(error) = agent
+            .prompt_with_attachments(prompt, prepared_attachments.paths.clone())
+            .await
+        {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error.to_string() }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+        let mut assistant_text = String::new();
+        let mut thinking_text = String::new();
+        let mut last_usage = None;
+        let mut response_started = false;
+        let mut thinking_started = false;
+        let mut terminal_sent = false;
+        let mut turn_completed_successfully = false;
+        let mut tool_names: HashMap<String, String> = HashMap::new();
+        let mut assistant_tools: Vec<Value> = Vec::new();
+        let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
-    while let Some(event) = events.recv().await {
-        let terminal_status = native_chat_terminal_status(&event);
-        let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
-        match event {
-            FromAgent::Ready { .. }
-            | FromAgent::LocalAssistantContent { .. }
-            | FromAgent::ConversationSnapshot { .. }
-            | FromAgent::ModelChanged { .. }
-            | FromAgent::BoostChanged { .. }
-            | FromAgent::ModelChangeFailed { .. }
-            // Output accounting for Codex-native operations; carries no
-            // content for a chat client to render.
-            | FromAgent::CodexNativeOperation { .. }
-            | FromAgent::CodexNativeDecision { .. }
-            | FromAgent::CodexTransportReceipt { .. }
-            | FromAgent::SessionInfo { .. } => {}
-            FromAgent::ManagedGatewayReceipt {
-                request_id,
-                record_id,
-                lineage_id,
-                record_status,
-                ..
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &managed_gateway_receipt_status(
-                        request_id,
-                        record_id,
-                        lineage_id,
-                        record_status,
-                    ),
-                )
-                .await?;
-            }
-            FromAgent::CodexSessionState {
-                state,
-                thread_id,
-                profile,
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_session_state",
-                        "details": {
-                            "state": state,
-                            "threadId": thread_id,
-                            "profile": profile
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexTurnState {
-                state,
-                thread_id,
-                turn_id,
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_turn_state",
-                        "details": {
-                            "state": state,
-                            "threadId": thread_id,
-                            "turnId": turn_id
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexUsageState { source, usage } => {
-                if usage.is_some() {
-                    last_usage = usage.clone();
+        while let Some(event) = events.recv().await {
+            let terminal_status = native_chat_terminal_status(&event);
+            let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
+            match event {
+                FromAgent::ManagedAuthorizationRequest { .. } => {
+                    // This embedded chat path has no authenticated renewal controller.
+                    return Err("Managed authorization requires a hosted controller".to_owned());
                 }
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_usage_state",
-                        "details": {
-                            "source": source,
-                            "usage": usage
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::CodexCompatibility {
-                protocol_version,
-                resume,
-                steering,
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "codex_compatibility",
-                        "details": {
-                            "protocolVersion": protocol_version,
-                            "resume": resume,
-                            "steering": steering
-                        }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ResponseStart { .. } => {
-                response_started = true;
-                let message = composer_assistant_message(&assistant_text, &thinking_text, None);
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "message_update",
-                        "message": message,
-                        "assistantMessageEvent": { "type": "start", "partial": message }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ResponseChunk {
-                content,
-                is_thinking,
-                ..
-            } => {
-                if !response_started {
+                FromAgent::Ready { .. }
+                | FromAgent::LocalAssistantContent { .. }
+                | FromAgent::ConversationSnapshot { .. }
+                | FromAgent::ModelChanged { .. }
+                | FromAgent::BoostChanged { .. }
+                | FromAgent::ModelChangeFailed { .. }
+                // Output accounting for Codex-native operations; carries no
+                // content for a chat client to render.
+                | FromAgent::CodexNativeOperation { .. }
+                | FromAgent::CodexNativeDecision { .. }
+                | FromAgent::CodexTransportReceipt { .. }
+                | FromAgent::SessionInfo { .. } => {}
+                FromAgent::ManagedGatewayReceipt {
+                    request_id,
+                    record_id,
+                    lineage_id,
+                    record_status,
+                    ..
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &managed_gateway_receipt_status(
+                            request_id,
+                            record_id,
+                            lineage_id,
+                            record_status,
+                        ),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexSessionState {
+                    state,
+                    thread_id,
+                    profile,
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_session_state",
+                            "details": {
+                                "state": state,
+                                "threadId": thread_id,
+                                "profile": profile
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexTurnState {
+                    state,
+                    thread_id,
+                    turn_id,
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_turn_state",
+                            "details": {
+                                "state": state,
+                                "threadId": thread_id,
+                                "turnId": turn_id
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexUsageState { source, usage } => {
+                    if usage.is_some() {
+                        last_usage = usage.clone();
+                    }
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_usage_state",
+                            "details": {
+                                "source": source,
+                                "usage": usage
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::CodexCompatibility {
+                    protocol_version,
+                    resume,
+                    steering,
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "codex_compatibility",
+                            "details": {
+                                "protocolVersion": protocol_version,
+                                "resume": resume,
+                                "steering": steering
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::ResponseStart { .. } => {
                     response_started = true;
-                }
-                if is_thinking {
-                    if !thinking_started {
-                        thinking_started = true;
-                        let message =
-                            composer_assistant_message(&assistant_text, &thinking_text, None);
-                        send_ws_json(
-                            &mut stream,
-                            &serde_json::json!({
-                                "type": "message_update",
-                                "message": message,
-                                "assistantMessageEvent": {
-                                    "type": "thinking_start",
-                                    "contentIndex": 0,
-                                    "partial": message
-                                }
-                            }),
-                        )
-                        .await?;
-                    }
-                    thinking_text.push_str(&content);
+                    let message = composer_assistant_message(&assistant_text, &thinking_text, None);
                     send_ws_json(
                         &mut stream,
                         &serde_json::json!({
                             "type": "message_update",
-                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
-                            "assistantMessageEvent": {
-                                "type": "thinking_delta",
-                                "contentIndex": 0,
-                                "delta": content
-                            }
-                        }),
-                    )
-                    .await?;
-                } else {
-                    assistant_text.push_str(&content);
-                    send_ws_json(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "message_update",
-                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
-                            "assistantMessageEvent": {
-                                "type": "text_delta",
-                                "contentIndex": 0,
-                                "delta": content
-                            }
+                            "message": message,
+                            "assistantMessageEvent": { "type": "start", "partial": message }
                         }),
                     )
                     .await?;
                 }
-            }
-            FromAgent::ToolCall {
-                call_id,
-                tool,
-                args,
-                requires_approval,
-                ..
-            } => {
-                tool_names.insert(call_id.clone(), tool.clone());
-                record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                // Gateway-handled session-messaging tools. The native runner is
-                // blocked on the tool-response channel (these definitions carry
-                // `requires_approval: true`), so answering here with a
-                // `ToolResult` supplies the outcome without the runner ever
-                // trying to execute an unknown tool. Tenancy is enforced inside
-                // the handler under this turn's AuthContext, and the sender is
-                // always this turn's session id, so the model cannot forge a
-                // different `from` session.
-                if is_session_messaging_tool(&tool) {
-                    let result = handle_session_messaging_tool_call(
-                        &state,
-                        &auth,
-                        session_id.as_deref(),
-                        turn_scope.as_deref(),
-                        &call_id,
-                        &tool,
-                        &args,
-                    )
-                    .await;
-                    send_ws_json(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "tool_execution_start",
-                            "toolCallId": call_id,
-                            "toolName": tool,
-                            "args": args
-                        }),
-                    )
-                    .await?;
-                    // `ExecutionSource::RemoteClient` keeps peer-authored text
-                    // (peer titles) inside the runner's untrusted-content
-                    // envelope. `FromAgent::ToolEnd` closes out the metadata.
-                    let _ = agent.tool_response_sender().send((
-                        call_id.clone(),
-                        true,
-                        Some(result),
-                        ExecutionSource::RemoteClient,
-                        None,
-                    ));
-                } else if client_tool_names.contains(&tool.to_lowercase()) {
-                    client_tool_call_ids.insert(call_id.clone());
-                    state
-                        .pending_tool_responses
-                        .lock()
-                        .await
-                        .insert(call_id.clone(), agent.tool_response_sender());
-                    if let Some(owner) =
-                        PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
-                    {
-                        state
-                            .pending_tool_response_sessions
-                            .lock()
-                            .await
-                            .insert(call_id.clone(), owner);
+                FromAgent::ResponseChunk {
+                    content,
+                    is_thinking,
+                    ..
+                } => {
+                    if !response_started {
+                        response_started = true;
                     }
-                    send_ws_json(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "tool_execution_start",
-                            "toolCallId": call_id,
-                            "toolName": tool,
-                            "args": args,
-                            "clientOwned": true
-                        }),
-                    )
-                    .await?;
-                } else if requires_approval {
-                    match approval_mode_for_session(&state, session_id.as_deref())
-                        .await
-                        .as_str()
-                    {
-                        "auto" => {
-                            let _ = agent.tool_response_sender().send((
-                                call_id.clone(),
-                                true,
-                                None,
-                                ExecutionSource::RemoteClient,
-                                None,
-                            ));
+                    if is_thinking {
+                        if !thinking_started {
+                            thinking_started = true;
+                            let message =
+                                composer_assistant_message(&assistant_text, &thinking_text, None);
                             send_ws_json(
                                 &mut stream,
                                 &serde_json::json!({
-                                    "type": "tool_execution_start",
-                                    "toolCallId": call_id,
-                                }),
-                            )
-                            .await?;
-                        }
-                        "fail" => {
-                            let _ = agent.tool_response_sender().send((
-                                call_id.clone(),
-                                false,
-                                None,
-                                ExecutionSource::RemoteClient,
-                                None,
-                            ));
-                            finish_tool_metadata(&mut assistant_tools, &call_id, false);
-                            send_ws_json(
-                                &mut stream,
-                                &approval_blocked_tool_event(&call_id, &tool),
-                            )
-                            .await?;
-                        }
-                        _ => {
-                            state
-                                .pending_tool_responses
-                                .lock()
-                                .await
-                                .insert(call_id.clone(), agent.tool_response_sender());
-                            if let Some(owner) =
-                                PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
-                            {
-                                state
-                                    .pending_tool_response_sessions
-                                    .lock()
-                                    .await
-                                    .insert(call_id.clone(), owner);
-                            }
-                            send_ws_json(
-                                &mut stream,
-                                &serde_json::json!({
-                                    "type": "action_approval_required",
-                                    "request": {
-                                        "id": call_id,
-                                        "toolName": tool,
-                                        "args": args,
-                                        "reason": "Tool execution requires approval"
+                                    "type": "message_update",
+                                    "message": message,
+                                    "assistantMessageEvent": {
+                                        "type": "thinking_start",
+                                        "contentIndex": 0,
+                                        "partial": message
                                     }
                                 }),
                             )
                             .await?;
                         }
+                        thinking_text.push_str(&content);
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                                "assistantMessageEvent": {
+                                    "type": "thinking_delta",
+                                    "contentIndex": 0,
+                                    "delta": content
+                                }
+                            }),
+                        )
+                        .await?;
+                    } else {
+                        assistant_text.push_str(&content);
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                                "assistantMessageEvent": {
+                                    "type": "text_delta",
+                                    "contentIndex": 0,
+                                    "delta": content
+                                }
+                            }),
+                        )
+                        .await?;
                     }
-                } else {
+                }
+                FromAgent::ToolCall {
+                    call_id,
+                    tool,
+                    args,
+                    requires_approval,
+                    ..
+                } => {
+                    tool_names.insert(call_id.clone(), tool.clone());
+                    record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
+                    // Gateway-handled session-messaging tools. The native runner is
+                    // blocked on the tool-response channel (these definitions carry
+                    // `requires_approval: true`), so answering here with a
+                    // `ToolResult` supplies the outcome without the runner ever
+                    // trying to execute an unknown tool. Tenancy is enforced inside
+                    // the handler under this turn's AuthContext, and the sender is
+                    // always this turn's session id, so the model cannot forge a
+                    // different `from` session.
+                    if is_session_messaging_tool(&tool) {
+                        let result = handle_session_messaging_tool_call(
+                            &state,
+                            &auth,
+                            session_id.as_deref(),
+                            turn_scope.as_deref(),
+                            &call_id,
+                            &tool,
+                            &args,
+                        )
+                        .await;
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args
+                            }),
+                        )
+                        .await?;
+                        // `ExecutionSource::RemoteClient` keeps peer-authored text
+                        // (peer titles) inside the runner's untrusted-content
+                        // envelope. `FromAgent::ToolEnd` closes out the metadata.
+                        let _ = agent.tool_response_sender().send((
+                            call_id.clone(),
+                            true,
+                            Some(result),
+                            ExecutionSource::RemoteClient,
+                            None,
+                        ));
+                    } else if client_tool_names.contains(&tool.to_lowercase()) {
+                        client_tool_call_ids.insert(call_id.clone());
+                        pending_tool_call_ids.insert(call_id.clone());
+                        state
+                            .pending_tool_responses
+                            .lock()
+                            .await
+                            .insert(call_id.clone(), agent.tool_response_sender());
+                        if let Some(owner) =
+                            PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                        {
+                            state
+                                .pending_tool_response_sessions
+                                .lock()
+                                .await
+                                .insert(call_id.clone(), owner);
+                        }
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args,
+                                "clientOwned": true
+                            }),
+                        )
+                        .await?;
+                    } else if requires_approval {
+                        match approval_mode_for_session(&state, session_id.as_deref())
+                            .await
+                            .as_str()
+                        {
+                            "auto" => {
+                                let _ = agent.tool_response_sender().send((
+                                    call_id.clone(),
+                                    true,
+                                    None,
+                                    ExecutionSource::RemoteClient,
+                                    None,
+                                ));
+                                send_ws_json(
+                                    &mut stream,
+                                    &serde_json::json!({
+                                        "type": "tool_execution_start",
+                                        "toolCallId": call_id,
+                                    }),
+                                )
+                                .await?;
+                            }
+                            "fail" => {
+                                let _ = agent.tool_response_sender().send((
+                                    call_id.clone(),
+                                    false,
+                                    None,
+                                    ExecutionSource::RemoteClient,
+                                    None,
+                                ));
+                                finish_tool_metadata(&mut assistant_tools, &call_id, false);
+                                send_ws_json(
+                                    &mut stream,
+                                    &approval_blocked_tool_event(&call_id, &tool),
+                                )
+                                .await?;
+                            }
+                            _ => {
+                                pending_tool_call_ids.insert(call_id.clone());
+                                state
+                                    .pending_tool_responses
+                                    .lock()
+                                    .await
+                                    .insert(call_id.clone(), agent.tool_response_sender());
+                                if let Some(owner) =
+                                    PendingToolResponseOwner::for_request(session_id.as_deref(), &auth)
+                                {
+                                    state
+                                        .pending_tool_response_sessions
+                                        .lock()
+                                        .await
+                                        .insert(call_id.clone(), owner);
+                                }
+                                send_ws_json(
+                                    &mut stream,
+                                    &serde_json::json!({
+                                        "type": "action_approval_required",
+                                        "request": {
+                                            "id": call_id,
+                                            "toolName": tool,
+                                            "args": args,
+                                            "reason": "Tool execution requires approval"
+                                        }
+                                    }),
+                                )
+                                .await?;
+                            }
+                        }
+                    } else {
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "tool_execution_start",
+                                "toolCallId": call_id,
+                                "toolName": tool,
+                                "args": args
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+                FromAgent::ToolStart { call_id } => {
+                    update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
+                    let tool = tool_names
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
                     send_ws_json(
                         &mut stream,
                         &serde_json::json!({
                             "type": "tool_execution_start",
                             "toolCallId": call_id,
                             "toolName": tool,
-                            "args": args
+                            "args": {}
                         }),
                     )
                     .await?;
                 }
-            }
-            FromAgent::ToolStart { call_id } => {
-                update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
-                let tool = tool_names
-                    .get(&call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "tool".to_string());
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_start",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "args": {}
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ToolOutput { call_id, content } => {
-                let tool = tool_names
-                    .get(&call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "tool".to_string());
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_update",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "args": {},
-                        "partialResult": content
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::ToolEnd {
-                call_id, success, ..
-            } => {
-                state.pending_tool_responses.lock().await.remove(&call_id);
-                state
-                    .pending_tool_response_sessions
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                state
-                    .completed_client_tool_results
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                finish_tool_metadata(&mut assistant_tools, &call_id, success);
-                let tool = tool_names
-                    .remove(&call_id)
-                    .unwrap_or_else(|| "tool".to_string());
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_end",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "result": { "success": success },
-                        "isError": !success
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::BatchStart { total } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": "tool_batch_start",
-                        "details": { "total": total }
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::BatchEnd {
-                total,
-                successes,
-                failures,
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_batch_summary",
-                        "summary": format!("{successes}/{total} tools succeeded"),
-                        "summaryLabels": [],
-                        "toolCallIds": [],
-                        "toolNames": [],
-                        "callsSucceeded": successes,
-                        "callsFailed": failures
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::Error {
-                message,
-                fatal,
-                terminal,
-                ..
-            } => {
-                let request_ended = fatal || terminal;
-                if request_ended {
-                    let usage = last_usage.take();
+                FromAgent::ToolOutput { call_id, content } => {
+                    let tool = tool_names
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_update",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": {},
+                            "partialResult": content
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::ToolEnd {
+                    call_id, success, ..
+                } => {
+                    pending_tool_call_ids.remove(&call_id);
+                    state.pending_tool_responses.lock().await.remove(&call_id);
+                    state
+                        .pending_tool_response_sessions
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    state
+                        .completed_client_tool_results
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    finish_tool_metadata(&mut assistant_tools, &call_id, success);
+                    let tool = tool_names
+                        .remove(&call_id)
+                        .unwrap_or_else(|| "tool".to_string());
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_end",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "result": { "success": success },
+                            "isError": !success
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::BatchStart { total } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": "tool_batch_start",
+                            "details": { "total": total }
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::BatchEnd {
+                    total,
+                    successes,
+                    failures,
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_batch_summary",
+                            "summary": format!("{successes}/{total} tools succeeded"),
+                            "summaryLabels": [],
+                            "toolCallIds": [],
+                            "toolNames": [],
+                            "callsSucceeded": successes,
+                            "callsFailed": failures
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::Error {
+                    message,
+                    fatal,
+                    terminal,
+                    ..
+                } => {
+                    let request_ended = fatal || terminal;
+                    if request_ended {
+                        let usage = last_usage.take();
+                        if usage.is_some() {
+                            record_usage_entry(
+                                &state,
+                                session_id.as_deref(),
+                                &usage_provider,
+                                &usage_model,
+                                usage.as_ref(),
+                            )
+                            .await;
+                        }
+                    }
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({ "type": "error", "message": message }),
+                    )
+                    .await?;
+                    if request_ended {
+                        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                        terminal_sent = true;
+                        break;
+                    }
+                }
+                FromAgent::Status { message } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "status",
+                            "status": message,
+                            "details": {}
+                        }),
+                    )
+                    .await?;
+                }
+                // Local measurements are consumed by native telemetry, not the chat wire protocol.
+                FromAgent::StreamObservation { .. }
+                | FromAgent::RequestRetryObservation
+                | FromAgent::RequestContextPrepared { .. }
+                | FromAgent::OperationObservation { .. }
+                | FromAgent::TurnStarted
+                | FromAgent::RequestRetryScheduled { .. }
+                | FromAgent::ContextCalibration { .. }
+                | FromAgent::CompactionMeasured { .. } => {}
+                FromAgent::Compaction {
+                    summary,
+                    first_kept_entry_index,
+                    tokens_before,
+                    auto,
+                    custom_instructions,
+                    continuation,
+                    timestamp,
+                } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "compaction",
+                            "summary": summary,
+                            "firstKeptEntryIndex": first_kept_entry_index,
+                            "tokensBefore": tokens_before,
+                            "auto": auto,
+                            "customInstructions": custom_instructions,
+                            "continuation": continuation,
+                            "timestamp": timestamp
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::HookBlocked {
+                    call_id,
+                    tool,
+                    reason,
+                } => {
+                    pending_tool_call_ids.remove(&call_id);
+                    state.pending_tool_responses.lock().await.remove(&call_id);
+                    state
+                        .pending_tool_response_sessions
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    state
+                        .completed_client_tool_results
+                        .lock()
+                        .await
+                        .remove(&call_id);
+                    finish_tool_metadata(&mut assistant_tools, &call_id, false);
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_end",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "result": reason,
+                            "isError": true
+                        }),
+                    )
+                    .await?;
+                }
+                FromAgent::SideQuestionStart { .. }
+                | FromAgent::SideQuestionChunk { .. }
+                | FromAgent::SideQuestionEnd { .. } => {}
+                FromAgent::ResponseEnd { usage, .. } => {
                     if usage.is_some() {
                         record_usage_entry(
                             &state,
@@ -2078,190 +2222,170 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                             usage.as_ref(),
                         )
                         .await;
+                        last_usage = usage;
                     }
+                    response_started = false;
+                    thinking_started = false;
                 }
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({ "type": "error", "message": message }),
-                )
-                .await?;
-                if request_ended {
+                FromAgent::TurnCompleted { .. } => {
+                    debug_assert!(matches!(terminal_status, Some(Ok(()))));
+                    let client_tool_results =
+                        take_client_tool_results(&state, &client_tool_call_ids).await;
+                    finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
+                    let usage = last_usage.take();
+                    let message = composer_assistant_message_with_tools(
+                        &assistant_text,
+                        &thinking_text,
+                        usage,
+                        &assistant_tools,
+                    );
+                    record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({ "type": "message_end", "message": message }),
+                    )
+                    .await?;
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "agent_end",
+                            "messages": [message],
+                            "stopReason": "stop"
+                        }),
+                    )
+                    .await?;
+                    send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    turn_completed_successfully = acknowledge_pending_peer_messages;
+                    break;
+                }
+                FromAgent::TurnInterrupted { reason, .. } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({ "type": "error", "message": reason }),
+                    )
+                    .await?;
+                    send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    break;
+                }
+                FromAgent::ProviderError { kind, message } => {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "error",
+                            "message": message,
+                            "providerErrorKind": kind,
+                        }),
+                    )
+                    .await?;
                     send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
                     terminal_sent = true;
                     break;
                 }
             }
-            FromAgent::Status { message } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "status",
-                        "status": message,
-                        "details": {}
-                    }),
-                )
-                .await?;
-            }
-            // Local measurements are consumed by native telemetry, not the chat wire protocol.
-            FromAgent::StreamObservation { .. }
-            | FromAgent::RequestRetryObservation
-            | FromAgent::CompactionMeasured { .. } => {}
-            FromAgent::Compaction {
-                summary,
-                first_kept_entry_index,
-                tokens_before,
-                auto,
-                custom_instructions,
-                continuation,
-                timestamp,
-            } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "compaction",
-                        "summary": summary,
-                        "firstKeptEntryIndex": first_kept_entry_index,
-                        "tokensBefore": tokens_before,
-                        "auto": auto,
-                        "customInstructions": custom_instructions,
-                        "continuation": continuation,
-                        "timestamp": timestamp
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::HookBlocked {
-                call_id,
-                tool,
-                reason,
-            } => {
-                state.pending_tool_responses.lock().await.remove(&call_id);
-                state
-                    .pending_tool_response_sessions
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                state
-                    .completed_client_tool_results
-                    .lock()
-                    .await
-                    .remove(&call_id);
-                finish_tool_metadata(&mut assistant_tools, &call_id, false);
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "tool_execution_end",
-                        "toolCallId": call_id,
-                        "toolName": tool,
-                        "result": reason,
-                        "isError": true
-                    }),
-                )
-                .await?;
-            }
-            FromAgent::SideQuestionStart { .. }
-            | FromAgent::SideQuestionChunk { .. }
-            | FromAgent::SideQuestionEnd { .. } => {}
-            FromAgent::ResponseEnd { usage, .. } => {
-                if usage.is_some() {
-                    record_usage_entry(
-                        &state,
-                        session_id.as_deref(),
-                        &usage_provider,
-                        &usage_model,
-                        usage.as_ref(),
-                    )
-                    .await;
-                    last_usage = usage;
-                }
-                response_started = false;
-                thinking_started = false;
-            }
-            FromAgent::TurnCompleted { .. } => {
-                debug_assert!(matches!(terminal_status, Some(Ok(()))));
-                let client_tool_results =
-                    take_client_tool_results(&state, &client_tool_call_ids).await;
-                finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
-                let usage = last_usage.take();
-                let message = composer_assistant_message_with_tools(
-                    &assistant_text,
-                    &thinking_text,
-                    usage,
-                    &assistant_tools,
-                );
-                record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({ "type": "message_end", "message": message }),
-                )
-                .await?;
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "agent_end",
-                        "messages": [message],
-                        "stopReason": "stop"
-                    }),
-                )
-                .await?;
-                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                turn_completed_successfully = acknowledge_pending_peer_messages;
-                break;
-            }
-            FromAgent::TurnInterrupted { reason, .. } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({ "type": "error", "message": reason }),
-                )
-                .await?;
-                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                break;
-            }
-            FromAgent::ProviderError { kind, message } => {
-                send_ws_json(
-                    &mut stream,
-                    &serde_json::json!({
-                        "type": "error",
-                        "message": message,
-                        "providerErrorKind": kind,
-                    }),
-                )
-                .await?;
-                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
-                terminal_sent = true;
-                break;
-            }
         }
+
+        if !terminal_sent {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({
+                    "type": "error",
+                    "message": "Agent stream closed before response completed"
+                }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        }
+
+        if turn_completed_successfully {
+            acknowledge_peer_messages(
+                &state,
+                session_id.as_deref(),
+                &auth,
+                &pending_peer_message_ids,
+            )
+            .await;
+        }
+
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        Ok(())
+    }
+    .await;
+    finish_embedded_chat(
+        &state,
+        &pending_tool_call_ids,
+        agent,
+        prepared_attachments,
+        outcome,
+    )
+    .await
+}
+
+// Run the cleanup barrier on successful completion and every post-start error,
+// including a failed SSE/WebSocket write. Attachment files remain available to
+// the actor until its active work and background processes have stopped.
+async fn finish_embedded_chat(
+    state: &AppState,
+    pending_tool_call_ids: &HashSet<String>,
+    agent: EmbeddedAgent,
+    attachments: PreparedAttachments,
+    outcome: Result<(), String>,
+) -> Result<(), String> {
+    clear_pending_tool_response_entries(state, pending_tool_call_ids).await;
+    finish_embedded_agent(agent, attachments, outcome).await
+}
+
+async fn finish_embedded_agent(
+    agent: EmbeddedAgent,
+    attachments: PreparedAttachments,
+    outcome: Result<(), String>,
+) -> Result<(), String> {
+    agent.shutdown().await;
+    cleanup_prepared_attachments(attachments).await;
+    outcome
+}
+
+async fn clear_pending_tool_response_entries(
+    state: &AppState,
+    pending_tool_call_ids: &HashSet<String>,
+) {
+    clear_pending_tool_response_maps(
+        state.pending_tool_responses.as_ref(),
+        state.pending_tool_response_sessions.as_ref(),
+        state.completed_client_tool_results.as_ref(),
+        pending_tool_call_ids,
+    )
+    .await;
+}
+
+async fn clear_pending_tool_response_maps(
+    pending_tool_responses: &Mutex<HashMap<String, PendingToolResponseSender>>,
+    pending_tool_response_sessions: &Mutex<HashMap<String, PendingToolResponseOwner>>,
+    completed_client_tool_results: &Mutex<HashMap<String, bool>>,
+    pending_tool_call_ids: &HashSet<String>,
+) {
+    if pending_tool_call_ids.is_empty() {
+        return;
     }
 
-    if !terminal_sent {
-        send_ws_json(
-            &mut stream,
-            &serde_json::json!({
-                "type": "error",
-                "message": "Agent stream closed before response completed"
-            }),
-        )
-        .await?;
-        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+    let mut pending = pending_tool_responses.lock().await;
+    for call_id in pending_tool_call_ids {
+        pending.remove(call_id);
     }
+    drop(pending);
 
-    if turn_completed_successfully {
-        acknowledge_peer_messages(
-            &state,
-            session_id.as_deref(),
-            &auth,
-            &pending_peer_message_ids,
-        )
-        .await;
+    let mut owners = pending_tool_response_sessions.lock().await;
+    for call_id in pending_tool_call_ids {
+        owners.remove(call_id);
     }
+    drop(owners);
 
-    send_ws_close(&mut stream).await?;
-    let _ = stream.shutdown().await;
-    cleanup_prepared_attachments(prepared_attachments).await;
-    Ok(())
+    let mut completed = completed_client_tool_results.lock().await;
+    for call_id in pending_tool_call_ids {
+        completed.remove(call_id);
+    }
 }
 
 pub(crate) async fn prepare_chat_attachments(
@@ -2810,10 +2934,176 @@ pub(crate) fn sse_headers() -> String {
 #[cfg(test)]
 mod chat_stream_tests {
     use super::{
-        managed_gateway_receipt_status, native_chat_acknowledges_peer_messages,
-        native_chat_terminal_status,
+        clear_pending_tool_response_maps, managed_gateway_receipt_status,
+        native_chat_acknowledges_peer_messages, native_chat_terminal_status,
     };
-    use maestro_tui::agent::FromAgent;
+    use maestro_local_host::agent::FromAgent;
+
+    #[tokio::test]
+    async fn failed_chat_writes_stop_the_embedding_before_removing_attachments() {
+        use maestro_local_host::ai::{ScriptedBlock, ScriptedResponse, StopReason};
+        use maestro_local_host::embedding::test_kit::ScriptedEmbeddingBuilder;
+        use std::time::Duration;
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::{TcpListener, TcpStream};
+
+        for websocket in [false, true] {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let attachment_dir = workspace.path().join("attachments");
+            std::fs::create_dir(&attachment_dir).expect("attachment directory");
+            let attachment = attachment_dir.join("request.txt");
+            std::fs::write(&attachment, "request context").expect("attachment");
+            let session = ScriptedEmbeddingBuilder::new(vec![ScriptedResponse {
+                blocks: vec![ScriptedBlock::Pending],
+                stop_reason: StopReason::EndTurn,
+                error: None,
+            }])
+            .working_directory(workspace.path())
+            .start()
+            .expect("embedding");
+            let (agent, mut events) = session.into_parts();
+            agent.prompt("Wait for the client.").await.expect("prompt");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(event) = events.recv().await {
+                    if matches!(event, FromAgent::ResponseStart { .. }) {
+                        return;
+                    }
+                }
+                panic!("embedding stopped before the request began");
+            })
+            .await
+            .expect("pending model request");
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let mut writer = TcpStream::connect(listener.local_addr().expect("address"))
+                .await
+                .expect("writer");
+            let (_reader, _) = listener.accept().await.expect("reader");
+            writer.shutdown().await.expect("close write half");
+            let message = serde_json::json!({ "type": "done" });
+            let outcome = if websocket {
+                super::send_ws_json(&mut writer, &message).await
+            } else {
+                super::send_sse(&mut writer, &message).await
+            };
+            assert!(
+                outcome.is_err(),
+                "the closed transport must reject the write"
+            );
+            let original_error = outcome.clone();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                super::finish_embedded_agent(
+                    agent,
+                    super::PreparedAttachments {
+                        paths: vec![attachment.to_string_lossy().into_owned()],
+                        temp_dir: Some(attachment_dir.clone()),
+                    },
+                    outcome,
+                ),
+            )
+            .await
+            .expect("cleanup cancels the pending model");
+            assert_eq!(result, original_error);
+            assert!(!attachment_dir.exists());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while events.recv().await.is_some() {}
+            })
+            .await
+            .expect("the actor and event relay must be closed after cleanup");
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_response_cleanup_removes_only_this_turns_client_and_approval_entries() {
+        use std::collections::{HashMap, HashSet};
+        use tokio::sync::{Mutex, mpsc};
+
+        let client_call = "client-tool-call".to_string();
+        let approval_call = "approval-call".to_string();
+        let unrelated_call = "other-turn-call".to_string();
+        let (client_sender, _client_receiver) =
+            mpsc::unbounded_channel::<maestro_local_host::agent::ToolResponseMessage>();
+        let (approval_sender, _approval_receiver) =
+            mpsc::unbounded_channel::<maestro_local_host::agent::ToolResponseMessage>();
+        let (unrelated_sender, _unrelated_receiver) =
+            mpsc::unbounded_channel::<maestro_local_host::agent::ToolResponseMessage>();
+        let pending_tool_responses = Mutex::new(HashMap::from([
+            (client_call.clone(), client_sender),
+            (approval_call.clone(), approval_sender),
+            (unrelated_call.clone(), unrelated_sender),
+        ]));
+        let pending_tool_response_sessions = Mutex::new(HashMap::from([
+            (
+                client_call.clone(),
+                super::PendingToolResponseOwner::Session("session-client".to_string()),
+            ),
+            (
+                approval_call.clone(),
+                super::PendingToolResponseOwner::Session("session-approval".to_string()),
+            ),
+            (
+                unrelated_call.clone(),
+                super::PendingToolResponseOwner::Session("session-other".to_string()),
+            ),
+        ]));
+        let completed_client_tool_results = Mutex::new(HashMap::from([
+            (client_call.clone(), true),
+            (approval_call.clone(), false),
+            (unrelated_call.clone(), true),
+        ]));
+        let this_turn = HashSet::from([client_call.clone(), approval_call.clone()]);
+
+        clear_pending_tool_response_maps(
+            &pending_tool_responses,
+            &pending_tool_response_sessions,
+            &completed_client_tool_results,
+            &this_turn,
+        )
+        .await;
+
+        for call_id in [&client_call, &approval_call] {
+            assert!(
+                !pending_tool_responses.lock().await.contains_key(call_id),
+                "pending sender for {call_id} must be removed",
+            );
+            assert!(
+                !pending_tool_response_sessions
+                    .lock()
+                    .await
+                    .contains_key(call_id),
+                "pending owner for {call_id} must be removed",
+            );
+            assert!(
+                !completed_client_tool_results
+                    .lock()
+                    .await
+                    .contains_key(call_id),
+                "completed result for {call_id} must be removed",
+            );
+        }
+        assert!(
+            pending_tool_responses
+                .lock()
+                .await
+                .contains_key(&unrelated_call),
+            "another active turn's sender must remain",
+        );
+        assert!(
+            pending_tool_response_sessions
+                .lock()
+                .await
+                .contains_key(&unrelated_call),
+            "another active turn's owner must remain",
+        );
+        assert!(
+            completed_client_tool_results
+                .lock()
+                .await
+                .contains_key(&unrelated_call),
+            "another active turn's completed result must remain",
+        );
+    }
 
     #[test]
     fn managed_gateway_receipt_status_contains_safe_camel_case_fields() {
@@ -2856,7 +3146,7 @@ mod chat_stream_tests {
         ));
         assert!(matches!(
             native_chat_terminal_status(&FromAgent::ProviderError {
-                kind: maestro_tui::ai::ProviderStreamErrorKind::TransientProtocol,
+                kind: maestro_local_host::ai::ProviderStreamErrorKind::TransientProtocol,
                 message: "unexpected eof".to_string(),
             }),
             Some(Err(message)) if message.contains("unexpected eof")
@@ -2873,7 +3163,7 @@ mod chat_stream_tests {
         ));
         assert!(!native_chat_acknowledges_peer_messages(
             &FromAgent::ProviderError {
-                kind: maestro_tui::ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                kind: maestro_local_host::ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
                 message: "authentication failed".to_string(),
             }
         ));

@@ -53,11 +53,11 @@ fn parse_action(args: &[&str]) -> Result<OrbConsoleAction> {
         }),
         "followup" | "follow-up" => {
             let Some(id) = args.get(1).copied().filter(|id| !id.trim().is_empty()) else {
-                bail!("Usage: maestro computer followup <task-id> <prompt>");
+                bail!("{}", crate::localization::cli_locale().format("Usage: maestro computer followup <task-id> <prompt>", &[]));
             };
             let prompt = args[2..].join(" ");
             if prompt.trim().is_empty() {
-                bail!("Usage: maestro computer followup <task-id> <prompt>");
+                bail!("{}", crate::localization::cli_locale().format("Usage: maestro computer followup <task-id> <prompt>", &[]));
             }
             Ok(OrbConsoleAction::Followup {
                 id: id.to_string(),
@@ -77,22 +77,29 @@ fn parse_action(args: &[&str]) -> Result<OrbConsoleAction> {
             id: required_id(&args[1..], "maestro computer collect <task-id>")?,
         }),
         "handoff" => parse_handoff_action(&args[1..]),
-        _ => bail!(
-            "Unknown Computer command '{}'. Use list|status|followup|pause|resume|cancel|collect|handoff",
-            args[0]
-        ),
+        _ => bail!("{}", crate::localization::cli_locale().format("Unknown Computer command '{0}'. Use list|status|followup|pause|resume|cancel|collect|handoff", &[args[0].to_string()])),
     }
 }
 
 fn parse_handoff_action(args: &[&str]) -> Result<OrbConsoleAction> {
     let Some(operation) = args.first().copied() else {
-        bail!("Usage: maestro computer handoff create|list|read ...");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Usage: maestro computer handoff create|list|read ...", &[])
+        );
     };
     match operation.to_ascii_lowercase().as_str() {
         "create" | "capture" => parse_handoff_create(&args[1..]),
         "list" | "ls" => {
             if args.len() != 2 || args[1].trim().is_empty() {
-                bail!("Usage: maestro computer handoff list <target-thread-id>");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Usage: maestro computer handoff list <target-thread-id>",
+                        &[]
+                    )
+                );
             }
             Ok(OrbConsoleAction::HandoffList {
                 target_thread_id: args[1].to_string(),
@@ -100,7 +107,13 @@ fn parse_handoff_action(args: &[&str]) -> Result<OrbConsoleAction> {
         }
         "read" => {
             if args.len() != 3 || args[1].trim().is_empty() || args[2].trim().is_empty() {
-                bail!("Usage: maestro computer handoff read <target-thread-id> <package-id>");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Usage: maestro computer handoff read <target-thread-id> <package-id>",
+                        &[]
+                    )
+                );
             }
             Ok(OrbConsoleAction::HandoffRead {
                 target_thread_id: args[1].to_string(),
@@ -108,22 +121,21 @@ fn parse_handoff_action(args: &[&str]) -> Result<OrbConsoleAction> {
             })
         }
         _ => bail!(
-            "Unknown handoff command '{}'. Use create|list|read",
-            operation
+            "{}",
+            crate::localization::cli_locale().format(
+                "Unknown handoff command '{0}'. Use create|list|read",
+                &[(operation).to_string()]
+            )
         ),
     }
 }
 
 fn parse_handoff_create(args: &[&str]) -> Result<OrbConsoleAction> {
     let Some(source_id) = args.first().copied().filter(|id| !id.trim().is_empty()) else {
-        bail!(
-            "Usage: maestro computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]"
-        );
+        bail!("{}", crate::localization::cli_locale().format("Usage: maestro computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]", &[]));
     };
     let Some(target_thread_id) = args.get(1).copied().filter(|id| !id.trim().is_empty()) else {
-        bail!(
-            "Usage: maestro computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]"
-        );
+        bail!("{}", crate::localization::cli_locale().format("Usage: maestro computer handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]", &[]));
     };
     let mut files = Vec::new();
     let mut artifact_ids = Vec::new();
@@ -151,23 +163,42 @@ fn parse_handoff_create(args: &[&str]) -> Result<OrbConsoleAction> {
             value if value.starts_with("--file=") => {
                 let value = value.trim_start_matches("--file=");
                 if value.is_empty() {
-                    bail!("--file requires a value");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale().format("--file requires a value", &[])
+                    );
                 }
                 files.push(value.to_string());
             }
             value if value.starts_with("--artifact=") => {
                 let value = value.trim_start_matches("--artifact=");
                 if value.is_empty() {
-                    bail!("--artifact requires a value");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--artifact requires a value", &[])
+                    );
                 }
                 artifact_ids.push(value.to_string());
             }
-            value => bail!("Unknown handoff create argument '{value}'"),
+            value => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown handoff create argument '{0}'",
+                    &[(value).to_string()]
+                )
+            ),
         }
         index += 1;
     }
     if files.is_empty() && artifact_ids.is_empty() && !include_diff {
-        bail!("handoff create requires --file, --artifact, or --include-diff");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "handoff create requires --file, --artifact, or --include-diff",
+                &[]
+            )
+        );
     }
     Ok(OrbConsoleAction::HandoffCreate {
         source_id: source_id.to_string(),
@@ -180,7 +211,10 @@ fn parse_handoff_create(args: &[&str]) -> Result<OrbConsoleAction> {
 
 fn required_id(args: &[&str], usage: &str) -> Result<String> {
     let Some(id) = args.first().copied().filter(|id| !id.trim().is_empty()) else {
-        bail!("Usage: {usage}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("Usage: {0}", &[(usage).to_string()])
+        );
     };
     ensure_no_extra(&args[1..], usage)?;
     Ok(id.to_string())
@@ -190,13 +224,14 @@ fn ensure_no_extra(args: &[&str], usage: &str) -> Result<()> {
     if args.is_empty() {
         return Ok(());
     }
-    bail!("Usage: {usage}")
+    bail!(
+        "{}",
+        crate::localization::cli_locale().format("Usage: {0}", &[(usage).to_string()])
+    )
 }
 
 fn print_usage() {
-    println!(
-        "Usage: maestro computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>|handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]|handoff list <target-thread-id>|handoff read <target-thread-id> <package-id>] [--json]"
-    );
+    println!("{}", crate::localization::cli_locale().format("Usage: maestro computer [list|status <task-id>|followup <task-id> <prompt>|pause <task-id>|resume <task-id>|cancel <task-id>|collect <task-id>|handoff create <source-task-id> <target-thread-id> [--file path] [--artifact id] [--include-diff]|handoff list <target-thread-id>|handoff read <target-thread-id> <package-id>] [--json]", &[]));
 }
 
 #[cfg(test)]

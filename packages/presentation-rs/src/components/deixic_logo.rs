@@ -244,7 +244,7 @@ pub fn session_meta_line(session_id: &str, ready: bool) -> Line<'static> {
             )),
         ),
         Span::styled(
-            format!("  ·  session {session_id}"),
+            maestro_ui::localization::format("  ·  session {0}", &[(session_id).to_string()]),
             Style::default()
                 .fg(Color::Rgb(
                     DEIXIC_LOGO_BASE.0,
@@ -384,9 +384,9 @@ pub fn render_welcome_with_theme(
                     }
                     Line::styled(
                         if ready {
-                            "Ready when you are."
+                            maestro_ui::localization::tr("Ready when you are.")
                         } else {
-                            "Getting ready…"
+                            maestro_ui::localization::tr("Getting ready…")
                         },
                         Style::default().fg(Color::Rgb(
                             DEIXIC_MUTED.0,
@@ -417,7 +417,7 @@ pub fn render_welcome_with_theme(
             }
         }
         if ready && facts.is_some() && welcome_prompt_row(area) < area.bottom() {
-            Paragraph::new("Objective?")
+            Paragraph::new(maestro_ui::localization::tr("Objective?"))
                 .style(Style::default().fg(theme.map_or(
                     Color::Rgb(DEIXIC_MUTED.0, DEIXIC_MUTED.1, DEIXIC_MUTED.2),
                     |theme| theme.muted,

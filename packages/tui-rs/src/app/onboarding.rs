@@ -99,8 +99,11 @@ impl App {
 
     pub(super) fn start_onboarding_checks(&mut self) {
         if self.onboarding.checks.is_some() || self.state.busy {
-            self.setup_modal
-                .set_status("Finish the current request before running setup checks.");
+            self.setup_modal.set_status(
+                self.state
+                    .locale
+                    .translate("Finish the current request before running setup checks."),
+            );
             return;
         }
         let model = if self.current_model.is_empty() {
@@ -140,9 +143,16 @@ impl App {
                         checks: vec![OnboardingCheck {
                             id: OnboardingCheckId::ModelProbe,
                             status: CheckStatus::Fail,
-                            summary: "Setup checks ended without a result.".to_string(),
+                            summary: self
+                                .state
+                                .locale
+                                .translate("Setup checks ended without a result.")
+                                .to_string(),
                             repair: Some(
-                                "Retry the checks. If this repeats, open /feedback.".to_string(),
+                                self.state
+                                    .locale
+                                    .translate("Retry the checks. If this repeats, open /feedback.")
+                                    .to_string(),
                             ),
                         }],
                     }
@@ -178,8 +188,11 @@ impl App {
         if completed && self.onboarding.check_scope != crate::telemetry::onboarding_identity_scope()
         {
             self.setup_modal.set_connection_ready();
-            self.setup_modal
-                .set_status("The selected account changed. Run the checks again before finishing.");
+            self.setup_modal.set_status(
+                self.state.locale.translate(
+                    "The selected account changed. Run the checks again before finishing.",
+                ),
+            );
             return;
         }
         let completed = completed && self.setup_modal.checks().is_some_and(|report| report.ready);
@@ -196,7 +209,10 @@ impl App {
         self.ui_prefs.onboarding_share_diagnostics = Some(self.setup_modal.share_diagnostics());
         if self.ui_prefs.save_default().is_err() {
             self.state.add_system_message(
-                "Could not save the onboarding display preference.".to_string(),
+                self.state
+                    .locale
+                    .translate("Could not save the onboarding display preference.")
+                    .to_string(),
             );
         }
         self.setup_modal.hide();
@@ -222,8 +238,12 @@ fn invalidate_changed_scope(
     report.checks.push(OnboardingCheck {
         id: OnboardingCheckId::Identity,
         status: CheckStatus::Fail,
-        summary: "The selected account changed during verification.".into(),
-        repair: Some("Reconnect and run the checks for the selected account.".into()),
+        summary: maestro_ui::localization::tr("The selected account changed during verification.")
+            .into(),
+        repair: Some(
+            maestro_ui::localization::tr("Reconnect and run the checks for the selected account.")
+                .into(),
+        ),
     });
 }
 

@@ -865,7 +865,16 @@ message ToAgentEnvelope {
     GovernedClientToolResultMessage governed_client_tool_result = 21;
     ApplyWorkspaceCapabilitySetMessage apply_workspace_capability_set = 22;
     ConfigurePromptExperimentMessage configure_prompt_experiment = 23;
+    ManagedAuthorizationResultMessage managed_authorization_result = 24;
   }
+}
+
+message ManagedAuthorizationRequestMessage {
+  string request_id = 1;
+}
+message ManagedAuthorizationResultMessage {
+  string request_id = 1;
+  string authorization = 2;
 }
 
 message FromAgentEnvelope {
@@ -904,5 +913,6 @@ message FromAgentEnvelope {
     GovernedClientToolRequestMessage governed_client_tool_request = 32;
     DelegationEventMessage delegation_event = 33;
     WorkspaceCapabilitySetAppliedMessage workspace_capability_set_applied = 34;
+    ManagedAuthorizationRequestMessage managed_authorization_request = 35;
   }
 }

@@ -11,18 +11,33 @@ impl App {
         let Ok(cwd) = std::env::current_dir() else {
             return;
         };
+        self.capture_file_checkpoint(&cwd, prompt);
+    }
+
+    pub(super) fn capture_file_checkpoint(&mut self, cwd: &std::path::Path, prompt: &str) {
         let Some(session_id) = self.state.session_id.clone() else {
             return;
         };
-        let turn_index = self
+        let turn_index = match self
             .session_manager
-            .flush()
-            .ok()
-            .and_then(|()| self.session_manager.current_session_path())
-            .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
-            .map(|session| session.stats.user_messages);
+            .writer()
+            .map(|writer| writer.saved_user_turn_count())
+            .transpose()
+        {
+            // Ephemeral sessions intentionally have no writer, but still
+            // support file-only checkpoints without conversation coordinates.
+            Ok(index) => index,
+            Err(error) => {
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("File checkpoint unavailable: {0}", &[error.to_string()]),
+                );
+                return;
+            }
+        };
         self.pending_checkpoint = crate::checkpoints::begin_turn(
-            &cwd,
+            cwd,
             self.session_manager.sessions_dir(),
             &session_id,
             prompt,
@@ -38,12 +53,22 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("No session checkpoint store."))?;
         let (candidates, skipped) = crate::checkpoints::preview_turns(&store, first_turn)?;
         let mut message = if candidates.is_empty() {
-            "No restorable file changes recorded for these turns.".to_string()
+            self.state
+                .locale
+                .translate("No restorable file changes recorded for these turns.")
+                .to_string()
         } else {
-            format!("Restore: {}.", candidates.join(", "))
+            self.state
+                .locale
+                .format("Restore: {0}.", &[(candidates.join(", ")).clone()])
         };
         if !skipped.is_empty() {
-            message.push_str(&format!(" Keep later changes: {}.", skipped.join(", ")));
+            message.push_str(
+                &self
+                    .state
+                    .locale
+                    .format(" Keep later changes: {0}.", &[(skipped.join(", ")).clone()]),
+            );
         }
         self.state.add_system_message(message);
         Ok(())
@@ -85,19 +110,33 @@ impl App {
     /// `/rewind files`: restore file contents from the most recent checkpoint.
     pub(super) fn rewind_files(&mut self) {
         if self.state.busy {
-            self.state.status =
-                Some("Wait for the active response to finish before rewinding.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Wait for the active response to finish before rewinding.")
+                    .to_string(),
+            );
             return;
         }
         let cwd = std::env::current_dir().ok();
         if !cwd.as_deref().is_some_and(crate::git::is_git_repo) {
             self.state.add_system_message(
-                "File checkpoints require a git worktree; this directory is not one.".to_string(),
+                self.state
+                    .locale
+                    .translate(
+                        "File checkpoints require a git worktree; this directory is not one.",
+                    )
+                    .to_string(),
             );
             return;
         }
         let Some(store) = self.file_checkpoint_store() else {
-            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         };
         let result = crate::checkpoints::restore_latest(&store);
@@ -109,17 +148,31 @@ impl App {
     /// message when there is nothing to pick.
     pub(super) fn open_rewind_picker(&mut self) {
         if self.state.busy {
-            self.state.status =
-                Some("Wait for the active response to finish before rewinding.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Wait for the active response to finish before rewinding.")
+                    .to_string(),
+            );
             return;
         }
         let Some(store) = self.file_checkpoint_store() else {
-            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         };
         let checkpoints = store.list();
         if checkpoints.is_empty() {
-            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         }
         self.rewind_picker
@@ -132,12 +185,21 @@ impl App {
     /// after the turn are skipped, never clobbered.
     pub(super) fn restore_file_checkpoint(&mut self, checkpoint: crate::checkpoints::Checkpoint) {
         if self.state.busy {
-            self.state.status =
-                Some("Wait for the active response to finish before rewinding.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Wait for the active response to finish before rewinding.")
+                    .to_string(),
+            );
             return;
         }
         let Some(store) = self.file_checkpoint_store() else {
-            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         };
         if let Some(index) = checkpoint.user_turn_index {
@@ -162,56 +224,80 @@ impl App {
     ) {
         match result {
             Ok(Some(report)) => {
-                let mut msg = format!(
-                    "Restored checkpoint {} (\"{}\"):",
-                    &report.checkpoint_id[..8.min(report.checkpoint_id.len())],
-                    report.prompt
+                let mut msg = self.state.locale.format(
+                    "Restored checkpoint {0} (\"{1}\"):",
+                    &[
+                        report.checkpoint_id[..8.min(report.checkpoint_id.len())].to_string(),
+                        (report.prompt).clone(),
+                    ],
                 );
                 if !report.restored.is_empty() {
                     msg.push_str(&format!("\n- restored: {}", report.restored.join(", ")));
                 }
                 if !report.deleted.is_empty() {
-                    msg.push_str(&format!(
-                        "\n- deleted (created by the turn): {}",
-                        report.deleted.join(", ")
+                    msg.push_str(&self.state.locale.format(
+                        "\n- deleted (created by the turn): {0}",
+                        &[(report.deleted.join(", ")).clone()],
                     ));
                 }
                 if !report.skipped.is_empty() {
-                    msg.push_str(&format!(
-                        "\n- skipped (changed after the turn): {}",
-                        report.skipped.join(", ")
+                    msg.push_str(&self.state.locale.format(
+                        "\n- skipped (changed after the turn): {0}",
+                        &[(report.skipped.join(", ")).clone()],
                     ));
                 }
                 if !report.gone.is_empty() {
-                    msg.push_str(&format!("\n- already removed: {}", report.gone.join(", ")));
+                    msg.push_str(&self.state.locale.format(
+                        "\n- already removed: {0}",
+                        &[(report.gone.join(", ")).clone()],
+                    ));
                 }
                 if report.restored.is_empty()
                     && report.deleted.is_empty()
                     && report.skipped.is_empty()
                 {
-                    msg.push_str("\n- nothing to restore");
+                    msg.push_str(self.state.locale.translate("\n- nothing to restore"));
                 }
                 if !report.failed.is_empty() {
-                    msg.push_str(&format!("\n- failed: {}", report.failed.join(", ")));
+                    msg.push_str(
+                        &self
+                            .state
+                            .locale
+                            .format("\n- failed: {0}", &[(report.failed.join(", ")).clone()]),
+                    );
                 }
                 self.state.status = Some(
                     if !report.failed.is_empty() {
-                        "Some files could not be restored."
+                        self.state
+                            .locale
+                            .translate("Some files could not be restored.")
                     } else if !report.skipped.is_empty() {
-                        "Restored available files; later changes were kept."
+                        self.state
+                            .locale
+                            .translate("Restored available files; later changes were kept.")
                     } else {
-                        "Files restored from checkpoint."
+                        self.state
+                            .locale
+                            .translate("Files restored from checkpoint.")
                     }
                     .to_string(),
                 );
                 self.state.add_system_message(msg);
             }
             Ok(None) => {
-                self.state.status =
-                    Some("No file checkpoints recorded for this session.".to_string());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("No file checkpoints recorded for this session.")
+                        .to_string(),
+                );
             }
             Err(err) => {
-                self.state.error = Some(format!("Failed to restore checkpoint: {err}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to restore checkpoint: {0}", &[(err).to_string()]),
+                );
             }
         }
     }
@@ -219,30 +305,48 @@ impl App {
     /// `/rewind checkpoints`: list file checkpoints recorded for this session.
     pub(super) fn list_file_checkpoints(&mut self) {
         let Some(store) = self.file_checkpoint_store() else {
-            self.state
-                .add_system_message("No file checkpoints recorded for this session.".to_string());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         };
         let checkpoints = store.list();
         if checkpoints.is_empty() {
-            self.state
-                .add_system_message("No file checkpoints recorded for this session.".to_string());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("No file checkpoints recorded for this session.")
+                    .to_string(),
+            );
             return;
         }
-        let mut msg = String::from("## File checkpoints\n\n");
+        let mut msg = String::from(self.state.locale.translate("## File checkpoints\n\n"));
         for (index, checkpoint) in checkpoints.iter().rev().enumerate() {
             let file_count = checkpoint.entries.len();
             msg.push_str(&format!(
-                "{}. `{}` — {} — \"{}\" — {} file{}\n",
+                "{}. `{}` — {} — \"{}\" — {}\n",
                 index + 1,
                 checkpoint.short_id(),
                 checkpoint.created_at,
                 checkpoint.prompt,
-                file_count,
-                if file_count == 1 { "" } else { "s" }
+                self.state.locale.format(
+                    if file_count == 1 {
+                        "{0} file"
+                    } else {
+                        "{0} files"
+                    },
+                    &[file_count.to_string()],
+                )
             ));
         }
-        msg.push_str("\n`/rewind files` restores the most recent one.");
+        msg.push_str(
+            self.state
+                .locale
+                .translate("\n`/rewind files` restores the most recent one."),
+        );
         self.state.add_system_message(msg);
     }
 }

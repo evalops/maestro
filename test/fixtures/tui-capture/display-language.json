@@ -1,0 +1,17 @@
+{
+  "name": "display-language",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "(?s)Display language.*English.*Español.*Français"
+    }
+  ]
+}

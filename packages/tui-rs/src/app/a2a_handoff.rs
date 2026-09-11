@@ -38,8 +38,13 @@ impl App {
     ) {
         let tx = self.a2a_handoff_tx.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
-        let requested_peer = peer.clone().unwrap_or_else(|| "default peer".into());
-        self.state.status = Some(format!("Handing work to {requested_peer} ..."));
+        let requested_peer = peer
+            .clone()
+            .unwrap_or_else(|| self.state.locale.translate("default peer").into());
+        self.state.status = Some(self.state.locale.format(
+            "Handing work to {0} ...",
+            std::slice::from_ref(&(requested_peer)),
+        ));
         tokio::spawn(async move {
             let package = match computer_package {
                 Some(selection) => match create_computer_package(tool_executor, selection).await {
@@ -113,13 +118,19 @@ impl App {
                     package_id,
                     ledger_warning,
                 } => {
-                    self.state.status = Some(format!("Handoff to {peer} accepted as {task_id}"));
-                    let package = package_id
-                        .map(|package_id| format!(" with Computer package `{package_id}`"))
-                        .unwrap_or_default();
-                    self.state.add_system_message(format!(
-                        "Handoff sent to `{peer}` as task `{task_id}`{package}. Deixic Code is following it in the background."
+                    self.state.status = Some(self.state.locale.format(
+                        "Handoff to {0} accepted as {1}",
+                        &[(peer).clone(), (task_id).clone()],
                     ));
+                    let package = package_id
+                        .map(|package_id| {
+                            self.state.locale.format(
+                                " with Computer package `{0}`",
+                                std::slice::from_ref(&(package_id)),
+                            )
+                        })
+                        .unwrap_or_default();
+                    self.state.add_system_message(self.state.locale.format("Handoff sent to `{0}` as task `{1}`{2}. Deixic Code is following it in the background.", &[(peer).clone(), (task_id).clone(), (package).clone()]));
                     self.report_a2a_ledger_warning(ledger_warning);
                 }
                 A2aHandoffEvent::Finished {
@@ -131,29 +142,55 @@ impl App {
                     let state = task.status.state.clone();
                     let response = extract_task_text(&task);
                     if is_failed_state(&state) {
-                        self.state.error = Some(format!(
-                            "Handoff to {peer} failed ({task_id}, state {state}){}",
-                            response
-                                .as_deref()
-                                .map(|text| format!(": {text}"))
-                                .unwrap_or_default()
-                        ));
+                        self.state.error = Some(
+                            self.state.locale.format(
+                                "Handoff to {0} failed ({1}, state {2}){3}",
+                                &[
+                                    (peer).clone(),
+                                    (task_id).clone(),
+                                    (state).clone(),
+                                    (response
+                                        .as_deref()
+                                        .map(|text| format!(": {text}"))
+                                        .unwrap_or_default())
+                                    .clone(),
+                                ],
+                            ),
+                        );
                     } else if is_action_required_state(&state) {
-                        self.state.add_system_message(format!(
-                            "Handoff `{task_id}` from `{peer}` needs input{}",
-                            response
-                                .as_deref()
-                                .map(|text| format!(":\n\n{text}"))
-                                .unwrap_or_default()
-                        ));
+                        self.state.add_system_message(
+                            self.state.locale.format(
+                                "Handoff `{0}` from `{1}` needs input{2}",
+                                &[
+                                    (task_id).clone(),
+                                    (peer).clone(),
+                                    (response
+                                        .as_deref()
+                                        .map(|text| format!(":\n\n{text}"))
+                                        .unwrap_or_default())
+                                    .clone(),
+                                ],
+                            ),
+                        );
                     } else {
-                        self.state.status = Some(format!("Handoff from {peer} completed"));
-                        self.state.add_system_message(format!(
-                            "## Handoff response from {peer}\n\n{}\n\nTask: `{task_id}`",
-                            response
-                                .as_deref()
-                                .unwrap_or("Completed without a text response.")
-                        ));
+                        self.state.status =
+                            Some(self.state.locale.format(
+                                "Handoff from {0} completed",
+                                std::slice::from_ref(&(peer)),
+                            ));
+                        self.state.add_system_message(
+                            self.state.locale.format(
+                                "## Handoff response from {0}\n\n{1}\n\nTask: `{2}`",
+                                &[
+                                    (peer).clone(),
+                                    (response
+                                        .as_deref()
+                                        .unwrap_or("Completed without a text response."))
+                                    .to_string(),
+                                    (task_id).clone(),
+                                ],
+                            ),
+                        );
                     }
                     self.report_a2a_ledger_warning(ledger_warning);
                 }
@@ -163,10 +200,14 @@ impl App {
                     error,
                 } => {
                     self.state.error = Some(match task_id {
-                        Some(task_id) => {
-                            format!("Handoff to {peer} task {task_id} stopped: {error}")
-                        }
-                        None => format!("Handoff to {peer} failed: {error}"),
+                        Some(task_id) => self.state.locale.format(
+                            "Handoff to {0} task {1} stopped: {2}",
+                            &[(peer).clone(), (task_id).clone(), (error).clone()],
+                        ),
+                        None => self.state.locale.format(
+                            "Handoff to {0} failed: {1}",
+                            &[(peer).clone(), (error).clone()],
+                        ),
                     });
                 }
             }
@@ -176,8 +217,10 @@ impl App {
 
     fn report_a2a_ledger_warning(&mut self, warning: Option<String>) {
         if let Some(warning) = warning {
-            self.state
-                .add_system_message(format!("A2A task ledger warning: {warning}"));
+            self.state.add_system_message(self.state.locale.format(
+                "A2A task ledger warning: {0}",
+                std::slice::from_ref(&(warning)),
+            ));
         }
     }
 }

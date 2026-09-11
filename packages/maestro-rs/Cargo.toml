@@ -1,6 +1,6 @@
 [package]
 name = "maestro"
-version = "0.10.84"
+version = "0.10.86"
 edition = "2021"
 license = "MIT"
 description = "Canonical native Rust CLI for Deixic Code"
@@ -9,9 +9,20 @@ description = "Canonical native Rust CLI for Deixic Code"
 name = "maestro"
 path = "src/main.rs"
 
+[[bin]]
+name = "maestro-local-sdk-conformance"
+path = "src/bin/local_sdk_conformance.rs"
+required-features = ["test-support"]
+
 [lib]
 name = "maestro"
 path = "src/lib.rs"
+
+[features]
+default = []
+# Builds the deterministic local-stdio conformance fixture. The production
+# `maestro` binary never enables this feature.
+test-support = ["maestro-tui/test-support"]
 
 [dependencies]
 anyhow.workspace = true

@@ -48,6 +48,26 @@ impl MessageContent {
     }
 }
 
+/// Native Gemini call context, retained only for provider history replay.
+/// It is never part of executable tool arguments or tool authorization.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeminiToolContext {
+    pub native_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
+}
+
+impl std::fmt::Debug for GeminiToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiToolContext")
+            .field("native_name", &self.native_name)
+            .field("has_thought_signature", &self.thought_signature.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Content block types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -62,6 +82,8 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gemini_context: Option<GeminiToolContext>,
     },
     ToolResult {
         tool_use_id: String,
@@ -192,6 +214,8 @@ pub enum StreamEvent {
     },
     /// Provider-reported USD cost; absent pricing is never inferred as zero.
     ProviderCost { cost_usd: f64 },
+    /// Provider-reported reasoning tokens, a subset of output tokens.
+    ReasoningUsage { tokens: u64 },
     /// Usage stats
     Usage {
         input_tokens: u64,
@@ -220,6 +244,8 @@ pub struct RequestConfig {
     /// Enable prompt caching for system prompt (Anthropic only)
     /// When true, the system prompt will be marked for caching
     pub cache_system_prompt: bool,
+    /// Immutable preparation proof; dispatch rejects changes after preparation.
+    pub cache_topology: Option<crate::cache_topology::PreparedPrompt>,
 }
 
 impl Default for RequestConfig {
@@ -232,6 +258,7 @@ impl Default for RequestConfig {
             tools: Arc::new(Vec::new()),
             thinking: None,
             cache_system_prompt: false,
+            cache_topology: None,
         }
     }
 }
@@ -339,6 +366,7 @@ mod tests {
             id: "tool-1".to_string(),
             name: "read".to_string(),
             input: json!({"path": "/tmp/test"}),
+            gemini_context: None,
         }]);
         assert_eq!(content.as_text(), None);
     }
@@ -350,6 +378,7 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: "read".to_string(),
                 input: json!({}),
+                gemini_context: None,
             },
             ContentBlock::Text {
                 text: "First text".to_string(),
@@ -476,6 +505,7 @@ mod tests {
             id: "tool-123".to_string(),
             name: "bash".to_string(),
             input: json!({"command": "ls"}),
+            gemini_context: None,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "tool_use");

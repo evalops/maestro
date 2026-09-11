@@ -143,7 +143,8 @@ impl BedrockClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-        let request_messages = build_messages(messages)?;
+        let messages = crate::cache_topology::messages_with_volatile_tail(messages, config);
+        let request_messages = build_messages(&messages)?;
         let model = provider_model_name(&config.model);
         let client = self.sdk_client().await?;
         let mut request = client
@@ -335,7 +336,9 @@ fn build_content_block(block: &ContentBlock) -> Option<Result<bedrock::types::Co
     Some(match block {
         ContentBlock::Text { text } => Ok(bedrock::types::ContentBlock::Text(text.clone())),
         ContentBlock::Image { source } => build_image_block(source),
-        ContentBlock::ToolUse { id, name, input } => bedrock::types::ToolUseBlock::builder()
+        ContentBlock::ToolUse {
+            id, name, input, ..
+        } => bedrock::types::ToolUseBlock::builder()
             .tool_use_id(id.clone())
             .name(name.clone())
             .input(document_from_json(input))
@@ -421,6 +424,7 @@ fn send_event(
                     id: tool.tool_use_id().to_string(),
                     name: tool.name().to_string(),
                     input: Value::Object(serde_json::Map::new()),
+                    gemini_context: None,
                 },
                 Some(ContentBlockStart::Image(_)) => {
                     bail!("unsupported Bedrock image content-block start at index {index}")

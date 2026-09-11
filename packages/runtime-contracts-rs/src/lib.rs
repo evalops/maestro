@@ -8,13 +8,16 @@
 #![forbid(unsafe_code)]
 
 mod boundary;
+pub mod cache_topology;
 pub mod contracts;
 pub mod delegation;
 mod launch_spec;
+pub mod operation_observation;
 pub mod passport;
 pub mod protocol;
 pub mod receipt_contract;
 mod receipts;
+mod session_event;
 pub mod telemetry;
 pub mod tool_details;
 
@@ -67,6 +70,10 @@ pub use receipts::{
     MAX_RUNTIME_RECEIPT_STRING_BYTES, RUNTIME_RECEIPT_VERSION, RuntimeLifecycleState,
     RuntimeReceipt, RuntimeReceiptError, RuntimeReceiptInput, RuntimeReceiptKind,
     RuntimeTerminalClassification, runtime_receipt_validation_contract,
+};
+pub use session_event::{
+    SESSION_EVENT_CUSTOM_TYPE, SESSION_EVENT_SCHEMA, SessionEvent, SessionEventLane,
+    SessionEventPhase,
 };
 pub use telemetry::{
     Telemetry, TelemetryConfig, TelemetryGuard, TraceHeaders, approval_span, client_span,

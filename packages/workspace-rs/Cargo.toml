@@ -11,6 +11,9 @@ dirs.workspace = true
 dunce.workspace = true
 libc.workspace = true
 rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]

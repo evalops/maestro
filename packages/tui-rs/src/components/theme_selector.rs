@@ -79,9 +79,12 @@ impl ThemeSelector {
             return;
         }
         let theme = themes::current_ui_theme();
-        let inner = Modal::sized("Select Theme", ModalSize::Standard)
-            .theme(theme)
-            .render(frame, area);
+        let inner = Modal::sized(
+            maestro_ui::localization::tr("Select Theme"),
+            ModalSize::Standard,
+        )
+        .theme(theme)
+        .render(frame, area);
         let (picker_area, preview_area) = if inner.height >= 12 {
             let chunks = Layout::vertical([Constraint::Min(5), Constraint::Length(7)]).split(inner);
             (chunks[0], Some(chunks[1]))
@@ -100,12 +103,12 @@ impl ThemeSelector {
             picker_area,
             theme,
             PickerOptions {
-                placeholder: "Type to filter themes...",
-                empty: "No matching themes",
+                placeholder: maestro_ui::localization::tr("Type to filter themes..."),
+                empty: maestro_ui::localization::tr("No matching themes"),
                 hints: Some(&[
-                    KeyHint::new("Enter", "select"),
-                    KeyHint::new("Esc", "cancel"),
-                    KeyHint::new("↑↓", "navigate"),
+                    KeyHint::new("Enter", maestro_ui::localization::tr("select")),
+                    KeyHint::new("Esc", maestro_ui::localization::tr("cancel")),
+                    KeyHint::new("↑↓", maestro_ui::localization::tr("navigate")),
                 ]),
                 ..PickerOptions::default()
             },
@@ -116,7 +119,7 @@ impl ThemeSelector {
                 )];
                 if current.as_ref().is_some_and(|c| c == name) {
                     spans.push(Span::styled(
-                        " (current)",
+                        maestro_ui::localization::tr(" (current)"),
                         Style::default().fg(theme.success),
                     ));
                 }

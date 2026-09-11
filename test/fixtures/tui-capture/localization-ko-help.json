@@ -1,0 +1,32 @@
+{
+  "name": "ko-help",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language ko"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "표시 언어"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "표시 언어"
+    },
+    {
+      "text": "/help"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "명령"
+    }
+  ]
+}

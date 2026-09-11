@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 41] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 42] = [
     "acp",
     "sessions",
     "search",
@@ -94,6 +94,7 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 41] = [
     "codex",
     "context",
     "run",
+    "workflow",
     "a2a",
     "plugins",
     "plugin",
@@ -149,7 +150,15 @@ pub fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<Stri
                 let t = rest[j].to_string_lossy();
                 if matches!(
                     t.as_ref(),
-                    "inspect" | "ledger" | "replay" | "promote" | "help" | "--help" | "-h"
+                    "inspect"
+                        | "timeline"
+                        | "context"
+                        | "ledger"
+                        | "replay"
+                        | "promote"
+                        | "help"
+                        | "--help"
+                        | "-h"
                 ) {
                     has_sub = true;
                     break;
@@ -1049,9 +1058,9 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     if let Some(id) = &args.resume_session {
         let cwd = std::env::current_dir()?;
         let manager = crate::session::SessionManager::new(cwd.to_string_lossy().to_string());
-        let session = manager.load_session(id)?;
+        let session = manager.find_session(id)?;
         if args.model.is_none() {
-            args.model = Some(session.header.model);
+            args.model = Some(session.model);
         }
     }
 
@@ -1358,24 +1367,26 @@ async fn run_fork(args: &[std::ffi::OsString]) -> Result<i32> {
     let manager = crate::session::SessionManager::new(cwd.to_string_lossy().to_string());
     let source = match session_id.as_deref() {
         Some(id) => manager
-            .load_session(id)
+            .find_session(id)
             .map_err(|err| anyhow::anyhow!("failed to load session {id}: {err}"))?,
         None => manager
-            .most_recent_session()?
+            .recent_sessions(1)?
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("no session to fork for {}", cwd.display()))?,
     };
-    let forked = crate::session::fork_session_file(std::path::Path::new(&source.file_path))?;
+    let forked = crate::session::fork_session_file(&source.path)?;
 
     // Continue with the model that recorded the source session unless the
     // user already pinned one (`spawn_agent` reads MAESTRO_MODEL).
-    if std::env::var_os("MAESTRO_MODEL").is_none() && !source.header.model.is_empty() {
+    if std::env::var_os("MAESTRO_MODEL").is_none() && !source.model.is_empty() {
         // SAFETY: the agent has not spawned worker threads yet.
-        unsafe { std::env::set_var("MAESTRO_MODEL", &source.header.model) };
+        unsafe { std::env::set_var("MAESTRO_MODEL", &source.model) };
     }
 
     println!(
         "Forked session {} -> {} ({})",
-        source.header.id,
+        source.id,
         forked.id,
         forked.path.display()
     );
@@ -1574,6 +1585,20 @@ mod tests {
             .map(std::ffi::OsString::from)
             .collect::<Vec<_>>();
         assert_eq!(native_utility_tokens(&args), None);
+    }
+
+    #[test]
+    fn run_graphics_are_dispatched_as_utility_commands() {
+        for subcommand in ["timeline", "context"] {
+            let args = ["run", subcommand, "session-1"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                native_utility_tokens(&args),
+                Some(vec!["run".into(), subcommand.into(), "session-1".into(),])
+            );
+        }
     }
 
     #[test]

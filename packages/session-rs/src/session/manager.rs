@@ -637,19 +637,25 @@ impl SessionManager {
 
     /// Load a session by ID
     pub fn load_session(&self, id: &str) -> Result<ParsedSession, SessionReadError> {
+        SessionReader::read_file(self.find_session(id)?.path)
+    }
+
+    /// Resolve a session using the same workspace-first ID matching as loading,
+    /// without reconstructing its transcript before acquiring a writer lock.
+    pub fn find_session(&self, id: &str) -> Result<SessionInfo, SessionReadError> {
         // First try current directory
         let sessions = self.list_sessions()?;
-        for session in &sessions {
+        for session in sessions {
             if session.id == id || session.id.starts_with(id) {
-                return SessionReader::read_file(&session.path);
+                return Ok(session);
             }
         }
 
         // Try all directories
         let all_sessions = self.list_all_sessions()?;
-        for session in &all_sessions {
+        for session in all_sessions {
             if session.id == id || session.id.starts_with(id) {
-                return SessionReader::read_file(&session.path);
+                return Ok(session);
             }
         }
 

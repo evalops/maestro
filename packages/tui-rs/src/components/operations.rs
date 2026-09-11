@@ -47,20 +47,20 @@ impl ReceiptSummary {
     fn from_receipt(receipt: &ExecutionReceipt) -> Self {
         let (status, phase) = match receipt.status {
             ExecutionStatus::Succeeded => ("succeeded", None),
-            ExecutionStatus::Failed => ("failed", None),
+            ExecutionStatus::Failed => (maestro_ui::localization::tr("failed"), None),
             ExecutionStatus::Denied => ("denied", None),
             ExecutionStatus::Cancelled { phase } => (
-                "cancelled",
+                maestro_ui::localization::tr("cancelled"),
                 Some(match phase {
-                    ExecutionPhase::Queued => "queued",
-                    ExecutionPhase::Running => "running",
+                    ExecutionPhase::Queued => maestro_ui::localization::tr("queued"),
+                    ExecutionPhase::Running => maestro_ui::localization::tr("running"),
                 }),
             ),
             ExecutionStatus::Indeterminate => ("indeterminate", None),
         };
         let source = match receipt.source {
             ExecutionSource::Native => "native",
-            ExecutionSource::RemoteClient => "remote client",
+            ExecutionSource::RemoteClient => maestro_ui::localization::tr("remote client"),
             ExecutionSource::Cache => "cache",
         };
         let (detail_kind, detail) = match &receipt.details {
@@ -80,9 +80,11 @@ impl ReceiptSummary {
             ToolReceiptDetails::Origin(origin) => {
                 ("origin", Some(bounded_text(origin, STRING_LIMIT)))
             }
-            ToolReceiptDetails::FeedbackDraft { .. } => ("feedback draft", None),
+            ToolReceiptDetails::FeedbackDraft { .. } => {
+                (maestro_ui::localization::tr("feedback draft"), None)
+            }
             ToolReceiptDetails::Cached => ("cached", None),
-            ToolReceiptDetails::None => ("none", None),
+            ToolReceiptDetails::None => (maestro_ui::localization::tr("none"), None),
         };
         Self {
             source,
@@ -102,12 +104,12 @@ fn built_in_kind(details: &ToolDetails) -> &'static str {
         ToolDetails::Write(_) => "write",
         ToolDetails::Edit(_) => "edit",
         ToolDetails::Image(_) => "image",
-        ToolDetails::WebFetch(_) => "web fetch",
+        ToolDetails::WebFetch(_) => maestro_ui::localization::tr("web fetch"),
         ToolDetails::Glob(_) => "glob",
         ToolDetails::Grep(_) => "grep",
         ToolDetails::Diff(_) => "diff",
         ToolDetails::List(_) => "list",
-        ToolDetails::InlineTool(_) => "inline tool",
+        ToolDetails::InlineTool(_) => maestro_ui::localization::tr("inline tool"),
         ToolDetails::Batch(_) => "batch",
     }
 }
@@ -159,7 +161,7 @@ pub fn project_session(session: &ParsedSession) -> Vec<OperationRow> {
                         tool_name: bounded_text(name, STRING_LIMIT),
                         task_args: Some(format_bounded_value(args)),
                         timestamp_ms: *timestamp,
-                        result_status: "pending",
+                        result_status: maestro_ui::localization::tr("pending"),
                         receipt: None,
                     };
                     if let Some(index) = by_call_id.get(id).copied() {
@@ -186,7 +188,11 @@ pub fn project_session(session: &ParsedSession) -> Vec<OperationRow> {
                 let summary = receipt.as_ref().map(ReceiptSummary::from_receipt);
                 if let Some(index) = by_call_id.get(tool_call_id).copied() {
                     let row = &mut rows[index];
-                    row.result_status = if *is_error { "failed" } else { "succeeded" };
+                    row.result_status = if *is_error {
+                        maestro_ui::localization::tr("failed")
+                    } else {
+                        "succeeded"
+                    };
                     row.receipt = summary;
                     if row.timestamp_ms == 0 {
                         row.timestamp_ms = *timestamp;
@@ -202,7 +208,11 @@ pub fn project_session(session: &ParsedSession) -> Vec<OperationRow> {
                         tool_name: bounded_text(tool_name, STRING_LIMIT),
                         task_args: None,
                         timestamp_ms: *timestamp,
-                        result_status: if *is_error { "failed" } else { "succeeded" },
+                        result_status: if *is_error {
+                            maestro_ui::localization::tr("failed")
+                        } else {
+                            "succeeded"
+                        },
                         receipt: summary,
                     });
                 }
@@ -354,9 +364,9 @@ fn load_operations(manager: &SessionManager) -> OperationsLoad {
                 rows: Vec::new(),
                 agents: Vec::new(),
                 parse_failures: Vec::new(),
-                error: Some(format!(
-                    "Failed to load operations: {}",
-                    bounded_text(&error.to_string(), STRING_LIMIT)
+                error: Some(maestro_ui::localization::format(
+                    "Failed to load operations: {0}",
+                    &[bounded_text(&error.to_string(), STRING_LIMIT).clone()],
                 )),
             };
         }
@@ -399,7 +409,10 @@ fn load_operations(manager: &SessionManager) -> OperationsLoad {
 fn monitor_event_row(event: &MonitorEvent) -> OperationRow {
     OperationRow {
         session_id: "background".to_string(),
-        session_title: format!("Task {}", bounded_text(&event.task_id, 24)),
+        session_title: maestro_ui::localization::format(
+            "Task {0}",
+            &[(bounded_text(&event.task_id, 24)).clone()],
+        ),
         session_cwd: String::new(),
         session_timestamp: String::new(),
         call_id: event.monitor_id.clone(),
@@ -559,7 +572,10 @@ impl OperationsModal {
                 }
             }
             Err(()) => {
-                self.error = Some("Failed to load operations: loader stopped".to_string());
+                self.error = Some(
+                    maestro_ui::localization::tr("Failed to load operations: loader stopped")
+                        .to_string(),
+                );
             }
         }
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
@@ -707,16 +723,18 @@ impl OperationsModal {
         } else if self.parse_failures.is_empty() {
             format!(" Operations ({}) ", self.rows.len())
         } else {
-            format!(
-                " Operations ({}, {} load failures) ",
-                self.rows.len(),
-                self.parse_failures.len()
+            maestro_ui::localization::format(
+                " Operations ({0}, {1} load failures) ",
+                &[
+                    (self.rows.len()).to_string(),
+                    (self.parse_failures.len()).to_string(),
+                ],
             )
         };
         let outer = Block::default()
             .title(title)
             .title_bottom(Line::styled(
-                " v operations/agents  Up/Down select  Left/Right pane  a approve  c cancel  r refresh  Esc close ", theme.muted_style(),
+                maestro_ui::localization::tr(" v operations/agents  Up/Down select  Left/Right pane  a approve  c cancel  r refresh  Esc close "), theme.muted_style(),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
@@ -734,8 +752,10 @@ impl OperationsModal {
         }
         if self.loading {
             frame.render_widget(
-                Paragraph::new("Loading persisted tool executions...")
-                    .style(Style::default().fg(theme.attention)),
+                Paragraph::new(maestro_ui::localization::tr(
+                    "Loading persisted tool executions...",
+                ))
+                .style(Style::default().fg(theme.attention)),
                 inner,
             );
             return;
@@ -747,8 +767,10 @@ impl OperationsModal {
         if self.rows.is_empty() {
             if self.parse_failures.is_empty() {
                 frame.render_widget(
-                    Paragraph::new("No persisted tool executions in recent sessions.")
-                        .style(Style::default().fg(theme.muted)),
+                    Paragraph::new(maestro_ui::localization::tr(
+                        "No persisted tool executions in recent sessions.",
+                    ))
+                    .style(Style::default().fg(theme.muted)),
                     inner,
                 );
             } else {
@@ -775,8 +797,10 @@ impl OperationsModal {
     fn render_agents(&mut self, frame: &mut Frame, area: Rect, theme: maestro_ui::UiTheme) {
         if self.agents.is_empty() {
             frame.render_widget(
-                Paragraph::new("No delegated agents have been recorded.")
-                    .style(Style::default().fg(theme.muted)),
+                Paragraph::new(maestro_ui::localization::tr(
+                    "No delegated agents have been recorded.",
+                ))
+                .style(Style::default().fg(theme.muted)),
                 area,
             );
             return;
@@ -829,7 +853,11 @@ impl OperationsModal {
             ]))
         });
         let list = List::new(items)
-            .block(Self::pane_block("Agents", focused, theme))
+            .block(Self::pane_block(
+                maestro_ui::localization::tr("Agents"),
+                focused,
+                theme,
+            ))
             .style(theme.text_style())
             .highlight_style(theme.selection_style());
         frame.render_stateful_widget(list, area, &mut self.agent_list_state);
@@ -848,14 +876,30 @@ impl OperationsModal {
             .started_at_ms
             .map(|start| elapsed_end.saturating_sub(start));
         let mut lines = vec![
-            labelled_line("Agent", &agent.agent_ref, theme),
-            labelled_line("Role", &agent.role, theme),
-            labelled_line("Status", &agent.status, theme),
-            labelled_line("Attempt", &agent.attempt.to_string(), theme),
-            labelled_line("Created", &format_timestamp(agent.created_at_ms), theme),
+            labelled_line(
+                maestro_ui::localization::tr("Agent"),
+                &agent.agent_ref,
+                theme,
+            ),
+            labelled_line(maestro_ui::localization::tr("Role"), &agent.role, theme),
+            labelled_line(maestro_ui::localization::tr("Status"), &agent.status, theme),
+            labelled_line(
+                maestro_ui::localization::tr("Attempt"),
+                &agent.attempt.to_string(),
+                theme,
+            ),
+            labelled_line(
+                maestro_ui::localization::tr("Created"),
+                &format_timestamp(agent.created_at_ms),
+                theme,
+            ),
         ];
         if let Some(elapsed) = elapsed {
-            lines.push(labelled_line("Elapsed", &format!("{elapsed} ms"), theme));
+            lines.push(labelled_line(
+                maestro_ui::localization::tr("Elapsed"),
+                &format!("{elapsed} ms"),
+                theme,
+            ));
         }
         if let Some(error) = &agent.error {
             lines.push(Line::from(""));
@@ -863,7 +907,11 @@ impl OperationsModal {
         }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Self::pane_block("Run", focused, theme))
+                .block(Self::pane_block(
+                    maestro_ui::localization::tr("Run"),
+                    focused,
+                    theme,
+                ))
                 .scroll((self.task_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
@@ -879,42 +927,59 @@ impl OperationsModal {
     ) {
         let agent = &self.agents[self.agent_selected];
         let mut lines = vec![
-            labelled_line("Parent", &agent.parent_scope_id, theme),
             labelled_line(
-                "Lifecycle",
+                maestro_ui::localization::tr("Parent"),
+                &agent.parent_scope_id,
+                theme,
+            ),
+            labelled_line(
+                maestro_ui::localization::tr("Lifecycle"),
                 if agent.lifecycle_published {
                     "published"
                 } else {
-                    "pending"
+                    maestro_ui::localization::tr("pending")
                 },
                 theme,
             ),
             labelled_line(
-                "Last control",
-                agent.last_control_id.as_deref().unwrap_or("none"),
+                maestro_ui::localization::tr("Last control"),
+                agent
+                    .last_control_id
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("none")),
                 theme,
             ),
             labelled_line(
-                "Mode",
-                agent.last_control_mode.as_deref().unwrap_or("none"),
+                maestro_ui::localization::tr("Mode"),
+                agent
+                    .last_control_mode
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("none")),
                 theme,
             ),
             labelled_line(
-                "Delivery",
-                agent.last_control_state.as_deref().unwrap_or("none"),
+                maestro_ui::localization::tr("Delivery"),
+                agent
+                    .last_control_state
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("none")),
                 theme,
             ),
         ];
         if agent.held_control_id.is_some() {
             lines.push(Line::from(""));
             lines.push(Line::styled(
-                "Press a to approve the held control.",
+                maestro_ui::localization::tr("Press a to approve the held control."),
                 Style::default().fg(theme.attention),
             ));
         }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Self::pane_block("Coordination", focused, theme))
+                .block(Self::pane_block(
+                    maestro_ui::localization::tr("Coordination"),
+                    focused,
+                    theme,
+                ))
                 .scroll((self.receipt_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
@@ -966,7 +1031,11 @@ impl OperationsModal {
             ]))
         });
         let list = List::new(items)
-            .block(Self::pane_block("Session", focused, theme))
+            .block(Self::pane_block(
+                maestro_ui::localization::tr("Session"),
+                focused,
+                theme,
+            ))
             .style(theme.text_style())
             .highlight_style(theme.selection_style());
         frame.render_stateful_widget(list, area, &mut self.list_state);
@@ -980,17 +1049,27 @@ impl OperationsModal {
         theme: maestro_ui::UiTheme,
     ) {
         let row = &self.rows[self.selected];
-        let args = row.task_args.as_deref().unwrap_or("Not recorded");
+        let args = row
+            .task_args
+            .as_deref()
+            .unwrap_or(maestro_ui::localization::tr("Not recorded"));
         let mut lines = vec![
-            labelled_line("Tool", &row.tool_name, theme),
-            labelled_line("Call", &row.call_id, theme),
-            labelled_line("Task time", &format_timestamp(row.timestamp_ms), theme),
+            labelled_line(maestro_ui::localization::tr("Tool"), &row.tool_name, theme),
+            labelled_line(maestro_ui::localization::tr("Call"), &row.call_id, theme),
+            labelled_line(
+                maestro_ui::localization::tr("Task time"),
+                &format_timestamp(row.timestamp_ms),
+                theme,
+            ),
             Line::from(""),
-            Line::styled("Arguments", Style::default().fg(theme.focus)),
+            Line::styled(
+                maestro_ui::localization::tr("Arguments"),
+                Style::default().fg(theme.focus),
+            ),
         ];
         lines.extend(raw_lines(args, None));
         let text = Text::from(lines);
-        let block = Self::pane_block("Task", focused, theme);
+        let block = Self::pane_block(maestro_ui::localization::tr("Task"), focused, theme);
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -1014,24 +1093,52 @@ impl OperationsModal {
     ) {
         let row = &self.rows[self.selected];
         let mut lines = vec![
-            labelled_line("Session", &row.session_id, theme),
-            labelled_line("Title", &row.session_title, theme),
-            labelled_line("Started", &row.session_timestamp, theme),
-            labelled_line("Cwd", &row.session_cwd, theme),
+            labelled_line(
+                maestro_ui::localization::tr("Session"),
+                &row.session_id,
+                theme,
+            ),
+            labelled_line(
+                maestro_ui::localization::tr("Title"),
+                &row.session_title,
+                theme,
+            ),
+            labelled_line(
+                maestro_ui::localization::tr("Started"),
+                &row.session_timestamp,
+                theme,
+            ),
+            labelled_line(maestro_ui::localization::tr("Cwd"), &row.session_cwd, theme),
             Line::from(""),
         ];
         if let Some(receipt) = &row.receipt {
             lines.extend([
-                labelled_line("Status", receipt.status, theme),
-                labelled_line("Source", receipt.source, theme),
-                labelled_line("Detail", receipt.detail_kind, theme),
+                labelled_line(
+                    maestro_ui::localization::tr("Status"),
+                    receipt.status,
+                    theme,
+                ),
+                labelled_line(
+                    maestro_ui::localization::tr("Source"),
+                    receipt.source,
+                    theme,
+                ),
+                labelled_line(
+                    maestro_ui::localization::tr("Detail"),
+                    receipt.detail_kind,
+                    theme,
+                ),
             ]);
             if let Some(phase) = receipt.phase {
-                lines.push(labelled_line("Phase", phase, theme));
+                lines.push(labelled_line(
+                    maestro_ui::localization::tr("Phase"),
+                    phase,
+                    theme,
+                ));
             }
             if let Some(duration_ms) = receipt.duration_ms {
                 lines.push(labelled_line(
-                    "Duration",
+                    maestro_ui::localization::tr("Duration"),
                     &format!("{duration_ms} ms"),
                     theme,
                 ));
@@ -1041,16 +1148,20 @@ impl OperationsModal {
                 lines.extend(raw_lines(detail, Some(STRING_LIMIT)));
             }
         } else {
-            lines.push(labelled_line("Status", row.result_status, theme));
+            lines.push(labelled_line(
+                maestro_ui::localization::tr("Status"),
+                row.result_status,
+                theme,
+            ));
             lines.push(Line::styled(
-                "No typed receipt persisted.",
+                maestro_ui::localization::tr("No typed receipt persisted."),
                 Style::default().fg(theme.muted),
             ));
         }
         if !self.parse_failures.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::styled(
-                "Session load failures",
+                maestro_ui::localization::tr("Session load failures"),
                 Style::default().fg(theme.error),
             ));
             lines.extend(
@@ -1060,7 +1171,7 @@ impl OperationsModal {
             );
         }
         let text = Text::from(lines);
-        let block = Self::pane_block("Receipt", focused, theme);
+        let block = Self::pane_block(maestro_ui::localization::tr("Receipt"), focused, theme);
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -1088,7 +1199,11 @@ impl OperationsModal {
                 .flat_map(|failure| raw_lines(failure, Some(STRING_LIMIT)))
                 .collect::<Vec<_>>(),
         );
-        let block = Self::pane_block("Session load failures", focused, theme);
+        let block = Self::pane_block(
+            maestro_ui::localization::tr("Session load failures"),
+            focused,
+            theme,
+        );
         let pane = block.inner(area);
         let max_scroll = crate::wrapping::wrapped_line_count(&text, pane.width as usize)
             .saturating_sub(pane.height as usize)
@@ -1125,7 +1240,7 @@ fn raw_lines(value: &str, limit: Option<usize>) -> Vec<Line<'static>> {
 
 fn format_timestamp(timestamp_ms: u64) -> String {
     if timestamp_ms == 0 {
-        return "Not recorded".to_string();
+        return maestro_ui::localization::tr("Not recorded").to_string();
     }
     chrono::DateTime::from_timestamp_millis(timestamp_ms as i64).map_or_else(
         || timestamp_ms.to_string(),
@@ -1204,6 +1319,8 @@ mod tests {
             thinking_level_changes: Vec::new(),
             model_changes: Vec::new(),
             compactions: Vec::new(),
+            session_events: Vec::new(),
+            context_budget_snapshots: Vec::new(),
             lifecycle_notifications: Vec::new(),
             pending_lifecycle_agent_notes: Vec::new(),
             usage_entries: Vec::new(),
@@ -1221,6 +1338,7 @@ mod tests {
                     name: "read".to_string(),
                     args: serde_json::json!({"path": "README.md"}),
                     contract: None,
+                    gemini_context: None,
                 }],
                 api: None,
                 provider: None,
@@ -1323,6 +1441,7 @@ mod tests {
                         "long": "x".repeat(300)
                     }),
                     contract: None,
+                    gemini_context: None,
                 }],
                 api: None,
                 provider: None,

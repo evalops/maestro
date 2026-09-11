@@ -178,7 +178,8 @@ impl VertexAiClient {
 
     /// Build the Vertex AI request body
     fn build_request(&self, messages: &[Message], config: &RequestConfig) -> Result<VertexRequest> {
-        let messages = super::transform::google_messages_for_wire(messages);
+        let messages = crate::cache_topology::messages_with_volatile_tail(messages, config);
+        let messages = super::transform::google_messages_for_wire(&messages);
         let contents = messages
             .iter()
             .map(|msg| self.message_to_content(msg))
@@ -236,7 +237,9 @@ impl VertexAiClient {
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
                         text: format!("<thinking>{thinking}</thinking>"),
                     }),
-                    ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
+                    ContentBlock::ToolUse {
+                        id: _, name, input, ..
+                    } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -316,6 +319,7 @@ async fn stream_vertex_response(
     let mut buffer = Vec::new();
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut cache_read_tokens = None;
     let mut next_block_index = 0usize;
     let mut terminal_stop_reason = None;
 
@@ -336,6 +340,7 @@ async fn stream_vertex_response(
                     &mut next_block_index,
                     &mut input_tokens,
                     &mut output_tokens,
+                    &mut cache_read_tokens,
                     &mut terminal_stop_reason,
                 );
             }
@@ -347,12 +352,11 @@ async fn stream_vertex_response(
     }
 
     // Send final usage
-    let _ = tx.send(StreamEvent::Usage {
+    let _ = tx.send(super::google::cache_usage_event(
         input_tokens,
         output_tokens,
-        cache_read_tokens: Some(0),
-        cache_creation_tokens: Some(0),
-    });
+        cache_read_tokens,
+    ));
     if terminal_stop_reason.is_some() {
         let _ = tx.send(StreamEvent::MessageStop {
             stop_reason: terminal_stop_reason,
@@ -368,6 +372,7 @@ fn emit_vertex_response(
     next_block_index: &mut usize,
     input_tokens: &mut u64,
     output_tokens: &mut u64,
+    cache_read_tokens: &mut Option<u64>,
     terminal_stop_reason: &mut Option<StopReason>,
 ) {
     if let Some(candidates) = response.candidates {
@@ -397,6 +402,7 @@ fn emit_vertex_response(
                                     id: format!("call_{}", uuid::Uuid::new_v4()),
                                     name: function_call.name,
                                     input: json!({}),
+                                    gemini_context: None,
                                 },
                             });
                             let _ = tx.send(StreamEvent::InputJsonDelta {
@@ -426,8 +432,9 @@ fn emit_vertex_response(
     }
 
     if let Some(metadata) = response.usage_metadata {
-        *input_tokens = metadata.prompt_token_count.unwrap_or(0);
-        *output_tokens = metadata.candidates_token_count.unwrap_or(0);
+        *input_tokens = metadata.prompt_token_count.unwrap_or(*input_tokens);
+        *output_tokens = metadata.candidates_token_count.unwrap_or(*output_tokens);
+        *cache_read_tokens = metadata.cached_content_token_count.or(*cache_read_tokens);
     }
 }
 
@@ -581,11 +588,75 @@ struct Candidate {
 struct UsageMetadata {
     prompt_token_count: Option<u64>,
     candidates_token_count: Option<u64>,
+    cached_content_token_count: Option<u64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_cache_usage_survives_partial_stream_updates() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (mut input, mut output, mut index) = (0, 0, 0);
+        let (mut cached, mut stop) = (None, None);
+        for metadata in [
+            serde_json::json!({"promptTokenCount":100,"cachedContentTokenCount":80}),
+            serde_json::json!({"candidatesTokenCount":5}),
+        ] {
+            let response =
+                serde_json::from_value(serde_json::json!({"usageMetadata": metadata})).unwrap();
+            emit_vertex_response(
+                response,
+                &tx,
+                &mut index,
+                &mut input,
+                &mut output,
+                &mut cached,
+                &mut stop,
+            );
+        }
+        let StreamEvent::Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            ..
+        } = super::super::google::cache_usage_event(input, output, cached)
+        else {
+            panic!("expected usage")
+        };
+        assert_eq!(
+            (input_tokens, output_tokens, cache_read_tokens),
+            (20, 5, Some(80))
+        );
+    }
+
+    #[test]
+    fn volatile_tail_reaches_the_provider_after_history() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::text("previous"),
+        }];
+        let mut config = RequestConfig::default();
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &messages,
+                &config,
+                "scope".into(),
+                None,
+            )
+            .unwrap()
+            .with_volatile_tail(Some("current clock and plan".into())),
+        );
+        let request =
+            serde_json::to_value(client.build_request(&messages, &config).unwrap()).unwrap();
+        assert_eq!(
+            request["contents"][1]["parts"][0]["text"],
+            "current clock and plan"
+        );
+        assert_eq!(request["contents"][0]["parts"][0]["text"], "previous");
+    }
 
     #[test]
     fn request_matches_foreign_tool_results_by_function_name() {
@@ -598,11 +669,13 @@ mod tests {
                         id: "call_shared|fc_a".into(),
                         name: "read".into(),
                         input: json!({"path":"a"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_shared|fc_b".into(),
                         name: "search".into(),
                         input: json!({"query":"b"}),
+                        gemini_context: None,
                     },
                 ]),
             },
@@ -764,6 +837,7 @@ mod tests {
                 id: "call-123".to_string(),
                 name: "read_file".to_string(),
                 input: json!({"path": "/tmp/test.txt"}),
+                gemini_context: None,
             }]),
         };
 
@@ -1043,6 +1117,7 @@ mod tests {
             &mut next_block_index,
             &mut input_tokens,
             &mut output_tokens,
+            &mut None,
             &mut terminal_stop_reason,
         );
         assert!(matches!(
@@ -1104,6 +1179,7 @@ mod tests {
                 &mut next_block_index,
                 &mut input_tokens,
                 &mut output_tokens,
+                &mut None,
                 &mut terminal_stop_reason,
             );
             let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
@@ -1141,6 +1217,7 @@ mod tests {
                     &mut next_block_index,
                     &mut input_tokens,
                     &mut output_tokens,
+                    &mut None,
                     &mut terminal_stop_reason,
                 ),
                 Ok(None) => {}
@@ -1258,6 +1335,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "read".to_string(),
                     input: json!({"path": "/test"}),
+                    gemini_context: None,
                 },
                 ContentBlock::Thinking {
                     thinking: "Let me think...".to_string(),
@@ -1830,6 +1908,7 @@ mod tests {
                 id: "call_456".to_string(),
                 name: "test_tool".to_string(),
                 input: json!({"arg": "value"}),
+                gemini_context: None,
             }]),
         };
 

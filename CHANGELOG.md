@@ -47,6 +47,80 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.86] - 2026-09-11
+
+### Added
+
+- Learn from adjudicated Maestro review feedback (#8927). <!-- maestro-release-note:e76c601dc4e4 -->
+
+### Changed
+
+- Render an editable composer during startup (#9014). <!-- maestro-release-note:710baf254f57 -->
+- Add trusted Python import review replays (#9008). <!-- maestro-release-note:969138eac0a2 -->
+- Refresh bundled model catalog (#9004). <!-- maestro-release-note:8a4de8965aac -->
+
+### Fixed
+
+- Bound inventory preparation and retain cancelled phase timings (#9013). <!-- maestro-release-note:90cda95fb72b -->
+- Run learning promotion on Vertex AI (#9012). <!-- maestro-release-note:b390e10f157e -->
+- Preserve Gemini tool history across model requests (#9011). <!-- maestro-release-note:d388d235376f -->
+- Bound and scope Cosign package bootstrap (#9010). <!-- maestro-release-note:5278bcbda198 -->
+- Restore deployed migration inventory (#9009). <!-- maestro-release-note:884754f712ac -->
+- Remap Gemini sanitized tool names onto declared Dex tools (#9002). <!-- maestro-release-note:32e8a23769eb -->
+- Dispatch platform runtime without waiting on Maestro (#9001). <!-- maestro-release-note:fe94ecf01c3d -->
+- Put the turn identity on the tool-failure warns (#8954). <!-- maestro-release-note:b725f861df5b -->
+- Recover audits and remove empty-claim polling (#9003). <!-- maestro-release-note:1028e337e89c -->
+- Surface governed tool approvals and resume the same call (#9007). <!-- maestro-release-note:040d6268d01b -->
+- Keep renewed resident processes alive (#9005). <!-- maestro-release-note:eaeb630fb3d4 -->
+- Repair Grid audit integration and Rust lint failures (#8998). <!-- maestro-release-note:ea4dca8c9464 -->
+
+## [0.10.85] - 2026-09-11
+
+### Added
+
+- Configure exact internal production cost scope (#8985). <!-- maestro-release-note:ef7c293094da -->
+- Execute and recover dynamic workflows (#8963). <!-- maestro-release-note:1d2ff7e23593 -->
+- Collect final responses and select native models (#8973). <!-- maestro-release-note:24420dc019ca -->
+- Add dex-turn-forensics, a one-command causal chain for a Dex turn (#8951). <!-- maestro-release-note:d7c7c19ea7e3 -->
+- Add local agent SDK devkit (#8941). <!-- maestro-release-note:03d2eda82628 -->
+- Add bounded dynamic swarm expansion (#8938). <!-- maestro-release-note:bd04281a213f -->
+- Add typed accepted-turn observation (#8933). <!-- maestro-release-note:1dac448549a3 -->
+- Manage inference enrollment across Dex clients (#8921). <!-- maestro-release-note:5e0afbbaeeff -->
+- Serve professional worlds to Dex over MCP (#8908). <!-- maestro-release-note:25f8ac6dcaa5 -->
+- Add product SDK, native embedding kit, and product scaffold (#8917). <!-- maestro-release-note:ba5b7c52acfd -->
+- Approve customer context before shared recall (#8883). <!-- maestro-release-note:1c37ca5f7503 -->
+- Deliver workspace invitations with recoverable onboarding (#8880). <!-- maestro-release-note:41b6d9b210ee -->
+
+### Changed
+
+- Publish dynamic workflow guide (#8993). <!-- maestro-release-note:0933016b780f -->
+- Repair stop lifecycle fixtures (#8987). <!-- maestro-release-note:254e622c87ed -->
+- Reduce transcript parsing during resume and fork (#8988). <!-- maestro-release-note:913975c6e65d -->
+- Operating turns wait on owner-pushed completions (#8986). <!-- maestro-release-note:2ab92f14abb6 -->
+- Shut down native runtime gateway fixtures deterministically (#8962). <!-- maestro-release-note:f9f6ebe8e7c3 -->
+- Use Maestro SDK in Dex headless smoke (#8959). <!-- maestro-release-note:efeaeb78377e -->
+- Stop presenting the removed trajectory dataset exporter as runnable (#8944). <!-- maestro-release-note:45261b874753 -->
+- Lock accepted-turn nextCursor to the owner watermark (#8937). <!-- maestro-release-note:d3e0a67be161 -->
+- Establish agent SDK parity baseline (#8930). <!-- maestro-release-note:eb9735118e7d -->
+- Organize repository tooling by responsibility (#8924). <!-- maestro-release-note:4d5bf86e0163 -->
+- Isolate Codex retry fixture homes (#8925). <!-- maestro-release-note:39127b40f3f0 -->
+- Adopt SDK in operating chat and native gateway (#8920). <!-- maestro-release-note:0dc2be51f58d -->
+
+### Fixed
+
+- Align computer dispatch with the runtime capability catalog (#8992). <!-- maestro-release-note:1cabd09868b0 -->
+- Report managed access sync failures without sensitive bodies (#8991). <!-- maestro-release-note:4ba1d7147317 -->
+- Release introspection flights when requests are cancelled (#8989). <!-- maestro-release-note:f067066bcf4e -->
+- Settle governed tools inside the claim before parking (#8984). <!-- maestro-release-note:60046a538137 -->
+- Separate internal usage from customer COGS (#8983). <!-- maestro-release-note:06fd0cdf3d68 -->
+- Renew active sterile cell leases with fenced claims (#8981). <!-- maestro-release-note:42ee7f97c3a3 -->
+- Preserve response identity across dispatch replay (#8979). <!-- maestro-release-note:786707cb51a4 -->
+- Preserve rewind state and checkpoint coverage (#8982). <!-- maestro-release-note:924813a43422 -->
+- Collect governed tool results promptly (#8980). <!-- maestro-release-note:c7119b5076c7 -->
+- Retain successful approval evidence on projection failure (#8978). <!-- maestro-release-note:4f90f25a6c1d -->
+- Dispatch computer turns through the durable runtime (#8977). <!-- maestro-release-note:670a842e3ba3 -->
+- Redact tool arguments and preserve approval calls (#8975). <!-- maestro-release-note:4fc2a2c648d8 -->
+
 ## [0.10.84] - 2026-09-08
 
 ### Added

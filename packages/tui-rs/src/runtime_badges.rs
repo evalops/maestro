@@ -66,7 +66,10 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
     ));
 
     if params.pending_approvals > 0 {
-        core.push(format!("pending:{}", params.pending_approvals));
+        core.push(maestro_ui::localization::format(
+            "pending:{0}",
+            &[(params.pending_approvals).to_string()],
+        ));
     }
 
     core.push(if params.workspace_trusted {
@@ -92,7 +95,10 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
     }
 
     if params.alert_count > 0 {
-        core.push(format!("alerts:{}", params.alert_count));
+        core.push(maestro_ui::localization::format(
+            "alerts:{0}",
+            &[(params.alert_count).to_string()],
+        ));
     }
 
     if let Some(label) = thinking_badge_label(params.thinking_level) {
@@ -184,10 +190,10 @@ fn approval_label(mode: ApprovalMode) -> &'static str {
 fn thinking_badge_label(level: ThinkingLevel) -> Option<&'static str> {
     match level {
         ThinkingLevel::Off => None,
-        ThinkingLevel::Minimal => Some("minimal"),
-        ThinkingLevel::Low => Some("low"),
-        ThinkingLevel::Medium => Some("medium"),
-        ThinkingLevel::High => Some("high"),
+        ThinkingLevel::Minimal => Some(maestro_ui::localization::tr("minimal")),
+        ThinkingLevel::Low => Some(maestro_ui::localization::tr("low")),
+        ThinkingLevel::Medium => Some(maestro_ui::localization::tr("medium")),
+        ThinkingLevel::High => Some(maestro_ui::localization::tr("high")),
         ThinkingLevel::Max => Some("max"),
     }
 }

@@ -320,7 +320,19 @@ async fn run_scripted_session(
     let mut completed = 0;
     let mut tool_ends = 0;
     let mut failed_tool_ids = Vec::new();
-    while let Some(event) = events.recv().await {
+    while let Some(event) = tokio::time::timeout(std::time::Duration::from_secs(30), events.recv())
+        .await
+        .expect("scripted session must make progress within 30 seconds")
+    {
+        assert!(
+            !matches!(
+                event,
+                FromAgent::Error { .. }
+                    | FromAgent::ProviderError { .. }
+                    | FromAgent::TurnInterrupted { .. }
+            ),
+            "scripted session must complete successfully: {event:?}"
+        );
         if let FromAgent::ToolEnd {
             call_id, success, ..
         } = &event
@@ -490,10 +502,13 @@ async fn run_scripted_multi_tool_turns(turn_count: usize) {
 }
 
 async fn run_scripted_long_history(turn_count: usize) {
-    let response_text = "Completed a long-history step. ".repeat(12);
+    // Repeated filler triggers the real text-loop breaker and measures recovery
+    // instead of successful history growth. Keep comparable length without loops.
     let responses = (0..turn_count)
-        .map(|_| ScriptedResponse {
-            blocks: vec![ScriptedBlock::Text(response_text.clone())],
+        .map(|index| ScriptedResponse {
+            blocks: vec![ScriptedBlock::Text(format!(
+                "Turn {index}: inspected the request preparation path. The transcript contains user text and tool results. Stable instructions precede the volatile tail. Request identity preserves the serialized message order. Accounting uses the current prepared request. The next step can build on this completed inspection without repeating earlier work."
+            ))],
             stop_reason: StopReason::EndTurn,
             error: None,
         })
@@ -748,6 +763,13 @@ mod tests {
 
     fn scenarios(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn long_history_fixture_completes_without_loop_recovery() {
+        Runtime::new()
+            .unwrap()
+            .block_on(run_scripted_long_history(2));
     }
 
     #[test]

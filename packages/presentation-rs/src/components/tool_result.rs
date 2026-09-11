@@ -56,12 +56,16 @@ impl ToolResult<'_> {
         }
         let t = self.theme;
         let (symbol, label, color) = match self.phase {
-            ToolPhase::Pending => ("○", "Pending · ", t.attention),
-            ToolPhase::Running => ("●", "Running · ", t.focus),
+            ToolPhase::Pending => ("○", maestro_ui::localization::tr("Pending · "), t.attention),
+            ToolPhase::Running => ("●", maestro_ui::localization::tr("Running · "), t.focus),
             ToolPhase::Completed => ("✓", "", t.success),
-            ToolPhase::Failed => ("!", "Failed · ", t.error),
-            ToolPhase::Cancelled => ("⊘", "Cancelled · ", t.attention),
-            ToolPhase::Blocked => ("!", "Blocked · ", t.attention),
+            ToolPhase::Failed => ("!", maestro_ui::localization::tr("Failed · "), t.error),
+            ToolPhase::Cancelled => (
+                "⊘",
+                maestro_ui::localization::tr("Cancelled · "),
+                t.attention,
+            ),
+            ToolPhase::Blocked => ("!", maestro_ui::localization::tr("Blocked · "), t.attention),
         };
         let title = format!("{label}{}", self.summary);
         let mut header = vec![
@@ -69,9 +73,9 @@ impl ToolResult<'_> {
             Span::styled(title.clone(), Style::default().fg(t.text)),
         ];
         let hint = if self.expanded {
-            "[−] collapse"
+            maestro_ui::localization::tr("[−] collapse")
         } else {
-            "[+] expand"
+            maestro_ui::localization::tr("[+] expand")
         };
         // Only show the complete action hint when it fits beside the outcome.
         let used = 4 + title.width();

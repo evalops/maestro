@@ -92,13 +92,13 @@ fn parse_filter(query: &str) -> (Option<PaletteResourceKind>, &str) {
     (None, trimmed)
 }
 
-const fn kind_caption(kind: PaletteResourceKind) -> &'static str {
+fn kind_caption(kind: PaletteResourceKind) -> &'static str {
     match kind {
-        PaletteResourceKind::Command => "All commands",
-        PaletteResourceKind::File => "Files",
-        PaletteResourceKind::Session => "Sessions",
-        PaletteResourceKind::Model => "Models",
-        PaletteResourceKind::Theme => "Themes",
+        PaletteResourceKind::Command => maestro_ui::localization::tr("All commands"),
+        PaletteResourceKind::File => maestro_ui::localization::tr("Files"),
+        PaletteResourceKind::Session => maestro_ui::localization::tr("Sessions"),
+        PaletteResourceKind::Model => maestro_ui::localization::tr("Models"),
+        PaletteResourceKind::Theme => maestro_ui::localization::tr("Themes"),
     }
 }
 
@@ -112,14 +112,14 @@ enum MatchRank {
 }
 
 fn rank_resource(resource: &PaletteResource, query: &str) -> Option<MatchRank> {
-    let query = query.trim().to_ascii_lowercase();
+    let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Some(MatchRank::Exact);
     }
     let names = std::iter::once(resource.id.as_str())
         .chain(std::iter::once(resource.label.as_str()))
         .chain(resource.search_terms.iter().map(String::as_str))
-        .map(str::to_ascii_lowercase)
+        .map(str::to_lowercase)
         .collect::<Vec<_>>();
     if names.contains(&query) {
         return Some(MatchRank::Exact);
@@ -131,9 +131,8 @@ fn rank_resource(resource: &PaletteResource, query: &str) -> Option<MatchRank> {
         return Some(MatchRank::Contains);
     }
     resource
-        .description
-        .as_ref()
-        .is_some_and(|value| value.to_ascii_lowercase().contains(&query))
+        .display_description()
+        .is_some_and(|value| value.to_lowercase().contains(&query))
         .then_some(MatchRank::Description)
 }
 
@@ -153,6 +152,7 @@ enum PaletteRow {
 /// Provides `render(&mut Frame)` rather than implementing `Widget` so it can
 /// place the terminal cursor inside the input.
 pub struct CommandPalette {
+    locale: crate::localization::Locale,
     panel_title: Option<String>,
     registry: Arc<CommandRegistry>,
     resources: Vec<PaletteResource>,
@@ -182,6 +182,7 @@ impl CommandPalette {
     pub fn new(registry: Arc<CommandRegistry>) -> Self {
         let resources = command_resources(&registry);
         Self {
+            locale: crate::localization::Locale::English,
             registry,
             resources,
             query: String::new(),
@@ -350,7 +351,18 @@ impl CommandPalette {
     /// A changed query resets selection and scroll to the top. An unchanged
     /// query (resource or registry refresh) keeps the selection while it is
     /// still in range.
+    pub fn set_locale(&mut self, locale: crate::localization::Locale) {
+        if self.locale != locale {
+            self.locale = locale;
+            self.search();
+        }
+    }
+
     fn search(&mut self) {
+        crate::localization::with_locale(self.locale, || self.search_in_locale());
+    }
+
+    fn search_in_locale(&mut self) {
         let (filter, text) = parse_filter(&self.query);
         let (matches, rows) = if self.panel_title.is_some() {
             let matches: Vec<usize> = self
@@ -439,7 +451,7 @@ impl CommandPalette {
                 })
             })
             .collect();
-        push_group("Recent", recent, RECENT_LIMIT);
+        push_group(maestro_ui::localization::tr("Recent"), recent, RECENT_LIMIT);
 
         let primary = self.registry.primary_commands();
         let common: Vec<usize> = primary
@@ -452,7 +464,11 @@ impl CommandPalette {
                 })
             })
             .collect();
-        push_group("Commands", common, primary.len());
+        push_group(
+            maestro_ui::localization::tr("Commands"),
+            common,
+            primary.len(),
+        );
 
         let group_cap = if filter.is_some() {
             RESULT_LIMIT
@@ -505,7 +521,9 @@ impl CommandPalette {
             .buffer_mut()
             .set_style(area, crate::themes::current_theme().canvas_style());
         let inner = Modal::sized(
-            self.panel_title.as_deref().unwrap_or("Search"),
+            self.panel_title
+                .as_deref()
+                .unwrap_or(maestro_ui::localization::tr("Search")),
             ModalSize::Wide,
         )
         .theme(theme)
@@ -544,24 +562,24 @@ impl CommandPalette {
         Picker::new(
             &self.query,
             if self.panel_title.is_some() {
-                "Filter actions…"
+                maestro_ui::localization::tr("Filter actions…")
             } else {
-                "Search commands, files, sessions…"
+                maestro_ui::localization::tr("Search commands, files, sessions…")
             },
             items,
             theme,
         )
         .cursor(self.cursor)
         .empty(if self.query.is_empty() {
-            "Type to search resources..."
+            maestro_ui::localization::tr("Type to search resources...")
         } else {
-            "No matching resources"
+            maestro_ui::localization::tr("No matching resources")
         })
         .help(if self.panel_title.is_some() {
             key_hints(
                 &[
-                    KeyHint::new("Enter", "select / apply"),
-                    KeyHint::new("Esc", "close unchanged"),
+                    KeyHint::new("Enter", maestro_ui::localization::tr("select / apply")),
+                    KeyHint::new("Esc", maestro_ui::localization::tr("close unchanged")),
                 ],
                 theme,
             )
@@ -595,19 +613,19 @@ impl CommandPalette {
 /// Keep selection and cancellation visible before optional resource shortcuts.
 fn footer_hint(width: u16, theme: UiTheme) -> Line<'static> {
     let mut hints = vec![
-        KeyHint::new("Enter", "select"),
-        KeyHint::new("Esc", "cancel"),
+        KeyHint::new("Enter", maestro_ui::localization::tr("select")),
+        KeyHint::new("Esc", maestro_ui::localization::tr("cancel")),
     ];
     if width >= 74 {
         hints.extend([
-            KeyHint::new(">", "cmd"),
-            KeyHint::new("@", "file"),
-            KeyHint::new("#", "session"),
-            KeyHint::new(":", "model"),
-            KeyHint::new("%", "theme"),
+            KeyHint::new(">", maestro_ui::localization::tr("cmd")),
+            KeyHint::new("@", maestro_ui::localization::tr("file")),
+            KeyHint::new("#", maestro_ui::localization::tr("session")),
+            KeyHint::new(":", maestro_ui::localization::tr("model")),
+            KeyHint::new("%", maestro_ui::localization::tr("theme")),
         ]);
     } else if width >= 40 {
-        hints.push(KeyHint::new("↑↓", "navigate"));
+        hints.push(KeyHint::new("↑↓", maestro_ui::localization::tr("navigate")));
     }
     key_hints(&hints, theme)
 }
@@ -629,7 +647,7 @@ fn render_panel_resource(
             theme.text_style()
         },
     ))];
-    if let Some(description) = &resource.description {
+    if let Some(description) = resource.display_description() {
         lines.push(Line::from(Span::styled(
             palette_ellipsis(description, usize::from(width)),
             theme.muted_style(),
@@ -672,7 +690,7 @@ fn render_resource(
             Style::default().fg(theme.focus),
         ));
     }
-    if let Some(description) = &resource.description {
+    if let Some(description) = resource.display_description() {
         let used: usize = spans.iter().map(|span| span.content.width()).sum();
         let remaining = usize::from(width).saturating_sub(used + 3);
         if remaining > 0 {
@@ -724,7 +742,7 @@ fn command_resources(registry: &CommandRegistry) -> Vec<PaletteResource> {
                 command.name.clone(),
                 format!("/{}", command.name),
             )
-            .description(command.description.clone())
+            .localized_description(command.description.clone(), command.localized_description)
             .search_terms(command.aliases.clone())
         })
         .collect()
@@ -993,7 +1011,10 @@ mod tests {
             "primary commands come first in registry browse order; compatibility commands stay hidden"
         );
         assert_eq!(captions(&palette), vec!["Commands", "Files"]);
-        assert_eq!(palette.selected_resource().unwrap().id, "model");
+        assert_eq!(
+            palette.selected_resource().unwrap().id,
+            maestro_ui::localization::tr("model")
+        );
 
         // Compatibility commands are still available through typed search.
         palette.insert_str("compact");

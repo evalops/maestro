@@ -302,3 +302,43 @@ test("the human report names the exact source location", (t) => {
 	assert.match(result.stderr, /Native Maestro runtime boundary check failed:/);
 	assert.match(result.stderr, /packages\/tui-rs\/src\/lib\.rs:3/);
 });
+
+function createHostFixture(t, { hostRust, hostExtra = "", gatewayExtra = "" } = {}) {
+    return createFixture(t, {
+        tuiCargo: tuiManifest + '\nmaestro-local-host = { path = "../local-host-rs" }\n',
+        tuiRust: "pub use maestro_local_host::NativeAgent;\n",
+        extraMembers: ["packages/local-host-rs", "packages/runtime-gateway-rs"],
+        extraFiles: {
+            "packages/local-host-rs/Cargo.toml": '[package]\nname = "maestro-local-host"\nversion = "0.1.0"\n[dependencies]\nmaestro-runtime.workspace = true\n' + hostExtra,
+            "packages/local-host-rs/src/lib.rs": hostRust ?? "pub struct NativeAgent { inner: maestro_runtime::NativeAgent }\n",
+            "packages/runtime-gateway-rs/Cargo.toml": '[package]\nname = "maestro-runtime-gateway"\nversion = "0.1.0"\n[dependencies]\nmaestro-local-host = { path = "../local-host-rs" }\n' + gatewayExtra,
+            "packages/runtime-gateway-rs/src/lib.rs": "pub use maestro_local_host::NativeAgent;\n",
+        },
+    });
+}
+
+test("accepts a shared local host that carries the runtime handle", (t) => {
+    const result = runChecker(createHostFixture(t));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("rejects an independent agent in the shared local host", (t) => {
+    const result = runChecker(createHostFixture(t, { hostRust: "pub struct NativeAgent;\n" }));
+    assert.equal(result.status, 1);
+    assert.ok(result.report.violations.some((v) => v.code === "host-owns-native-agent"));
+});
+
+test("rejects an aliased gateway dependency on the terminal application", (t) => {
+    const result = runChecker(createHostFixture(t, {
+        gatewayExtra: 'terminal = { package = "maestro-tui", path = "../tui-rs" }\n',
+    }));
+    assert.equal(result.status, 1);
+    assert.ok(result.report.violations.some((v) => v.code === "gateway-depends-on-tui"));
+});
+
+test("rejects a terminal application dependency hidden behind the local host", (t) => {
+    const result = runChecker(createHostFixture(t, { hostExtra: "maestro-tui.workspace = true\n" }));
+    assert.equal(result.status, 1);
+    assert.ok(result.report.violations.some((v) => v.code === "host-depends-on-tui"));
+    assert.ok(result.report.violations.some((v) => v.code === "gateway-depends-on-tui"));
+});

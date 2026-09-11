@@ -41,7 +41,7 @@ use super::tasks::{
     A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY, A2ASendMessageRequest, a2a_agent_message,
     a2a_artifact_update_event, a2a_error_response, a2a_status_update_event, a2a_task_is_terminal,
     a2a_task_tenant, a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id,
-    publish_a2a_task_update,
+    prune_a2a_terminal_tasks, publish_a2a_task_update, publish_a2a_task_update_locked,
 };
 
 const A2A_PUSH_NOTIFICATION_CONFIG_LIMIT: usize = 16;
@@ -382,7 +382,8 @@ pub(crate) async fn record_platform_a2a_push_payload(
             validate_platform_a2a_task_tenant(existing, service_auth)?;
         }
         tasks.insert(task_id.clone(), task.clone());
-        publish_a2a_task_update(state, &task).await;
+        prune_a2a_terminal_tasks(&mut tasks);
+        publish_a2a_task_update_locked(state, &task, &tasks).await;
         drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
@@ -403,7 +404,8 @@ pub(crate) async fn record_platform_a2a_push_payload(
         let mut task = platform_a2a_task_with_status_update(tasks.get(&task_id), status_update)?;
         bind_platform_a2a_task_tenant(&mut task, service_auth)?;
         tasks.insert(task_id, task.clone());
-        publish_a2a_task_update(state, &task).await;
+        prune_a2a_terminal_tasks(&mut tasks);
+        publish_a2a_task_update_locked(state, &task, &tasks).await;
         drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
@@ -425,7 +427,8 @@ pub(crate) async fn record_platform_a2a_push_payload(
             platform_a2a_task_with_artifact_update(tasks.get(&task_id), artifact_update)?;
         bind_platform_a2a_task_tenant(&mut task, service_auth)?;
         tasks.insert(task_id, task.clone());
-        publish_a2a_task_update(state, &task).await;
+        prune_a2a_terminal_tasks(&mut tasks);
+        publish_a2a_task_update_locked(state, &task, &tasks).await;
         drop(tasks);
         persist_a2a_tasks(state).await;
         return Ok(serde_json::json!({
@@ -1069,7 +1072,7 @@ pub(crate) fn a2a_push_select_pinned_addr(
 /// Returns true if `addr` is private, reserved, or otherwise not a routable
 /// public target for an A2A push notification callback.
 ///
-/// This delegates to `maestro_tui::tools::net_guard::is_blocked_ip`, the one
+/// This delegates to `maestro_local_host::tools::net_guard::is_blocked_ip`, the one
 /// SSRF address policy in this workspace. It used to duplicate the range list
 /// here with a "if you change one, change both" comment, and the two copies
 /// had drifted: this one did not block the 6to4 (`2002::/16`,
@@ -1078,7 +1081,7 @@ pub(crate) fn a2a_push_select_pinned_addr(
 /// `203.0.113.0/24`), site-local (`fec0::/10`), discard-only (`100::/64`), or
 /// IETF protocol assignment (`2001::/23`, including Teredo) ranges.
 pub(crate) fn a2a_push_ip_is_private(addr: IpAddr) -> bool {
-    maestro_tui::tools::net_guard::is_blocked_ip(addr)
+    maestro_local_host::tools::net_guard::is_blocked_ip(addr)
 }
 
 fn a2a_task_with_push_notification_config(task: &Value, config: Value) -> Result<Value, String> {

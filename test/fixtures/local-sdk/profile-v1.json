@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "evalops.maestro.local-sdk-profile.v1",
+  "protocolVersion": "2026-08-08",
+  "transport": {
+    "command": ["maestro", "--headless"],
+    "framing": "ndjson",
+    "stdin": "client_to_native",
+    "stdout": "native_to_client",
+    "stderr": "drain_and_discard_by_default; bounded_phase_and_exit_code_diagnostics_only",
+    "startup": ["ready", "session_info?", "hello", "hello_ok", "init", "status:init applied"]
+  },
+  "clientMessages": {
+    "allowed": ["hello", "init", "prompt", "tool_response", "interrupt", "cancel", "shutdown"],
+    "hello": {
+      "required": ["protocol_version", "client_info.name"],
+      "protocolVersion": "2026-08-08",
+      "forbidden": ["capabilities", "role", "controller_binding", "opt_out_notifications"]
+    },
+    "init": {
+      "required": ["approval_mode"],
+      "approvalMode": "prompt",
+      "optional": ["system_prompt", "append_system_prompt", "thinking_level", "history"]
+    },
+    "prompt": {
+      "required": ["content"],
+      "forbidden": ["attachments", "managed_inference_authorization"]
+    },
+    "tool_response": {
+      "required": ["call_id", "approved"],
+      "onlyFor": "pending_native_tool_call_requires_approval",
+      "forbidden": ["tool_execution_id", "result"]
+    }
+  },
+  "serverEvents": {
+    "core": [
+      "ready",
+      "session_info",
+      "hello_ok",
+      "status",
+      "response_start",
+      "response_chunk",
+      "response_end",
+      "tool_call",
+      "tool_start",
+      "tool_output",
+      "tool_end",
+      "response_accepted",
+      "turn_completed",
+      "turn_interrupted",
+      "provider_error",
+      "error"
+    ],
+    "informational": [
+      "compaction",
+      "conversation_snapshot",
+      "codex_session_state",
+      "codex_turn_state",
+      "codex_usage_state",
+      "codex_compatibility"
+    ]
+  },
+  "terminalReducer": {
+    "responseEndTerminal": false,
+    "explicitTurnTerminalRequired": true,
+    "firstTerminalWins": true,
+    "completed": ["turn_completed"],
+    "interrupted": ["turn_interrupted"],
+    "cancelled": ["error:cancelled"],
+    "failed": ["provider_error", "error:terminal", "error:fatal"]
+  },
+  "toolOwnership": {
+    "nativeRegistryOnly": true,
+    "callerExecutesTool": false,
+    "callerSuppliesToolResult": false,
+    "approvalMode": "prompt",
+    "nonApprovalToolAction": "native_executes_without_client_response",
+    "approvalToolAction": "client_decides_then_native_executes"
+  },
+  "excluded": [
+    "governed_init",
+    "governed_prompt",
+    "governed_steer",
+    "managed_inference_authorization",
+    "controller_binding",
+    "connection_roles",
+    "remote_attach",
+    "hosted_runner",
+    "platform_scope",
+    "restore_conversation",
+    "steer",
+    "apply_workspace_capability_set",
+    "configure_prompt_experiment",
+    "server_request_response",
+    "client_tool_request",
+    "client_tool_result",
+    "governed_client_tool_result",
+    "utility_operations",
+    "tool_response.tool_execution_id",
+    "tool_response.result"
+  ],
+  "clientResponsibilities": {
+    "lineLimit": "sdk_owned",
+    "timeout": "sdk_owned",
+    "cleanup": ["cancel", "wait_for_terminal", "shutdown_or_terminate_child"],
+    "unknownEvent": "protocol_error_never_success"
+  }
+}

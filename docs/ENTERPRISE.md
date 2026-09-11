@@ -44,7 +44,7 @@ check passes.
 
 `identity` at `https://identity.evalops.dev` is the only issuer.
 
-- CLI login is the existing PKCE loopback flow in `packages/tui-rs/src/init_cli.rs`.
+- CLI login is the existing PKCE loopback flow in `packages/local-host-rs/src/init_cli.rs`.
 - The stored session carries access token, refresh token, `organization_id`,
   and the selected `provider_ref`.
 - Model calls use the `evalops` provider in `packages/ai-rs` and go to

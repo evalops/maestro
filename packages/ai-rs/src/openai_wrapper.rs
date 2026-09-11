@@ -88,12 +88,23 @@ impl OpenAiClient {
         self.base.managed_gateway_scope()
     }
 
+    pub(crate) fn cache_namespace(&self) -> Result<String> {
+        self.base.cache_namespace()
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.base.set_managed_request_lineage(lineage_id);
     }
 
     pub(crate) fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
         self.base.set_managed_inference_authorization(authorization);
+    }
+
+    pub(crate) fn set_managed_authorization_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        self.base.set_managed_authorization_provider(provider);
     }
 
     #[cfg(test)]

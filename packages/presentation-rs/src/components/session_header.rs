@@ -155,7 +155,10 @@ pub fn format_context_usage(used: Option<u64>, window: Option<u64>) -> Option<St
             format_context_tokens(used),
             format_context_tokens(window)
         )),
-        (Some(used), None) if used > 0 => Some(format!("{} context", format_context_tokens(used))),
+        (Some(used), None) if used > 0 => Some(maestro_ui::localization::format(
+            "{0} context",
+            &[format_context_tokens(used)],
+        )),
         _ => None,
     }
 }

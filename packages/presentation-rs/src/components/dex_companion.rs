@@ -23,14 +23,14 @@ pub enum DexCompanionState {
 impl DexCompanionState {
     /// Plain state text remains visible even without color or animation.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Ready => "ready",
-            Self::Working => "working",
-            Self::NeedsInput => "needs input",
-            Self::Waiting => "waiting",
-            Self::Finished => "finished",
-            Self::Failed => "failed",
+            Self::Ready => maestro_ui::localization::tr("ready"),
+            Self::Working => maestro_ui::localization::tr("working"),
+            Self::NeedsInput => maestro_ui::localization::tr("needs input"),
+            Self::Waiting => maestro_ui::localization::tr("waiting"),
+            Self::Finished => maestro_ui::localization::tr("finished"),
+            Self::Failed => maestro_ui::localization::tr("failed"),
         }
     }
 }
