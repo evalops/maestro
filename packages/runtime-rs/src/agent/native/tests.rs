@@ -7646,3 +7646,6 @@ fn codex_turn_boundary_releases_patches_and_rejects_stale_item_approvals() {
     correlations.reset();
     assert_eq!(correlations.file_changes.capacity(), 0);
 }
+
+#[path = "session_scenarios.rs"]
+pub(super) mod session_scenarios;

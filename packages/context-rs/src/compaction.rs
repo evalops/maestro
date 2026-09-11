@@ -45,7 +45,7 @@ use crate::token_estimation::{self, IMAGE_TOKEN_ESTIMATE};
 use maestro_ai::{ContentBlock, Message, MessageContent, Role};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Durable state needed to continue a compacted conversation without guessing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +78,7 @@ pub struct ContinuationRecord {
     pub source_hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuationFileOperationKind {
     Read,
@@ -86,14 +86,14 @@ pub enum ContinuationFileOperationKind {
     Edit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContinuationFileOperation {
     pub tool_call_id: String,
     pub path: String,
     pub kind: ContinuationFileOperationKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ToolOutputReference {
     pub tool_call_id: String,
     pub path: String,
@@ -266,6 +266,21 @@ fn has_tool_calls(message: &Message) -> bool {
     } else {
         false
     }
+}
+
+/// Preserve first occurrence and order without repeatedly scanning growing history.
+/// The temporary index borrows entries; it does not duplicate their payloads.
+fn extend_unique<'a, T: Clone + Eq + std::hash::Hash + 'a>(
+    values: &mut Vec<T>,
+    prior: impl Iterator<Item = &'a T>,
+) {
+    let additions = {
+        let mut seen: HashSet<&T> = values.iter().collect();
+        prior
+            .filter(|value| seen.insert(*value))
+            .collect::<Vec<_>>()
+    };
+    values.extend(additions.into_iter().cloned());
 }
 
 /// Check if a position is a valid cut point
@@ -493,24 +508,14 @@ impl ContinuationRecord {
 
     pub fn merge_previous(&mut self, previous: &Self) {
         let mut operations = previous.file_operations.clone();
-        for operation in &self.file_operations {
-            if !operations.contains(operation) {
-                operations.push(operation.clone());
-            }
-        }
+        extend_unique(&mut operations, self.file_operations.iter());
         self.file_operations = operations;
-        for reference in &previous.tool_outputs {
-            if !self.tool_outputs.contains(reference) {
-                self.tool_outputs.push(reference.clone());
-            }
-        }
+        extend_unique(&mut self.tool_outputs, previous.tool_outputs.iter());
         if self.objective.is_none() {
             self.objective.clone_from(&previous.objective);
         }
         let mut requests = previous.user_requests.clone();
-        for request in &self.user_requests {
-            requests.push(request.clone());
-        }
+        requests.append(&mut self.user_requests);
         self.user_requests = requests;
         for (current, prior) in [
             (&mut self.constraints, &previous.constraints),
@@ -520,16 +525,21 @@ impl ContinuationRecord {
             (&mut self.next_actions, &previous.next_actions),
             (&mut self.verification, &previous.verification),
         ] {
-            for value in prior {
-                push_unique(current, value.clone());
-            }
+            extend_unique(
+                current,
+                prior.iter().filter(|value| !value.trim().is_empty()),
+            );
+        }
+        let mut command_positions = HashMap::new();
+        for (index, command) in self.commands.iter().enumerate() {
+            // Existing duplicate IDs historically resolve to the first occurrence.
+            command_positions
+                .entry(command.tool_call_id.clone())
+                .or_insert(index);
         }
         for command in &previous.commands {
-            if let Some(current) = self
-                .commands
-                .iter_mut()
-                .find(|current| current.tool_call_id == command.tool_call_id)
-            {
+            if let Some(&index) = command_positions.get(&command.tool_call_id) {
+                let current = &mut self.commands[index];
                 if current.command.is_empty() {
                     current.command.clone_from(&command.command);
                 }
@@ -538,9 +548,59 @@ impl ContinuationRecord {
                     current.failed = command.failed;
                 }
             } else {
+                command_positions.insert(command.tool_call_id.clone(), self.commands.len());
                 self.commands.push(command.clone());
             }
         }
+    }
+
+    /// A lower bound on semantic-summary bytes can reject long plain-text
+    /// histories before rendering/copying them. Envelope repair may shorten
+    /// malformed input, so that compatibility path still uses the full renderer.
+    fn semantic_summary_exceeds_budget(&self, generated: &str, budget: usize) -> bool {
+        let lists = [
+            &self.user_requests,
+            &self.constraints,
+            &self.decisions,
+            &self.open_questions,
+            &self.evidence,
+            &self.next_actions,
+            &self.verification,
+        ];
+        let mut minimum = generated.len();
+        for text in lists.into_iter().flatten() {
+            minimum = minimum.saturating_add(text.len()).saturating_add(2);
+        }
+        for command in &self.commands {
+            if !command.command.is_empty() {
+                minimum = minimum.saturating_add(command.command.len());
+                minimum = minimum.saturating_add(command.outcome.as_ref().map_or(0, String::len));
+            }
+        }
+        if minimum <= budget {
+            return false;
+        }
+        // Include bounded provenance rows too: an incomplete opener there could
+        // swallow the text used in the lower bound during envelope repair.
+        let marker = "<untrusted_content";
+        !generated.contains(marker)
+            && !lists
+                .into_iter()
+                .flatten()
+                .any(|text| text.contains(marker))
+            && !self.commands.iter().any(|command| {
+                command.command.contains(marker)
+                    || command
+                        .outcome
+                        .as_ref()
+                        .is_some_and(|text| text.contains(marker))
+            })
+            && !self.tool_outputs.iter().any(|reference| {
+                reference.path.contains(marker) || reference.tool_call_id.contains(marker)
+            })
+            && !self.file_operations.iter().any(|operation| {
+                operation.path.contains(marker) || operation.tool_call_id.contains(marker)
+            })
     }
 
     pub fn to_markdown(&self) -> String {
@@ -734,6 +794,11 @@ impl ContextCompactor {
         let Some(record) = &result.continuation else {
             return false;
         };
+        if record
+            .semantic_summary_exceeds_budget(generated.trim(), self.config.summary_char_budget())
+        {
+            return false;
+        }
         let summary = format!(
             "{}\n\n{}\n\n## User requests in order (verbatim data)\n{}",
             generated.trim(),
@@ -1739,6 +1804,103 @@ fn elide_message_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_semantic_history_rejects_before_rendering_without_changing_fallback() {
+        let compactor = ContextCompactor::new(CompactionConfig {
+            preserve_recent_count: 1,
+            ..Default::default()
+        });
+        let mut result = compactor.compact(&[
+            make_user_message("Keep this"),
+            make_assistant_message("Working"),
+        ]);
+        let record = result.continuation.as_mut().unwrap();
+        record.user_requests = vec!["Unicode 界 and escaped \n\t text".repeat(20_000)];
+        assert!(
+            record.semantic_summary_exceeds_budget(
+                "Continue",
+                compactor.config.summary_char_budget()
+            )
+        );
+        let original = serde_json::to_value((&result.messages, &result.continuation)).unwrap();
+        assert!(!compactor.apply_semantic_summary(&mut result, "Continue"));
+        assert_eq!(
+            serde_json::to_value((&result.messages, &result.continuation)).unwrap(),
+            original
+        );
+        // An incomplete envelope can shorten the rendered candidate. Preserve
+        // the existing repair/acceptance behavior instead of rejecting by length.
+        let malformed = "<untrusted_content source=\"";
+        assert!(
+            !result
+                .continuation
+                .as_ref()
+                .unwrap()
+                .semantic_summary_exceeds_budget(malformed, compactor.config.summary_char_budget())
+        );
+        assert!(compactor.apply_semantic_summary(&mut result, malformed));
+    }
+
+    #[test]
+    #[ignore = "manual continuation merge scaling measurement"]
+    fn continuation_merge_scaling_probe() {
+        for count in [1000, 2000, 4000, 8000, 16000] {
+            let previous = ContinuationRecord {
+                evidence: (0..count).map(|i| format!("evidence-{i:08}")).collect(),
+                commands: (0..count)
+                    .map(|i| ContinuationCommand {
+                        tool_call_id: format!("call-{i:08}"),
+                        command: "check".into(),
+                        outcome: Some("passed".into()),
+                        failed: false,
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let start = std::time::Instant::now();
+            let mut next = ContinuationRecord::default();
+            next.merge_previous(&previous);
+            eprintln!(
+                "CONTINUATION_MERGE entries={count} elapsed_us={}",
+                start.elapsed().as_micros()
+            );
+            assert_eq!(next, previous);
+        }
+    }
+
+    #[test]
+    fn continuation_merge_preserves_order_and_late_outcomes() {
+        let prior = ContinuationRecord {
+            user_requests: vec!["repeat".into(), "repeat".into()],
+            evidence: vec!["old".into(), "shared".into(), "old".into()],
+            commands: vec![ContinuationCommand {
+                tool_call_id: "call".into(),
+                command: "test".into(),
+                outcome: None,
+                failed: false,
+            }],
+            ..Default::default()
+        };
+        let mut next = ContinuationRecord {
+            user_requests: vec!["repeat".into()],
+            evidence: vec!["new".into(), "shared".into()],
+            commands: vec![ContinuationCommand {
+                tool_call_id: "call".into(),
+                command: String::new(),
+                outcome: Some("failed".into()),
+                failed: true,
+            }],
+            ..Default::default()
+        };
+        next.merge_previous(&prior);
+        assert_eq!(next.user_requests, vec!["repeat"; 3]);
+        assert_eq!(next.evidence, vec!["new", "shared", "old"]);
+        assert_eq!(next.commands.len(), 1);
+        assert_eq!(next.commands[0].command, "test");
+        assert_eq!(next.commands[0].outcome.as_deref(), Some("failed"));
+        assert!(next.commands[0].failed);
+    }
 
     #[test]
     fn file_provenance_survives_repeated_checkpoint_roundtrips() {

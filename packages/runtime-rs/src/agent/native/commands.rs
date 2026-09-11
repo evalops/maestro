@@ -413,6 +413,10 @@ impl NativeAgentRunner {
                 break;
             };
             match cmd {
+                #[cfg(test)]
+                AgentCommand::InspectSession { capture, reply } => {
+                    let _ = reply.send(tests::session_scenarios::inspect(&self, capture));
+                }
                 AgentCommand::ApplySelectiveSummary {
                     messages,
                     digest,
@@ -1329,7 +1333,9 @@ impl NativeAgentRunner {
                     self.semantic_continuation = None;
                     self.reset_tool_response_state();
                     self.reset_user_note_consumption();
-                    self.messages_mut().clear();
+                    // Reset ends this history's lifetime, including its high-water
+                    // capacity. Replacing also avoids copy-on-write before clearing.
+                    self.messages = Arc::new(Vec::new());
                     self.codex_session = None;
                     self.codex_correlations.reset();
                     self.codex_history_restore_prefix_len = None;

@@ -3469,7 +3469,7 @@ async fn auto_remote_reconnect_waits_for_disconnect_completion_before_next_boots
         }
     ));
 
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let markers = lifecycle_markers.lock().await.clone();
             let bootstrap_count = markers

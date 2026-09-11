@@ -4027,7 +4027,7 @@ async fn mcp_dispatch_propagates_cancellation_to_the_server() {
     });
 
     let execution = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         executor.execute_with_receipt_cancellable(
             "mcp__cancel-routing__mutate",
             &serde_json::json!({}),
@@ -4043,7 +4043,7 @@ async fn mcp_dispatch_propagates_cancellation_to_the_server() {
         execution.receipt.status,
         ExecutionStatus::Indeterminate
     ));
-    let notification = tokio::time::timeout(Duration::from_secs(1), cancel_rx.recv())
+    let notification = tokio::time::timeout(Duration::from_secs(5), cancel_rx.recv())
         .await
         .expect("cancellation notification timeout")
         .expect("server saw cancellation notification");

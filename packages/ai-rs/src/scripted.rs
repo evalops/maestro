@@ -110,6 +110,16 @@ impl ScriptedClient {
         }
     }
 
+    /// Append one response for incremental lifecycle fixtures without retaining
+    /// an entire long-session script in the provider queue.
+    #[cfg(feature = "test-support")]
+    pub fn push_response(&self, response: ScriptedResponse) {
+        self.responses
+            .lock()
+            .expect("scripted queue poisoned")
+            .push_back(response);
+    }
+
     /// Number of scripted responses not yet consumed.
     #[must_use]
     pub fn remaining(&self) -> usize {
@@ -174,8 +184,8 @@ impl ScriptedClient {
                 ScriptedBlock::Eof => return Ok(rx),
                 ScriptedBlock::Pending => {
                     tokio::spawn(async move {
-                        std::future::pending::<()>().await;
-                        drop(tx);
+                        // Remain pending only while someone can consume the stream.
+                        tx.closed().await;
                     });
                     return Ok(rx);
                 }
@@ -218,6 +228,34 @@ impl ScriptedClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_stream_releases_task_when_receiver_is_dropped() {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let baseline = metrics.num_alive_tasks();
+        let client = ScriptedClient::new(
+            "pending-lifetime",
+            (0..128)
+                .map(|_| ScriptedResponse {
+                    blocks: vec![ScriptedBlock::Pending],
+                    stop_reason: StopReason::EndTurn,
+                    error: None,
+                })
+                .collect(),
+        );
+        for _ in 0..128 {
+            let receiver = client.stream(&[], &RequestConfig::default()).await.unwrap();
+            drop(receiver);
+        }
+        for _ in 0..256 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            metrics.num_alive_tasks(),
+            baseline,
+            "abandoned scripted streams must release their tasks"
+        );
+    }
 
     fn sample_script() -> Vec<ScriptedResponse> {
         vec![
