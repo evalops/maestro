@@ -153,6 +153,12 @@ mod tests {
                     artifact_content: "Use the focused skill.".into(),
                 },
             },
+            ToAgentMessage::ManagedAuthorizationResult {
+                request_id: "invocation-1".into(),
+                authorization: maestro_runtime_contracts::ManagedInferenceAuthorization::new(
+                    "opaque-capability",
+                ),
+            },
             ToAgentMessage::Interrupt,
             ToAgentMessage::ToolResponse {
                 call_id: "call-1".into(),
@@ -269,6 +275,7 @@ mod tests {
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
             | ToAgentMessage::GovernedClientToolResult { .. }
+            | ToAgentMessage::ManagedAuthorizationResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
             | ToAgentMessage::UtilityCommandStart { .. }
             | ToAgentMessage::UtilityCommandTerminate { .. }
@@ -285,6 +292,9 @@ mod tests {
 
     fn live_from_agent_messages() -> Vec<FromAgentMessage> {
         vec![
+            FromAgentMessage::ManagedAuthorizationRequest {
+                request_id: "invocation-1".into(),
+            },
             FromAgentMessage::WorkspaceCapabilitySetApplied {
                 receipt: WorkspaceCapabilitySetApplied {
                     schema_version: "evalops.maestro.workspace-prompt-capability-set.v1".into(),
@@ -591,6 +601,7 @@ mod tests {
             | FromAgentMessage::ToolEnd { .. }
             | FromAgentMessage::ClientToolRequest { .. }
             | FromAgentMessage::GovernedClientToolRequest { .. }
+            | FromAgentMessage::ManagedAuthorizationRequest { .. }
             | FromAgentMessage::ServerRequest { .. }
             | FromAgentMessage::ServerRequestResolved { .. }
             | FromAgentMessage::Error { .. }
@@ -1114,6 +1125,7 @@ mod tests {
             Payload::GovernedPrompt(_) => "governed_prompt",
             Payload::GovernedSteer(_) => "governed_steer",
             Payload::GovernedClientToolResult(_) => "governed_client_tool_result",
+            Payload::ManagedAuthorizationResult(_) => "managed_authorization_result",
             Payload::ApplyWorkspaceCapabilitySet(_) => "apply_workspace_capability_set",
             Payload::ConfigurePromptExperiment(_) => "configure_prompt_experiment",
         }
@@ -1153,6 +1165,7 @@ mod tests {
             FromPayload::TurnInterrupted(_) => "turn_interrupted",
             FromPayload::ProviderError(_) => "provider_error",
             FromPayload::GovernedClientToolRequest(_) => "governed_client_tool_request",
+            FromPayload::ManagedAuthorizationRequest(_) => "managed_authorization_request",
             FromPayload::DelegationEvent(_) => "delegation_event",
             FromPayload::WorkspaceCapabilitySetApplied(_) => "workspace_capability_set_applied",
         }
@@ -1182,6 +1195,7 @@ mod tests {
             Payload::GovernedPrompt(Default::default()),
             Payload::GovernedSteer(Default::default()),
             Payload::GovernedClientToolResult(Default::default()),
+            Payload::ManagedAuthorizationResult(Default::default()),
             Payload::ApplyWorkspaceCapabilitySet(ApplyWorkspaceCapabilitySetMessage::default()),
             Payload::ConfigurePromptExperiment(Default::default()),
         ];
@@ -1237,6 +1251,7 @@ mod tests {
             FromPayload::TurnInterrupted(Default::default()),
             FromPayload::ProviderError(Default::default()),
             FromPayload::GovernedClientToolRequest(Default::default()),
+            FromPayload::ManagedAuthorizationRequest(Default::default()),
             FromPayload::DelegationEvent(Default::default()),
             FromPayload::WorkspaceCapabilitySetApplied(Default::default()),
         ];

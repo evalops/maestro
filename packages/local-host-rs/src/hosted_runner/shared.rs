@@ -1392,7 +1392,7 @@ impl SharedRunner {
         let Some(agent_state) = self.prune_pending_controller_events(state) else {
             return Vec::new();
         };
-        pending_controller_requests(&agent_state)
+        let mut events: Vec<_> = pending_controller_requests(&agent_state)
             .into_iter()
             .filter_map(|pending| {
                 state
@@ -1402,7 +1402,18 @@ impl SharedRunner {
                     .find(|message| pending_controller_event_matches(&pending, message))
                     .cloned()
             })
-            .collect()
+            .collect();
+        events.extend(
+            state
+                .pending_controller_events
+                .iter()
+                .filter(|message| {
+                    matches!(message, FromAgentMessage::ManagedAuthorizationRequest { request_id }
+                if agent_state.pending_managed_authorizations.contains(request_id))
+                })
+                .cloned(),
+        );
+        events
     }
 
     pub(super) fn prune_pending_controller_events(
@@ -1426,6 +1437,11 @@ impl SharedRunner {
             }
         }
         state.pending_controller_events.retain(|message| {
+            if let FromAgentMessage::ManagedAuthorizationRequest { request_id } = message {
+                return agent_state
+                    .pending_managed_authorizations
+                    .contains(request_id);
+            }
             pending_controller_event_key(message)
                 .and_then(|key| live_index.get(&key))
                 .is_some_and(|pending| {
@@ -1555,6 +1571,7 @@ impl SharedRunner {
                 | FromAgentMessage::TurnCompleted { .. }
                 | FromAgentMessage::TurnInterrupted { .. }
                 | FromAgentMessage::ServerRequest { .. }
+                | FromAgentMessage::ManagedAuthorizationRequest { .. }
                 | FromAgentMessage::ServerRequestResolved { .. }
                 | FromAgentMessage::Error { .. }
                 | FromAgentMessage::ProviderError { .. }
@@ -1567,7 +1584,16 @@ impl SharedRunner {
                 .into_iter()
                 .find(|pending| pending_controller_event_matches(pending, &message))
         });
-        if let Some(pending) = matching_pending {
+        if let FromAgentMessage::ManagedAuthorizationRequest { request_id } = &message {
+            if agent_state
+                .as_ref()
+                .is_some_and(|state| state.pending_managed_authorizations.contains(request_id))
+            {
+                state.pending_controller_events.retain(|existing| !matches!(existing,
+                    FromAgentMessage::ManagedAuthorizationRequest { request_id: existing_id } if existing_id == request_id));
+                state.pending_controller_events.push_back(message.clone());
+            }
+        } else if let Some(pending) = matching_pending {
             state
                 .pending_controller_events
                 .retain(|existing| !pending_controller_event_matches(&pending, existing));

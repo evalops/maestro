@@ -49,6 +49,8 @@ use super::{
 /// `Arc<Mutex<AgentState>>`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentState {
+    /// Transient pending invocations, never restored after resident process death.
+    pub pending_managed_authorizations: Vec<String>,
     /// Model information
     pub protocol_version: Option<String>,
     pub client_protocol_version: Option<String>,
@@ -649,6 +651,7 @@ impl AgentState {
         self.pending_client_tools.clear();
         self.pending_user_inputs.clear();
         self.pending_tool_retries.clear();
+        self.pending_managed_authorizations.clear();
         self.tracked_tools.clear();
     }
 
@@ -715,12 +718,15 @@ impl AgentState {
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
                 self.pending_tool_retries.clear();
+                self.pending_managed_authorizations.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
                 self.active_file_watches.clear();
                 self.tracked_tools.clear();
                 self.is_responding = false;
             }
+            // Retain the pending request until the native consumer acknowledges it.
+            ToAgentMessage::ManagedAuthorizationResult { .. } => {}
             ToAgentMessage::ToolResponse {
                 call_id, approved, ..
             } => {
@@ -787,6 +793,7 @@ impl AgentState {
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
                 self.pending_tool_retries.clear();
+                self.pending_managed_authorizations.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
                 self.active_file_watches.clear();
@@ -803,7 +810,17 @@ impl AgentState {
             // A provider conversation snapshot is durable private runtime state,
             // not a customer-visible protocol event.
             FromAgentMessage::ConversationSnapshot { .. } => None,
-            FromAgentMessage::ResponseAccepted { .. } => None,
+            FromAgentMessage::ManagedAuthorizationRequest { request_id } => {
+                if !self.pending_managed_authorizations.contains(&request_id) {
+                    self.pending_managed_authorizations.push(request_id);
+                }
+                None
+            }
+            FromAgentMessage::ResponseAccepted { request_id } => {
+                self.pending_managed_authorizations
+                    .retain(|id| id != &request_id);
+                None
+            }
             FromAgentMessage::ProcessBudgetCheckpoint { .. } => None,
             FromAgentMessage::ManagedGatewayReceipt {
                 request_id,
@@ -1041,6 +1058,7 @@ impl AgentState {
             } => {
                 self.is_responding = false;
                 self.current_response = None;
+                self.pending_managed_authorizations.clear();
                 Some(AgentEvent::TurnCompleted {
                     response_id,
                     coding_completion,
@@ -1054,6 +1072,7 @@ impl AgentState {
             } => {
                 self.is_responding = false;
                 self.current_response = None;
+                self.pending_managed_authorizations.clear();
                 Some(AgentEvent::TurnInterrupted {
                     response_id,
                     reason,
@@ -1494,6 +1513,7 @@ impl AgentState {
                 self.last_error_type = error_type;
                 self.provider_error_kind = None;
                 if fatal || terminal {
+                    self.pending_managed_authorizations.clear();
                     self.is_responding = false;
                     self.current_response = None;
                 }
@@ -1512,6 +1532,7 @@ impl AgentState {
                 self.provider_error_kind = Some(kind);
                 self.is_responding = false;
                 self.current_response = None;
+                self.pending_managed_authorizations.clear();
                 Some(AgentEvent::ProviderError { kind, message })
             }
 

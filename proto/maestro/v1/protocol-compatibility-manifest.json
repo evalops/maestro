@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:4bcbc853490d46efdcbcb1de022872054f127c5d954dff9183af01dfa9586628",
+  "compatibilityDigest": "sha256:d0d5b77ac9165ebb4d2fb96529af3eed31854473b855fc4a4a5ad424e3168b2e",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -37,10 +37,11 @@
         "2026-08-08"
       ],
       "schemaDeclaredVersion": "2026-08-08",
-      "schemaContractDigest": "sha256:cf65a6aa422720c6cec243479ba4c3a6c2f3e54f838d6cd1b3e2b788d04229d5",
-      "runtimeContractDigest": "sha256:596ce3fc6b25720fb90421bfd1627695dce0f9db2985492f14d16cebd95dca6d",
+      "schemaContractDigest": "sha256:52936fa6b3fc78afcdf96f5968297fd3bfbc3c35d093492882d14a1d721bc456",
+      "runtimeContractDigest": "sha256:e194b4faaa31493622b68dac4697b5d286ad05a576687087de0f307867c89f4c",
       "messages": {
         "toRuntime": [
+          "managed_authorization_result",
           "hello",
           "init",
           "governed_init",
@@ -68,6 +69,7 @@
           "shutdown"
         ],
         "fromRuntime": [
+          "managed_authorization_request",
           "conversation_snapshot",
           "hello_ok",
           "response_accepted",
@@ -174,7 +176,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:05af2c2e7f5b7458ac12b2c5440fba1bc98917340d0ba965c4ac8078b73815f0",
+      "contractDigest": "sha256:1f273f544becbd6282a4be89bf1d557a5e16ee731e577d0040f535b1794b346f",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",
@@ -199,7 +201,7 @@
     },
     "runtime": {
       "schemaVersion": "evalops.maestro.headless-protocol.v1",
-      "contractDigest": "sha256:191794d318091af702b473448e446be5ab26d409a2890f453ea92d6ae933f6c7",
+      "contractDigest": "sha256:641d393c709db54d139f93af6a3bcb1f93f97291518a1ef0ecd45e5b11b17c21",
       "receipt": {
         "schemaVersion": "evalops.maestro.runtime-receipt.v1",
         "sourceDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921",

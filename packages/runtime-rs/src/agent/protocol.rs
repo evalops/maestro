@@ -707,6 +707,8 @@ pub struct InlineToolApprovalContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgent {
+    /// Request a fresh opaque capability; contains no authority or secret.
+    ManagedAuthorizationRequest { request_id: String },
     /// In-process content for local transcript persistence, before tool dispatch.
     /// Never serialize provider thinking/signatures onto a public transport.
     #[serde(skip)]

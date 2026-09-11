@@ -1193,6 +1193,11 @@ impl NativeAgentRunner {
                             self.config.thinking_enabled = thinking_enabled;
                             self.config.thinking_budget = thinking_budget;
                             self.client = client;
+                            if let Some(client) = self.client.as_mut() {
+                                client.set_managed_authorization_provider(
+                                    self.managed_authorization.clone(),
+                                );
+                            }
                             self.model_route = model_route;
                             refresh_model_budgets_with_host(
                                 &self.tool_executor,

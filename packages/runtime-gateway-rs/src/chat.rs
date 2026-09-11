@@ -718,6 +718,10 @@ pub(crate) async fn handle_chat_endpoint(
             let terminal_status = native_chat_terminal_status(&event);
             let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
             match event {
+                FromAgent::ManagedAuthorizationRequest { .. } => {
+                    // This embedded chat path has no authenticated renewal controller.
+                    return Err("Managed authorization requires a hosted controller".to_owned());
+                }
                 FromAgent::Ready { .. }
                 | FromAgent::LocalAssistantContent { .. }
                 | FromAgent::ConversationSnapshot { .. }
@@ -1669,6 +1673,10 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             let terminal_status = native_chat_terminal_status(&event);
             let acknowledge_pending_peer_messages = native_chat_acknowledges_peer_messages(&event);
             match event {
+                FromAgent::ManagedAuthorizationRequest { .. } => {
+                    // This embedded chat path has no authenticated renewal controller.
+                    return Err("Managed authorization requires a hosted controller".to_owned());
+                }
                 FromAgent::Ready { .. }
                 | FromAgent::LocalAssistantContent { .. }
                 | FromAgent::ConversationSnapshot { .. }

@@ -1482,6 +1482,7 @@ fn hosted_message_kind(message: &ToAgentMessage) -> &'static str {
         ToAgentMessage::ToolResponse { .. } => "tool_response",
         ToAgentMessage::ClientToolResult { .. } => "client_tool_result",
         ToAgentMessage::GovernedClientToolResult { .. } => "governed_client_tool_result",
+        ToAgentMessage::ManagedAuthorizationResult { .. } => "managed_authorization_result",
         ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => "apply_workspace_capability_set",
         ToAgentMessage::ConfigurePromptExperiment { .. } => "configure_prompt_experiment",
         ToAgentMessage::ServerRequestResponse { .. } => "server_request_response",
@@ -4397,6 +4398,7 @@ async fn handle_message_inner(
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
             | ToAgentMessage::GovernedClientToolResult { .. }
+            | ToAgentMessage::ManagedAuthorizationResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
             | ToAgentMessage::Interrupt
             | ToAgentMessage::Cancel
@@ -4755,6 +4757,7 @@ fn is_control_response_message(message: &ToAgentMessage) -> bool {
         ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
             | ToAgentMessage::GovernedClientToolResult { .. }
+            | ToAgentMessage::ManagedAuthorizationResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
     )
 }

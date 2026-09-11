@@ -377,6 +377,16 @@ impl UnifiedClient {
         }
     }
 
+    /// Attach the trusted host's per-invocation renewal channel.
+    pub fn set_managed_authorization_provider(
+        &mut self,
+        provider: Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        if let Self::OpenAI(client) = self {
+            client.set_managed_authorization_provider(provider);
+        }
+    }
+
     /// Cache provenance is tenant/session-bound; this does not authorize inference.
     pub fn cache_namespace(&self) -> Result<String> {
         match self {

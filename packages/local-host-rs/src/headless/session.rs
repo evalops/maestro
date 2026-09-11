@@ -477,6 +477,7 @@ impl AgentStateCheckpoint {
     #[must_use]
     pub fn into_state(self) -> AgentState {
         AgentState {
+            pending_managed_authorizations: Vec::new(),
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
             controller_binding_version: self.controller_binding_version,
@@ -1106,6 +1107,11 @@ impl SessionRecorder {
 
     /// Record a sent message
     pub fn record_sent(&mut self, message: &ToAgentMessage) -> std::io::Result<()> {
+        // A renewal result is an ephemeral credential, not replayable state.
+        // Requests and Gateway receipts retain content-free correlation.
+        if matches!(message, ToAgentMessage::ManagedAuthorizationResult { .. }) {
+            return Ok(());
+        }
         let entry = SessionEntry::sent(without_ephemeral_managed_authorization(message));
         self.write_entry(&entry)?;
         self.replay_state.handle_sent_message(message);
@@ -2442,6 +2448,14 @@ mod tests {
         assert!(wire.contains("signed-capability-marker"));
 
         recorder.record_sent(&message).expect("record sent message");
+        recorder
+            .record_sent(&ToAgentMessage::ManagedAuthorizationResult {
+                request_id: "invocation-1".into(),
+                authorization: crate::agent::ManagedInferenceAuthorization::new(
+                    "renewed-capability-marker",
+                ),
+            })
+            .expect("record renewal delivery");
         recorder.flush_checkpoint().expect("flush session state");
         drop(recorder);
 
@@ -2452,6 +2466,7 @@ mod tests {
             let durable = fs::read_to_string(path).expect("read durable session data");
             assert!(!durable.contains("managed_inference_authorization"));
             assert!(!durable.contains("signed-capability-marker"));
+            assert!(!durable.contains("renewed-capability-marker"));
         }
     }
 

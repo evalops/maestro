@@ -100,6 +100,13 @@ impl OpenAiClient {
         self.base.set_managed_inference_authorization(authorization);
     }
 
+    pub(crate) fn set_managed_authorization_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        self.base.set_managed_authorization_provider(provider);
+    }
+
     #[cfg(test)]
     pub(crate) fn headers(&self) -> reqwest::header::HeaderMap {
         self.base.headers()

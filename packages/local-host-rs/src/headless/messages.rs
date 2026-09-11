@@ -199,6 +199,11 @@ pub fn decode_from_agent_message(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToAgentMessage {
+    /// Opaque capability delivered by the authenticated controller.
+    ManagedAuthorizationResult {
+        request_id: String,
+        authorization: maestro_runtime_contracts::ManagedInferenceAuthorization,
+    },
     /// Declare client identity and negotiated capabilities for this connection
     Hello {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,6 +430,7 @@ pub enum ToAgentMessage {
 impl ToAgentMessage {
     pub(crate) fn validate_managed_inference_authorization(&self) -> Result<(), &'static str> {
         let authorization = match self {
+            Self::ManagedAuthorizationResult { authorization, .. } => Some(authorization),
             Self::Prompt {
                 managed_inference_authorization,
                 ..
@@ -927,6 +933,8 @@ pub struct UtilityFileSearchMatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
+    /// A new HTTP invocation needs a fresh controller-issued capability.
+    ManagedAuthorizationRequest { request_id: String },
     /// Private native-provider conversation checkpoint. This is recorded for
     /// process recovery but is intentionally never surfaced as an agent event.
     ConversationSnapshot {
