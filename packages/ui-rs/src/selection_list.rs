@@ -102,7 +102,7 @@ impl Default for SelectionListConfig {
     fn default() -> Self {
         Self {
             max_visible: 10,
-            empty_message: "No matches".to_string(),
+            empty_message: crate::localization::tr("No matches").to_string(),
             selected_style: Style::default().fg(Color::Cyan),
             normal_style: Style::default(),
             description_style: Style::default().fg(Color::DarkGray),

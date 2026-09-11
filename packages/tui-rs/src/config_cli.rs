@@ -77,8 +77,15 @@ pub async fn run_config(args: &[String]) -> Result<i32> {
         "init" => run_init(&args[1..]),
         "local" => run_local(&args[1..]).await,
         other => {
-            eprintln!("Unknown config subcommand: {other}");
-            eprintln!("\nAvailable commands:");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown config subcommand: {0}", &[(other).to_string()])
+            );
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format("\nAvailable commands:", &[])
+            );
             println!("{}", config_help());
             Ok(1)
         }
@@ -125,7 +132,10 @@ fn run_path(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
 
-    println!("Configuration paths");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Configuration paths", &[])
+    );
     println!("{}", "─".repeat(40));
     for (label, path, exists) in entries {
         let status = if exists { "present" } else { "missing" };
@@ -154,7 +164,10 @@ fn run_list(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
 
-    println!("Settings: {}", display_path(&path));
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Settings: {0}", &[(display_path(&path)).clone()])
+    );
     if keys.is_empty() {
         println!("  (empty)");
     } else {
@@ -186,14 +199,26 @@ fn run_get(args: &[String]) -> Result<i32> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: deixic-code config get <key> [--scope user|project|local] [--json]"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Usage: deixic-code config get <key> [--scope user|project|local] [--json]",
+                        &[]
+                    )
                 );
                 return Ok(0);
             }
-            arg if arg.starts_with('-') => bail!("Unknown option: {arg}"),
+            arg if arg.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown option: {0}", &[(arg).to_string()])
+            ),
             arg => {
                 if key.is_some() {
-                    bail!("deixic-code config get accepts a single key");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("deixic-code config get accepts a single key", &[])
+                    );
                 }
                 key = Some(arg.to_owned());
                 index += 1;
@@ -201,7 +226,11 @@ fn run_get(args: &[String]) -> Result<i32> {
         }
     }
     let Some(key) = key else {
-        eprintln!("Key required. Usage: deixic-code config get <key>");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Key required. Usage: deixic-code config get <key>", &[])
+        );
         return Ok(1);
     };
 
@@ -224,7 +253,13 @@ fn run_get(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         None => {
-            eprintln!("Key not set: {key} (in {})", display_path(&path));
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Key not set: {0} (in {1})",
+                    &[(key).clone(), (display_path(&path)).clone()]
+                )
+            );
             Ok(1)
         }
     }
@@ -247,29 +282,53 @@ fn run_set(args: &[String]) -> Result<i32> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: deixic-code config set <key> <value> [--scope user|project|local]"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Usage: deixic-code config set <key> <value> [--scope user|project|local]",
+                        &[]
+                    )
                 );
                 return Ok(0);
             }
-            arg if arg.starts_with('-') => bail!("Unknown option: {arg}"),
+            arg if arg.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown option: {0}", &[(arg).to_string()])
+            ),
             arg => {
                 if key.is_none() {
                     key = Some(arg.to_owned());
                 } else if value_raw.is_none() {
                     value_raw = Some(arg.to_owned());
                 } else {
-                    bail!("deixic-code config set accepts a single key and value");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("deixic-code config set accepts a single key and value", &[])
+                    );
                 }
                 index += 1;
             }
         }
     }
     let Some(key) = key else {
-        eprintln!("Key required. Usage: deixic-code config set <key> <value>");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Key required. Usage: deixic-code config set <key> <value>",
+                &[]
+            )
+        );
         return Ok(1);
     };
     let Some(value_raw) = value_raw else {
-        eprintln!("Value required. Usage: deixic-code config set <key> <value>");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Value required. Usage: deixic-code config set <key> <value>",
+                &[]
+            )
+        );
         return Ok(1);
     };
 
@@ -282,7 +341,13 @@ fn run_set(args: &[String]) -> Result<i32> {
     }
     let rendered = toml::to_string_pretty(&root).context("failed to serialize config.toml")?;
     write_atomic(&path, &rendered)?;
-    println!("Set {key} in {}", display_path(&path));
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Set {0} in {1}",
+            &[(key).clone(), (display_path(&path)).clone()]
+        )
+    );
     Ok(0)
 }
 
@@ -331,13 +396,25 @@ fn run_show(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
 
-    println!("Configuration Inspection");
     println!(
-        "Generation: {}",
-        inspection["generation"].as_str().unwrap_or("unavailable")
+        "{}",
+        crate::localization::cli_locale().format("Configuration Inspection", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Generation: {0}",
+            &[inspection["generation"]
+                .as_str()
+                .unwrap_or("unavailable")
+                .to_string()]
+        )
     );
     println!();
-    println!("Config Sources");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Config Sources", &[])
+    );
     for source in &inspection["sources"]
         .as_array()
         .cloned()
@@ -360,7 +437,10 @@ fn run_show(args: &[String]) -> Result<i32> {
         .cloned()
         .unwrap_or_default();
     if providers.is_empty() {
-        println!("No providers configured");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No providers configured", &[])
+        );
         println!();
     } else {
         println!("Providers ({})", providers.len());
@@ -381,7 +461,11 @@ fn run_show(args: &[String]) -> Result<i32> {
             if !name.is_empty() {
                 println!("     {name}");
             }
-            println!("     Base URL: {base}");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("     Base URL: {0}", &[(base).to_string()])
+            );
             if let Some(models) = provider["models"].as_array() {
                 let shown = models.iter().take(3);
                 for model in shown {
@@ -389,7 +473,11 @@ fn run_show(args: &[String]) -> Result<i32> {
                     println!("       • {mid}");
                 }
                 if models.len() > 3 {
-                    println!("       ... and {} more", models.len() - 3);
+                    println!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("       ... and {0} more", &[(models.len() - 3).to_string()])
+                    );
                 }
             }
             println!();
@@ -397,7 +485,10 @@ fn run_show(args: &[String]) -> Result<i32> {
     }
 
     if let Some(settings) = inspection.get("settings") {
-        println!("Effective Settings (TOML)");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Effective Settings (TOML)", &[])
+        );
         if let Some(obj) = settings.as_object() {
             for (key, value) in obj {
                 println!("  {key}: {value}");
@@ -408,7 +499,11 @@ fn run_show(args: &[String]) -> Result<i32> {
 
     if let Some(refs) = inspection["fileReferences"].as_array() {
         if !refs.is_empty() {
-            println!("File References ({})", refs.len());
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("File References ({0})", &[(refs.len()).to_string()])
+            );
             for file_ref in refs {
                 let path = file_ref["path"].as_str().unwrap_or("");
                 let exists = file_ref["exists"].as_bool().unwrap_or(false);
@@ -426,7 +521,11 @@ fn run_show(args: &[String]) -> Result<i32> {
 
     if let Some(vars) = inspection["envVars"].as_array() {
         if !vars.is_empty() {
-            println!("Environment Variables ({})", vars.len());
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Environment Variables ({0})", &[(vars.len()).to_string()])
+            );
             for env_var in vars {
                 let name = env_var["name"].as_str().unwrap_or("?");
                 let set = env_var["set"].as_bool().unwrap_or(false);
@@ -449,11 +548,17 @@ fn run_validate(args: &[String]) -> Result<i32> {
         return Ok(i32::from(!result["valid"].as_bool().unwrap_or(false)));
     }
 
-    println!("Validating Configuration");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Validating Configuration", &[])
+    );
     println!();
     if let Some(files) = result["summary"]["configFiles"].as_array() {
         if !files.is_empty() {
-            println!("Config Files:");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("Config Files:", &[])
+            );
             for file in files {
                 if let Some(path) = file.as_str() {
                     println!("  • {}", display_path(Path::new(path)));
@@ -488,33 +593,59 @@ fn run_validate(args: &[String]) -> Result<i32> {
     }
 
     let summary = &result["summary"];
-    println!("Summary:");
     println!(
-        "  • Providers: {}",
-        summary["providers"].as_u64().unwrap_or(0)
-    );
-    println!("  • Models: {}", summary["models"].as_u64().unwrap_or(0));
-    println!(
-        "  • File References: {}",
-        summary["fileReferences"]
-            .as_array()
-            .map(|values| values.len())
-            .unwrap_or(0)
+        "{}",
+        crate::localization::cli_locale().format("Summary:", &[])
     );
     println!(
-        "  • Environment Variables: {}",
-        summary["envVars"]
-            .as_array()
-            .map(|values| values.len())
-            .unwrap_or(0)
+        "{}",
+        crate::localization::cli_locale().format(
+            "  • Providers: {0}",
+            &[(summary["providers"].as_u64().unwrap_or(0)).to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  • Models: {0}",
+            &[(summary["models"].as_u64().unwrap_or(0)).to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  • File References: {0}",
+            &[(summary["fileReferences"]
+                .as_array()
+                .map(|values| values.len())
+                .unwrap_or(0))
+            .to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "  • Environment Variables: {0}",
+            &[(summary["envVars"]
+                .as_array()
+                .map(|values| values.len())
+                .unwrap_or(0))
+            .to_string()]
+        )
     );
     println!();
 
     if result["valid"].as_bool().unwrap_or(false) {
-        println!("Configuration is valid");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Configuration is valid", &[])
+        );
         Ok(0)
     } else {
-        println!("Configuration has errors");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Configuration has errors", &[])
+        );
         Ok(1)
     }
 }
@@ -537,8 +668,17 @@ fn run_init(args: &[String]) -> Result<i32> {
                 index += 1;
             }
             "--help" | "-h" => {
-                println!("Usage: deixic-code config init [--preset <id>] [--force]");
-                println!("\nPresets:");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Usage: deixic-code config init [--preset <id>] [--force]",
+                        &[]
+                    )
+                );
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format("\nPresets:", &[])
+                );
                 for preset in provider_presets() {
                     let note = preset.note.unwrap_or("");
                     if note.is_empty() {
@@ -549,11 +689,20 @@ fn run_init(args: &[String]) -> Result<i32> {
                 }
                 return Ok(0);
             }
-            other => bail!("Unknown option for deixic-code config init: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown option for deixic-code config init: {0}",
+                    &[(other).to_string()]
+                )
+            ),
         }
     }
 
-    println!("Initialize Deixic Code Configuration");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Initialize Deixic Code Configuration", &[])
+    );
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let config_dir = cwd.join(".maestro");
     let config_path = config_dir.join("config.json");
@@ -569,7 +718,10 @@ fn run_init(args: &[String]) -> Result<i32> {
             false,
         )?
     {
-        println!("\nCancelled.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("\nCancelled.", &[])
+        );
         return Ok(0);
     }
 
@@ -580,11 +732,21 @@ fn run_init(args: &[String]) -> Result<i32> {
             .find(|preset| preset.id.eq_ignore_ascii_case(id))
         {
             Some(preset) => {
-                println!("\nUsing preset: {}", preset.name);
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("\nUsing preset: {0}", &[(preset.name).to_string()])
+                );
                 preset.clone()
             }
             None => {
-                eprintln!("Unknown preset \"{id}\", falling back to menu selection.");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Unknown preset \"{0}\", falling back to menu selection.",
+                        &[(id).to_string()]
+                    )
+                );
                 select_preset_interactively(&presets)?
             }
         }
@@ -597,9 +759,21 @@ fn run_init(args: &[String]) -> Result<i32> {
     let mut api_key = None;
     if preset.requires_api_key {
         if stdin_is_tty() {
-            println!("\n2. How would you like to provide your API key?");
-            println!("  1) Environment variable (recommended)");
-            println!("  2) Direct in config (not recommended)");
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("\n2. How would you like to provide your API key?", &[])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("  1) Environment variable (recommended)", &[])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("  2) Direct in config (not recommended)", &[])
+            );
             let choice = prompt_line("\nChoice (1-2): ")?;
             use_env = choice.trim() != "2";
             if use_env {
@@ -608,7 +782,13 @@ fn run_init(args: &[String]) -> Result<i32> {
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("{}_API_KEY", preset.id.to_ascii_uppercase()));
                 api_key_env = Some(env_name.clone());
-                println!("\nUsing environment variable: {env_name}");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "\nUsing environment variable: {0}",
+                        std::slice::from_ref(&(env_name))
+                    )
+                );
             } else {
                 let key = prompt_line("\nEnter API key: ")?;
                 api_key = Some(key.trim().to_owned());
@@ -620,20 +800,42 @@ fn run_init(args: &[String]) -> Result<i32> {
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("{}_API_KEY", preset.id.to_ascii_uppercase()));
             api_key_env = Some(env_name.clone());
-            println!("\nUsing environment variable: {env_name}");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "\nUsing environment variable: {0}",
+                    std::slice::from_ref(&(env_name))
+                )
+            );
             use_env = true;
         }
     } else if preset.managed {
-        println!(
-            "\nManaged gateway preset does not use a local API key. Run deixic-code evalops login after setup."
-        );
+        println!("{}", crate::localization::cli_locale().format("\nManaged gateway preset does not use a local API key. Run deixic-code evalops login after setup.", &[]));
     } else {
-        println!("\nLocal providers do not require API keys. Skipping step.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "\nLocal providers do not require API keys. Skipping step.",
+                &[]
+            )
+        );
     }
 
     let create_prompts = if stdin_is_tty() {
-        println!("\n3. Would you like to use file references for prompts?");
-        println!("  This creates a prompts/ folder for better organization.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "\n3. Would you like to use file references for prompts?",
+                &[]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "  This creates a prompts/ folder for better organization.",
+                &[]
+            )
+        );
         prompt_yes_no("\nUse file references? (Y/n): ", true)?
     } else {
         // Non-interactive default: create prompts for a useful starter project.
@@ -676,12 +878,24 @@ fn run_init(args: &[String]) -> Result<i32> {
         &config_path,
         &format!("{}\n", serde_json::to_string_pretty(&config)?),
     )?;
-    println!("\nCreated config {}", config_path.display());
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "\nCreated config {0}",
+            &[(config_path.display()).to_string()]
+        )
+    );
 
     if create_prompts {
         let system_prompt_path = prompts_dir.join("system.md");
         write_atomic(&system_prompt_path, DEFAULT_SYSTEM_PROMPT)?;
-        println!("Created prompt {}", system_prompt_path.display());
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Created prompt {0}",
+                &[(system_prompt_path.display()).to_string()]
+            )
+        );
     }
 
     if use_env {
@@ -703,20 +917,38 @@ fn run_init(args: &[String]) -> Result<i32> {
         }
     }
 
-    println!("\nConfiguration initialized successfully!");
-    println!("Next steps:");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("\nConfiguration initialized successfully!", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Next steps:", &[])
+    );
     if let Some(env_name) = provider
         .get("apiKeyEnv")
         .and_then(JsonValue::as_str)
         .map(str::to_owned)
     {
-        println!("  1. Set {env_name} in your environment");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "  1. Set {0} in your environment",
+                std::slice::from_ref(&(env_name))
+            )
+        );
     }
     if create_prompts {
         println!("  2. Edit .maestro/prompts/system.md");
     }
-    println!("  3. Run: deixic-code models list");
-    println!("  4. Start using: maestro \"your prompt\"");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("  3. Run: deixic-code models list", &[])
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("  4. Start using: maestro \"your prompt\"", &[])
+    );
     Ok(0)
 }
 
@@ -745,21 +977,32 @@ async fn run_local(args: &[String]) -> Result<i32> {
                 scope = match value.as_str() {
                     "project" | "1" => Scope::Project,
                     "user" | "home" | "global" | "2" => Scope::User,
-                    other => bail!("unknown local scope: {other}"),
+                    other => bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("unknown local scope: {0}", &[(other).to_string()])
+                    ),
                 };
                 index += 2;
             }
             "--help" | "-h" => {
-                println!(
-                    "Usage: deixic-code config local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]"
-                );
+                println!("{}", crate::localization::cli_locale().format("Usage: deixic-code config local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]", &[]));
                 return Ok(0);
             }
-            other => bail!("Unknown option for deixic-code config local: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown option for deixic-code config local: {0}",
+                    &[(other).to_string()]
+                )
+            ),
         }
     }
 
-    println!("Local provider helper");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Local provider helper", &[])
+    );
     // Non-interactive default when only --check or no TTY: check endpoints.
     if (check_only || provider.is_none() && !stdin_is_tty()) && provider.is_none() {
         check_only = true;
@@ -779,13 +1022,30 @@ async fn run_local(args: &[String]) -> Result<i32> {
             "lmstudio" | "1" => "lmstudio",
             "ollama" | "2" => "ollama",
             "llamacpp" | "llama.cpp" | "llama-cpp" | "3" => "llamacpp",
-            other => bail!("Unknown local provider: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown local provider: {0}", &[(other).to_string()])
+            ),
         }
     } else {
-        println!("  1) Add LM Studio provider");
-        println!("  2) Add Ollama provider");
-        println!("  3) Add llama.cpp provider (Qwen3.8-27B)");
-        println!("  4) Check local endpoints");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  1) Add LM Studio provider", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  2) Add Ollama provider", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  3) Add llama.cpp provider (Qwen3.8-27B)", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  4) Check local endpoints", &[])
+        );
         println!("  5) Cancel");
         let choice = prompt_line("\nChoice (1-5): ")?;
         match choice.trim() {
@@ -797,7 +1057,10 @@ async fn run_local(args: &[String]) -> Result<i32> {
                 return Ok(0);
             }
             "5" => {
-                println!("\nCancelled.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format("\nCancelled.", &[])
+                );
                 return Ok(0);
             }
             "2" => "ollama",
@@ -809,7 +1072,10 @@ async fn run_local(args: &[String]) -> Result<i32> {
     let template = local_provider_template(template_key)?;
     let interactive_local = provider_flag.is_none();
     if interactive_local {
-        println!("\nSave provider to:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("\nSave provider to:", &[])
+        );
         println!("  1) Project (.maestro/local.json)");
         println!("  2) Home (~/.maestro/local.json)");
         let choice = prompt_line("\nChoice (1-2): ")?;
@@ -914,17 +1180,36 @@ async fn run_local(args: &[String]) -> Result<i32> {
         &local_path,
         &format!("{}\n", serde_json::to_string_pretty(&config)?),
     )?;
-    println!("\nUpdated local config {}", local_path.display());
     println!(
-        "Reload your models (/model) after starting the local runtime to use the new provider."
+        "{}",
+        crate::localization::cli_locale().format(
+            "\nUpdated local config {0}",
+            &[(local_path.display()).to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Reload your models (/model) after starting the local runtime to use the new provider.",
+            &[]
+        )
     );
     if template.id == "llamacpp" {
         println!(
-            "Set LLAMA_CPP_BASE_URL before starting Deixic Code to override {}.",
-            template.base_url
+            "{}",
+            crate::localization::cli_locale().format(
+                "Set LLAMA_CPP_BASE_URL before starting Deixic Code to override {0}.",
+                &[(template.base_url).to_string()]
+            )
         );
     }
-    println!("Tip: run `deixic-code config local --check` to check connectivity.");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Tip: run `deixic-code config local --check` to check connectivity.",
+            &[]
+        )
+    );
     Ok(0)
 }
 
@@ -1419,8 +1704,16 @@ fn parse_scope_json(args: &[String], default: Scope) -> Result<(Scope, bool)> {
                 index += 1;
             }
             "--help" | "-h" => {}
-            other if other.starts_with('-') => bail!("Unknown option: {other}"),
-            other => bail!("Unexpected argument: {other}"),
+            other if other.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown option: {0}", &[(other).to_string()])
+            ),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unexpected argument: {0}", &[(other).to_string()])
+            ),
         }
     }
     Ok((scope, json))
@@ -1481,7 +1774,11 @@ fn get_dotted(value: &TomlValue, key: &str) -> Option<TomlValue> {
 
 fn set_dotted(root: &mut TomlValue, key: &str, value: TomlValue) -> Result<()> {
     if key.trim().is_empty() || key.split('.').any(|part| part.is_empty()) {
-        bail!("invalid config key: {key}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("invalid config key: {0}", &[(key).to_string()])
+        );
     }
     if !matches!(root, TomlValue::Table(_)) {
         *root = TomlValue::Table(toml::map::Map::new());
@@ -1745,7 +2042,10 @@ fn resolved_base_url(preset: &ProviderPreset) -> Option<String> {
 }
 
 fn select_preset_interactively(presets: &[ProviderPreset]) -> Result<ProviderPreset> {
-    println!("\n1. Choose your provider");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("\n1. Choose your provider", &[])
+    );
     for (index, preset) in presets.iter().enumerate() {
         match preset.note {
             Some(note) => println!("  {}) {} — {note}", index + 1, preset.name),
@@ -1806,7 +2106,13 @@ fn local_provider_template(key: &str) -> Result<LocalProviderTemplate> {
             context_window: 262_144,
             max_tokens: 32_768,
         }),
-        other => bail!("unknown local provider template: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unknown local provider template: {0}",
+                &[(other).to_string()]
+            )
+        ),
     }
 }
 

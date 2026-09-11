@@ -1,0 +1,44 @@
+{
+  "schema": "evalops.maestro.session-scenario.v1",
+  "context_window": 4096,
+  "name": "interrupted-turns-regression",
+  "steps": [
+    {
+      "action": "cancel",
+      "count": 128,
+      "prompt_bytes": 384
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "retained_requests": {
+          "min": 1,
+          "max": 128
+        },
+        "pending_prompts": {
+          "max": 0
+        },
+        "deferred_commands": {
+          "max": 0
+        },
+        "message_tokens": {
+          "max": 4096
+        }
+      }
+    },
+    {
+      "action": "clear"
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "messages": {
+          "max": 0
+        },
+        "continuation_bytes": {
+          "max": 0
+        }
+      }
+    }
+  ]
+}

@@ -462,7 +462,10 @@ impl Loader {
         if let (Some(current), Some(total)) = (self.current_step, self.total_steps) {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(
-                format!("step {current}/{total}"),
+                crate::localization::format(
+                    "step {0}/{1}",
+                    &[(current).to_string(), (total).to_string()],
+                ),
                 Style::default().fg(Color::DarkGray),
             ));
         }

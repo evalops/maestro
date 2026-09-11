@@ -13,5 +13,12 @@
   "streamRetryCount": 1,
   "streamRecoveryCount": 1,
   "requestRetryCount": 0,
-  "streamOpenFailureCount": 0
+  "streamOpenFailureCount": 0,
+  "contextEstimation": {
+    "responses": 2,
+    "estimatedInputTokens": 800,
+    "observedInputTokens": 900,
+    "absoluteErrorTokens": 100,
+    "underestimatedResponses": 1
+  }
 }

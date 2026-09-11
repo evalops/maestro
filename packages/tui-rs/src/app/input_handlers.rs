@@ -3,16 +3,28 @@ use super::*;
 fn model_palette_resource(
     model: &crate::model_catalog::ModelInfo,
     current_route: Option<&str>,
+    locale: crate::localization::Locale,
 ) -> PaletteResource {
     let route = crate::model_catalog::model_route(model);
-    let mut resource = PaletteResource::from(model).description(format!(
-        "{} · {}k context · {:?}",
-        model.provider,
-        model.capabilities.context_tokens / 1000,
-        model.verification.state
-    ));
+    let mut resource = PaletteResource::from(model).description(
+        locale.format(
+            "{0} · {1}k context · {2}",
+            &[
+                (model.provider).clone(),
+                (model.capabilities.context_tokens / 1000).to_string(),
+                locale
+                    .translate(match model.verification.state {
+                        crate::model_catalog::VerificationState::Catalog => "Catalog",
+                        crate::model_catalog::VerificationState::Verified => "Verified",
+                        crate::model_catalog::VerificationState::Unavailable => "Unavailable",
+                        crate::model_catalog::VerificationState::Unknown => "Unknown",
+                    })
+                    .to_owned(),
+            ],
+        ),
+    );
     if current_route == Some(route.as_str()) {
-        resource = resource.status("current");
+        resource = resource.status(locale.translate("current"));
     }
     resource
 }
@@ -179,9 +191,9 @@ impl App {
         if is_focus_view_binding(code, modifiers) {
             let enabled = self.state.toggle_focus_view();
             self.state.status = Some(if enabled {
-                "Focus view on".to_string()
+                self.state.locale.translate("Focus view on").to_string()
             } else {
-                "Focus view off".to_string()
+                self.state.locale.translate("Focus view off").to_string()
             });
             return Ok(());
         }
@@ -241,7 +253,12 @@ impl App {
                     }
                     // Make cancel vs quit explicit: first Ctrl+C cancels the
                     // turn; a second Ctrl+C while idle quits (handled below).
-                    self.state.status = Some("Cancelled. Ctrl+C again to quit.".to_string());
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .translate("Cancelled. Ctrl+C again to quit.")
+                            .to_string(),
+                    );
                 } else {
                     self.should_quit = true;
                 }
@@ -487,8 +504,9 @@ impl App {
                     // Surface the path in the composer so the operator sees it.
                     let mention = format!("[image:{path_str}] ");
                     self.state.insert_paste(&mention);
-                    self.state.status = Some(format!(
-                        "Pasted image → attached for next prompt: {path_str}"
+                    self.state.status = Some(self.state.locale.format(
+                        "Pasted image → attached for next prompt: {0}",
+                        std::slice::from_ref(&(path_str)),
                     ));
                     self.update_slash_state();
                 } else if let Ok(text) = self.clipboard.paste() {
@@ -522,12 +540,17 @@ impl App {
                         self.state.set_input("");
                         self.update_slash_state();
                         self.last_esc_at = None;
-                        self.state.status.replace("Input cleared".to_string());
-                    } else {
-                        self.last_esc_at = Some(now);
                         self.state
                             .status
-                            .replace("Press Esc again to clear input".to_string());
+                            .replace(self.state.locale.translate("Input cleared").to_string());
+                    } else {
+                        self.last_esc_at = Some(now);
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Press Esc again to clear input")
+                                .to_string(),
+                        );
                     }
                 } else {
                     let now = Instant::now();
@@ -539,9 +562,12 @@ impl App {
                         self.open_rewind_picker();
                     } else {
                         self.last_esc_at = Some(now);
-                        self.state
-                            .status
-                            .replace("Press Esc again to rewind files".to_string());
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .translate("Press Esc again to rewind files")
+                                .to_string(),
+                        );
                     }
                 }
             }
@@ -651,7 +677,11 @@ impl App {
             KeyCode::Enter => {
                 if self.state.busy {
                     self.state.status = Some(
-                        "Wait for the active response to finish before switching sessions."
+                        self.state
+                            .locale
+                            .translate(
+                                "Wait for the active response to finish before switching sessions.",
+                            )
                             .to_string(),
                     );
                     return Ok(());
@@ -661,7 +691,11 @@ impl App {
                     match self.session_manager.load_session(&session_id) {
                         Ok(session) => self.apply_resumed_session(&session),
                         Err(e) => {
-                            self.state.error = Some(format!("Failed to load session: {e}"));
+                            self.state.error = Some(
+                                self.state
+                                    .locale
+                                    .format("Failed to load session: {0}", &[(e).to_string()]),
+                            );
                         }
                     }
                 }
@@ -716,7 +750,10 @@ impl App {
                         .approve_held_subagent_control(&message_id)
                     {
                         Ok(_) => {
-                            self.state.status = Some(format!("Approved control {message_id}"));
+                            self.state.status = Some(self.state.locale.format(
+                                "Approved control {0}",
+                                std::slice::from_ref(&(message_id)),
+                            ));
                             self.operations.refresh();
                         }
                         Err(error) => self.state.error = Some(error),
@@ -727,7 +764,10 @@ impl App {
                 if let Some(subagent_id) = self.operations.selected_agent_id().map(str::to_owned) {
                     match self.tool_executor.cancel_subagent_by_id(&subagent_id) {
                         Ok(()) => {
-                            self.state.status = Some(format!("Cancelled subagent {subagent_id}"));
+                            self.state.status = Some(self.state.locale.format(
+                                "Cancelled subagent {0}",
+                                std::slice::from_ref(&(subagent_id)),
+                            ));
                             self.operations.refresh();
                         }
                         Err(error) => self.state.error = Some(error),
@@ -740,22 +780,43 @@ impl App {
     }
 
     pub(super) async fn handle_mcp_manager_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.mcp_manager.in_catalog() {
+            match code {
+                KeyCode::Esc => self.mcp_manager.leave_catalog(),
+                KeyCode::Up => self.mcp_manager.move_up(),
+                KeyCode::Down => self.mcp_manager.move_down(),
+                KeyCode::Backspace => self.mcp_manager.search_backspace(),
+                KeyCode::Char(ch) if !ch.is_control() => self.mcp_manager.search_character(ch),
+                KeyCode::Enter => {
+                    if let Some(entry) = self.mcp_manager.selected_catalog() {
+                        if self.mcp_manager.catalog_entry_configured(entry.id) {
+                            self.state.status = Some(format!(
+                                "{}: {}",
+                                entry.id,
+                                self.state
+                                    .locale
+                                    .text(crate::localization::TextKey::Configured)
+                            ));
+                        } else if self
+                            .apply_mcp_manager_config(vec![
+                                "registry".into(),
+                                "add".into(),
+                                entry.id.into(),
+                            ])
+                            .await
+                        {
+                            self.mcp_manager.leave_catalog();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         match code {
-            KeyCode::Esc if self.mcp_manager.in_catalog() => self.mcp_manager.leave_catalog(),
             KeyCode::Esc => self.active_modal = ActiveModal::None,
             KeyCode::Up => self.mcp_manager.move_up(),
             KeyCode::Down => self.mcp_manager.move_down(),
-            KeyCode::Enter if self.mcp_manager.in_catalog() => {
-                if let Some(entry) = self.mcp_manager.selected_catalog() {
-                    self.apply_mcp_manager_config(vec![
-                        "registry".to_string(),
-                        "add".to_string(),
-                        entry.id.to_string(),
-                    ])
-                    .await;
-                    self.mcp_manager.leave_catalog();
-                }
-            }
             KeyCode::Enter => self.mcp_manager.toggle_tools(),
             KeyCode::Char('r' | 'R') => {
                 if let Some(name) = self
@@ -766,18 +827,18 @@ impl App {
                     self.tool_executor.retry_mcp_server(&name).await;
                     self.last_mcp_status_refresh = None;
                     self.refresh_mcp_badges_with_force(true).await;
-                    self.state.status = Some(format!("Retrying MCP server {name}"));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("Retrying MCP server {0}", std::slice::from_ref(&(name))),
+                    );
                 }
             }
             KeyCode::Char(' ') => {
                 let selected = self.mcp_manager.selected().cloned();
                 if let Some(status) = selected {
                     if !mcp_manager_entry_is_mutable(&status) {
-                        self.state.status = Some(format!(
-                            "MCP server {} is controlled by {} configuration and is read-only here",
-                            status.name,
-                            mcp_scope_arg(status.scope)
-                        ));
+                        self.state.status = Some(self.state.locale.format("MCP server {0} is controlled by {1} configuration and is read-only here", &[(status.name).clone(), (mcp_scope_arg(status.scope)).to_string()]));
                         return Ok(());
                     }
                     if let Some((tool, enabled)) = self
@@ -819,27 +880,19 @@ impl App {
             KeyCode::Char('o' | 'O') => {
                 if let Some(status) = self.mcp_manager.selected().cloned() {
                     if !mcp_manager_entry_is_mutable(&status) {
-                        self.state.status = Some(format!(
-                            "MCP server {} is controlled by {} configuration and is read-only here",
-                            status.name,
-                            mcp_scope_arg(status.scope)
-                        ));
+                        self.state.status = Some(self.state.locale.format("MCP server {0} is controlled by {1} configuration and is read-only here", &[(status.name).clone(), (mcp_scope_arg(status.scope)).to_string()]));
                         return Ok(());
                     }
-                    self.active_modal = ActiveModal::None;
-                    self.state
-                        .set_input(&format!("/mcp config auth {}", status.name));
-                    self.update_slash_state();
+                    self.handle_mcp_action(crate::commands::McpAction::Configure {
+                        args: vec!["auth".into(), status.name],
+                    })
+                    .await;
                 }
             }
             KeyCode::Char('x' | 'X') => {
                 if let Some(status) = self.mcp_manager.selected().cloned() {
                     if !mcp_manager_entry_is_mutable(&status) {
-                        self.state.status = Some(format!(
-                            "MCP server {} is controlled by {} configuration and is read-only here",
-                            status.name,
-                            mcp_scope_arg(status.scope)
-                        ));
+                        self.state.status = Some(self.state.locale.format("MCP server {0} is controlled by {1} configuration and is read-only here", &[(status.name).clone(), (mcp_scope_arg(status.scope)).to_string()]));
                         return Ok(());
                     }
                     self.apply_mcp_manager_config(vec!["clear-auth".to_string(), status.name])
@@ -849,15 +902,11 @@ impl App {
             KeyCode::Char('d' | 'D') => {
                 if let Some(status) = self.mcp_manager.selected().cloned() {
                     if !mcp_manager_entry_is_mutable(&status) {
-                        self.state.status = Some(format!(
-                            "MCP server {} is controlled by {} configuration and is read-only here",
-                            status.name,
-                            mcp_scope_arg(status.scope)
-                        ));
+                        self.state.status = Some(self.state.locale.format("MCP server {0} is controlled by {1} configuration and is read-only here", &[(status.name).clone(), (mcp_scope_arg(status.scope)).to_string()]));
                         return Ok(());
                     }
                     self.apply_mcp_manager_config(vec![
-                        "remove".to_string(),
+                        self.state.locale.translate("remove").to_string(),
                         status.name,
                         "--scope".to_string(),
                         mcp_scope_arg(status.scope).to_string(),
@@ -875,14 +924,22 @@ impl App {
         Ok(())
     }
 
-    async fn apply_mcp_manager_config(&mut self, args: Vec<String>) {
+    async fn apply_mcp_manager_config(&mut self, args: Vec<String>) -> bool {
         match crate::mcp_config_cli::apply_mcp_config(&args) {
             Ok(message) => {
                 self.state.status = Some(message);
                 self.last_mcp_status_refresh = None;
                 self.refresh_mcp_badges_with_force(true).await;
+                true
             }
-            Err(error) => self.state.status = Some(format!("MCP configuration failed: {error}")),
+            Err(error) => {
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("MCP configuration failed: {0}", &[(error).to_string()]),
+                );
+                false
+            }
         }
     }
 
@@ -897,7 +954,7 @@ impl App {
                 command.name.clone(),
                 format!("/{}", command.name),
             )
-            .description(command.description.clone())
+            .localized_description(command.description.clone(), command.localized_description)
             .search_terms(command.aliases.clone())
         }));
         resources.extend(self.workspace_files.iter().map(|file| {
@@ -933,17 +990,15 @@ impl App {
             &self.current_model,
             &models,
         );
-        resources.extend(
-            models
-                .iter()
-                .map(|model| model_palette_resource(model, current_model_route.as_deref())),
-        );
+        resources.extend(models.iter().map(|model| {
+            model_palette_resource(model, current_model_route.as_deref(), self.state.locale)
+        }));
         let current_theme = crate::themes::current_theme_name();
         resources.extend(crate::themes::available_themes().into_iter().map(|theme| {
             let mut resource =
                 PaletteResource::new(PaletteResourceKind::Theme, theme.clone(), theme.clone());
             if theme == current_theme {
-                resource = resource.status("current");
+                resource = resource.status(self.state.locale.translate("current"));
             }
             resource
         }));
@@ -979,7 +1034,7 @@ impl App {
                         PaletteResourceKind::Session => {
                             if self.state.busy {
                                 self.state.status = Some(
-                                    "Wait for the active response to finish before switching sessions."
+                                    self.state.locale.translate("Wait for the active response to finish before switching sessions.")
                                         .to_string(),
                                 );
                                 self.active_modal = ActiveModal::None;
@@ -990,7 +1045,12 @@ impl App {
                                 self.handle_session_switcher_key(KeyCode::Enter, false)
                                     .await?;
                             } else {
-                                self.state.error = Some("Session no longer exists".to_string());
+                                self.state.error = Some(
+                                    self.state
+                                        .locale
+                                        .translate("Session no longer exists")
+                                        .to_string(),
+                                );
                             }
                         }
                         PaletteResourceKind::Model => {
@@ -1044,16 +1104,13 @@ impl App {
                 if let Some(checkpoint) = self.rewind_picker.confirm() {
                     let total = self
                         .session_manager
-                        .flush()
-                        .ok()
-                        .and_then(|()| self.session_manager.current_session_path())
-                        .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
-                        .map(|session| session.stats.user_messages);
+                        .writer()
+                        .and_then(|writer| writer.saved_user_turn_count().ok());
                     match (checkpoint.user_turn_index, total) {
                         (Some(index), Some(total)) if index < total =>
                             self.rewind_saved_turns(total - index, false, mode == 'b'),
                         _ => self.state.error = Some(
-                            "This checkpoint has no saved conversation turn. Use Enter to restore files.".into()),
+                            self.state.locale.translate("This checkpoint has no saved conversation turn. Use Enter to restore files.").into()),
                     }
                 }
                 self.active_modal = ActiveModal::None;
@@ -1111,7 +1168,10 @@ impl App {
                         &self.state.messages,
                         changed_files,
                     );
-                    format!("Session evidence:\n{evidence}\n\n{content}")
+                    self.state.locale.format(
+                        "Session evidence:\n{0}\n\n{1}",
+                        &[(evidence).clone(), (content).clone()],
+                    )
                 } else {
                     content
                 };
@@ -1120,7 +1180,9 @@ impl App {
                 self.active_modal = ActiveModal::DetailView;
             }
             None => {
-                self.state.status.replace("Nothing to expand".to_string());
+                self.state
+                    .status
+                    .replace(self.state.locale.translate("Nothing to expand").to_string());
             }
         }
     }
@@ -1143,24 +1205,29 @@ impl App {
             }
             if !message.thinking.trim().is_empty() {
                 return Some((
-                    "Thinking".to_string(),
+                    self.state.locale.translate("Thinking").to_string(),
                     message.thinking.clone(),
                     include_evidence,
                 ));
             }
             if !message.content.trim().is_empty() {
                 let title = match message.kind {
-                    MessageKind::System => "System message",
-                    _ if message.role == MessageRole::User => "User message",
-                    _ => "Assistant message",
+                    MessageKind::System => self.state.locale.translate("System message"),
+                    _ if message.role == MessageRole::User => {
+                        self.state.locale.translate("User message")
+                    }
+                    _ => self.state.locale.translate("Assistant message"),
                 };
                 return Some((title.to_string(), message.content.clone(), include_evidence));
             }
         }
-        self.state
-            .error
-            .as_ref()
-            .map(|error| ("Error".to_string(), error.clone(), false))
+        self.state.error.as_ref().map(|error| {
+            (
+                self.state.locale.translate("Error").to_string(),
+                error.clone(),
+                false,
+            )
+        })
     }
 
     /// Handle keys in approval modal
@@ -1176,7 +1243,9 @@ impl App {
         if modifiers.contains(CrosstermModifiers::CONTROL) && matches!(code, KeyCode::Char('e')) {
             if let Some(request) = self.approval_controller.selected_request() {
                 self.detail_view = Some(DetailView::new(
-                    format!("Approval: {}", request.tool),
+                    self.state
+                        .locale
+                        .format("Approval: {0}", std::slice::from_ref(&(request.tool))),
                     approval_detail_content(request),
                 ));
                 self.detail_return_modal = ActiveModal::Approval;
@@ -1204,8 +1273,9 @@ impl App {
                         .tool_executor
                         .remember_mcp_permission(&request.tool, persistent)
                     {
-                        self.state.status = Some(format!(
-                            "Approved once; could not remember MCP permission: {error}"
+                        self.state.status = Some(self.state.locale.format(
+                            "Approved once; could not remember MCP permission: {0}",
+                            std::slice::from_ref(&(error)),
                         ));
                     }
                     self.handle_tool_approval(request.call_id, request.tool, request.args, true)
@@ -1281,8 +1351,9 @@ impl App {
                         .tool_executor
                         .remember_mcp_permission(&request.tool, persistent)
                     {
-                        self.state.status = Some(format!(
-                            "Approved once; could not remember MCP permission: {error}"
+                        self.state.status = Some(self.state.locale.format(
+                            "Approved once; could not remember MCP permission: {0}",
+                            std::slice::from_ref(&(error)),
                         ));
                     }
                     self.handle_tool_approval(request.call_id, request.tool, request.args, true)
@@ -1426,7 +1497,11 @@ impl App {
             Ok(Some(theme)) => {
                 crate::themes::set_theme(theme);
                 if let PickerOutcome::Selected(name) = &outcome {
-                    self.state.status = Some(format!("Theme: {name}"));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("Theme: {0}", std::slice::from_ref(name)),
+                    );
                 }
             }
             Ok(None) => {}
@@ -1434,7 +1509,11 @@ impl App {
                 if let Some(original) = self.theme_selector.original_theme() {
                     crate::themes::set_theme(original.clone());
                 }
-                self.state.error = Some(format!("Could not apply theme: {error}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Could not apply theme: {0}", &[(error).to_string()]),
+                );
             }
         }
         if matches!(
@@ -1473,8 +1552,11 @@ impl App {
                 self.ui_prefs.onboarding_share_diagnostics =
                     Some(self.setup_modal.share_diagnostics());
                 if self.ui_prefs.save_default().is_err() {
-                    self.setup_modal
-                        .set_status("Could not save the information-sharing preference.");
+                    self.setup_modal.set_status(
+                        self.state
+                            .locale
+                            .translate("Could not save the information-sharing preference."),
+                    );
                 }
             }
             KeyCode::Char('f') if !ctrl && before == SetupPage::Results => {
@@ -1492,8 +1574,11 @@ impl App {
         if before == SetupPage::Welcome && code == KeyCode::Enter {
             self.ui_prefs.onboarding_share_diagnostics = Some(self.setup_modal.share_diagnostics());
             if self.ui_prefs.save_default().is_err() {
-                self.setup_modal
-                    .set_status("Could not save the information-sharing preference.");
+                self.setup_modal.set_status(
+                    self.state
+                        .locale
+                        .translate("Could not save the information-sharing preference."),
+                );
             }
             self.record_onboarding(OnboardingStage::Started);
         }
@@ -1513,8 +1598,12 @@ impl App {
         });
         self.setup_login_rx = Some(rx);
         self.setup_modal.set_waiting_evalops();
-        self.state
-            .add_system_message("Opening EvalOps login in the browser.".to_string());
+        self.state.add_system_message(
+            self.state
+                .locale
+                .translate("Opening EvalOps login in the browser.")
+                .to_string(),
+        );
     }
 
     fn finish_setup_api_key(&mut self, provider_id: &str, secret: &str) {
@@ -1528,8 +1617,9 @@ impl App {
                 if let Err(error) =
                     crate::config_cli::persist_user_model_and_provider(default_model, provider_id)
                 {
-                    self.setup_modal.set_status(format!(
-                        "Saved key, but could not write config.toml: {error}"
+                    self.setup_modal.set_status(self.state.locale.format(
+                        "Saved key, but could not write config.toml: {0}",
+                        &[(error).to_string()],
                     ));
                     return;
                 }
@@ -1539,8 +1629,13 @@ impl App {
                 if self.native_agent.is_none() {
                     self.pending_agent_spawn = true;
                 }
-                self.state.add_system_message(format!(
-                    "Saved {provider_id} key as {connection_id}. Model set to {route}."
+                self.state.add_system_message(self.state.locale.format(
+                    "Saved {0} key as {1}. Model set to {2}.",
+                    &[
+                        (provider_id).to_string(),
+                        (connection_id).clone(),
+                        (route).clone(),
+                    ],
                 ));
             }
             Err(error) => self.setup_modal.set_status(error.to_string()),
@@ -1589,9 +1684,11 @@ impl App {
                 let _ = tx.send((call_id, true, None, ExecutionSource::Native, None));
             }
         } else {
-            self.tool_history.fail(&call_id, "Denied".to_string());
+            self.tool_history
+                .fail(&call_id, self.state.locale.translate("Denied").to_string());
             // Move the transcript row out of `Pending` on denial.
-            self.state.fail_tool_call(&call_id, "Denied");
+            self.state
+                .fail_tool_call(&call_id, self.state.locale.translate("Denied"));
             // Send denial
             if let Some(tx) = &self.tool_response_tx {
                 let _ = tx.send((call_id, false, None, ExecutionSource::Native, None));
@@ -1629,13 +1726,25 @@ fn is_focus_view_binding(code: KeyCode, modifiers: CrosstermModifiers) -> bool {
 fn approval_detail_content(request: &ApprovalRequest) -> String {
     let mut sections = Vec::new();
     if let Some(reason) = &request.reason {
-        sections.push(format!("Reason:\n{reason}"));
+        sections.push(maestro_ui::localization::format(
+            "Reason:\n{0}",
+            std::slice::from_ref(reason),
+        ));
     }
-    sections.push(format!("Command:\n{}", request.display_command()));
+    sections.push(maestro_ui::localization::format(
+        "Command:\n{0}",
+        &[(request.display_command()).clone()],
+    ));
     if let Some(source) = &request.command_source {
-        sections.push(format!("Source and execution context:\n{source}"));
+        sections.push(maestro_ui::localization::format(
+            "Source and execution context:\n{0}",
+            std::slice::from_ref(source),
+        ));
     }
-    sections.push(format!("Args:\n{}", request.display_args_pretty()));
+    sections.push(maestro_ui::localization::format(
+        "Args:\n{0}",
+        &[(request.display_args_pretty()).clone()],
+    ));
     sections.join("\n\n")
 }
 
@@ -1683,8 +1792,16 @@ mod model_palette_tests {
         ] {
             let current_route =
                 crate::components::model_selector::canonical_current_route(current, &models);
-            let google_resource = model_palette_resource(google, current_route.as_deref());
-            let vertex_resource = model_palette_resource(vertex, current_route.as_deref());
+            let google_resource = model_palette_resource(
+                google,
+                current_route.as_deref(),
+                crate::localization::Locale::English,
+            );
+            let vertex_resource = model_palette_resource(
+                vertex,
+                current_route.as_deref(),
+                crate::localization::Locale::English,
+            );
 
             assert_eq!(
                 google_resource.status.as_deref(),
@@ -1696,6 +1813,29 @@ mod model_palette_tests {
                 (expected_provider == "vertex-ai").then_some("current"),
                 "current route {current}"
             );
+        }
+    }
+    #[test]
+    fn model_metadata_uses_selected_locale_and_preserves_route() {
+        let mut model = crate::model_catalog::available_models()[0].clone();
+        model.verification.state = crate::model_catalog::VerificationState::Catalog;
+        let route = crate::model_catalog::model_route(&model);
+        for locale in crate::localization::Locale::ALL {
+            let resource =
+                crate::localization::with_locale(crate::localization::Locale::English, || {
+                    model_palette_resource(&model, Some(&route), locale)
+                });
+            assert_eq!(resource.id, route);
+            assert_eq!(
+                resource.status.as_deref(),
+                Some(locale.translate("current"))
+            );
+            let description = resource.description.unwrap();
+            assert!(description.contains(&model.provider));
+            assert!(description.contains(locale.translate("Catalog")));
+            if locale != crate::localization::Locale::English {
+                assert!(!description.contains("k context"));
+            }
         }
     }
 }

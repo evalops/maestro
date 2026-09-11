@@ -7,8 +7,8 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -68,6 +68,18 @@ pub struct InitializeOptions {
 }
 
 type PendingMap = HashMap<u64, oneshot::Sender<Result<Value>>>;
+
+/// Remove the waiter on every exit, including destruction of a request future.
+struct PendingRequestGuard {
+    pending: Arc<StdMutex<PendingMap>>,
+    id: u64,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        self.pending.lock().unwrap().remove(&self.id);
+    }
+}
 
 /// Inbound JSON-RPC request from Codex app-server that Maestro must answer
 /// (dynamic tools, approvals). When external handling is enabled, these are
@@ -333,7 +345,7 @@ pub struct CodexAppServerClient {
     command_label: Option<String>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
-    pending: Arc<Mutex<PendingMap>>,
+    pending: Arc<StdMutex<PendingMap>>,
     notifications: Arc<Mutex<VecDeque<Notification>>>,
     notify: Arc<Notify>,
     /// When true, tool/approval server requests are queued for the native
@@ -534,7 +546,7 @@ impl CodexAppServerClient {
         writer_task: Option<tokio::task::JoinHandle<()>>,
         child_holder: Option<Arc<Mutex<Option<Child>>>>,
     ) -> Self {
-        let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<StdMutex<PendingMap>> = Arc::new(StdMutex::new(HashMap::new()));
         let notifications: Arc<Mutex<VecDeque<Notification>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let notify = Arc::new(Notify::new());
@@ -708,9 +720,13 @@ impl CodexAppServerClient {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = self.pending.lock().await;
+            let mut pending = self.pending.lock().unwrap();
             pending.insert(id, tx);
         }
+        let _pending_request = PendingRequestGuard {
+            pending: Arc::clone(&self.pending),
+            id,
+        };
 
         let mut message = json!({ "id": id, "method": method });
         if let Some(params) = params {
@@ -723,7 +739,7 @@ impl CodexAppServerClient {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => bail!("Codex app-server request cancelled: {method}"),
             Err(_) => {
-                let mut pending = self.pending.lock().await;
+                let mut pending = self.pending.lock().unwrap();
                 pending.remove(&id);
                 bail!("Codex app-server request timed out: {method}");
             }
@@ -1231,7 +1247,7 @@ impl MockCodexTransport {
 
 async fn handle_line(
     line: &str,
-    pending: &Arc<Mutex<PendingMap>>,
+    pending: &Arc<StdMutex<PendingMap>>,
     notifications: &Arc<Mutex<VecDeque<Notification>>>,
     notify: &Arc<Notify>,
     write_tx: &mpsc::UnboundedSender<String>,
@@ -1259,7 +1275,7 @@ async fn handle_line(
         let Some(id) = id else {
             return;
         };
-        let mut map = pending.lock().await;
+        let mut map = pending.lock().unwrap();
         if let Some(tx) = map.remove(&id) {
             if let Some(error) = obj.get("error") {
                 let rpc_error = json_rpc_error_from_value(error);
@@ -1390,7 +1406,7 @@ fn json_rpc_error_from_value(error: &Value) -> JsonRpcError {
 }
 
 async fn reject_all(
-    pending: &Arc<Mutex<PendingMap>>,
+    pending: &Arc<StdMutex<PendingMap>>,
     closed: &Arc<AtomicBool>,
     stderr_tail: &Arc<Mutex<VecDeque<String>>>,
     message: &str,
@@ -1408,7 +1424,7 @@ async fn reject_all(
         }
     };
     let full = format!("{message}{stderr}");
-    let mut map = pending.lock().await;
+    let mut map = pending.lock().unwrap();
     for (_, tx) in map.drain() {
         let _ = tx.send(Err(anyhow!(full.clone())));
     }
@@ -1651,6 +1667,38 @@ fn format_spawn_error(error: &std::io::Error, command_label: Option<&str>) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_codex_writes_release_pending_entries() {
+        let (client, mock) = CodexAppServerClient::mock();
+        mock.write_rx.lock().await.close();
+        for _ in 0..128 {
+            let error = client
+                .request("closed-writer", None, None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("stdin closed"));
+        }
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn abandoned_codex_requests_release_pending_entries() {
+        let (client, mock) = CodexAppServerClient::mock();
+        for _ in 0..128 {
+            let request = client.request("never-replies", None, Some(60_000));
+            tokio::pin!(request);
+            tokio::select! {
+                result = &mut request => panic!("request unexpectedly finished: {result:?}"),
+                message = mock.next_request() => { message.unwrap(); }
+            }
+        }
+        assert_eq!(
+            client.pending.lock().unwrap().len(),
+            0,
+            "dropping a request future must release its pending sender"
+        );
+    }
 
     #[test]
     fn prefers_bundled_openai_codex_package_for_default_spawns() {

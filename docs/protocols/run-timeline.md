@@ -5,6 +5,35 @@ Maestro exposes a session-scoped run timeline at
 answering what happened in a run without exposing raw tool arguments, raw diffs,
 or secret-bearing payloads.
 
+Local CLI sessions can render the same product-safe history as a terminal
+swimlane:
+
+```sh
+maestro run timeline <session-id>
+maestro run timeline <session-id> --json
+```
+
+The human view has `USER`, `RUNTIME`, `MODEL`, `TOOLS`, and `WORKER` lanes.
+Maestro persists semantic boundaries such as model request/response, tool
+approval/start, retry/rate-limit, cancellation, transport restart, compaction,
+and worker lifecycle. Streaming response and tool-output chunks are not copied
+into this event store. The durable event envelope contains IDs, timestamps,
+lane, phase, attempts, delays, and durations, but never prompt text, tool
+arguments, or tool output.
+
+Prepared-request accounting is available as a separate terminal waterfall:
+
+```sh
+maestro run context <session-id>
+maestro run context <session-id> --json
+```
+
+It shows system prompt, tool schemas, tool results, conversation, other input,
+response reserve, the request safety margin, and remaining headroom. The latest
+before/after-compaction pair is shown when both snapshots exist. These numbers
+describe the runtime's prepared request; cumulative session usage and
+provider-reported cache read/write tokens remain separate measurements.
+
 Local sessions use local session state. Hosted/Platform-backed sessions prefer
 Platform `MaestroTimelineService/ListRunTimeline` when Maestro has an
 `agent_run_id` or `remote_runner_session_id`, then fall back to the local
@@ -58,3 +87,7 @@ Known event families:
 - `policy.decision` for governed tool outcomes
 - `compaction.created`, `branch.created`, `model.changed`, `thinking.changed`,
   and `custom.event`
+- `model.request.started`, `model.response.completed`, `turn.completed`, and
+  `turn.cancelled`
+- `tool.approval.requested`, `tool.started`, `retry.scheduled`,
+  `retry.started`, `rate_limit.hit`, `session.restarted`, and `worker.*`

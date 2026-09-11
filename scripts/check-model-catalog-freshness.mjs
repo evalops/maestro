@@ -2,7 +2,7 @@
 
 /**
  * Advisory freshness check for the bundled model catalog snapshot at
- * `packages/tui-rs/src/model_catalog_data.json`.
+ * `packages/local-host-rs/src/model_catalog_data.json`.
  *
  * Modes:
  *   (default)            warn when the committed snapshot's `generated_at` is
@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 
-const SNAPSHOT_PATH = "packages/tui-rs/src/model_catalog_data.json";
+const SNAPSHOT_PATH = "packages/local-host-rs/src/model_catalog_data.json";
 const DEFAULT_STALE_DAYS = 7;
 
 function parseArgs(argv) {

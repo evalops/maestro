@@ -603,11 +603,7 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
     };
 
     if is_remote_source(scenario_path) {
-        eprintln!(
-            "Remote scenario sources (http/https/gs) are not yet supported in the native scenario CLI.\n\
-             Residual: use the TypeScript library path or a local fixture file.\n\
-             Source: {scenario_path}"
-        );
+        eprintln!("{}", crate::localization::cli_locale().format("Remote scenario sources (http/https/gs) are not yet supported in the native scenario CLI.\nResidual: use the TypeScript library path or a local fixture file.\nSource: {0}", &[(scenario_path).to_string()]));
         return Ok(1);
     }
 
@@ -635,9 +631,11 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                     );
                 } else {
                     println!(
-                        "Validated scripted replay {} ({} frame(s)).",
-                        scenario.id,
-                        scenario.frames.len()
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Validated scripted replay {0} ({1} frame(s)).",
+                            &[(scenario.id).clone(), (scenario.frames.len()).to_string()]
+                        )
                     );
                 }
                 Ok(0)
@@ -656,19 +654,20 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                     );
                 } else {
                     println!(
-                        "Validated scenario {} ({} assertion(s)).",
-                        scenario.id,
-                        scenario.assertions.len()
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Validated scenario {0} ({1} assertion(s)).",
+                            &[
+                                (scenario.id).clone(),
+                                (scenario.assertions.len()).to_string()
+                            ]
+                        )
                     );
                 }
                 Ok(0)
             }
             other => {
-                eprintln!(
-                    "Unsupported scenario schemaVersion for native CLI: {other:?}\n\
-                     Supported: {SCRIPTED_SCHEMA}, {TRAJECTORY_SCHEMA}\n\
-                     Residual: remote http(s)/gs:// sources are not loaded natively."
-                );
+                eprintln!("{}", crate::localization::cli_locale().format("Unsupported scenario schemaVersion for native CLI: {0}\nSupported: {1}, {2}\nResidual: remote http(s)/gs:// sources are not loaded natively.", &[format!("{other:?}"), (SCRIPTED_SCHEMA).to_string(), (TRAJECTORY_SCHEMA).to_string()]));
                 Ok(1)
             }
         },
@@ -681,7 +680,11 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                     .unwrap_or_else(|| PathBuf::from("."));
                 if execute {
                     #[cfg(feature = "thin-scenario")]
-                    bail!("--execute requires the full maestro binary");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--execute requires the full maestro binary", &[])
+                    );
                     #[cfg(not(feature = "thin-scenario"))]
                     return run_scripted_scenario_execute(&scenario, &base_dir, json, junit_path)
                         .await;
@@ -701,7 +704,13 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                         result.counts.failed,
                         result.counts.warnings
                     );
-                    println!("Scripted scenario {}: {summary}", result.scenario.id);
+                    println!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Scripted scenario {0}: {1}",
+                            &[(result.scenario.id).clone(), (summary).clone()]
+                        )
+                    );
                     for assertion in &result.assertions {
                         let marker = match assertion.status.as_str() {
                             "pass" => "PASS",
@@ -747,16 +756,16 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                 Ok(i32::from(!matched))
             }
             other => {
-                eprintln!(
-                    "Unsupported scenario schemaVersion for native run: {other:?}\n\
-                     Supported: {SCRIPTED_SCHEMA}, {TRAJECTORY_SCHEMA}\n\
-                     Residual: remote http(s)/gs:// sources are not loaded natively."
-                );
+                eprintln!("{}", crate::localization::cli_locale().format("Unsupported scenario schemaVersion for native run: {0}\nSupported: {1}, {2}\nResidual: remote http(s)/gs:// sources are not loaded natively.", &[format!("{other:?}"), (SCRIPTED_SCHEMA).to_string(), (TRAJECTORY_SCHEMA).to_string()]));
                 Ok(1)
             }
         },
         other => {
-            eprintln!("Unknown scenario subcommand: {other}");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown scenario subcommand: {0}", &[(other).to_string()])
+            );
             eprintln!("{}", scenario_help());
             Ok(1)
         }
@@ -773,15 +782,7 @@ fn write_junit_file(path: &str, xml: &str) -> Result<()> {
 }
 
 fn scenario_help() -> &'static str {
-    "Usage: maestro scenario <validate|run> <path> [--execute] [--json] [--junit <path>]\n\n\
-     Native support:\n\
-       evalops.maestro.scripted-scenario.v1  validate + run (assertions, workspace, junit)\n\
-       evalops.maestro.scenario.v1           full validate + offline run (trajectory artifacts)\n\n\
-     --execute replays a scripted scenario through the real agent loop via the\n\
-     scripted-replay provider: tools execute for real in the (hydrated)\n\
-     workspace under auto approval and a session JSONL is recorded.\n\n\
-     Residual:\n\
-       Remote http(s)/gs:// sources are not loaded natively yet."
+    crate::localization::cli_locale().translate("Usage: maestro scenario <validate|run> <path> [--execute] [--json] [--junit <path>]\n\nNative support:\nevalops.maestro.scripted-scenario.v1  validate + run (assertions, workspace, junit)\nevalops.maestro.scenario.v1           full validate + offline run (trajectory artifacts)\n\n--execute replays a scripted scenario through the real agent loop via the\nscripted-replay provider: tools execute for real in the (hydrated)\nworkspace under auto approval and a session JSONL is recorded.\n\nResidual:\nRemote http(s)/gs:// sources are not loaded natively yet.")
 }
 
 fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -826,7 +827,11 @@ fn read_json_file(path: &Path) -> Result<Value> {
 fn require_non_empty_str(value: Option<&str>, label: &str) -> Result<String> {
     match value {
         Some(s) if !s.trim().is_empty() => Ok(s.to_string()),
-        _ => bail!("{label} must be a non-empty string"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0} must be a non-empty string", &[(label).to_string()])
+        ),
     }
 }
 
@@ -835,7 +840,13 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
         .as_object()
         .with_context(|| format!("Replay scenario {label} must be a JSON object"))?;
     if obj.get("schemaVersion").and_then(Value::as_str) != Some(SCRIPTED_SCHEMA) {
-        bail!("Replay scenario {label} must use schemaVersion {SCRIPTED_SCHEMA}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Replay scenario {0} must use schemaVersion {1}",
+                &[(label).to_string(), (SCRIPTED_SCHEMA).to_string()]
+            )
+        );
     }
     require_non_empty_str(
         obj.get("id").and_then(Value::as_str),
@@ -847,7 +858,13 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
     )?;
     if let Some(outcome) = obj.get("expectedOutcome").and_then(Value::as_str) {
         if outcome != "pass" && outcome != "fail" {
-            bail!("Replay scenario {label} expectedOutcome must be pass or fail");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Replay scenario {0} expectedOutcome must be pass or fail",
+                    &[(label).to_string()]
+                )
+            );
         }
     }
     let metadata = obj
@@ -905,9 +922,7 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
                 )
             })? as usize;
         if index != frame_offset {
-            bail!(
-                "Replay scenario {label} frame indexes must be contiguous, unique, and start at 0; frame {frame_offset} has index {index}"
-            );
+            bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} frame indexes must be contiguous, unique, and start at 0; frame {1} has index {2}", &[(label).to_string(), (frame_offset).to_string(), (index).to_string()]));
         }
         let statements = frame_obj
             .get("statements")
@@ -945,7 +960,17 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
                 )
             })?;
             if !SCRIPTED_ASSERTION_KINDS.contains(&kind) {
-                bail!("Replay scenario {label} assertion {assertion_id} has unknown kind {kind}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Replay scenario {0} assertion {1} has unknown kind {2}",
+                        &[
+                            (label).to_string(),
+                            (assertion_id).to_string(),
+                            (kind).to_string()
+                        ]
+                    )
+                );
             }
             if kind == "workspace_manifest" {
                 has_workspace_manifest_assertion = true;
@@ -957,9 +982,7 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
                     .and_then(Value::as_str)
                     .is_none()
                 {
-                    bail!(
-                        "Replay scenario {label} assertion {assertion_id} workspace_manifest requires workspaceManifestPath"
-                    );
+                    bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} assertion {1} workspace_manifest requires workspaceManifestPath", &[(label).to_string(), (assertion_id).to_string()]));
                 }
             }
         }
@@ -976,14 +999,10 @@ fn parse_scripted_scenario(value: &Value, label: &str) -> Result<ScriptedScenari
                 .iter()
                 .any(|a| a.as_str() == Some("workspace_manifest"));
             if requires_workspace && !has_workspace_manifest_assertion {
-                bail!(
-                    "Replay scenario {label} releaseGate release-blocking workspace_manifest gates must include a workspace_manifest assertion"
-                );
+                bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} releaseGate release-blocking workspace_manifest gates must include a workspace_manifest assertion", &[(label).to_string()]));
             }
             if requires_workspace && has_warning_workspace_manifest_assertion {
-                bail!(
-                    "Replay scenario {label} releaseGate release-blocking workspace_manifest assertions must use error severity"
-                );
+                bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} releaseGate release-blocking workspace_manifest assertions must use error severity", &[(label).to_string()]));
             }
         }
     }
@@ -1005,7 +1024,13 @@ fn validate_scripted_release_gate(
         .map(Value::is_boolean)
         .unwrap_or(false)
     {
-        bail!("Replay scenario {label} releaseGate.releaseBlocking must be a boolean");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Replay scenario {0} releaseGate.releaseBlocking must be a boolean",
+                &[(label).to_string()]
+            )
+        );
     }
     let tier = gate
         .get("tier")
@@ -1013,8 +1038,11 @@ fn validate_scripted_release_gate(
         .with_context(|| format!("Replay scenario {label} releaseGate.tier must be a string"))?;
     if !RELEASE_GATE_TIERS.contains(&tier) {
         bail!(
-            "Replay scenario {label} releaseGate.tier must be one of: {}",
-            RELEASE_GATE_TIERS.join(", ")
+            "{}",
+            crate::localization::cli_locale().format(
+                "Replay scenario {0} releaseGate.tier must be one of: {1}",
+                &[(label).to_string(), (RELEASE_GATE_TIERS.join(", ")).clone()]
+            )
         );
     }
     let artifacts = gate
@@ -1024,7 +1052,13 @@ fn validate_scripted_release_gate(
             format!("Replay scenario {label} releaseGate.requiredArtifacts must not be empty")
         })?;
     if artifacts.is_empty() {
-        bail!("Replay scenario {label} releaseGate.requiredArtifacts must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Replay scenario {0} releaseGate.requiredArtifacts must not be empty",
+                &[(label).to_string()]
+            )
+        );
     }
     let unknown: Vec<_> = artifacts
         .iter()
@@ -1032,19 +1066,14 @@ fn validate_scripted_release_gate(
         .filter(|a| !REQUIRED_ARTIFACTS.contains(a))
         .collect();
     if !unknown.is_empty() {
-        bail!(
-            "Replay scenario {label} releaseGate.requiredArtifacts contains unknown artifact(s): {}",
-            unknown.join(", ")
-        );
+        bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} releaseGate.requiredArtifacts contains unknown artifact(s): {1}", &[(label).to_string(), (unknown.join(", ")).clone()]));
     }
     if gate.get("releaseBlocking") == Some(&Value::Bool(true))
         && !artifacts
             .iter()
             .any(|a| a.as_str() == Some("workspace_manifest"))
     {
-        bail!(
-            "Replay scenario {label} releaseGate release-blocking scripted scenarios must require workspace_manifest"
-        );
+        bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} releaseGate release-blocking scripted scenarios must require workspace_manifest", &[(label).to_string()]));
     }
     if artifacts
         .iter()
@@ -1054,9 +1083,7 @@ fn validate_scripted_release_gate(
             .and_then(Value::as_str)
             .is_none()
     {
-        bail!(
-            "Replay scenario {label} releaseGate requires workspace_manifest but workspaceManifestPath is missing"
-        );
+        bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} releaseGate requires workspace_manifest but workspaceManifestPath is missing", &[(label).to_string()]));
     }
     Ok(())
 }
@@ -1081,7 +1108,15 @@ fn validate_statement(
         "text" => {
             if !obj.get("text").map(Value::is_string).unwrap_or(false) {
                 bail!(
-                    "Replay scenario {label} frame {frame_index} statement {statement_offset} text must be a string"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Replay scenario {0} frame {1} statement {2} text must be a string",
+                        &[
+                            (label).to_string(),
+                            (frame_index).to_string(),
+                            (statement_offset).to_string()
+                        ]
+                    )
                 );
             }
         }
@@ -1089,7 +1124,15 @@ fn validate_statement(
             let ms = obj.get("ms").and_then(Value::as_f64);
             if ms.is_none_or(|v| !v.is_finite() || v < 0.0) {
                 bail!(
-                    "Replay scenario {label} frame {frame_index} statement {statement_offset} delay ms must be non-negative"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Replay scenario {0} frame {1} statement {2} delay ms must be non-negative",
+                        &[
+                            (label).to_string(),
+                            (frame_index).to_string(),
+                            (statement_offset).to_string()
+                        ]
+                    )
                 );
             }
         }
@@ -1102,23 +1145,17 @@ fn validate_statement(
             )?;
             if let Some(expected) = obj.get("expectedResult").and_then(Value::as_str) {
                 if !matches!(expected, "success" | "error" | "any") {
-                    bail!(
-                        "Replay scenario {label} frame {frame_index} statement {statement_offset} expectedResult must be success, error, or any"
-                    );
+                    bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} frame {1} statement {2} expectedResult must be success, error, or any", &[(label).to_string(), (frame_index).to_string(), (statement_offset).to_string()]));
                 }
             }
         }
         "error" => {
             let ty = obj.get("type").and_then(Value::as_str);
             if !matches!(ty, Some("transient" | "fatal")) {
-                bail!(
-                    "Replay scenario {label} frame {frame_index} statement {statement_offset} error type must be transient or fatal"
-                );
+                bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} frame {1} statement {2} error type must be transient or fatal", &[(label).to_string(), (frame_index).to_string(), (statement_offset).to_string()]));
             }
             if !obj.get("message").map(Value::is_string).unwrap_or(false) {
-                bail!(
-                    "Replay scenario {label} frame {frame_index} statement {statement_offset} error message must be a string"
-                );
+                bail!("{}", crate::localization::cli_locale().format("Replay scenario {0} frame {1} statement {2} error message must be a string", &[(label).to_string(), (frame_index).to_string(), (statement_offset).to_string()]));
             }
         }
         "wait_for_user" => {}
@@ -1126,12 +1163,29 @@ fn validate_statement(
             let reason = obj.get("reason").and_then(Value::as_str);
             if !matches!(reason, Some("complete" | "aborted" | "limit_exceeded")) {
                 bail!(
-                    "Replay scenario {label} frame {frame_index} statement {statement_offset} end reason is invalid"
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Replay scenario {0} frame {1} statement {2} end reason is invalid",
+                        &[
+                            (label).to_string(),
+                            (frame_index).to_string(),
+                            (statement_offset).to_string()
+                        ]
+                    )
                 );
             }
         }
         other => bail!(
-            "Replay scenario {label} frame {frame_index} statement {statement_offset} has unknown kind {other}"
+            "{}",
+            crate::localization::cli_locale().format(
+                "Replay scenario {0} frame {1} statement {2} has unknown kind {3}",
+                &[
+                    (label).to_string(),
+                    (frame_index).to_string(),
+                    (statement_offset).to_string(),
+                    (other).to_string()
+                ]
+            )
         ),
     }
     Ok(())
@@ -1168,8 +1222,14 @@ fn load_workspace_manifest(path: &Path) -> Result<WorkspaceManifest> {
     let raw = read_json_file(path)?;
     if raw.get("schemaVersion").and_then(Value::as_str) != Some(WORKSPACE_MANIFEST_SCHEMA) {
         bail!(
-            "workspace manifest at {} must use schemaVersion {WORKSPACE_MANIFEST_SCHEMA}",
-            path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "workspace manifest at {0} must use schemaVersion {1}",
+                &[
+                    (path.display()).to_string(),
+                    (WORKSPACE_MANIFEST_SCHEMA).to_string()
+                ]
+            )
         );
     }
     let manifest: WorkspaceManifest = serde_json::from_value(raw)
@@ -1183,29 +1243,51 @@ fn load_workspace_manifest(path: &Path) -> Result<WorkspaceManifest> {
 
 fn validate_workspace_manifest(manifest: &WorkspaceManifest, label: &str) -> Result<()> {
     if manifest.id.trim().is_empty() {
-        bail!("{label}.id must be a non-empty string");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0}.id must be a non-empty string", &[(label).to_string()])
+        );
     }
     if manifest.recorded_at.trim().is_empty() {
-        bail!("{label}.recordedAt must be a non-empty string");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.recordedAt must be a non-empty string",
+                &[(label).to_string()]
+            )
+        );
     }
     if !WORKSPACE_SOURCES.contains(&manifest.source.as_str()) {
         bail!(
-            "{label}.source must be one of: {}",
-            WORKSPACE_SOURCES.join(", ")
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.source must be one of: {1}",
+                &[(label).to_string(), (WORKSPACE_SOURCES.join(", ")).clone()]
+            )
         );
     }
     if !HYDRATION_MODES.contains(&manifest.hydration.mode.as_str()) {
         bail!(
-            "{label}.hydration.mode must be one of: {}",
-            HYDRATION_MODES.join(", ")
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.hydration.mode must be one of: {1}",
+                &[(label).to_string(), (HYDRATION_MODES.join(", ")).clone()]
+            )
         );
     }
     for adapter in &manifest.tool_adapters {
         if !TOOL_ADAPTER_MODES.contains(&adapter.mode.as_str()) {
             bail!(
-                "{label} tool adapter {} mode must be one of: {}",
-                adapter.tool,
-                TOOL_ADAPTER_MODES.join(", ")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "{0} tool adapter {1} mode must be one of: {2}",
+                    &[
+                        (label).to_string(),
+                        (adapter.tool).clone(),
+                        (TOOL_ADAPTER_MODES.join(", ")).clone()
+                    ]
+                )
             );
         }
     }
@@ -2046,8 +2128,11 @@ async fn run_scripted_scenario_execute(
             result.counts.warnings
         );
         println!(
-            "Scripted scenario {} (executed in agent loop): {summary}",
-            result.scenario.id
+            "{}",
+            crate::localization::cli_locale().format(
+                "Scripted scenario {0} (executed in agent loop): {1}",
+                &[(result.scenario.id).clone(), (summary).clone()]
+            )
         );
         for assertion in &result.assertions {
             let marker = match assertion.status.as_str() {
@@ -2058,10 +2143,15 @@ async fn run_scripted_scenario_execute(
             println!("  {marker} {}: {}", assertion.id, assertion.message);
         }
         println!(
-            "  Session {} ({} tool call(s) executed): {}",
-            execution.session_id,
-            execution.tool_executions.len(),
-            execution.session_path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "  Session {0} ({1} tool call(s) executed): {2}",
+                &[
+                    (execution.session_id).clone(),
+                    (execution.tool_executions.len()).to_string(),
+                    (execution.session_path.display()).to_string()
+                ]
+            )
         );
     }
     Ok(i32::from(!matched))
@@ -2168,7 +2258,11 @@ fn result_to_junit(
 
 fn require_non_empty_string_array(value: Option<&Value>, label: &str) -> Result<()> {
     let Some(arr) = value.and_then(Value::as_array) else {
-        bail!("{label} must contain non-empty strings");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0} must contain non-empty strings", &[(label).to_string()])
+        );
     };
     for (i, item) in arr.iter().enumerate() {
         require_non_empty_str(item.as_str(), &format!("{label}[{i}]"))?;
@@ -2186,7 +2280,11 @@ fn require_optional_non_empty_string_array(value: Option<&Value>, label: &str) -
 fn require_optional_non_negative_integer(value: Option<&Value>, label: &str) -> Result<()> {
     if let Some(v) = value {
         let Some(n) = v.as_u64() else {
-            bail!("{label} must be a non-negative integer");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("{0} must be a non-negative integer", &[(label).to_string()])
+            );
         };
         let _ = n;
     }
@@ -2202,7 +2300,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .as_object()
         .with_context(|| format!("Scenario {label} must be a JSON object"))?;
     if obj.get("schemaVersion").and_then(Value::as_str) != Some(TRAJECTORY_SCHEMA) {
-        bail!("Scenario {label} must use schemaVersion {TRAJECTORY_SCHEMA}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Scenario {0} must use schemaVersion {1}",
+                &[(label).to_string(), (TRAJECTORY_SCHEMA).to_string()]
+            )
+        );
     }
     require_non_empty_str(
         obj.get("id").and_then(Value::as_str),
@@ -2218,7 +2322,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
     )?;
     if let Some(outcome) = obj.get("expectedOutcome").and_then(Value::as_str) {
         if outcome != "pass" && outcome != "fail" {
-            bail!("{label}.expectedOutcome must be pass or fail");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "{0}.expectedOutcome must be pass or fail",
+                    &[(label).to_string()]
+                )
+            );
         }
     }
 
@@ -2253,9 +2363,7 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty());
     if has_baseline_traj != has_candidate_traj {
-        bail!(
-            "{label}.source baselineTrajectoryPath and candidateTrajectoryPath must be provided together"
-        );
+        bail!("{}", crate::localization::cli_locale().format("{0}.source baselineTrajectoryPath and candidateTrajectoryPath must be provided together", &[(label).to_string()]));
     }
     let has_baseline_score = source
         .get("baselineScorePath")
@@ -2266,7 +2374,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty());
     if has_baseline_score != has_candidate_score {
-        bail!("{label}.source baselineScorePath and candidateScorePath must be provided together");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.source baselineScorePath and candidateScorePath must be provided together",
+                &[(label).to_string()]
+            )
+        );
     }
 
     let assertions = obj
@@ -2274,14 +2388,24 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .and_then(Value::as_array)
         .with_context(|| format!("{label}.assertions must contain at least one assertion"))?;
     if assertions.is_empty() {
-        bail!("{label}.assertions must contain at least one assertion");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.assertions must contain at least one assertion",
+                &[(label).to_string()]
+            )
+        );
     }
     if !obj
         .get("reviewLabels")
         .map(Value::is_array)
         .unwrap_or(false)
     {
-        bail!("{label}.reviewLabels must be an array");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("{0}.reviewLabels must be an array", &[(label).to_string()])
+        );
     }
 
     if let Some(release_gate) = obj.get("releaseGate") {
@@ -2297,7 +2421,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .and_then(Value::as_array)
         .with_context(|| format!("{label}.platform.traceJoinKeys must not be empty"))?;
     if join_keys.is_empty() {
-        bail!("{label}.platform.traceJoinKeys must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.platform.traceJoinKeys must not be empty",
+                &[(label).to_string()]
+            )
+        );
     }
 
     if let Some(external_refs) = obj.get("externalRefs") {
@@ -2318,7 +2448,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
             }
         }
         if refs == 0 {
-            bail!("{label}.externalRefs must contain at least one ref");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "{0}.externalRefs must contain at least one ref",
+                    &[(label).to_string()]
+                )
+            );
         }
     }
 
@@ -2343,7 +2479,13 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         .and_then(Value::as_array)
         .with_context(|| format!("{label}.assumptions.researchBasis must not be empty"))?;
     if research.is_empty() {
-        bail!("{label}.assumptions.researchBasis must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.assumptions.researchBasis must not be empty",
+                &[(label).to_string()]
+            )
+        );
     }
 
     let mut has_workspace_manifest_assertion = false;
@@ -2362,8 +2504,14 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
         )?;
         if !TRAJECTORY_ASSERTION_KINDS.contains(&kind.as_str()) {
             bail!(
-                "{label}.assertions[].kind must be one of: {}",
-                TRAJECTORY_ASSERTION_KINDS.join(", ")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "{0}.assertions[].kind must be one of: {1}",
+                    &[
+                        (label).to_string(),
+                        (TRAJECTORY_ASSERTION_KINDS.join(", ")).clone()
+                    ]
+                )
             );
         }
         if kind == "trajectory.diff"
@@ -2377,9 +2525,7 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                     .and_then(Value::as_str)
                     .is_none())
         {
-            bail!(
-                "{label}.assertions[].maxAddedScoreFailures requires baselineScorePath and candidateScorePath"
-            );
+            bail!("{}", crate::localization::cli_locale().format("{0}.assertions[].maxAddedScoreFailures requires baselineScorePath and candidateScorePath", &[(label).to_string()]));
         }
         if kind == "workspace.manifest" {
             has_workspace_manifest_assertion = true;
@@ -2391,9 +2537,7 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                 .and_then(Value::as_str)
                 .is_none()
             {
-                bail!(
-                    "{label}.assertions[].kind workspace.manifest requires source.workspaceManifestPath"
-                );
+                bail!("{}", crate::localization::cli_locale().format("{0}.assertions[].kind workspace.manifest requires source.workspaceManifestPath", &[(label).to_string()]));
             }
             require_optional_non_empty_string_array(
                 a.get("requiredWorkspaceFiles"),
@@ -2413,16 +2557,17 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                     .iter()
                     .any(|mode| !mode.as_str().is_some_and(|m| HYDRATION_MODES.contains(&m)))
                 {
-                    bail!(
-                        "{label}.assertions[].requiredHydrationModes must contain known hydration modes"
-                    );
+                    bail!("{}", crate::localization::cli_locale().format("{0}.assertions[].requiredHydrationModes must contain known hydration modes", &[(label).to_string()]));
                 }
             }
             if let Some(tier) = a.get("requiredReleaseGateTier").and_then(Value::as_str) {
                 if !RELEASE_GATE_TIERS.contains(&tier) {
                     bail!(
-                        "{label}.assertions[].requiredReleaseGateTier must be one of: {}",
-                        RELEASE_GATE_TIERS.join(", ")
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "{0}.assertions[].requiredReleaseGateTier must be one of: {1}",
+                            &[(label).to_string(), (RELEASE_GATE_TIERS.join(", ")).clone()]
+                        )
                     );
                 }
             }
@@ -2445,9 +2590,7 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                     )
                 })?;
             if kinds.is_empty() {
-                bail!(
-                    "{label}.assertions[].requiredExternalRefKinds must not be empty for external.refs"
-                );
+                bail!("{}", crate::localization::cli_locale().format("{0}.assertions[].requiredExternalRefKinds must not be empty for external.refs", &[(label).to_string()]));
             }
             let unknown: Vec<_> = kinds
                 .iter()
@@ -2467,9 +2610,7 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                 } else {
                     unknown.join(", ")
                 };
-                bail!(
-                    "{label}.assertions[].requiredExternalRefKinds contains unknown external ref kind(s): {joined}"
-                );
+                bail!("{}", crate::localization::cli_locale().format("{0}.assertions[].requiredExternalRefKinds contains unknown external ref kind(s): {1}", &[(label).to_string(), (joined).clone()]));
             }
             if a.get("requiredExternalRefs").is_some() {
                 require_non_empty_string_array(
@@ -2498,14 +2639,10 @@ fn parse_trajectory_scenario(value: &Value, label: &str) -> Result<TrajectorySce
                 .iter()
                 .any(|a| a.as_str() == Some("workspace_manifest"));
             if requires_workspace && !has_workspace_manifest_assertion {
-                bail!(
-                    "{label}.releaseGate release-blocking workspace_manifest gates must include a workspace.manifest assertion"
-                );
+                bail!("{}", crate::localization::cli_locale().format("{0}.releaseGate release-blocking workspace_manifest gates must include a workspace.manifest assertion", &[(label).to_string()]));
             }
             if requires_workspace && has_warning_workspace_manifest_assertion {
-                bail!(
-                    "{label}.releaseGate release-blocking workspace_manifest assertions must use error severity"
-                );
+                bail!("{}", crate::localization::cli_locale().format("{0}.releaseGate release-blocking workspace_manifest assertions must use error severity", &[(label).to_string()]));
             }
         }
     }
@@ -2527,7 +2664,13 @@ fn validate_trajectory_release_gate(
         .map(Value::is_boolean)
         .unwrap_or(false)
     {
-        bail!("{label}.releaseGate.releaseBlocking must be a boolean");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate.releaseBlocking must be a boolean",
+                &[(label).to_string()]
+            )
+        );
     }
     let tier = gate
         .get("tier")
@@ -2535,8 +2678,11 @@ fn validate_trajectory_release_gate(
         .with_context(|| format!("{label}.releaseGate.tier must be a string"))?;
     if !RELEASE_GATE_TIERS.contains(&tier) {
         bail!(
-            "{label}.releaseGate.tier must be one of: {}",
-            RELEASE_GATE_TIERS.join(", ")
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate.tier must be one of: {1}",
+                &[(label).to_string(), (RELEASE_GATE_TIERS.join(", ")).clone()]
+            )
         );
     }
     let artifacts = gate
@@ -2544,7 +2690,13 @@ fn validate_trajectory_release_gate(
         .and_then(Value::as_array)
         .with_context(|| format!("{label}.releaseGate.requiredArtifacts must not be empty"))?;
     if artifacts.is_empty() {
-        bail!("{label}.releaseGate.requiredArtifacts must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate.requiredArtifacts must not be empty",
+                &[(label).to_string()]
+            )
+        );
     }
     let unknown: Vec<_> = artifacts
         .iter()
@@ -2553,8 +2705,11 @@ fn validate_trajectory_release_gate(
         .collect();
     if !unknown.is_empty() {
         bail!(
-            "{label}.releaseGate.requiredArtifacts contains unknown artifact(s): {}",
-            unknown.join(", ")
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate.requiredArtifacts contains unknown artifact(s): {1}",
+                &[(label).to_string(), (unknown.join(", ")).clone()]
+            )
         );
     }
     if gate.get("releaseBlocking") == Some(&Value::Bool(true))
@@ -2562,7 +2717,13 @@ fn validate_trajectory_release_gate(
             .iter()
             .any(|a| a.as_str() == Some("workspace_manifest"))
     {
-        bail!("{label}.releaseGate release-blocking scenarios must require workspace_manifest");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate release-blocking scenarios must require workspace_manifest",
+                &[(label).to_string()]
+            )
+        );
     }
     if artifacts.iter().any(|a| a.as_str() == Some("inspection"))
         && source
@@ -2570,7 +2731,13 @@ fn validate_trajectory_release_gate(
             .and_then(Value::as_str)
             .is_none()
     {
-        bail!("{label}.releaseGate requires inspection but source.inspectionPath is missing");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}.releaseGate requires inspection but source.inspectionPath is missing",
+                &[(label).to_string()]
+            )
+        );
     }
     if artifacts
         .iter()
@@ -2580,9 +2747,7 @@ fn validate_trajectory_release_gate(
             .and_then(Value::as_str)
             .is_none()
     {
-        bail!(
-            "{label}.releaseGate requires workspace_manifest but source.workspaceManifestPath is missing"
-        );
+        bail!("{}", crate::localization::cli_locale().format("{0}.releaseGate requires workspace_manifest but source.workspaceManifestPath is missing", &[(label).to_string()]));
     }
     require_optional_non_negative_integer(
         gate.get("maxEvents"),
@@ -2615,8 +2780,15 @@ fn load_typed_json(path: &Path, schema_version: &str, name: &str) -> Result<Valu
         .any(|schema| schema == schema_version);
     if !schema_matches {
         bail!(
-            "{name} at {} must use schemaVersion {schema_version}",
-            path.display()
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0} at {1} must use schemaVersion {2}",
+                &[
+                    (name).to_string(),
+                    (path.display()).to_string(),
+                    (schema_version).to_string()
+                ]
+            )
         );
     }
     Ok(value)

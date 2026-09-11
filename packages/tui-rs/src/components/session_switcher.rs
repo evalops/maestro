@@ -89,7 +89,10 @@ impl SessionSwitcher {
                 self.filter();
             }
             Err(e) => {
-                self.error = Some(format!("Failed to load sessions: {e}"));
+                self.error = Some(maestro_ui::localization::format(
+                    "Failed to load sessions: {0}",
+                    &[(e).to_string()],
+                ));
                 self.loading = false;
             }
         }
@@ -221,9 +224,12 @@ impl SessionSwitcher {
     /// Delete the selected session and its owned sidecar data.
     pub fn delete_selected(&mut self) -> Result<(), String> {
         if let Some(session) = self.selected_session().cloned() {
-            self.manager
-                .delete_session(&session)
-                .map_err(|e| format!("Failed to delete session: {e}"))?;
+            self.manager.delete_session(&session).map_err(|e| {
+                maestro_ui::localization::format(
+                    "Failed to delete session: {0}",
+                    &[(e).to_string()],
+                )
+            })?;
             self.refresh();
         }
         Ok(())
@@ -241,7 +247,8 @@ impl SessionSwitcher {
         } else {
             format!("{}/{}", self.filtered.len(), self.sessions.len())
         };
-        let title = format!("Sessions ({count})");
+        let title =
+            maestro_ui::localization::format("Sessions ({0})", std::slice::from_ref(&(count)));
         let inner = Modal::sized(title, ModalSize::Wide)
             .theme(theme)
             .render(frame, area);
@@ -251,23 +258,31 @@ impl SessionSwitcher {
             .filter_map(|&idx| self.sessions.get(idx))
             .map(Self::render_session_item)
             .collect();
-        let mut picker = Picker::new(&self.query, "Type to filter...", items, theme)
-            .empty(if self.query.is_empty() {
-                "No sessions found"
-            } else {
-                "No matching sessions"
-            })
-            .help(key_hints(
-                &[
-                    KeyHint::new("↑↓", "navigate"),
-                    KeyHint::new("Enter", "select"),
-                    KeyHint::new("Esc", "cancel"),
-                    KeyHint::new("Del", "delete"),
-                ],
-                theme,
-            ));
+        let mut picker = Picker::new(
+            &self.query,
+            maestro_ui::localization::tr("Type to filter..."),
+            items,
+            theme,
+        )
+        .empty(if self.query.is_empty() {
+            maestro_ui::localization::tr("No sessions found")
+        } else {
+            maestro_ui::localization::tr("No matching sessions")
+        })
+        .help(key_hints(
+            &[
+                KeyHint::new("↑↓", "navigate"),
+                KeyHint::new("Enter", "select"),
+                KeyHint::new("Esc", "cancel"),
+                KeyHint::new("Del", "delete"),
+            ],
+            theme,
+        ));
         if self.loading {
-            picker = picker.notice("Loading sessions...", NoticeTone::Busy);
+            picker = picker.notice(
+                maestro_ui::localization::tr("Loading sessions..."),
+                NoticeTone::Busy,
+            );
         } else if let Some(error) = &self.error {
             picker = picker.notice(error.as_str(), NoticeTone::Error);
         }
@@ -296,7 +311,10 @@ impl SessionSwitcher {
 
         // Message count
         spans.push(Span::styled(
-            format!("  {} msgs", session.stats.total_messages()),
+            maestro_ui::localization::format(
+                "  {0} msgs",
+                &[(session.stats.total_messages()).to_string()],
+            ),
             Style::default().fg(theme.focus),
         ));
 
@@ -356,19 +374,19 @@ fn format_relative_time(timestamp: &str) -> String {
         let duration = now.signed_duration_since(dt.with_timezone(&chrono::Utc));
 
         if duration.num_minutes() < 1 {
-            return "just now".to_string();
+            return maestro_ui::localization::tr("just now").to_string();
         } else if duration.num_hours() < 1 {
             let mins = duration.num_minutes();
-            return format!("{mins}m ago");
+            return maestro_ui::localization::format("{0}m ago", &[(mins).to_string()]);
         } else if duration.num_days() < 1 {
             let hours = duration.num_hours();
-            return format!("{hours}h ago");
+            return maestro_ui::localization::format("{0}h ago", &[(hours).to_string()]);
         } else if duration.num_days() < 7 {
             let days = duration.num_days();
-            return format!("{days}d ago");
+            return maestro_ui::localization::format("{0}d ago", &[(days).to_string()]);
         } else if duration.num_weeks() < 4 {
             let weeks = duration.num_weeks();
-            return format!("{weeks}w ago");
+            return maestro_ui::localization::format("{0}w ago", &[(weeks).to_string()]);
         }
     }
 

@@ -49,7 +49,9 @@ const AGENT_RUNTIME_PROMOTION_PLAN_SCHEMA: &str = "evalops.maestro.agent-runtime
 const DETERMINISTIC_EVIDENCE_ENVELOPE_SCHEMA: &str =
     "evalops.maestro.deterministic-evidence-envelope.v1";
 
-const RUN_SUBCOMMANDS: &[&str] = &["inspect", "ledger", "replay", "promote"];
+const RUN_SUBCOMMANDS: &[&str] = &[
+    "inspect", "timeline", "context", "ledger", "replay", "promote",
+];
 
 /// Omitted fields catalog for trajectory inspection (matches TS inspection report).
 const INSPECTION_OMITTED_FIELDS: &[&str] = &[
@@ -254,6 +256,7 @@ struct RunReconstructionReport {
     prompt_context: PromptContextSummary,
     context_manifest: ContextManifestSummary,
     timeline: ComposerRunTimeline,
+    context_budget: ContextBudgetReport,
     trajectory: JsonValue,
     trajectory_replay: JsonValue,
     trajectory_score: JsonValue,
@@ -264,6 +267,21 @@ struct RunReconstructionReport {
     durability: DurabilitySummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     residual: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextBudgetReport {
+    latest: Option<maestro_context::ContextBudgetSnapshot>,
+    latest_compaction: Option<ContextCompactionComparison>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextCompactionComparison {
+    before: maestro_context::ContextBudgetSnapshot,
+    after: Option<maestro_context::ContextBudgetSnapshot>,
+    input_token_delta: Option<i64>,
 }
 
 /// A projection of recorded tool results, independent of assistant completion prose.
@@ -351,7 +369,10 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if !RUN_SUBCOMMANDS.contains(&subcommand) {
-        eprintln!("Run subcommand required.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format("Run subcommand required.", &[])
+        );
         eprintln!("{}", run_help());
         return Ok(1);
     }
@@ -363,7 +384,10 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
         .find(|arg| !arg.starts_with('-'))
         .map(String::as_str);
     let Some(session_id) = session_id else {
-        eprintln!("Session id required.");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format("Session id required.", &[])
+        );
         eprintln!("{}", run_help());
         return Ok(1);
     };
@@ -378,6 +402,18 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
     };
 
     match subcommand {
+        "timeline" if json => {
+            println!("{}", serde_json::to_string_pretty(&report.timeline)?);
+        }
+        "timeline" => {
+            println!("{}", render_timeline_swimlane(&report.timeline));
+        }
+        "context" if json => {
+            println!("{}", serde_json::to_string_pretty(&report.context_budget)?);
+        }
+        "context" => {
+            println!("{}", render_context_budget(&report.context_budget));
+        }
         "ledger" => {
             println!(
                 "{}",
@@ -412,16 +448,18 @@ pub async fn run_run(args: &[String]) -> Result<i32> {
 }
 
 fn run_help() -> &'static str {
-    "Usage: maestro run inspect|ledger|replay|promote <session-id> [--json]
+    "Usage: maestro run inspect|timeline|context|ledger|replay|promote <session-id> [--json]
 
 Commands:
   inspect   Reconstruct timeline, trajectory, and durability summary
+  timeline  Render the redacted session-event swimlane
+  context   Render the prepared-request context-budget waterfall
   ledger    Print the AgentRuntime ledger projection (JSON)
   replay    Print the AgentRuntime replay summary (JSON)
   promote   Print the dry-run Platform promotion plan (JSON)
 
 Options:
-  --json    Machine-readable full reconstruction report (inspect only)
+  --json    Machine-readable output for inspect, timeline, or context
   --help    Show this help
 
 Notes:
@@ -445,6 +483,7 @@ fn build_report_from_session(
     generated_at: &str,
 ) -> RunReconstructionReport {
     let timeline = build_timeline(session, generated_at);
+    let context_budget = build_context_budget_report(session);
     let counts = count_timeline(&timeline);
     let prompt_context = prompt_context_summary(&session.header, &timeline);
     let context_manifest = context_manifest_summary(&session.header, &timeline, &prompt_context);
@@ -487,6 +526,7 @@ fn build_report_from_session(
         prompt_context,
         context_manifest,
         timeline,
+        context_budget,
         trajectory,
         trajectory_replay,
         trajectory_score,
@@ -496,6 +536,39 @@ fn build_report_from_session(
         execution_evidence: execution_evidence_summary(session),
         durability,
         residual: None,
+    }
+}
+
+fn build_context_budget_report(session: &ParsedSession) -> ContextBudgetReport {
+    let latest = session.context_budget_snapshots.last().cloned();
+    let before = session
+        .context_budget_snapshots
+        .iter()
+        .rev()
+        .find(|snapshot| snapshot.phase == maestro_context::ContextBudgetPhase::BeforeCompaction)
+        .cloned();
+    let latest_compaction = before.map(|before| {
+        let after = session
+            .context_budget_snapshots
+            .iter()
+            .find(|snapshot| {
+                snapshot.timestamp > before.timestamp
+                    && snapshot.phase == maestro_context::ContextBudgetPhase::PreparedRequest
+            })
+            .cloned();
+        let input_token_delta = after.as_ref().map(|after| {
+            i64::try_from(after.input_tokens()).unwrap_or(i64::MAX)
+                - i64::try_from(before.input_tokens()).unwrap_or(i64::MAX)
+        });
+        ContextCompactionComparison {
+            before,
+            after,
+            input_token_delta,
+        }
+    });
+    ContextBudgetReport {
+        latest,
+        latest_compaction,
     }
 }
 
@@ -562,6 +635,35 @@ fn build_timeline(session: &ParsedSession, generated_at: &str) -> ComposerRunTim
         tool_name: None,
         metadata: nonempty_opt(&session.header.cwd).map(|cwd| json!({ "cwd": cwd })),
     });
+
+    if let Some(parent_session) = session
+        .header
+        .branched_from
+        .as_ref()
+        .or(session.header.parent_session.as_ref())
+        .filter(|_| {
+            !session
+                .session_events
+                .iter()
+                .any(|event| matches!(event.kind.as_str(), "session.forked" | "session.rewound"))
+        })
+    {
+        items.push(TimelineItem {
+            id: format!("session-forked:{session_id}"),
+            session_id: session_id.clone(),
+            timestamp: session.header.timestamp.clone(),
+            item_type: "session.forked".into(),
+            title: "Session forked".into(),
+            visibility: "admin".into(),
+            source: "local".into(),
+            status: "info".into(),
+            role: None,
+            summary: None,
+            tool_call_id: None,
+            tool_name: None,
+            metadata: Some(json!({ "parentSessionId": parent_session })),
+        });
+    }
 
     if let Some(meta) = &session.meta {
         items.push(TimelineItem {
@@ -643,6 +745,38 @@ fn build_timeline(session: &ParsedSession, generated_at: &str) -> ComposerRunTim
             metadata: Some(json!({
                 "tokensBefore": compaction.tokens_before,
                 "auto": compaction.auto,
+            })),
+        });
+    }
+
+    for event in &session.session_events {
+        if event.kind == "session.created" {
+            continue;
+        }
+        items.push(TimelineItem {
+            id: format!("event:{}", event.event_id),
+            session_id: session_id.clone(),
+            timestamp: event.timestamp.clone(),
+            item_type: event.kind.clone(),
+            title: session_event_title(event),
+            visibility: "admin".into(),
+            source: "local-telemetry".into(),
+            status: "info".into(),
+            role: None,
+            summary: None,
+            tool_call_id: event
+                .correlation_id
+                .clone()
+                .filter(|_| event.kind.starts_with("tool.")),
+            tool_name: event.name.clone(),
+            metadata: Some(json!({
+                "lane": event.lane,
+                "phase": event.phase,
+                "correlationId": event.correlation_id,
+                "attempt": event.attempt,
+                "delayMs": event.delay_ms,
+                "durationMs": event.duration_ms,
+                "automatic": event.automatic,
             })),
         });
     }
@@ -796,6 +930,40 @@ fn append_message_items(
                 *is_error,
             );
         }
+    }
+}
+
+fn session_event_title(event: &maestro_runtime_contracts::SessionEvent) -> String {
+    match event.kind.as_str() {
+        "model.request.started" => "Model request started".into(),
+        "model.response.completed" => "Model response completed".into(),
+        "turn.started" => "Turn started".into(),
+        "turn.completed" => "Turn completed".into(),
+        "turn.cancelled" => "Turn cancelled".into(),
+        "tool.approval.requested" => event.name.as_ref().map_or_else(
+            || "Tool approval requested".into(),
+            |name| format!("Approval requested for {name}"),
+        ),
+        "tool.started" => event
+            .name
+            .as_ref()
+            .map_or_else(|| "Tool started".into(), |name| format!("{name} started")),
+        "rate_limit.hit" => "Rate limit observed".into(),
+        "retry.scheduled" => "Request retry scheduled".into(),
+        "retry.started" => "Request retry started".into(),
+        "compaction.measured" => "Compaction measured".into(),
+        "compaction.completed" => "Compaction completed".into(),
+        "session.restarted" => "Runtime transport restarted".into(),
+        "session.forked" => "Session forked".into(),
+        "session.rewound" => "Session rewound".into(),
+        "session.closed" => "Session closed".into(),
+        kind if kind.starts_with("worker.") => {
+            format!(
+                "Worker {}",
+                kind.trim_start_matches("worker.").replace('_', " ")
+            )
+        }
+        _ => event.kind.replace(['.', '_'], " "),
     }
 }
 
@@ -2728,98 +2896,37 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
         .and_then(JsonValue::as_u64)
         .unwrap_or(0);
     let mut lines = vec![
-        format!(
-            "Execution evidence: {} succeeded, {} failed, {} denied, {} cancelled, {} unknown outcomes, {} without matching receipts",
-            report.execution_evidence.succeeded,
-            report.execution_evidence.failed,
-            report.execution_evidence.denied,
-            report.execution_evidence.cancelled,
-            report.execution_evidence.indeterminate,
-            report.execution_evidence.unverified
-        ),
-        format!(
-            "Recorded changes: {} file operations; {} command results",
-            report.execution_evidence.file_changes,
-            report.execution_evidence.commands.len()
-        ),
-        format!("Run reconstruction: {}", report.session.id),
-        format!("Session file: {}", report.session.session_file),
-        format!("Messages: {}", report.session.message_count),
-        format!("Timeline items: {}", report.counts.timeline_items),
-        format!("Trajectory events: {traj_events}"),
-        format!(
-            "Replay deltas: {} ({} errors, {} warnings)",
-            u64_at(&report.trajectory_replay, "/counts/deltas"),
-            u64_at(&report.trajectory_replay, "/counts/errors"),
-            u64_at(&report.trajectory_replay, "/counts/warnings"),
-        ),
-        format!(
-            "Trajectory score: {} failed, {} warnings across {} rule(s)",
-            u64_at(&report.trajectory_score, "/counts/failed"),
-            u64_at(&report.trajectory_score, "/counts/warnings"),
-            u64_at(&report.trajectory_score, "/counts/rules"),
-        ),
-        format!(
-            "Replay lab: {} event/source jump target(s), redaction={}",
-            u64_at(&report.trajectory_inspection, "/counts/jumpTargets"),
-            report
+        crate::localization::cli_locale().format("Execution evidence: {0} succeeded, {1} failed, {2} denied, {3} cancelled, {4} unknown outcomes, {5} without matching receipts", &[(report.execution_evidence.succeeded).to_string(), (report.execution_evidence.failed).to_string(), (report.execution_evidence.denied).to_string(), (report.execution_evidence.cancelled).to_string(), (report.execution_evidence.indeterminate).to_string(), (report.execution_evidence.unverified).to_string()]),
+        crate::localization::cli_locale().format("Recorded changes: {0} file operations; {1} command results", &[(report.execution_evidence.file_changes).to_string(), (report.execution_evidence.commands.len()).to_string()]),
+        crate::localization::cli_locale().format("Run reconstruction: {0}", std::slice::from_ref(&(report.session.id))),
+        crate::localization::cli_locale().format("Session file: {0}", std::slice::from_ref(&(report.session.session_file))),
+        crate::localization::cli_locale().format("Messages: {0}", &[(report.session.message_count).to_string()]),
+        crate::localization::cli_locale().format("Timeline items: {0}", &[(report.counts.timeline_items).to_string()]),
+        crate::localization::cli_locale().format("Trajectory events: {0}", &[(traj_events).to_string()]),
+        crate::localization::cli_locale().format("Replay deltas: {0} ({1} errors, {2} warnings)", &[(u64_at(&report.trajectory_replay, "/counts/deltas")).to_string(), (u64_at(&report.trajectory_replay, "/counts/errors")).to_string(), (u64_at(&report.trajectory_replay, "/counts/warnings")).to_string()]),
+        crate::localization::cli_locale().format("Trajectory score: {0} failed, {1} warnings across {2} rule(s)", &[(u64_at(&report.trajectory_score, "/counts/failed")).to_string(), (u64_at(&report.trajectory_score, "/counts/warnings")).to_string(), (u64_at(&report.trajectory_score, "/counts/rules")).to_string()]),
+        crate::localization::cli_locale().format("Replay lab: {0} event/source jump target(s), redaction={1}", &[(u64_at(&report.trajectory_inspection, "/counts/jumpTargets")).to_string(), (report
                 .trajectory_inspection
                 .pointer("/redaction/default")
                 .and_then(JsonValue::as_str)
-                .unwrap_or("redacted"),
-        ),
-        format!(
-            "AgentRuntime ledger: {} entries, {} dry-run promotion op(s), replay deterministic={}",
-            u64_at(&report.agent_runtime_ledger, "/counts/entries"),
-            u64_at(&report.agent_runtime_ledger, "/counts/promotionOperations"),
-            yn(report.durability.replay_deterministic),
-        ),
-        format!(
-            "Evidence envelope: {} / {}, redaction={}, missing signals={}",
-            report.evidence_envelope.terminal.state,
-            report.evidence_envelope.terminal.outcome,
-            report.evidence_envelope.redaction_state,
-            report.evidence_envelope.missing_signals.len(),
-        ),
-        format!(
-            "Durability: reconstructable={}, resume summary={}, memory hash={}, checkpoints={}, pending waits={}",
-            yn(report.durability.reconstructable),
-            yn(report.durability.resume_summary_present),
-            yn(report.durability.memory_extraction_hash_present),
-            report.durability.compaction_checkpoints,
-            report.durability.pending_requests,
-        ),
-        format!("Coverage: {}", render_coverage(&report.coverage)),
-        format!(
-            "Prompt context: {} entries ({} docs, {} MCP servers)",
-            report.prompt_context.entries,
-            report.prompt_context.project_docs,
-            report.prompt_context.mcp_servers,
-        ),
-        format!(
-            "Context manifest: {} entries ({} docs, {} MCP servers, {} resources, {} prompts, {} diagnostics)",
-            report.context_manifest.entries,
-            report.context_manifest.project_docs,
-            report.context_manifest.mcp_servers,
-            report.context_manifest.mcp_resources,
-            report.context_manifest.mcp_prompts,
-            report.context_manifest.diagnostics,
-        ),
-        format!(
-            "Context generation: {} (declared digest verified={})",
-            report
+                .unwrap_or("redacted")).to_string()]),
+        crate::localization::cli_locale().format("AgentRuntime ledger: {0} entries, {1} dry-run promotion op(s), replay deterministic={2}", &[(u64_at(&report.agent_runtime_ledger, "/counts/entries")).to_string(), (u64_at(&report.agent_runtime_ledger, "/counts/promotionOperations")).to_string(), (yn(report.durability.replay_deterministic)).to_string()]),
+        crate::localization::cli_locale().format("Evidence envelope: {0} / {1}, redaction={2}, missing signals={3}", &[(report.evidence_envelope.terminal.state).to_string(), (report.evidence_envelope.terminal.outcome).to_string(), (report.evidence_envelope.redaction_state).to_string(), (report.evidence_envelope.missing_signals.len()).to_string()]),
+        crate::localization::cli_locale().format("Durability: reconstructable={0}, resume summary={1}, memory hash={2}, checkpoints={3}, pending waits={4}", &[(yn(report.durability.reconstructable)).to_string(), (yn(report.durability.resume_summary_present)).to_string(), (yn(report.durability.memory_extraction_hash_present)).to_string(), (report.durability.compaction_checkpoints).to_string(), (report.durability.pending_requests).to_string()]),
+        crate::localization::cli_locale().format("Coverage: {0}", &[(render_coverage(&report.coverage)).clone()]),
+        crate::localization::cli_locale().format("Prompt context: {0} entries ({1} docs, {2} MCP servers)", &[(report.prompt_context.entries).to_string(), (report.prompt_context.project_docs).to_string(), (report.prompt_context.mcp_servers).to_string()]),
+        crate::localization::cli_locale().format("Context manifest: {0} entries ({1} docs, {2} MCP servers, {3} resources, {4} prompts, {5} diagnostics)", &[(report.context_manifest.entries).to_string(), (report.context_manifest.project_docs).to_string(), (report.context_manifest.mcp_servers).to_string(), (report.context_manifest.mcp_resources).to_string(), (report.context_manifest.mcp_prompts).to_string(), (report.context_manifest.diagnostics).to_string()]),
+        crate::localization::cli_locale().format("Context generation: {0} (declared digest verified={1})", &[(report
                 .context_manifest
                 .manifest_sha256
                 .as_deref()
-                .unwrap_or("unavailable"),
-            report
+                .unwrap_or("unavailable")).to_string(), (report
                 .context_manifest
                 .manifest_sha256_verified
                 .map(yn)
-                .unwrap_or("not declared"),
-        ),
+                .unwrap_or("not declared")).to_string()]),
         String::new(),
-        "Timeline preview".into(),
+        crate::localization::cli_locale().translate("Timeline preview").into(),
     ];
     for item in report.timeline.items.iter().take(12) {
         let mut parts = vec![
@@ -2834,22 +2941,208 @@ fn render_run_reconstruction(report: &RunReconstructionReport) -> String {
         lines.push(format!("  - {}", parts.join(" | ")));
     }
     if report.timeline.items.len() > 12 {
-        lines.push(format!(
-            "  ... {} more item(s)",
-            report.timeline.items.len() - 12
+        lines.push(crate::localization::cli_locale().format(
+            "  ... {0} more item(s)",
+            &[(report.timeline.items.len() - 12).to_string()],
         ));
     }
     if report.execution_evidence.indeterminate > 0 {
-        lines.push("Reconcile unknown remote outcomes before retrying those calls.".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Reconcile unknown remote outcomes before retrying those calls.")
+                .into(),
+        );
     }
     if report.execution_evidence.failed
         + report.execution_evidence.denied
         + report.execution_evidence.cancelled
         > 0
     {
-        lines.push("Inspect the recorded failures or denials before resuming the session.".into());
+        lines.push(
+            crate::localization::cli_locale()
+                .translate("Inspect the recorded failures or denials before resuming the session.")
+                .into(),
+        );
     }
     lines.join("\n")
+}
+
+fn render_context_budget(report: &ContextBudgetReport) -> String {
+    let Some(snapshot) = report.latest.as_ref() else {
+        return "No prepared-request context telemetry is recorded for this session.".into();
+    };
+    let mut lines = vec![
+        format!("Context budget · {}", snapshot.model),
+        format!(
+            "Snapshot: {} · {:?}",
+            snapshot.timestamp, snapshot.confidence
+        ),
+    ];
+    if let Some(window) = snapshot.context_window {
+        lines.push(format!(
+            "[{}] {} / {} tokens budgeted",
+            context_budget_bar(snapshot, 48),
+            snapshot.occupied_tokens(),
+            window
+        ));
+    } else {
+        lines.push("Context window: unknown".into());
+    }
+    for (label, marker, tokens) in context_budget_rows(snapshot) {
+        let pct = snapshot
+            .context_window
+            .filter(|window| *window > 0)
+            .map_or(0.0, |window| tokens as f64 * 100.0 / window as f64);
+        lines.push(format!(" {marker} {label:<18} {tokens:>9}  {pct:>5.1}%"));
+    }
+    lines.push(" S system · D schemas · R results · C conversation · O other".into());
+    lines.push(" P response reserve · ! safety margin · . remaining".into());
+    if let Some(comparison) = &report.latest_compaction {
+        let after = comparison
+            .after
+            .as_ref()
+            .map_or("pending".into(), |snapshot| {
+                snapshot.input_tokens().to_string()
+            });
+        let delta = comparison
+            .input_token_delta
+            .map_or("pending".into(), |delta| format!("{delta:+}"));
+        lines.push(format!(
+            "Compaction: {} -> {after} input tokens ({delta})",
+            comparison.before.input_tokens()
+        ));
+    }
+    lines.join("\n")
+}
+
+fn context_budget_rows(
+    snapshot: &maestro_context::ContextBudgetSnapshot,
+) -> [(&'static str, char, u64); 8] {
+    [
+        ("System prompt", 'S', snapshot.system_prompt),
+        ("Tool schemas", 'D', snapshot.tool_schemas),
+        ("Tool results", 'R', snapshot.tool_results),
+        ("Conversation", 'C', snapshot.conversation),
+        ("Other", 'O', snapshot.other),
+        ("Response reserve", 'P', snapshot.response_reserve),
+        ("Safety margin", '!', snapshot.safety_margin),
+        ("Remaining", '.', snapshot.remaining_headroom().unwrap_or(0)),
+    ]
+}
+
+fn context_budget_bar(snapshot: &maestro_context::ContextBudgetSnapshot, width: usize) -> String {
+    let rows = context_budget_rows(snapshot);
+    let total = snapshot.context_window.unwrap_or_else(|| {
+        rows.iter()
+            .map(|(_, _, tokens)| *tokens)
+            .sum::<u64>()
+            .max(1)
+    });
+    (0..width)
+        .map(|cell| {
+            let target = (cell as u128 * u128::from(total)) / width.max(1) as u128;
+            let mut cumulative = 0u128;
+            rows.iter()
+                .find_map(|(_, marker, tokens)| {
+                    cumulative = cumulative.saturating_add(u128::from(*tokens));
+                    (target < cumulative).then_some(*marker)
+                })
+                .unwrap_or('.')
+        })
+        .collect()
+}
+
+fn render_timeline_swimlane(timeline: &ComposerRunTimeline) -> String {
+    const WIDTH: usize = 20;
+    let lanes = ["USER", "RUNTIME", "MODEL", "TOOLS", "WORKER"];
+    let mut lines = vec![
+        format!("Session {} event timeline", timeline.session_id),
+        format!(
+            "{:<12} {}",
+            "TIME",
+            lanes
+                .iter()
+                .map(|lane| format!("{lane:<WIDTH$}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        format!("{:-<12} {}", "", "-".repeat((WIDTH + 1) * lanes.len() - 1)),
+    ];
+    for item in &timeline.items {
+        let mut cells = vec![String::new(); lanes.len()];
+        let marker = match item.status.as_str() {
+            "failed" => "!",
+            "cancelled" => "x",
+            "running" | "pending" => ">",
+            _ => "*",
+        };
+        cells[timeline_lane(item)] = truncate_cell(&format!("{marker} {}", item.title), WIDTH);
+        lines.push(format!(
+            "{:<12} {}",
+            short_event_time(&item.timestamp),
+            cells
+                .iter()
+                .map(|cell| format!("{cell:<WIDTH$}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    lines.join("\n")
+}
+
+fn timeline_lane(item: &TimelineItem) -> usize {
+    if let Some(lane) = item
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("lane"))
+        .and_then(JsonValue::as_str)
+    {
+        match lane {
+            "user" => return 0,
+            "runtime" => return 1,
+            "model" => return 2,
+            "tools" => return 3,
+            "worker" => return 4,
+            _ => {}
+        }
+    }
+    if item.item_type == "message.user" {
+        0
+    } else if item.item_type.starts_with("model.") || item.item_type == "message.assistant" {
+        2
+    } else if item.item_type.starts_with("tool.")
+        || matches!(
+            item.item_type.as_str(),
+            "file.changed" | "artifact.linked" | "diagnostic.delta" | "policy.decision"
+        )
+    {
+        3
+    } else if item.item_type.starts_with("worker.") {
+        4
+    } else {
+        1
+    }
+}
+
+fn short_event_time(timestamp: &str) -> String {
+    timestamp
+        .split('T')
+        .nth(1)
+        .unwrap_or(timestamp)
+        .trim_end_matches('Z')
+        .chars()
+        .take(12)
+        .collect()
+}
+
+fn truncate_cell(value: &str, width: usize) -> String {
+    let mut chars = value.chars();
+    let mut output = chars.by_ref().take(width).collect::<String>();
+    if chars.next().is_some() && width > 0 {
+        output.pop();
+        output.push('…');
+    }
+    output
 }
 
 fn u64_at(value: &JsonValue, pointer: &str) -> u64 {
@@ -2861,19 +3154,49 @@ fn u64_at(value: &JsonValue, pointer: &str) -> u64 {
 
 fn render_coverage(coverage: &ReconstructionCoverage) -> String {
     let labels: [(&str, bool); 13] = [
-        ("prompt inputs", coverage.prompt_inputs),
-        ("assistant responses", coverage.assistant_responses),
-        ("tool requests", coverage.tool_requests),
-        ("tool results", coverage.tool_results),
-        ("context manifest", coverage.context_manifest),
-        ("context diagnostics", coverage.context_diagnostics),
-        ("file changes", coverage.file_changes),
+        (
+            crate::localization::cli_locale().translate("prompt inputs"),
+            coverage.prompt_inputs,
+        ),
+        (
+            crate::localization::cli_locale().translate("assistant responses"),
+            coverage.assistant_responses,
+        ),
+        (
+            crate::localization::cli_locale().translate("tool requests"),
+            coverage.tool_requests,
+        ),
+        (
+            crate::localization::cli_locale().translate("tool results"),
+            coverage.tool_results,
+        ),
+        (
+            crate::localization::cli_locale().translate("context manifest"),
+            coverage.context_manifest,
+        ),
+        (
+            crate::localization::cli_locale().translate("context diagnostics"),
+            coverage.context_diagnostics,
+        ),
+        (
+            crate::localization::cli_locale().translate("file changes"),
+            coverage.file_changes,
+        ),
         ("artifacts", coverage.artifacts),
-        ("policy decisions", coverage.policy_decisions),
+        (
+            crate::localization::cli_locale().translate("policy decisions"),
+            coverage.policy_decisions,
+        ),
         ("diagnostics", coverage.diagnostics),
         ("compactions", coverage.compactions),
-        ("pending waits", coverage.pending_requests),
-        ("MCP context", coverage.mcp_context),
+        (
+            crate::localization::cli_locale().translate("pending waits"),
+            coverage.pending_requests,
+        ),
+        (
+            crate::localization::cli_locale().translate("MCP context"),
+            coverage.mcp_context,
+        ),
     ];
     labels
         .iter()
@@ -3041,6 +3364,30 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    fn budget_snapshot(
+        timestamp: &str,
+        phase: maestro_context::ContextBudgetPhase,
+        conversation: u64,
+    ) -> maestro_context::ContextBudgetSnapshot {
+        maestro_context::ContextBudgetSnapshot {
+            schema_version: maestro_context::CONTEXT_BUDGET_SCHEMA.into(),
+            snapshot_id: format!("snapshot-{conversation}"),
+            timestamp: timestamp.into(),
+            model: "openai/gpt-5.5".into(),
+            phase,
+            compaction_id: None,
+            context_window: Some(1_000),
+            system_prompt: 100,
+            tool_schemas: 100,
+            tool_results: 100,
+            conversation,
+            other: 50,
+            response_reserve: 100,
+            safety_margin: 10,
+            confidence: maestro_context::BudgetCountConfidence::Measured,
+        }
+    }
+
     fn sample_session(dir: &TempDir) -> ParsedSession {
         let path = dir.path().join("sample.jsonl");
         let header = SessionHeader {
@@ -3173,6 +3520,26 @@ mod tests {
                 custom_instructions: None,
                 continuation: None,
             }],
+            session_events: vec![maestro_runtime_contracts::SessionEvent::new(
+                "event-retry",
+                "2026-05-09T10:03:00.000Z",
+                "sess-run-1",
+                maestro_runtime_contracts::SessionEventLane::Runtime,
+                "retry.scheduled",
+                maestro_runtime_contracts::SessionEventPhase::Info,
+            )],
+            context_budget_snapshots: vec![
+                budget_snapshot(
+                    "2026-05-09T10:03:59.000Z",
+                    maestro_context::ContextBudgetPhase::BeforeCompaction,
+                    400,
+                ),
+                budget_snapshot(
+                    "2026-05-09T10:04:01.000Z",
+                    maestro_context::ContextBudgetPhase::PreparedRequest,
+                    150,
+                ),
+            ],
             lifecycle_notifications: vec![],
             pending_lifecycle_agent_notes: vec![],
             side_questions: vec![],
@@ -3758,5 +4125,47 @@ mod tests {
         let replay = &report.agent_runtime_ledger["replay"];
         assert_eq!(replay["toolVersionPins"], json!({}));
         assert_eq!(replay["replayedBashCommands"]["total"], json!(0));
+    }
+
+    #[test]
+    fn renders_session_event_swimlane_with_runtime_telemetry() {
+        let dir = TempDir::new().unwrap();
+        let mut session = sample_session(&dir);
+        session
+            .session_events
+            .push(maestro_runtime_contracts::SessionEvent::new(
+                "event-turn",
+                "2026-05-09T10:03:01.000Z",
+                "sess-run-1",
+                maestro_runtime_contracts::SessionEventLane::User,
+                "turn.started",
+                maestro_runtime_contracts::SessionEventPhase::Started,
+            ));
+        let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+        let rendered = render_timeline_swimlane(&report.timeline);
+        assert!(rendered.contains("USER"));
+        assert!(rendered.contains("RUNTIME"));
+        assert!(rendered.contains("MODEL"));
+        assert!(rendered.contains("TOOLS"));
+        assert!(rendered.contains("WORKER"));
+        assert!(rendered.contains("Request retry"));
+        let turn_row = rendered
+            .lines()
+            .find(|line| line.contains("Turn started"))
+            .unwrap();
+        assert!(turn_row[13..33].contains("Turn started"));
+        assert!(!rendered.contains("hello"));
+    }
+
+    #[test]
+    fn renders_context_waterfall_and_compaction_delta() {
+        let dir = TempDir::new().unwrap();
+        let report = build_report_from_session(&sample_session(&dir), "2026-05-09T10:06:00.000Z");
+        let rendered = render_context_budget(&report.context_budget);
+        assert!(rendered.contains("Context budget"));
+        assert!(rendered.contains("Response reserve"));
+        assert!(rendered.contains("Safety margin"));
+        assert!(rendered.contains("Remaining"));
+        assert!(rendered.contains("Compaction: 750 -> 500 input tokens (-250)"));
     }
 }

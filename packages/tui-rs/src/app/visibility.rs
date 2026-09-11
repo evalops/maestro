@@ -117,25 +117,27 @@ pub(super) enum FeedbackSubmission {
 impl FeedbackSubmission {
     fn message(self) -> &'static str {
         match self {
-            Self::Queued => "Your saved rating is queued for the product team. Thank you.",
-            Self::QueuedPending => {
-                "Your rating is queued, but its cooldown could not be saved. Retrying will reuse this rating without submitting another response."
-            }
-            Self::Disabled => {
-                "Rating was not sent because telemetry is turned off. Your pending rating is saved locally for an explicit retry."
-            }
-            Self::Unavailable => {
-                "Rating was not sent because the signed-in workspace changed or is unavailable."
-            }
-            Self::Failed => {
-                "Rating could not be queued. Retry the same /feedback rating command to send the saved rating."
-            }
-            Self::Cooldown => {
-                "You already shared a rating for this workspace. You can share another after seven days."
-            }
-            Self::LocalFailure => {
-                "Rating was not sent because its local submission state could not be saved. Try again later."
-            }
+            Self::Queued => maestro_ui::localization::tr(
+                "Your saved rating is queued for the product team. Thank you.",
+            ),
+            Self::QueuedPending => maestro_ui::localization::tr(
+                "Your rating is queued, but its cooldown could not be saved. Retrying will reuse this rating without submitting another response.",
+            ),
+            Self::Disabled => maestro_ui::localization::tr(
+                "Rating was not sent because telemetry is turned off. Your pending rating is saved locally for an explicit retry.",
+            ),
+            Self::Unavailable => maestro_ui::localization::tr(
+                "Rating was not sent because the signed-in workspace changed or is unavailable.",
+            ),
+            Self::Failed => maestro_ui::localization::tr(
+                "Rating could not be queued. Retry the same /feedback rating command to send the saved rating.",
+            ),
+            Self::Cooldown => maestro_ui::localization::tr(
+                "You already shared a rating for this workspace. You can share another after seven days.",
+            ),
+            Self::LocalFailure => maestro_ui::localization::tr(
+                "Rating was not sent because its local submission state could not be saved. Try again later.",
+            ),
         }
     }
 }
@@ -218,20 +220,24 @@ impl App {
             "partly_useful" => FeedbackRating::PartlyUseful,
             "not_useful" => FeedbackRating::NotUseful,
             _ => {
-                self.state.add_system_message("Was Deixic Code useful? To share one optional rating with the product team, use /feedback rating useful, /feedback rating partly_useful, or /feedback rating not_useful. Only this category is sent. One rating per workspace every seven days. Retrying a pending submission reuses the previously saved rating.".into());
+                self.state.add_system_message(self.state.locale.translate("Was Deixic Code useful? To share one optional rating with the product team, use /feedback rating useful, /feedback rating partly_useful, or /feedback rating not_useful. Only this category is sent. One rating per workspace every seven days. Retrying a pending submission reuses the previously saved rating.").into());
                 return;
             }
         };
         if self.feedback_rating_rx.is_some() {
-            self.state
-                .add_system_message("A rating submission is already in progress.".into());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("A rating submission is already in progress.")
+                    .into(),
+            );
             return;
         }
         // Capture the local account before yielding. Network validation still
         // requires this exact scope inside the off-thread collection boundary.
         let Some(scope) = crate::telemetry::onboarding_identity_scope() else {
             self.state.add_system_message(
-                "Rating was not sent. Sign in to a Deixic workspace to share product feedback."
+                self.state.locale.translate("Rating was not sent. Sign in to a Deixic workspace to share product feedback.")
                     .into(),
             );
             return;
@@ -260,7 +266,8 @@ impl App {
             );
             let _ = tx.send(result);
         });
-        self.state.add_system_message("Saving your rating…".into());
+        self.state
+            .add_system_message(self.state.locale.translate("Saving your rating…").into());
     }
 }
 

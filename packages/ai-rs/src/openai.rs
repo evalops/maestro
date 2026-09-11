@@ -1028,6 +1028,10 @@ pub struct OpenAiClient {
     managed_workspace_id: Option<String>,
     managed_request_lineage: Option<ManagedRequestLineage>,
     managed_inference_authorization: Option<String>,
+    // Clones share consumption state across rounds, retries, and auxiliary calls.
+    managed_authorization_used: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    managed_authorization_provider:
+        Option<std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>>,
     route_provider: Option<String>,
     #[cfg(test)]
     response_open_timeout_override: Option<std::time::Duration>,
@@ -1058,6 +1062,10 @@ impl OpenAiClient {
             managed_workspace_id: None,
             managed_request_lineage: None,
             managed_inference_authorization: None,
+            managed_authorization_used: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            managed_authorization_provider: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -1083,6 +1091,10 @@ impl OpenAiClient {
             managed_workspace_id: None,
             managed_request_lineage: None,
             managed_inference_authorization: None,
+            managed_authorization_used: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            managed_authorization_provider: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -1111,6 +1123,46 @@ impl OpenAiClient {
             .zip(self.managed_workspace_id.as_deref())
     }
 
+    pub(crate) fn cache_scope(
+        &self,
+    ) -> Result<Option<maestro_runtime_contracts::cache_topology::CacheScope>> {
+        let Some((organization_id, workspace_id)) = self.managed_gateway_scope() else {
+            return Ok(None);
+        };
+        let Some(encoded) = self.managed_inference_authorization.as_deref() else {
+            return Ok(None);
+        };
+        let (authorization, _) = parse_managed_inference_authorization(encoded)?;
+        let context = managed_inference_context(&authorization)?;
+        let session_id = context
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|session| !session.trim().is_empty())
+            .context("managed cache topology requires an admitted session")?
+            .to_owned();
+        Ok(Some(
+            maestro_runtime_contracts::cache_topology::CacheScope {
+                organization_id: organization_id.into(),
+                workspace_id: workspace_id.into(),
+                session_id,
+            },
+        ))
+    }
+
+    pub(crate) fn cache_namespace(&self) -> Result<String> {
+        if let Some(scope) = self.cache_scope()? {
+            return Ok(scope.namespace());
+        }
+        // Older managed callers expose tenant scope but no session authority.
+        // Keep tenant separation for local diagnostics without inventing a session.
+        Ok(self.managed_gateway_scope().map_or_else(
+            || "local".into(),
+            |scope| {
+                maestro_runtime_contracts::cache_topology::digest(&("unattested-managed.v1", scope))
+            },
+        ))
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.managed_request_lineage =
             lineage_id.map(|lineage_id| ManagedRequestLineage { lineage_id });
@@ -1118,6 +1170,15 @@ impl OpenAiClient {
 
     pub(crate) fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
         self.managed_inference_authorization = authorization;
+        self.managed_authorization_used =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    }
+
+    pub(crate) fn set_managed_authorization_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        self.managed_authorization_provider = Some(provider);
     }
 
     fn response_open_timeout(&self) -> Option<std::time::Duration> {
@@ -1910,12 +1971,39 @@ impl OpenAiClient {
         } else {
             self.build_chat_request_body(messages, config)
         };
+        if let Some(prepared) = &config.cache_topology {
+            // The admitted session selects a fixed one-hour policy. Auxiliary
+            // summaries never acquire breakpoints or affinity.
+            if prepared.topology().transition != crate::cache_topology::CacheTransition::Auxiliary
+                && self.route_provider.as_deref() == Some("openrouter")
+                && config.model.contains("claude")
+                && !responses
+            {
+                let ttl = if self.managed_gateway && self.managed_inference_authorization.is_some()
+                {
+                    "1h"
+                } else {
+                    "5m"
+                };
+                crate::cache_topology::mark_stable_history(&mut body, ttl);
+            }
+            prepared.append_volatile_tail(&mut body);
+        }
+        let legacy_affinity = if config.cache_topology.is_none() && !self.managed_gateway {
+            std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY").ok()
+        } else {
+            None
+        };
+        let affinity = config
+            .cache_topology
+            .as_ref()
+            .and_then(|prepared| prepared.affinity())
+            .or(legacy_affinity.as_deref());
+        // Hosted affinity is derived by the gateway from admitted scope and the resolved route.
         apply_prompt_cache_key(
             &mut body,
             self.route_provider.as_deref(),
-            std::env::var("MAESTRO_OPENROUTER_PROMPT_CACHE_KEY")
-                .ok()
-                .as_deref(),
+            if self.managed_gateway { None } else { affinity },
         );
         if let Some(object) = body.as_object_mut() {
             object.extend(self.request_extensions.clone());
@@ -1965,11 +2053,68 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<CancellableStream> {
+        if self.managed_gateway && self.managed_inference_authorization.is_some() {
+            let mut invocation = self.clone();
+            if self
+                .managed_authorization_used
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                let provider = self
+                    .managed_authorization_provider
+                    .as_ref()
+                    .context("managed inference authorization renewal is unavailable")?;
+                let authorization = provider.renew().await?;
+                authorization.validate().map_err(anyhow::Error::msg)?;
+                invocation.managed_inference_authorization = Some(authorization.into_inner());
+            }
+            return invocation
+                .stream_authorized_invocation(messages, config)
+                .await;
+        }
+        self.stream_authorized_invocation(messages, config).await
+    }
+
+    async fn stream_authorized_invocation(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<CancellableStream> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
+        crate::cache_topology::validate_prepared(messages, config)?;
+        if let Some(prepared) = &config.cache_topology {
+            prepared.validate_namespace(&self.cache_namespace()?)?;
+        }
+        if config.cache_topology.is_some()
+            && self.request_extensions.keys().any(|key| {
+                matches!(
+                    key.as_str(),
+                    "model"
+                        | "messages"
+                        | "input"
+                        | "system"
+                        | "instructions"
+                        | "tools"
+                        | "thinking"
+                        | "reasoning"
+                        | "reasoning_effort"
+                        | "tool_choice"
+                        | "cache_control"
+                        | "session_id"
+                        | "prompt_cache_key"
+                        | "prompt_cache_retention"
+                        | "prompt_cache_options"
+                        | "cache_prompt"
+                        | "cache_topology"
+                )
+            })
+        {
+            anyhow::bail!("cache topology forbids late prompt extensions");
+        }
+
         let is_responses_api = self.authorized_responses_api_for(&config.model)?;
-        let body = self.managed_request(self.build_request_body_for_api(
+        let mut body = self.managed_request(self.build_request_body_for_api(
             messages,
             config,
             is_responses_api,
@@ -1985,6 +2130,22 @@ impl OpenAiClient {
                 body.get(required).is_some() && body.get(forbidden).is_none(),
                 "managed inference request body does not match authorized endpoint"
             );
+        }
+
+        if let Some(scope) = self.cache_scope()? {
+            use maestro_runtime_contracts::cache_topology::{
+                CacheTopology, HostedCacheTopology, wire_shape,
+            };
+            let mut topology = CacheTopology::prepare(
+                wire_shape(&body, scope.namespace()).map_err(anyhow::Error::msg)?,
+                None,
+            )
+            .map_err(anyhow::Error::msg)?;
+            if let Some(prepared) = &config.cache_topology {
+                topology.generation = prepared.topology().generation;
+                topology.transition = prepared.topology().transition;
+            }
+            body["cache_topology"] = serde_json::to_value(HostedCacheTopology { scope, topology })?;
         }
 
         // Get the appropriate API URL for this model, honoring any custom
@@ -2369,10 +2530,14 @@ impl OpenAiClient {
                                                 .and_then(|d| d.get("cached_tokens"))
                                                 .and_then(serde_json::Value::as_u64);
                                             // Extract reasoning tokens from output_tokens_details
-                                            let _reasoning_tokens = usage
+                                            let reasoning_tokens = usage
                                                 .get("output_tokens_details")
                                                 .and_then(|d| d.get("reasoning_tokens"))
                                                 .and_then(serde_json::Value::as_u64);
+                                            if let Some(tokens) = reasoning_tokens {
+                                                let _ =
+                                                    tx.send(StreamEvent::ReasoningUsage { tokens });
+                                            }
                                             if let Some(cost_usd) = usage
                                                 .get("cost")
                                                 .and_then(serde_json::Value::as_f64)
@@ -2381,16 +2546,21 @@ impl OpenAiClient {
                                                 let _ =
                                                     tx.send(StreamEvent::ProviderCost { cost_usd });
                                             }
+                                            let cache_write = usage
+                                                .get("input_tokens_details")
+                                                .and_then(|details| {
+                                                    details.get("cache_write_tokens")
+                                                })
+                                                .and_then(serde_json::Value::as_u64);
                                             let _ = tx.send(StreamEvent::Usage {
-                                                input_tokens: input,
+                                                input_tokens: uncached_input_tokens(
+                                                    input,
+                                                    cache_read,
+                                                    cache_write,
+                                                ),
                                                 output_tokens: output,
                                                 cache_read_tokens: cache_read,
-                                                cache_creation_tokens: usage
-                                                    .get("input_tokens_details")
-                                                    .and_then(|details| {
-                                                        details.get("cache_write_tokens")
-                                                    })
-                                                    .and_then(serde_json::Value::as_u64),
+                                                cache_creation_tokens: cache_write,
                                             });
                                         }
                                     }
@@ -2643,7 +2813,17 @@ impl OpenAiClient {
                                                     tx.send(StreamEvent::ProviderCost { cost_usd });
                                             }
                                             let _ = tx.send(StreamEvent::Usage {
-                                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                                input_tokens: uncached_input_tokens(
+                                                    usage.prompt_tokens.unwrap_or(0),
+                                                    usage
+                                                        .prompt_tokens_details
+                                                        .as_ref()
+                                                        .and_then(|d| d.cached_tokens),
+                                                    usage
+                                                        .prompt_tokens_details
+                                                        .as_ref()
+                                                        .and_then(|d| d.cache_write_tokens),
+                                                ),
                                                 output_tokens: usage.completion_tokens.unwrap_or(0),
                                                 cache_read_tokens: usage
                                                     .prompt_tokens_details
@@ -2938,6 +3118,14 @@ impl OpenAiUsage {
     }
 }
 
+// OpenAI-compatible prompt counts include cached reads/writes. The native
+// usage contract keeps these as separate buckets, like Anthropic usage.
+fn uncached_input_tokens(total: u64, read: Option<u64>, write: Option<u64>) -> u64 {
+    total
+        .saturating_sub(read.unwrap_or(0))
+        .saturating_sub(write.unwrap_or(0))
+}
+
 #[derive(Debug, Deserialize)]
 struct PromptTokensDetails {
     cached_tokens: Option<u64>,
@@ -2983,6 +3171,78 @@ struct ToolCallAccumulator {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_prompt_buckets_do_not_inflate_native_context() {
+        // Counts observed during the governed Fireworks tmux trial.
+        assert_eq!(uncached_input_tokens(11_958, Some(10_875), Some(0)), 1_083);
+        assert_eq!(uncached_input_tokens(100, None, None), 100);
+        assert_eq!(uncached_input_tokens(100, Some(70), Some(30)), 0);
+        assert_eq!(uncached_input_tokens(10, Some(20), None), 0);
+    }
+
+    #[test]
+    fn cache_topology_hosted_checkpoint_uses_one_hour_before_tail() {
+        let mut client = OpenAiClient::new("fixture")
+            .unwrap()
+            .with_route_provider("openrouter")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider":"openrouter", "environment":"production", "credential_name":"default"
+                }),
+            )
+            .unwrap();
+        client.set_managed_inference_authorization(Some(managed_authorization_fixture("cache-1")));
+        let scope = client.cache_scope().unwrap().unwrap();
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("checkpoint"),
+        }];
+        let mut config = RequestConfig {
+            model: "claude-sonnet-4-5".into(),
+            ..Default::default()
+        };
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &history,
+                &config,
+                scope.namespace(),
+                None,
+            )
+            .unwrap()
+            .with_volatile_tail(Some("clock and plan".into())),
+        );
+        let body = client.build_request_body_for_api(&history, &config, false);
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["ttl"],
+            "1h"
+        );
+        assert_eq!(body["messages"][1]["content"], "clock and plan");
+        let wire = maestro_runtime_contracts::cache_topology::CacheTopology::prepare(
+            maestro_runtime_contracts::cache_topology::wire_shape(&body, scope.namespace())
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+        let mut changed = body.clone();
+        changed["messages"][1]["content"] = serde_json::json!("late change");
+        assert!(
+            wire.validate(
+                &maestro_runtime_contracts::cache_topology::wire_shape(&changed, scope.namespace())
+                    .unwrap()
+            )
+            .is_err()
+        );
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::auxiliary(&history, &config, scope.namespace())
+                .unwrap(),
+        );
+        let auxiliary = client.build_request_body_for_api(&history, &config, false);
+        assert_eq!(auxiliary["messages"][0]["content"], "checkpoint");
+        assert!(auxiliary.get("prompt_cache_key").is_none());
+    }
+
     #[test]
     fn prompt_cache_affinity_is_opt_in_and_openrouter_only() {
         let mut body = serde_json::json!({});
@@ -3130,6 +3390,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_reasoning_usage_is_reported_without_double_counting_output() {
+        let events = collect_responses_sse(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":20}}}}\n\n"
+        ).await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ReasoningUsage { tokens: 20 }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::Usage {
+                input_tokens: 100,
+                output_tokens: 30,
+                ..
+            }
+        )));
+        let unknown = collect_responses_sse("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30}}}\n\n").await;
+        assert!(
+            !unknown
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ReasoningUsage { .. }))
+        );
+    }
+
+    #[tokio::test]
     async fn openrouter_tool_only_stream_reports_cost_and_cache_writes() {
         let client = client_with_responses_sse(concat!(
             "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-6-astra\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
@@ -3160,9 +3448,13 @@ mod tests {
                     cache_creation_tokens,
                     ..
                 } => {
-                    assert_eq!(input_tokens, 100);
+                    assert_eq!(input_tokens, 0);
                     assert_eq!(cache_read_tokens, Some(70));
                     assert_eq!(cache_creation_tokens, Some(30));
+                    assert_eq!(
+                        input_tokens + cache_read_tokens.unwrap() + cache_creation_tokens.unwrap(),
+                        100
+                    );
                     saw_usage = true;
                 }
                 StreamEvent::MessageStop { .. } => {
@@ -3594,6 +3886,18 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                 .is_none()
             );
             assert_eq!(body["managed_inference_authorization"], authorization);
+            let topology: maestro_runtime_contracts::cache_topology::HostedCacheTopology =
+                serde_json::from_value(body["cache_topology"].clone()).unwrap();
+            topology
+                .topology
+                .validate(
+                    &maestro_runtime_contracts::cache_topology::wire_shape(
+                        &body,
+                        topology.scope.namespace(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
         }
     }
 
@@ -3712,6 +4016,21 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
         assert_eq!(headers["x-organization-id"], "org_123");
         assert_eq!(headers["x-workspace-id"], "workspace_456");
         assert_eq!(body["lineage_id"], "lineage-explicit");
+        let topology: maestro_runtime_contracts::cache_topology::HostedCacheTopology =
+            serde_json::from_value(body["cache_topology"].clone()).expect("typed cache contract");
+        assert_eq!(topology.scope.organization_id, "org_123");
+        assert_eq!(topology.scope.workspace_id, "workspace_456");
+        topology
+            .topology
+            .validate(
+                &maestro_runtime_contracts::cache_topology::wire_shape(
+                    &body,
+                    topology.scope.namespace(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
         assert_eq!(
             body["managed_inference_authorization"],
             serde_json::from_str::<serde_json::Value>(&authorization)
@@ -6205,5 +6524,125 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
             ApiError::ContextWindowExceeded => {}
             _ => panic!("Expected ContextWindowExceeded"),
         }
+    }
+    #[tokio::test]
+    async fn cache_topology_legacy_managed_requests_do_not_claim_session_authority() {
+        let (mut client, request_rx) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+        client.set_managed_inference_authorization(None);
+        client.set_managed_request_lineage(Some("lineage-receipt".into()));
+        assert!(client.cache_scope().unwrap().is_none());
+        assert_ne!(client.cache_namespace().unwrap(), "local");
+        let stream = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "gpt-5.6".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_stream_events(stream).await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::ProviderError { .. })),
+            "{events:?}"
+        );
+        let request = request_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let body = captured_request_body(&request);
+        assert!(body.get("cache_topology").is_none());
+        assert!(body.get("managed_inference_authorization").is_none());
+    }
+
+    #[tokio::test]
+    async fn cache_topology_preserves_translating_and_model_fallback_routes() {
+        for (provider, candidate_model) in [
+            ("google", "openai/gpt-5.6-terra"),
+            ("vertex-ai", "openai/gpt-5.6-terra"),
+            ("openrouter", "openai/gpt-5.6-terra"),
+            ("azure-openai", "openai/gpt-5.6-terra"),
+            ("openai", "different-fallback-model"),
+        ] {
+            let (mut client, request_rx) =
+                managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+            let mut authorization: serde_json::Value =
+                serde_json::from_str(&managed_authorization_fixture("lineage-receipt")).unwrap();
+            let mut fallback = authorization["claims"]["providerCandidates"][0].clone();
+            fallback["provider"] = provider.into();
+            fallback["model"] = candidate_model.into();
+            authorization["claims"]["providerCandidates"]
+                .as_array_mut()
+                .unwrap()
+                .push(fallback);
+            client.set_managed_inference_authorization(Some(authorization.to_string()));
+            let stream = client.stream(&[], &RequestConfig::default()).await.unwrap();
+            let events = collect_stream_events(stream).await;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, StreamEvent::ProviderError { .. })),
+                "{events:?}"
+            );
+            let request = request_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let body = captured_request_body(&request);
+            assert!(
+                body.get("cache_topology").is_some(),
+                "managed routes must carry topology"
+            );
+            assert_eq!(body["managed_inference_authorization"], authorization);
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_topology_rejects_late_changes_before_opening_http() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("hello"),
+        }];
+        let mut config = RequestConfig::default();
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &messages,
+                &config,
+                "local".into(),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut client =
+            super::OpenAiClient::with_base_url("test-key", "http://127.0.0.1:1").unwrap();
+        client
+            .request_extensions
+            .insert("instructions".into(), serde_json::json!("late injection"));
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject extension");
+        assert!(error.to_string().contains("late prompt extensions"));
+        client.request_extensions.clear();
+        client
+            .request_extensions
+            .insert("session_id".into(), serde_json::json!("late affinity"));
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject affinity override");
+        assert!(error.to_string().contains("late prompt extensions"));
+        client.request_extensions.clear();
+        config.system = Some("late change".into());
+        let error = client
+            .stream_with_producer(&messages, &config)
+            .await
+            .err()
+            .expect("reject mutation");
+        assert!(error.to_string().contains("prepared cache topology"));
     }
 }

@@ -41,7 +41,7 @@ const VERSION: &str = concat!("deixic-code ", env!("CARGO_PKG_VERSION"));
 
 fn sync_command_output(command: &Command) -> Option<&'static str> {
     match command {
-        Command::Help => Some(HELP),
+        Command::Help => Some(maestro_tui::localization::cli_locale().translate(HELP)),
         Command::Version => Some(VERSION),
         _ => None,
     }

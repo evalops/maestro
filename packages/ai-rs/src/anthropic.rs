@@ -222,6 +222,7 @@ impl AnthropicClient {
         // ─────────────────────────────────────────────────────────────
         // Build Request
         // ─────────────────────────────────────────────────────────────
+        crate::cache_topology::validate_prepared(messages, config)?;
         let body = self.build_request_body(messages, config)?;
 
         // ─────────────────────────────────────────────────────────────
@@ -414,6 +415,12 @@ impl AnthropicClient {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
 
+        if let Some(prepared) = &config.cache_topology {
+            if config.cache_system_prompt {
+                crate::cache_topology::mark_stable_history(&mut body, "5m");
+            }
+            prepared.append_volatile_tail(&mut body);
+        }
         Ok(body)
     }
 }
@@ -778,6 +785,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
             max_tokens: 4096,
             system: Some("You are a helpful assistant.".to_string()),
             cache_system_prompt: false,
+            cache_topology: None,
             ..Default::default()
         };
 
@@ -1069,6 +1077,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
             max_tokens: 4096,
             system: Some("You are a helpful assistant.".to_string()),
             cache_system_prompt: true,
+            cache_topology: None,
             ..Default::default()
         };
 
@@ -1094,6 +1103,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
             max_tokens: 4096,
             tools: tools.into(),
             cache_system_prompt: true,
+            cache_topology: None,
             ..Default::default()
         };
 
@@ -1118,6 +1128,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
             max_tokens: 4096,
             tools: tools.into(),
             cache_system_prompt: false,
+            cache_topology: None,
             ..Default::default()
         };
 

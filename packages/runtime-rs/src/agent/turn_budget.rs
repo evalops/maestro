@@ -71,10 +71,14 @@ impl fmt::Display for TurnOutcome {
 impl std::error::Error for TurnOutcome {}
 
 /// Counts provider round trips inside one turn against a fixed ceiling.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TurnStepBudget {
     max_steps: usize,
     executed: usize,
+    pending_attempt: bool,
+    discarded_attempts: usize,
+    last_tool: Option<(String, String)>,
+    identical_tools: usize,
 }
 
 impl TurnStepBudget {
@@ -85,7 +89,51 @@ impl TurnStepBudget {
         Self {
             max_steps: max_steps.max(1),
             executed: 0,
+            pending_attempt: false,
+            discarded_attempts: 0,
+            last_tool: None,
+            identical_tools: 0,
         }
+    }
+
+    /// All retries and model recoveries share this budget. A response that
+    /// failed or was discarded by loop/empty-output recovery is not progress.
+    pub fn admit_attempt(&mut self) -> Result<(), &'static str> {
+        if self.pending_attempt {
+            self.discarded_attempts = self.discarded_attempts.saturating_add(1);
+            self.pending_attempt = false;
+        }
+        if self.discarded_attempts >= 3 {
+            return Err("Native turn stopped after three discarded model attempts");
+        }
+        self.pending_attempt = true;
+        Ok(())
+    }
+
+    /// Include the currently failed attempt before the outer retry policy
+    /// decides whether to retry, preserving the provider's terminal cause.
+    pub fn discarded_attempt_limit_reached(&self) -> bool {
+        self.discarded_attempts + usize::from(self.pending_attempt) >= 3
+    }
+
+    pub fn accept_attempt(&mut self) {
+        self.pending_attempt = false;
+    }
+
+    /// Stop the native turn on the third identical proposal. This lives with
+    /// the discarded-attempt budget, independently of optional extensions.
+    pub fn admit_tool(&mut self, name: &str, args: &serde_json::Value) -> Result<(), &'static str> {
+        let signature = (name.to_owned(), super::safety::stable_stringify(args));
+        self.identical_tools = if self.last_tool.as_ref() == Some(&signature) {
+            self.identical_tools.saturating_add(1)
+        } else {
+            1
+        };
+        self.last_tool = Some(signature);
+        if self.identical_tools >= 3 {
+            return Err("Native turn stopped after three identical tool proposals");
+        }
+        Ok(())
     }
 
     /// Record that a provider round trip started.
@@ -117,6 +165,10 @@ impl TurnStepBudget {
     /// Start a fresh turn. A new user message resets the bound.
     pub fn reset(&mut self) {
         self.executed = 0;
+        self.pending_attempt = false;
+        self.discarded_attempts = 0;
+        self.last_tool = None;
+        self.identical_tools = 0;
     }
 
     /// Build the terminal outcome for a batch this budget cannot afford.
@@ -133,6 +185,41 @@ impl TurnStepBudget {
 #[cfg(test)]
 mod tests {
     use super::{TurnOutcome, TurnStepBudget};
+
+    #[test]
+    fn identical_tools_stop_even_when_round_trips_are_unbounded() {
+        let mut budget = TurnStepBudget::new(usize::MAX);
+        let args = serde_json::json!({"path":"a", "offset":0});
+        budget.admit_tool("read", &args).unwrap();
+        budget
+            .admit_tool("read", &serde_json::json!({"offset":0,"path":"a"}))
+            .unwrap();
+        assert!(budget.admit_tool("read", &args).is_err());
+        budget.reset();
+        budget.admit_tool("read", &args).unwrap();
+        budget
+            .admit_tool("read", &serde_json::json!({"path":"a","offset":1}))
+            .unwrap();
+        budget.admit_tool("read", &args).unwrap();
+    }
+
+    #[test]
+    fn discarded_attempts_share_one_bound_even_for_unbounded_turns() {
+        let mut budget = TurnStepBudget::new(usize::MAX);
+        for index in 0..3 {
+            budget.admit_attempt().unwrap();
+            assert_eq!(budget.discarded_attempt_limit_reached(), index == 2);
+        }
+        assert!(budget.admit_attempt().is_err());
+        assert!(budget.admit_attempt().is_err());
+        budget.reset();
+        budget.admit_attempt().unwrap();
+        budget.accept_attempt();
+        for _ in 0..3 {
+            budget.admit_attempt().unwrap();
+        }
+        assert!(budget.admit_attempt().is_err());
+    }
 
     #[test]
     fn budget_allows_exactly_max_steps_round_trips() {

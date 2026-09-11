@@ -68,9 +68,7 @@ impl AccountMemoryConfig {
         };
         let memory_mode = required(metadata.memory_mode.as_deref(), "memory mode")?;
         if memory_mode != "durable" {
-            bail!(
-                "stored EvalOps registration memory mode is not durable; run `deixic-code init --memory-mode durable`"
-            );
+            bail!("{}", crate::localization::cli_locale().format("stored EvalOps registration memory mode is not durable; run `deixic-code init --memory-mode durable`", &[]));
         }
         Ok(Self {
             api_key: required(metadata.api_key.as_deref(), "API key")?,
@@ -225,7 +223,13 @@ fn validate_memory_write_gate(check: &Value, approval: Option<&Value>) -> Result
                 .context("memory write requires approval but returned no approval id")?;
             let approval = approval.context("memory write approval was not checked")?;
             if approval.get("approval_id").and_then(Value::as_str) != Some(approval_id) {
-                bail!("memory write approval id did not match the governance decision");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "memory write approval id did not match the governance decision",
+                        &[]
+                    )
+                );
             }
             let state = approval
                 .get("state")
@@ -234,17 +238,29 @@ fn validate_memory_write_gate(check: &Value, approval: Option<&Value>) -> Result
             if state.eq_ignore_ascii_case("approved") {
                 Ok(())
             } else {
-                bail!("memory write approval is {state}")
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("memory write approval is {0}", &[(state).to_string()])
+                )
             }
         }
         "deny" => bail!(
-            "memory write denied: {}",
-            check
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("governance denied the write")
+            "{}",
+            crate::localization::cli_locale().format(
+                "memory write denied: {0}",
+                &[(check
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("governance denied the write"))
+                .to_string()]
+            )
         ),
-        _ => bail!("memory write governance returned an unknown decision"),
+        _ => bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("memory write governance returned an unknown decision", &[])
+        ),
     }
 }
 
@@ -262,7 +278,11 @@ async fn register_account_memory_session(
             .and_then(Value::as_str)
             .is_none_or(|value| value.trim().is_empty())
     {
-        bail!("EvalOps did not register the account-memory session");
+        bail!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("EvalOps did not register the account-memory session", &[])
+        );
     }
     let summary: Value = client
         .call_tool("evalops_control_plane_summary", serde_json::json!({}))
@@ -270,7 +290,13 @@ async fn register_account_memory_session(
         .context("load live account-memory status")?;
     let status = account_memory_status(config, &summary);
     if !status.working {
-        bail!("account memory is not working: {}", status.reason);
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "account memory is not working: {0}",
+                std::slice::from_ref(&(status.reason))
+            )
+        );
     }
     Ok(summary)
 }
@@ -322,11 +348,15 @@ async fn remember_account_memory(config: &AccountMemoryConfig, fact: &str) -> Re
             || stored.get("stored").and_then(Value::as_bool) != Some(true)
         {
             bail!(
-                "account memory did not confirm the write: {}",
-                stored
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("write unavailable")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "account memory did not confirm the write: {0}",
+                    &[(stored
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("write unavailable"))
+                    .to_string()]
+                )
             );
         }
         Ok(stored)
@@ -348,11 +378,15 @@ async fn recall_account_memory(config: &AccountMemoryConfig, query: &str) -> Res
             .context("recall account memory")?;
         if recalled.get("available").and_then(Value::as_bool) != Some(true) {
             bail!(
-                "account memory recall is unavailable: {}",
-                recalled
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("control plane returned unavailable")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "account memory recall is unavailable: {0}",
+                    &[(recalled
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("control plane returned unavailable"))
+                    .to_string()]
+                )
             );
         }
         Ok(recalled)
@@ -408,11 +442,15 @@ pub(crate) fn local_account_memory_status() -> String {
 fn format_account_recall(response: &Value) -> Result<String> {
     if response.get("available").and_then(Value::as_bool) != Some(true) {
         bail!(
-            "account memory recall is unavailable: {}",
-            response
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("control plane returned unavailable")
+            "{}",
+            crate::localization::cli_locale().format(
+                "account memory recall is unavailable: {0}",
+                &[(response
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("control plane returned unavailable"))
+                .to_string()]
+            )
         );
     }
     let results = response
@@ -494,26 +532,46 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
                             exit = i32::from(!status.working);
                         }
                         Err(error) => {
-                            eprintln!("Account memory: not working\n{error:#}");
+                            eprintln!(
+                                "{}",
+                                crate::localization::cli_locale().format(
+                                    "Account memory: not working\n{0}",
+                                    &[format!("{:#}", error)]
+                                )
+                            );
                             exit = 1;
                         }
                     },
                     Err(error) => {
-                        eprintln!("Account memory: not working\n{error:#}");
+                        eprintln!(
+                            "{}",
+                            crate::localization::cli_locale().format(
+                                "Account memory: not working\n{0}",
+                                &[format!("{:#}", error)]
+                            )
+                        );
                         exit = 1;
                     }
                 },
                 Ok(None) if shared_memory_configured => {
-                    println!("Account memory: not configured");
+                    println!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("Account memory: not configured", &[])
+                    );
                 }
                 Ok(None) => {
-                    eprintln!(
-                        "Account memory: not working\nno stored EvalOps credentials; run `deixic-code init --workspace-id <id>`"
-                    );
+                    eprintln!("{}", crate::localization::cli_locale().format("Account memory: not working\nno stored EvalOps credentials; run `deixic-code init --workspace-id <id>`", &[]));
                     exit = 1;
                 }
                 Err(error) => {
-                    eprintln!("Account memory: not working\n{error:#}");
+                    eprintln!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Account memory: not working\n{0}",
+                            &[format!("{:#}", error)]
+                        )
+                    );
                     exit = 1;
                 }
             }
@@ -522,12 +580,24 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
                     Ok(config) => match status_output(&http_client()?, &config).await {
                         Ok(output) => println!("{output}"),
                         Err(error) => {
-                            eprintln!("Failed to fetch shared memory status: {error:#}");
+                            eprintln!(
+                                "{}",
+                                crate::localization::cli_locale().format(
+                                    "Failed to fetch shared memory status: {0}",
+                                    &[format!("{:#}", error)]
+                                )
+                            );
                             exit = 1;
                         }
                     },
                     Err(error) => {
-                        eprintln!("Failed to read shared memory configuration: {error:#}");
+                        eprintln!(
+                            "{}",
+                            crate::localization::cli_locale().format(
+                                "Failed to read shared memory configuration: {0}",
+                                &[format!("{:#}", error)]
+                            )
+                        );
                         exit = 1;
                     }
                 }
@@ -537,7 +607,13 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
         "remember" => {
             let fact = args[1..].join(" ");
             if fact.trim().is_empty() {
-                eprintln!("Fact required. Usage: deixic-code memory remember <fact>");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Fact required. Usage: deixic-code memory remember <fact>",
+                        &[]
+                    )
+                );
                 return Ok(1);
             }
             let result = match load_account_memory_config() {
@@ -546,11 +622,23 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
             };
             match result {
                 Ok(_) => {
-                    println!("Account memory: working\nRemembered for this workspace.");
+                    println!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Account memory: working\nRemembered for this workspace.",
+                            &[]
+                        )
+                    );
                     Ok(0)
                 }
                 Err(error) => {
-                    eprintln!("Account memory: not working\n{error:#}");
+                    eprintln!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Account memory: not working\n{0}",
+                            &[format!("{:#}", error)]
+                        )
+                    );
                     Ok(1)
                 }
             }
@@ -558,7 +646,13 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
         "recall" => {
             let query = args[1..].join(" ");
             if query.trim().is_empty() {
-                eprintln!("Query required. Usage: deixic-code memory recall <query>");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Query required. Usage: deixic-code memory recall <query>",
+                        &[]
+                    )
+                );
                 return Ok(1);
             }
             let result = match load_account_memory_config() {
@@ -571,7 +665,13 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
                     Ok(0)
                 }
                 Err(error) => {
-                    eprintln!("Account memory: not working\n{error:#}");
+                    eprintln!(
+                        "{}",
+                        crate::localization::cli_locale().format(
+                            "Account memory: not working\n{0}",
+                            &[format!("{:#}", error)]
+                        )
+                    );
                     Ok(1)
                 }
             }
@@ -580,13 +680,19 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
             let config = config_from_env()?;
             let client = http_client()?;
             let caps: CapabilitiesResponse = fetch_json(&client, &config, "/capabilities").await?;
-            println!("\nShared Memory Capabilities\n");
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("\nShared Memory Capabilities\n", &[])
+            );
             println!("{}", capabilities_line(Some(&caps)));
             Ok(0)
         }
         "session" => {
             let Some(session_id) = args.get(1).filter(|value| !value.is_empty()) else {
-                eprintln!("Session id required.");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format("Session id required.", &[])
+                );
                 return Ok(1);
             };
             let config = config_from_env()?;
@@ -596,7 +702,10 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
         }
         "audit" => {
             let Some(session_id) = args.get(1).filter(|value| !value.is_empty()) else {
-                eprintln!("Session id required.");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format("Session id required.", &[])
+                );
                 return Ok(1);
             };
             let limit = args
@@ -613,7 +722,10 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
         }
         "export" => {
             let Some(session_id) = args.get(1).filter(|value| !value.is_empty()) else {
-                eprintln!("Session id required.");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale().format("Session id required.", &[])
+                );
                 return Ok(1);
             };
             let config = config_from_env()?;
@@ -638,8 +750,15 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
         }
         "watch" => watch(args, config_from_env()?).await,
         other => {
-            eprintln!("Unknown memory subcommand: {other}");
-            println!("\nAvailable commands:");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown memory subcommand: {0}", &[(other).to_string()])
+            );
+            println!(
+                "{}",
+                crate::localization::cli_locale().format("\nAvailable commands:", &[])
+            );
             println!("{}", memory_help());
             Ok(1)
         }
@@ -727,9 +846,14 @@ async fn fetch_text(client: &Client, config: &SharedMemoryConfig, path: &str) ->
         .context("failed to read shared memory response")?;
     if !status.is_success() {
         bail!(
-            "Shared memory error {}: {}",
-            status.as_u16(),
-            if text.is_empty() { &status_text } else { &text }
+            "{}",
+            crate::localization::cli_locale().format(
+                "Shared memory error {0}: {1}",
+                &[
+                    (status.as_u16()).to_string(),
+                    (if text.is_empty() { &status_text } else { &text }).clone()
+                ]
+            )
         );
     }
     Ok(text)
@@ -912,8 +1036,16 @@ async fn watch(args: &[String], config: SharedMemoryConfig) -> Result<i32> {
         .filter(|value| *value > 0)
         .unwrap_or(2_000);
     println!(
-        "Watching {} every {interval_ms}ms. Ctrl+C to stop.",
-        session_id.map_or_else(|| "service".to_owned(), |id| format!("session {id}"))
+        "{}",
+        crate::localization::cli_locale().format(
+            "Watching {0} every {1}ms. Ctrl+C to stop.",
+            &[
+                session_id
+                    .map_or_else(|| "service".to_owned(), |id| format!("session {id}"))
+                    .clone(),
+                (interval_ms).to_string()
+            ]
+        )
     );
     let client = http_client()?;
     loop {
@@ -923,7 +1055,11 @@ async fn watch(args: &[String], config: SharedMemoryConfig) -> Result<i32> {
         };
         match result {
             Ok(output) => println!("{output}"),
-            Err(error) => eprintln!("Shared memory watch error: {error:#}"),
+            Err(error) => eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Shared memory watch error: {0}", &[format!("{:#}", error)])
+            ),
         }
         tokio::time::sleep(Duration::from_millis(interval_ms)).await;
     }
@@ -942,7 +1078,7 @@ fn display_value(value: Option<&Value>, fallback: &str) -> String {
 }
 
 fn memory_help() -> &'static str {
-    "  deixic-code memory [status]\n  deixic-code memory remember <fact>\n  deixic-code memory recall <query>\n  deixic-code memory capabilities\n  deixic-code memory session <id>\n  deixic-code memory audit <id> [limit]\n  deixic-code memory export <id>\n  deixic-code memory watch [id] [intervalMs]\n\nAccount memory uses the exact stored organization/workspace registration. Remember is always explicit; recall returns at most three memories."
+    crate::localization::cli_locale().translate("  deixic-code memory [status]\n  deixic-code memory remember <fact>\n  deixic-code memory recall <query>\n  deixic-code memory capabilities\n  deixic-code memory session <id>\n  deixic-code memory audit <id> [limit]\n  deixic-code memory export <id>\n  deixic-code memory watch [id] [intervalMs]\n\nAccount memory uses the exact stored organization/workspace registration. Remember is always explicit; recall returns at most three memories.")
 }
 
 #[cfg(test)]

@@ -61,6 +61,8 @@
 //! // }
 //! ```
 
+pub use maestro_local_host::ui_prefs::FooterStyle;
+
 use std::collections::HashMap;
 
 /// Result of executing a command
@@ -240,6 +242,8 @@ pub enum CommandAction {
     RefreshWorkspace,
     /// Copy the last message to system clipboard
     CopyLastMessage,
+    CopyTranscript(crate::transcript_copy::CopyTarget),
+    SetLanguage(crate::localization::Locale),
     /// Set the current UI theme
     SetTheme(String),
     /// Set the current model
@@ -248,7 +252,9 @@ pub enum CommandAction {
     Boost,
     /// Review uncommitted changes with a different model (second opinion).
     /// `None` lets the app pick a model from a different provider.
-    RubberDuck { model: Option<String> },
+    RubberDuck {
+        model: Option<String>,
+    },
     /// Set the current model and persist it as the user default
     SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)
@@ -268,9 +274,14 @@ pub enum CommandAction {
     /// Show a token breakdown of the current session's context by category
     ShowContext,
     /// Exclude or include a registered tool schema for this session.
-    SetContextTool { name: String, excluded: bool },
+    SetContextTool {
+        name: String,
+        excluded: bool,
+    },
     /// Audit the prompt and tool surface that will be sent to the model.
-    ShowPromptAudit { json: bool },
+    ShowPromptAudit {
+        json: bool,
+    },
     /// Change the transcript's turn-level Focus projection.
     SetFocus(Option<bool>),
     /// Export current session
@@ -304,11 +315,20 @@ pub enum CommandAction {
     /// Show the active interactive sandbox policy
     ShowSandbox,
     /// Invoke a skill as a slash command (Grok-style `/skillname args`)
-    InvokeSkill { name: String, args: String },
+    InvokeSkill {
+        name: String,
+        args: String,
+    },
     /// Invoke a flat markdown prompt/command template as a slash command
-    InvokePromptTemplate { name: String, args: String },
+    InvokePromptTemplate {
+        name: String,
+        args: String,
+    },
     /// Invoke an executable script (Droid-style `.composer/commands/`) as a slash command
-    InvokeExecCommand { name: String, args: String },
+    InvokeExecCommand {
+        name: String,
+        args: String,
+    },
     /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
     MagicTrace(MagicTraceAction),
     /// Direct user controls for existing workers.
@@ -332,7 +352,9 @@ pub enum CommandAction {
     /// Manage files queued for the next prompt (`/attach`).
     Attach(AttachAction),
     /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
-    Init { force: bool },
+    Init {
+        force: bool,
+    },
 }
 
 /// Product-level hosted Computer controls exposed by `/computer` in the TUI.
@@ -375,41 +397,6 @@ pub enum AttachAction {
     Clear,
     /// Drop one pending attachment by 1-based index.
     Remove { index: usize },
-}
-
-/// Status bar density presets (Kimi-inspired `/footer`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FooterStyle {
-    /// Model, cwd, git, badges, shortcuts.
-    #[default]
-    Rich,
-    /// Compact: model + goal + key badges only.
-    Solo,
-    /// Hide most chrome; keep alerts and pending approvals.
-    History,
-    /// Status bar empty (zen-adjacent; zen mode still separate).
-    Clear,
-}
-
-impl FooterStyle {
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rich" | "full" | "default" => Some(Self::Rich),
-            "solo" | "compact" | "min" => Some(Self::Solo),
-            "history" | "hist" => Some(Self::History),
-            "clear" | "off" | "none" | "hidden" => Some(Self::Clear),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Rich => "rich",
-            Self::Solo => "solo",
-            Self::History => "history",
-            Self::Clear => "clear",
-        }
-    }
 }
 
 /// Goal-mode slash actions.
@@ -862,6 +849,7 @@ pub enum ModalType {
 /// Navigation within existing runtime, session, and configuration owners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlPanel {
+    Language,
     Settings,
     Account,
     Permissions,
@@ -881,6 +869,12 @@ pub enum ControlPanel {
 
 /// Error from command execution
 ///
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandErrorKind {
+    InvalidInput,
+    UnknownCommand,
+}
+
 /// Rich error type for command failures, including a message and optional hint
 /// for helping the user fix the issue.
 ///
@@ -923,6 +917,7 @@ pub enum ControlPanel {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CommandError {
+    pub kind: CommandErrorKind,
     /// Primary error message
     pub message: String,
     /// Optional hint for resolving the error
@@ -932,9 +927,15 @@ pub struct CommandError {
 impl CommandError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: CommandErrorKind::InvalidInput,
             message: message.into(),
             hint: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: CommandErrorKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -1091,27 +1092,27 @@ impl CommandCategory {
     pub fn label(&self) -> &'static str {
         match self {
             CommandCategory::Ui => "UI",
-            CommandCategory::Session => "Session",
-            CommandCategory::Tools => "Tools",
-            CommandCategory::Safety => "Safety",
-            CommandCategory::Diagnostics => "Diagnostics",
-            CommandCategory::Config => "Config",
-            CommandCategory::Navigation => "Navigation",
-            CommandCategory::Context => "Context",
+            CommandCategory::Session => maestro_ui::localization::tr("Session"),
+            CommandCategory::Tools => maestro_ui::localization::tr("Tools"),
+            CommandCategory::Safety => maestro_ui::localization::tr("Safety"),
+            CommandCategory::Diagnostics => maestro_ui::localization::tr("Diagnostics"),
+            CommandCategory::Config => maestro_ui::localization::tr("Config"),
+            CommandCategory::Navigation => maestro_ui::localization::tr("Navigation"),
+            CommandCategory::Context => maestro_ui::localization::tr("Context"),
         }
     }
 
     #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
-            CommandCategory::Ui => "User interface settings",
-            CommandCategory::Session => "Session management",
-            CommandCategory::Tools => "Tool and MCP management",
-            CommandCategory::Safety => "Safety and approval settings",
-            CommandCategory::Diagnostics => "System diagnostics",
-            CommandCategory::Config => "Configuration options",
-            CommandCategory::Navigation => "Navigation and search",
-            CommandCategory::Context => "Context management",
+            CommandCategory::Ui => maestro_ui::localization::tr("User interface settings"),
+            CommandCategory::Session => maestro_ui::localization::tr("Session management"),
+            CommandCategory::Tools => maestro_ui::localization::tr("Tool and MCP management"),
+            CommandCategory::Safety => maestro_ui::localization::tr("Safety and approval settings"),
+            CommandCategory::Diagnostics => maestro_ui::localization::tr("System diagnostics"),
+            CommandCategory::Config => maestro_ui::localization::tr("Configuration options"),
+            CommandCategory::Navigation => maestro_ui::localization::tr("Navigation and search"),
+            CommandCategory::Context => maestro_ui::localization::tr("Context management"),
         }
     }
 }
@@ -1256,6 +1257,8 @@ impl CommandArgument {
 /// - `&CommandContext`: Immutable reference to execution context
 /// - `CommandResult`: Returns Ok(CommandOutput) or Err(CommandError)
 pub struct Command {
+    /// Only application-owned descriptions are translated.
+    pub localized_description: bool,
     /// Primary browse order; None keeps compatibility/advanced commands searchable only.
     pub browse_order: Option<u16>,
     /// Primary command name (without slash)
@@ -1288,6 +1291,7 @@ impl Command {
     ) -> Self {
         let name = name.into();
         Self {
+            localized_description: false,
             browse_order: None,
             usage: format!("/{name}"),
             name,
@@ -1298,6 +1302,19 @@ impl Command {
             handler,
             is_group: false,
             subcommands: Vec::new(),
+        }
+    }
+
+    pub fn localized(mut self) -> Self {
+        self.localized_description = true;
+        self
+    }
+
+    pub fn display_description(&self) -> &str {
+        if self.localized_description {
+            maestro_ui::localization::tr(&self.description)
+        } else {
+            &self.description
         }
     }
 

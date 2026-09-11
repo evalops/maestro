@@ -198,7 +198,7 @@
 		},
 		{
 			"area": "native-headless-server",
-			"path": "packages/tui-rs/src/headless_server.rs",
+			"path": "packages/local-host-rs/src/headless_server.rs",
 			"anchors": ["run_headless_server", "ToAgentMessage", "FromAgentMessage"]
 		}
 	]

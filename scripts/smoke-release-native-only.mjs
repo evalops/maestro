@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 // The agent only serves protocol versions it implements, so the smoke has to
 // announce the version this build speaks rather than a placeholder.
 const protocolVersion = readFileSync(
-	resolve("packages/tui-rs/src/headless/generated_protocol.rs"),
+	resolve("packages/local-host-rs/src/headless/generated_protocol.rs"),
 	"utf8",
 ).match(/pub const HEADLESS_PROTOCOL_VERSION: &str = "([^"]+)";/)?.[1];
 if (!protocolVersion) throw new Error("could not read HEADLESS_PROTOCOL_VERSION");

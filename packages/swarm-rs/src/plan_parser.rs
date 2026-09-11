@@ -263,38 +263,12 @@ pub fn validate_plan(plan: &SwarmPlan) -> Result<()> {
         }
     }
 
-    // Check for cycles (simple DFS)
-    for task in &plan.tasks {
-        if has_cycle(task, &plan.tasks, &mut std::collections::HashSet::new()) {
-            anyhow::bail!("Plan contains cyclic dependencies");
-        }
+    // Reuse the memoized traversal: a diamond graph must not revisit every
+    // path through already-checked dependencies on each dynamic expansion.
+    if plan.find_cycle().is_some() {
+        anyhow::bail!("Plan contains cyclic dependencies");
     }
-
     Ok(())
-}
-
-/// Check if a task has a dependency cycle
-fn has_cycle(
-    task: &SwarmTask,
-    all_tasks: &[SwarmTask],
-    visited: &mut std::collections::HashSet<TaskId>,
-) -> bool {
-    if visited.contains(&task.id) {
-        return true;
-    }
-
-    visited.insert(task.id.clone());
-
-    for dep_id in &task.dependencies {
-        if let Some(dep_task) = all_tasks.iter().find(|t| &t.id == dep_id) {
-            if has_cycle(dep_task, all_tasks, visited) {
-                return true;
-            }
-        }
-    }
-
-    visited.remove(&task.id);
-    false
 }
 
 #[cfg(test)]

@@ -1,0 +1,38 @@
+{
+  "name": "de-settings",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language de"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Anzeigesprache"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "Anzeigesprache"
+    },
+    {
+      "text": "/settings"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Einstellungen"
+    },
+    {
+      "wait": "Anmeldung, Arbeitsbereich, Modell, Nutzung"
+    },
+    {
+      "absent": "select / apply|close unchanged"
+    }
+  ]
+}

@@ -40,12 +40,23 @@ impl ProviderDescriptor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedProvider {
     pub provider: &'static ProviderDescriptor,
     pub auth_source: Option<String>,
     pub credential: Option<String>,
     pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for ResolvedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedProvider")
+            .field("provider", &self.provider)
+            .field("auth_source", &self.auth_source)
+            .field("credential_present", &self.credential.is_some())
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 pub struct ProviderRegistry;
@@ -410,6 +421,19 @@ const PROVIDERS: &[ProviderDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_provider_debug_never_exposes_credentials() {
+        let resolved = ResolvedProvider {
+            provider: ProviderRegistry::descriptor("openai").unwrap(),
+            auth_source: Some("OPENAI_API_KEY".into()),
+            credential: Some("private-credential-fixture".into()),
+            base_url: None,
+        };
+        let debug = format!("{resolved:?}");
+        assert!(!debug.contains("private-credential-fixture"));
+        assert!(debug.contains("credential_present: true"));
+    }
 
     #[test]
     fn llamacpp_resolves_to_the_local_openai_compatible_server() {

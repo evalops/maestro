@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 41] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 42] = [
     "acp",
     "sessions",
     "search",
@@ -94,6 +94,7 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 41] = [
     "codex",
     "context",
     "run",
+    "workflow",
     "a2a",
     "plugins",
     "plugin",
@@ -149,7 +150,15 @@ pub fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<Stri
                 let t = rest[j].to_string_lossy();
                 if matches!(
                     t.as_ref(),
-                    "inspect" | "ledger" | "replay" | "promote" | "help" | "--help" | "-h"
+                    "inspect"
+                        | "timeline"
+                        | "context"
+                        | "ledger"
+                        | "replay"
+                        | "promote"
+                        | "help"
+                        | "--help"
+                        | "-h"
                 ) {
                     has_sub = true;
                     break;
@@ -1574,6 +1583,20 @@ mod tests {
             .map(std::ffi::OsString::from)
             .collect::<Vec<_>>();
         assert_eq!(native_utility_tokens(&args), None);
+    }
+
+    #[test]
+    fn run_graphics_are_dispatched_as_utility_commands() {
+        for subcommand in ["timeline", "context"] {
+            let args = ["run", subcommand, "session-1"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                native_utility_tokens(&args),
+                Some(vec!["run".into(), subcommand.into(), "session-1".into(),])
+            );
+        }
     }
 
     #[test]

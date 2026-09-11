@@ -986,6 +986,11 @@ fn compaction_continuation_round_trips_in_session_jsonl_shape() {
         auto: true,
         custom_instructions: None,
         continuation: Some(ContinuationRecord {
+            file_operations: vec![maestro_context::compaction::ContinuationFileOperation {
+                tool_call_id: "write-1".into(),
+                path: "src/lib.rs".into(),
+                kind: maestro_context::compaction::ContinuationFileOperationKind::Write,
+            }],
             tool_outputs: vec![maestro_context::compaction::ToolOutputReference {
                 tool_call_id: "call-1".into(),
                 path: "/session-owned/output.txt".into(),
@@ -1010,6 +1015,10 @@ fn compaction_continuation_round_trips_in_session_jsonl_shape() {
 
     let value = serde_json::to_value(&entry).unwrap();
     assert_eq!(value["continuation"]["source_hash"], "abc123");
+    assert_eq!(
+        value["continuation"]["file_operations"][0]["path"],
+        "src/lib.rs"
+    );
     let decoded: CompactionEntry = serde_json::from_value(value).unwrap();
     assert_eq!(
         decoded.continuation.unwrap().commands[0].command,

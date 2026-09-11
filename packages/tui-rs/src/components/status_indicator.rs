@@ -63,7 +63,7 @@ pub struct StatusIndicator {
 impl Default for StatusIndicator {
     fn default() -> Self {
         Self {
-            header: "Working".to_string(),
+            header: maestro_ui::localization::tr("Working").to_string(),
             show_interrupt_hint: true,
             elapsed_running: Duration::ZERO,
             last_resume_at: None,
@@ -253,7 +253,7 @@ impl StatusIndicator {
                     .add_modifier(Modifier::DIM),
             ));
             spans.push(Span::styled(
-                " to interrupt",
+                maestro_ui::localization::tr(" to interrupt"),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
@@ -289,28 +289,28 @@ impl StatusIndicatorBuilder {
     /// Preset for "Working" state
     #[must_use]
     pub fn working(mut self) -> Self {
-        self.indicator.header = "Working".to_string();
+        self.indicator.header = maestro_ui::localization::tr("Working").to_string();
         self
     }
 
     /// Preset for "Thinking" state
     #[must_use]
     pub fn thinking(mut self) -> Self {
-        self.indicator.header = "Thinking".to_string();
+        self.indicator.header = maestro_ui::localization::tr("Thinking").to_string();
         self
     }
 
     /// Preset for "Analyzing" state
     #[must_use]
     pub fn analyzing(mut self) -> Self {
-        self.indicator.header = "Analyzing".to_string();
+        self.indicator.header = maestro_ui::localization::tr("Analyzing").to_string();
         self
     }
 
     /// Preset for "Generating" state
     #[must_use]
     pub fn generating(mut self) -> Self {
-        self.indicator.header = "Generating".to_string();
+        self.indicator.header = maestro_ui::localization::tr("Generating").to_string();
         self
     }
 

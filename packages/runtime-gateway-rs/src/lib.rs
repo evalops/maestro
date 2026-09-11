@@ -3,14 +3,14 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
+use maestro_local_host::agent::{
+    FromAgent, NativeAgentConfig, ToolDefinition, ToolResponseMessage,
+};
+use maestro_local_host::ai::Tool;
 use maestro_runtime::{
     ExecutionSource, TelemetryConfig, TelemetryGuard, TokenUsage, ToolResult, TraceHeaders,
     record_outcome, route_class, server_span,
 };
-use maestro_tui::agent::{
-    FromAgent, NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseMessage,
-};
-use maestro_tui::ai::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};

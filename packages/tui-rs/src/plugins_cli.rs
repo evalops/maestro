@@ -97,7 +97,11 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
                 .map(String::as_str)
                 .filter(|value| !value.is_empty());
             let Some(name) = name else {
-                eprintln!("Usage: maestro plugins info <plugin-name>");
+                eprintln!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("Usage: maestro plugins info <plugin-name>", &[])
+                );
                 return Ok(1);
             };
             run_info(&registry, name, parsed.json)
@@ -142,7 +146,11 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
             let enabled = match parsed.positionals.get(2).map(String::as_str) {
                 Some("on" | "enable" | "enabled") => true,
                 Some("off" | "disable" | "disabled") => false,
-                _ => bail!("capability state must be on or off"),
+                _ => bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("capability state must be on or off", &[])
+                ),
             };
             let state_path = state_path_for_plugin(&registry, name)?;
             crate::plugins::set_capability(&state_path, name, capability, enabled)?;
@@ -157,8 +165,16 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
             run_info(&registry, other, parsed.json)
         }
         other => {
-            eprintln!("Unknown plugins subcommand: {other}");
-            eprintln!("Try: maestro plugins list|info <name>");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown plugins subcommand: {0}", &[(other).to_string()])
+            );
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Try: maestro plugins list|info <name>", &[])
+            );
             Ok(1)
         }
     }
@@ -201,7 +217,13 @@ fn parse_args(args: &[String]) -> Result<PluginArgs> {
                     .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                 parsed.workspace = Some(PathBuf::from(value));
             }
-            value if value.starts_with('-') => bail!("Unknown maestro plugins option: {value}"),
+            value if value.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown maestro plugins option: {0}",
+                    &[(value).to_string()]
+                )
+            ),
             value if parsed.command.is_none() => parsed.command = Some(value.to_owned()),
             value => parsed.positionals.push(value.to_owned()),
         }
@@ -211,29 +233,7 @@ fn parse_args(args: &[String]) -> Result<PluginArgs> {
 }
 
 fn print_help() {
-    println!(
-        "maestro plugins [list|info|marketplace] [name] [options]\n\n\
-Commands:\n\
-  list                   List discovered plugins (default)\n\
-  info <name>            Show one plugin's path, origin, and components\n\
-  install <path|git-url> Install a plugin; git URLs require --trust\n\
-  marketplace [list]     List curated catalog (id, tier, source)\n\
-  marketplace install <id>  Install catalog entry; non-official needs --trust\n\
-  enable|disable <name>  Toggle the whole plugin\n\
-  capability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>\n\
-  <name>                 Alias for info <name>\n\n\
-Options:\n\
-  --json                 Emit machine-readable JSON\n\
-  --trust                Explicitly trust and execute remote plugin code\n\
-  --workspace <path>     Discover relative to this workspace (default: cwd)\n\
-  --help, -h             Show this help\n\n\
-Discovery roots (high wins on name collision):\n\
-  .maestro/plugins/<name>/   project\n\
-  ~/.maestro/plugins/<name>/ user\n\
-  .composer/plugins/<name>/  legacy project\n\
-  ~/.composer/plugins/<name>/ legacy user\n\n\
-Installed plugin code and each capability remain independently disableable."
-    );
+    println!("{}", crate::localization::cli_locale().format("maestro plugins [list|info|marketplace] [name] [options]\n\nCommands:\nlist                   List discovered plugins (default)\ninfo <name>            Show one plugin's path, origin, and components\ninstall <path|git-url> Install a plugin; git URLs require --trust\nmarketplace [list]     List curated catalog (id, tier, source)\nmarketplace install <id>  Install catalog entry; non-official needs --trust\nenable|disable <name>  Toggle the whole plugin\ncapability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>\n<name>                 Alias for info <name>\n\nOptions:\n--json                 Emit machine-readable JSON\n--trust                Explicitly trust and execute remote plugin code\n--workspace <path>     Discover relative to this workspace (default: cwd)\n--help, -h             Show this help\n\nDiscovery roots (high wins on name collision):\n.maestro/plugins/<name>/   project\n~/.maestro/plugins/<name>/ user\n.composer/plugins/<name>/  legacy project\n~/.composer/plugins/<name>/ legacy user\n\nInstalled plugin code and each capability remain independently disableable.", &[]));
 }
 
 fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i32> {
@@ -279,9 +279,11 @@ fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i3
             })?;
             if entry.tier.requires_explicit_trust() && !trust {
                 bail!(
-                    "entry '{}' ({}) requires --trust for install",
-                    entry.id,
-                    entry.tier.as_str()
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "entry '{0}' ({1}) requires --trust for install",
+                        &[(entry.id).clone(), (entry.tier.as_str()).to_string()]
+                    )
                 );
             }
             let source = crate::plugins::resolve_install_source(entry)?;
@@ -300,19 +302,36 @@ fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i3
                 println!("{}", serde_json::to_string_pretty(&preview)?);
             } else {
                 println!(
-                    "Installed {} from {} (marketplace id={}, tier={}, capabilities: {:?})",
-                    preview.name,
-                    preview.source,
-                    entry.id,
-                    entry.tier.as_str(),
-                    preview.capabilities
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Installed {0} from {1} (marketplace id={2}, tier={3}, capabilities: {4})",
+                        &[
+                            (preview.name).clone(),
+                            (preview.source).clone(),
+                            (entry.id).clone(),
+                            (entry.tier.as_str()).to_string(),
+                            format!("{:?}", preview.capabilities)
+                        ]
+                    )
                 );
             }
             Ok(0)
         }
         other => {
-            eprintln!("Unknown marketplace subcommand: {other}");
-            eprintln!("Usage: maestro plugins marketplace [list|install <id>] [--trust]");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Unknown marketplace subcommand: {0}",
+                    &[(other).to_string()]
+                )
+            );
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "Usage: maestro plugins marketplace [list|install <id>] [--trust]",
+                    &[]
+                )
+            );
             Ok(1)
         }
     }
@@ -352,19 +371,26 @@ fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
     }
 
     if registry.is_empty() {
-        println!("No plugins found");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("No plugins found", &[])
+        );
         println!();
-        println!("Install plugins under:");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Install plugins under:", &[])
+        );
         println!("  .maestro/plugins/<name>/   (project)");
         println!("  ~/.maestro/plugins/<name>/ (user)");
         println!();
-        println!(
-            "Each plugin may include plugin.json or .plugin/plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types."
-        );
+        println!("{}", crate::localization::cli_locale().format("Each plugin may include plugin.json or .plugin/plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types.", &[]));
         return Ok(0);
     }
 
-    println!("Plugins");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Plugins", &[])
+    );
     println!();
     for plugin in registry.plugins() {
         let version = plugin
@@ -383,19 +409,35 @@ fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
     }
     println!();
     println!(
-        "{} plugin(s) discovered. Use `maestro plugins info <name>` for details.",
-        registry.len()
+        "{}",
+        crate::localization::cli_locale().format(
+            "{0} plugin(s) discovered. Use `maestro plugins info <name>` for details.",
+            &[(registry.len()).to_string()]
+        )
     );
     Ok(0)
 }
 
 fn run_info(registry: &PluginRegistry, name: &str, json: bool) -> Result<i32> {
     let Some(plugin) = registry.get(name) else {
-        eprintln!("Plugin not found: {name}");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Plugin not found: {0}", &[(name).to_string()])
+        );
         if registry.is_empty() {
-            eprintln!("No plugins discovered. Install under .maestro/plugins/<name>/.");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "No plugins discovered. Install under .maestro/plugins/<name>/.",
+                    &[]
+                )
+            );
         } else {
-            eprintln!("Known plugins:");
+            eprintln!(
+                "{}",
+                crate::localization::cli_locale().format("Known plugins:", &[])
+            );
             for p in registry.plugins() {
                 eprintln!("  - {}", p.name);
             }

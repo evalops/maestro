@@ -2,4 +2,10 @@
 
 pub mod files;
 pub mod git;
+pub mod integration;
 pub mod worktree;
+
+pub use integration::{
+    IntegrationCoordinator, IntegrationError, IntegrationReceipt, IntegrationRequest,
+    IntegrationResult, IntegrationStatus,
+};

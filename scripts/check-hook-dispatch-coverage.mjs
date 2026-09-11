@@ -2,11 +2,11 @@
 /**
  * Standing guard against "registered but never fired" hooks.
  *
- * Scans production Rust sources under packages/tui-rs/src for call sites of
+ * Scans production Rust sources in the shared local host and terminal application for call sites of
  * IntegratedHookSystem dispatch methods. Events listed as required must have
  * at least one non-test call site.
  *
- * Keep WIRED in sync with packages/tui-rs/src/agent/harness.rs WIRED_HOOK_EVENTS.
+ * Keep WIRED in sync with packages/local-host-rs/src/agent/harness.rs WIRED_HOOK_EVENTS.
  *
  * Usage: node scripts/check-hook-dispatch-coverage.mjs
  */
@@ -14,7 +14,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const SRC = join(ROOT, "packages/tui-rs/src");
+const SOURCES = ["local-host-rs", "tui-rs"].map((name) => join(ROOT, "packages", name, "src"));
+const sourceRoot = (path) => SOURCES.find((root) => path.startsWith(root + "/"));
 
 /** event label → dispatch method substrings that count as a production call */
 const WIRED = {
@@ -52,13 +53,13 @@ function walk(dir, out = []) {
 }
 
 function isTestPath(path) {
-  const rel = relative(SRC, path).replaceAll("\\", "/");
+  const rel = relative(sourceRoot(path), path).replaceAll("\\", "/");
   return rel.includes("/tests/") || rel.endsWith("/harness.rs") || rel.includes("/benches/");
 }
 
 /** Hook system implementation files — registry wiring is not a runtime call site. */
 function isHookImplementation(path) {
-  const rel = relative(SRC, path).replaceAll("\\", "/");
+  const rel = relative(sourceRoot(path), path).replaceAll("\\", "/");
   return rel.startsWith("hooks/") || rel === "hooks.rs";
 }
 
@@ -272,7 +273,7 @@ function productionLineIndexes(text) {
     .filter(({ idx }) => !skip[idx]);
 }
 
-const files = walk(SRC);
+const files = SOURCES.flatMap((root) => walk(root));
 const sources = files.map((path) => ({
   path,
   text: readFileSync(path, "utf8"),

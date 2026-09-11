@@ -284,8 +284,11 @@ pub async fn run_value(args: &[String]) -> Result<i32> {
             println!("{}", format_markdown(&report));
             if let Some(artifacts) = &artifacts {
                 println!(
-                    "\nSaved value artifact manifest: {}",
-                    artifacts.manifest_path
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "\nSaved value artifact manifest: {0}",
+                        std::slice::from_ref(&(artifacts.manifest_path))
+                    )
                 );
             }
         }
@@ -293,10 +296,34 @@ pub async fn run_value(args: &[String]) -> Result<i32> {
             println!("{}", format_text(&report));
             if let Some(artifacts) = &artifacts {
                 println!();
-                println!("Saved value artifacts: {}", artifacts.output_dir);
-                println!("Manifest: {}", artifacts.manifest_path);
-                println!("Report JSON: {}", artifacts.report_json_path);
-                println!("Report Markdown: {}", artifacts.report_markdown_path);
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Saved value artifacts: {0}",
+                        std::slice::from_ref(&(artifacts.output_dir))
+                    )
+                );
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Manifest: {0}",
+                        std::slice::from_ref(&(artifacts.manifest_path))
+                    )
+                );
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Report JSON: {0}",
+                        std::slice::from_ref(&(artifacts.report_json_path))
+                    )
+                );
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "Report Markdown: {0}",
+                        std::slice::from_ref(&(artifacts.report_markdown_path))
+                    )
+                );
             }
         }
     }
@@ -305,16 +332,7 @@ pub async fn run_value(args: &[String]) -> Result<i32> {
 }
 
 fn value_help() -> &'static str {
-    "Usage: maestro value [today|yesterday|week|7d|month|30d|all] [options]\n\n\
-     Options:\n\
-       --format json|md|text   Output format (default: text)\n\
-       --write                 Persist report JSON, Markdown, and manifest\n\
-       --output-dir <path>     Artifact directory (default: ~/.maestro/value-reports)\n\
-       --session-dir <path>    Override session root (lists .jsonl files in this directory)\n\
-       --a2a-tasks <path>      Override A2A task ledger path (default: ~/.maestro/a2a/tasks.json)\n\
-       --help                  Show this help\n\n\
-     Native report uses SessionManager session stats plus the A2A task ledger.\n\
-     Residual gaps vs the full TypeScript report are listed in JSON residualGaps."
+    crate::localization::cli_locale().translate("Usage: maestro value [today|yesterday|week|7d|month|30d|all] [options]\n\nOptions:\n--format json|md|text   Output format (default: text)\n--write                 Persist report JSON, Markdown, and manifest\n--output-dir <path>     Artifact directory (default: ~/.maestro/value-reports)\n--session-dir <path>    Override session root (lists .jsonl files in this directory)\n--a2a-tasks <path>      Override A2A task ledger path (default: ~/.maestro/a2a/tasks.json)\n--help                  Show this help\n\nNative report uses SessionManager session stats plus the A2A task ledger.\nResidual gaps vs the full TypeScript report are listed in JSON residualGaps.")
 }
 
 fn parse_args(args: &[String]) -> Result<ValueArgs> {
@@ -334,7 +352,11 @@ fn parse_args(args: &[String]) -> Result<ValueArgs> {
             "--format" | "-f" => {
                 i += 1;
                 let Some(value) = args.get(i) else {
-                    bail!("--format requires a value (json|md|text)");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--format requires a value (json|md|text)", &[])
+                    );
                 };
                 out.format = normalize_format(value)?;
             }
@@ -344,7 +366,11 @@ fn parse_args(args: &[String]) -> Result<ValueArgs> {
             "--output-dir" => {
                 i += 1;
                 let Some(value) = args.get(i) else {
-                    bail!("--output-dir requires a path");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--output-dir requires a path", &[])
+                    );
                 };
                 out.output_dir = Some(PathBuf::from(value));
             }
@@ -354,7 +380,11 @@ fn parse_args(args: &[String]) -> Result<ValueArgs> {
             "--session-dir" => {
                 i += 1;
                 let Some(value) = args.get(i) else {
-                    bail!("--session-dir requires a path");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--session-dir requires a path", &[])
+                    );
                 };
                 out.session_dir = Some(PathBuf::from(value));
             }
@@ -364,7 +394,11 @@ fn parse_args(args: &[String]) -> Result<ValueArgs> {
             "--a2a-tasks" => {
                 i += 1;
                 let Some(value) = args.get(i) else {
-                    bail!("--a2a-tasks requires a path");
+                    bail!(
+                        "{}",
+                        crate::localization::cli_locale()
+                            .format("--a2a-tasks requires a path", &[])
+                    );
                 };
                 out.a2a_tasks_path = Some(value.clone());
             }
@@ -375,10 +409,20 @@ fn parse_args(args: &[String]) -> Result<ValueArgs> {
                 out.period = Some(a.to_string());
             }
             other if other.starts_with('-') => {
-                bail!("unknown value flag: {other}");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("unknown value flag: {0}", &[(other).to_string()])
+                );
             }
             other => {
-                bail!("unknown value period: {other} (use today|yesterday|week|7d|month|30d|all)");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "unknown value period: {0} (use today|yesterday|week|7d|month|30d|all)",
+                        &[(other).to_string()]
+                    )
+                );
             }
         }
         i += 1;
@@ -391,7 +435,13 @@ fn normalize_format(value: &str) -> Result<String> {
         "json" => Ok("json".to_string()),
         "md" | "markdown" => Ok("md".to_string()),
         "text" | "txt" | "plain" => Ok("text".to_string()),
-        other => bail!("unsupported --format: {other} (use json|md|text)"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unsupported --format: {0} (use json|md|text)",
+                &[(other).to_string()]
+            )
+        ),
     }
 }
 
@@ -1105,9 +1155,12 @@ fn format_text(report: &ValueReport) -> String {
         format!("Trust cards: {}", report.summary.trust_card_count),
         format!("Messages: {}", report.summary.message_count),
         format!("Tool calls: {}", report.summary.tool_call_count),
-        format!(
-            "Usage: {} tokens, ${:.4}",
-            report.summary.total_tokens, report.summary.total_cost_usd
+        crate::localization::cli_locale().format(
+            "Usage: {0} tokens, ${1}",
+            &[
+                (report.summary.total_tokens).to_string(),
+                format!("{:.4}", report.summary.total_cost_usd),
+            ],
         ),
         {
             let multiple = report
@@ -1492,8 +1545,11 @@ fn unique_base_name(output_dir: &Path, base_name: &str) -> Result<String> {
         }
     }
     bail!(
-        "could not allocate unique value artifact base name in {}",
-        output_dir.display()
+        "{}",
+        crate::localization::cli_locale().format(
+            "could not allocate unique value artifact base name in {0}",
+            &[(output_dir.display()).to_string()]
+        )
     );
 }
 

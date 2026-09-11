@@ -141,8 +141,12 @@ impl App {
                 "A tiny bow from Dex.",
                 "Dex is all ears.",
             ];
-            self.dex_delight.notice =
-                Some(REACTIONS[self.dex_delight.pet_notice_index].to_string());
+            self.dex_delight.notice = Some(
+                self.state
+                    .locale
+                    .translate(REACTIONS[self.dex_delight.pet_notice_index])
+                    .to_string(),
+            );
             self.dex_delight.pet_notice_index =
                 (self.dex_delight.pet_notice_index + 1) % REACTIONS.len();
         }
@@ -228,9 +232,9 @@ impl App {
             policy,
         );
         if let Some(state) = effect.recap {
-            self.dex_delight.notice = Some(format!(
-                "Welcome back. {}",
-                crate::dex_delight::recap(&self.state, Some(state))
+            self.dex_delight.notice = Some(self.state.locale.format(
+                "Welcome back. {0}",
+                &[crate::dex_delight::recap(&self.state, Some(state)).clone()],
             ));
         }
     }
@@ -302,13 +306,22 @@ impl App {
                         self.dex_delight.suggestion.dismiss();
                     }
                 } else {
-                    self.dex_delight.notice = Some("No next step to suggest yet.".to_string());
+                    self.dex_delight.notice = Some(
+                        self.state
+                            .locale
+                            .translate("No next step to suggest yet.")
+                            .to_string(),
+                    );
                 }
                 return;
             }
             Some(Control::Help) => {
                 self.dex_delight.notice = Some(
-                    "/dex appearance · pet · recap · next · notifications-on · tips-off"
+                    self.state
+                        .locale
+                        .translate(
+                            "/dex appearance · pet · recap · next · notifications-on · tips-off",
+                        )
                         .to_string(),
                 );
                 return;
@@ -349,10 +362,17 @@ impl App {
             Ok(()) => {
                 self.ui_prefs = prefs;
                 self.state.error = None;
-                self.dex_delight.notice = Some(format!("Dex: {description} (saved)"));
+                self.dex_delight.notice = Some(
+                    self.state
+                        .locale
+                        .format("Dex: {0} (saved)", &[(description).to_string()]),
+                );
             }
             Err(error) => {
-                self.state.error = Some(format!("Could not save Dex preferences: {error}"));
+                self.state.error = Some(self.state.locale.format(
+                    "Could not save Dex preferences: {0}",
+                    &[(error).to_string()],
+                ));
             }
         }
     }

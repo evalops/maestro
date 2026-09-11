@@ -242,6 +242,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use maestro_context::{CONTEXT_BUDGET_CUSTOM_TYPE, ContextBudgetSnapshot};
+use maestro_runtime_contracts::{SESSION_EVENT_CUSTOM_TYPE, SessionEvent};
 use serde::Deserialize;
 
 use super::entries::{
@@ -468,6 +470,12 @@ pub struct ParsedSession {
     /// Recorded compaction events.
     pub compactions: Vec<CompactionEntry>,
 
+    /// Typed session lifecycle telemetry decoded from recognized custom entries.
+    pub session_events: Vec<SessionEvent>,
+
+    /// Typed context budget snapshots decoded from recognized custom entries.
+    pub context_budget_snapshots: Vec<ContextBudgetSnapshot>,
+
     /// TUI-only subagent completion notices in final transcript positions.
     pub lifecycle_notifications: Vec<LifecycleNotificationEntry>,
 
@@ -577,6 +585,22 @@ struct HeaderScanMessage<'a> {
     role: Option<Cow<'a, str>>,
 }
 
+/// Count user boundaries without deserializing cumulative checkpoint payloads.
+pub(super) fn is_user_message_line(line: &str) -> std::io::Result<bool> {
+    let invalid = |error| std::io::Error::new(std::io::ErrorKind::InvalidData, error);
+    let entry: HeaderScanEntry<'_> = serde_json::from_str(line.trim_end()).map_err(invalid)?;
+    if entry.entry_type.as_deref() != Some("message")
+        || entry.message.and_then(|message| message.role).as_deref() != Some("user")
+    {
+        return Ok(false);
+    }
+    // A damaged record must not shift file checkpoint coordinates relative to
+    // SessionReader, which validates the persisted message schema.
+    // Validate only user candidates; compaction records remain projection-only.
+    let _: SessionEntry = serde_json::from_str(line.trim_end()).map_err(invalid)?;
+    Ok(true)
+}
+
 fn apply_effective_preferences(
     header: &mut SessionHeader,
     model: Option<&str>,
@@ -618,6 +642,8 @@ impl SessionReader {
         let mut thinking_level_changes: Vec<ThinkingLevelChange> = Vec::new();
         let mut model_changes: Vec<ModelChange> = Vec::new();
         let mut compactions: Vec<CompactionEntry> = Vec::new();
+        let mut session_events: Vec<SessionEvent> = Vec::new();
+        let mut context_budget_snapshots: Vec<ContextBudgetSnapshot> = Vec::new();
         let mut lifecycle_notifications: Vec<PendingLifecycleNotification> = Vec::new();
         let mut lifecycle_agent_notes: Vec<LifecycleAgentNoteEntry> = Vec::new();
         let mut consumed_lifecycle_agent_notes: HashSet<String> = HashSet::new();
@@ -833,6 +859,20 @@ impl SessionReader {
                             model: usage.model,
                             usage: usage_tokens,
                         });
+                    } else if entry.custom_type == SESSION_EVENT_CUSTOM_TYPE {
+                        if let Some(data) = entry.data {
+                            if let Ok(event) = serde_json::from_value::<SessionEvent>(data) {
+                                session_events.push(event);
+                            }
+                        }
+                    } else if entry.custom_type == CONTEXT_BUDGET_CUSTOM_TYPE {
+                        if let Some(data) = entry.data {
+                            if let Ok(snapshot) =
+                                serde_json::from_value::<ContextBudgetSnapshot>(data)
+                            {
+                                context_budget_snapshots.push(snapshot);
+                            }
+                        }
                     } else if entry.custom_type == "subagent_lifecycle_applied" {
                         if let Some((id, data)) = entry.id.zip(entry.data) {
                             if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
@@ -905,6 +945,8 @@ impl SessionReader {
             thinking_level_changes,
             model_changes,
             compactions,
+            session_events,
+            context_budget_snapshots,
             lifecycle_notifications: lifecycle_notifications
                 .into_iter()
                 .map(|notification| notification.entry)
@@ -1023,6 +1065,128 @@ mod tests {
         assert_eq!(session.messages.len(), 2);
         assert_eq!(session.stats.user_messages, 1);
         assert_eq!(session.stats.assistant_messages, 1);
+    }
+
+    #[test]
+    fn decodes_typed_telemetry_custom_entries() {
+        let mut file = create_test_session();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom",
+                "id": "event-entry",
+                "timestamp": "2024-01-15T10:30:02Z",
+                "customType": SESSION_EVENT_CUSTOM_TYPE,
+                "data": {
+                    "schemaVersion": "evalops.maestro.session-event.v1",
+                    "eventId": "event-1",
+                    "timestamp": "2024-01-15T10:30:02Z",
+                    "sessionId": "test123",
+                    "lane": "tools",
+                    "kind": "tool.started",
+                    "phase": "started",
+                    "correlationId": "call-1"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom",
+                "id": "budget-entry",
+                "timestamp": "2024-01-15T10:30:03Z",
+                "customType": CONTEXT_BUDGET_CUSTOM_TYPE,
+                "data": {
+                    "schemaVersion": "evalops.maestro.context-budget.v1",
+                    "snapshotId": "snapshot-1",
+                    "timestamp": "2024-01-15T10:30:03Z",
+                    "model": "openai/gpt-5.6",
+                    "phase": "prepared_request",
+                    "contextWindow": 100,
+                    "systemPrompt": 10,
+                    "toolSchemas": 10,
+                    "toolResults": 10,
+                    "conversation": 10,
+                    "other": 10,
+                    "responseReserve": 20,
+                    "safetyMargin": 5,
+                    "confidence": "measured"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom",
+                "timestamp": "2024-01-15T10:30:04Z",
+                "customType": "selective_summary_context_v1",
+                "data": {
+                    "messages": [
+                        {"role": "user", "content": "Hello"}
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.session_events.len(), 1);
+        assert_eq!(session.session_events[0].event_id, "event-1");
+        assert_eq!(
+            session.session_events[0].correlation_id.as_deref(),
+            Some("call-1")
+        );
+        assert_eq!(session.context_budget_snapshots.len(), 1);
+        assert_eq!(
+            session.context_budget_snapshots[0].snapshot_id,
+            "snapshot-1"
+        );
+        assert_eq!(
+            session.context_budget_snapshots[0].remaining_headroom(),
+            Some(25)
+        );
+        assert!(session.selective_summary_context.is_some());
+    }
+
+    #[test]
+    fn malformed_typed_telemetry_is_ignored() {
+        let mut file = create_test_session();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom",
+                "timestamp": "2024-01-15T10:30:02Z",
+                "customType": SESSION_EVENT_CUSTOM_TYPE,
+                "data": {"eventId": "missing-required-fields"}
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom",
+                "timestamp": "2024-01-15T10:30:03Z",
+                "customType": CONTEXT_BUDGET_CUSTOM_TYPE,
+                "data": "not-a-snapshot"
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.messages.len(), 2);
+        assert!(session.session_events.is_empty());
+        assert!(session.context_budget_snapshots.is_empty());
     }
 
     #[test]

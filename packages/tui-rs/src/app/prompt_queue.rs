@@ -14,7 +14,12 @@ impl App {
                 .await;
         }
         let Some(agent) = &self.native_agent else {
-            self.state.error = Some("Agent not initialized".to_string());
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .translate("Agent not initialized")
+                    .to_string(),
+            );
             return Ok(false);
         };
         self.state.busy = true;
@@ -23,7 +28,11 @@ impl App {
             .await
         {
             self.state.busy = false;
-            self.state.error = Some(format!("Failed to ask side question: {err}"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Failed to ask side question: {0}", &[(err).to_string()]),
+            );
             return Ok(false);
         }
         Ok(true)
@@ -35,7 +44,7 @@ impl App {
         }
         if self.state.busy && !self.state.follow_up_mode.allows_queue() {
             self.state.status = Some(
-                "Follow-up mode set to one-at-a-time. Use /queue mode followup all to enable follow-ups while running."
+                self.state.locale.translate("Follow-up mode set to one-at-a-time. Use /queue mode followup all to enable follow-ups while running.")
                     .to_string(),
             );
             return Ok(false);
@@ -55,7 +64,7 @@ impl App {
         }
         if self.state.busy && !self.state.steering_mode.allows_queue() {
             self.state.status = Some(
-                "Steering mode set to one-at-a-time. Use /queue mode steer all to allow multiple steering messages."
+                self.state.locale.translate("Steering mode set to one-at-a-time. Use /queue mode steer all to allow multiple steering messages.")
                     .to_string(),
             );
             return Ok(false);
@@ -80,9 +89,9 @@ impl App {
             return;
         }
         self.update_agent_system_prompt();
-        self.state.add_system_message(format!(
-            "Automatically activated skills: {}",
-            auto_activated.join(", ")
+        self.state.add_system_message(self.state.locale.format(
+            "Automatically activated skills: {0}",
+            &[(auto_activated.join(", ")).clone()],
         ));
     }
 
@@ -110,16 +119,20 @@ impl App {
         let system_prompt = self.build_system_prompt();
         if let Some(agent) = &self.native_agent {
             if let Err(e) = agent.set_system_prompt_for_queued_prompt(queue_id, system_prompt) {
-                self.state.error = Some(format!("Failed to update system prompt: {e}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to update system prompt: {0}", &[(e).to_string()]),
+                );
             }
         }
 
         if auto_activated.is_empty() {
             return;
         }
-        self.state.add_system_message(format!(
-            "Automatically activated skills: {}",
-            auto_activated.join(", ")
+        self.state.add_system_message(self.state.locale.format(
+            "Automatically activated skills: {0}",
+            &[(auto_activated.join(", ")).clone()],
         ));
     }
 
@@ -144,30 +157,49 @@ impl App {
             self.auto_activate_skills_for_queued_prompt(&content, queue_id);
         }
         let Some(agent) = &self.native_agent else {
-            self.state.error = Some("Agent not initialized".to_string());
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .translate("Agent not initialized")
+                    .to_string(),
+            );
             return Ok(false);
         };
         if let Err(e) = agent
             .prompt_with_kind(content.clone(), vec![], kind, Some(queue_id))
             .await
         {
-            self.state.error = Some(format!("Failed to queue prompt: {e}"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Failed to queue prompt: {0}", &[(e).to_string()]),
+            );
             return Ok(false);
         }
 
         let dropped = self.enqueue_pending_prompt(queue_id, content, kind, front);
         self.state.status = Some(match kind {
-            PromptKind::Steer => {
-                "Steering queued for the next checkpoint; current work continues.".to_owned()
-            }
-            PromptKind::FollowUp => "Follow-up queued after this turn.".to_owned(),
-            PromptKind::SideQuestion => "Side question queued.".to_owned(),
-            PromptKind::Prompt => "Message queued.".to_owned(),
+            PromptKind::Steer => self
+                .state
+                .locale
+                .translate("Steering queued for the next checkpoint; current work continues.")
+                .to_owned(),
+            PromptKind::FollowUp => self
+                .state
+                .locale
+                .translate("Follow-up queued after this turn.")
+                .to_owned(),
+            PromptKind::SideQuestion => self
+                .state
+                .locale
+                .translate("Side question queued.")
+                .to_owned(),
+            PromptKind::Prompt => self.state.locale.translate("Message queued.").to_owned(),
         });
         if let Some(dropped) = dropped {
-            self.state.status = Some(format!(
-                "Queue full, dropped oldest {}.",
-                dropped.kind.label()
+            self.state.status = Some(self.state.locale.format(
+                "Queue full, dropped oldest {0}.",
+                &[(dropped.kind.label()).to_string()],
             ));
         }
         Ok(true)
@@ -303,9 +335,9 @@ impl App {
             }
             let dropped = self.enqueue_follow_up_front_for_edit(current);
             if let Some(dropped) = dropped {
-                self.state.status = Some(format!(
-                    "Queue full, dropped oldest {}.",
-                    dropped.kind.label()
+                self.state.status = Some(self.state.locale.format(
+                    "Queue full, dropped oldest {0}.",
+                    &[(dropped.kind.label()).to_string()],
                 ));
             }
         }
@@ -330,9 +362,10 @@ impl App {
         self.state.set_input(&restored.content);
         self.update_slash_state();
         self.editing_queued_follow_up = Some(restored.clone());
-        self.state
-            .status
-            .replace(format!("Editing queued follow-up #{}.", restored.id));
+        self.state.status.replace(self.state.locale.format(
+            "Editing queued follow-up #{0}.",
+            &[(restored.id).to_string()],
+        ));
         Ok(true)
     }
 
@@ -366,7 +399,7 @@ impl App {
     pub(super) fn format_queue_snippet(text: &str, max_len: usize) -> String {
         let mut condensed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if condensed.is_empty() {
-            condensed = "(empty message)".to_string();
+            condensed = maestro_ui::localization::tr("(empty message)").to_string();
         }
         if condensed.len() <= max_len {
             return condensed;
@@ -401,8 +434,12 @@ impl App {
             "1 message".to_string()
         } else {
             match mode {
-                QueueMode::All => format!("all {count} messages"),
-                QueueMode::One => format!("1 of {count} messages"),
+                QueueMode::All => {
+                    maestro_ui::localization::format("all {0} messages", &[(count).to_string()])
+                }
+                QueueMode::One => {
+                    maestro_ui::localization::format("1 of {0} messages", &[(count).to_string()])
+                }
             }
         };
         Some(format!("{batch} {timing}"))
@@ -470,10 +507,13 @@ impl App {
         } else {
             None
         };
-        self.state.status = Some(format!(
-            "Restored {} queued prompt{} to the composer.",
-            batch.len(),
-            if batch.len() == 1 { "" } else { "s" }
+        self.state.status = Some(self.state.locale.format(
+            if batch.len() == 1 {
+                "Restored {0} queued prompt to the composer."
+            } else {
+                "Restored {0} queued prompts to the composer."
+            },
+            &[batch.len().to_string()],
         ));
     }
 
@@ -492,9 +532,15 @@ impl App {
                 return Ok(false);
             }
             self.state.status = Some(if batch.len() == 1 {
-                "Submitting queued steer.".to_string()
+                self.state
+                    .locale
+                    .translate("Submitting queued steer.")
+                    .to_string()
             } else {
-                format!("Submitting {} queued steers.", batch.len())
+                self.state.locale.format(
+                    "Submitting {0} queued steers.",
+                    &[(batch.len()).to_string()],
+                )
             });
             self.submit_prompt(merged).await?;
             return Ok(true);
@@ -559,8 +605,12 @@ impl App {
         kind: PromptKind,
     ) -> Result<bool> {
         if self.session_resume_failed {
-            self.state.error =
-                Some("Session resume failed; use /new to start a new session.".to_string());
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .translate("Session resume failed; use /new to start a new session.")
+                    .to_string(),
+            );
             return Ok(false);
         }
 
@@ -599,7 +649,7 @@ impl App {
 
         if let Err(err) = self.ensure_session_started() {
             self.state.error = Some(super::format_session_persistence_error(
-                "start the session",
+                self.state.locale.translate("start the session"),
                 err,
             ));
             return Ok(false);
@@ -629,20 +679,31 @@ impl App {
                 crate::file_mentions::expand_file_mentions(&content, std::path::Path::new(&cwd));
             let attachments = std::mem::take(&mut self.pending_attachments);
             if !attachments.is_empty() {
-                self.state.status =
-                    Some(format!("Sending with {} attachment(s)", attachments.len()));
+                self.state.status = Some(self.state.locale.format(
+                    "Sending with {0} attachment(s)",
+                    &[(attachments.len()).to_string()],
+                ));
             }
             if let Err(e) = agent
                 .prompt_with_kind(agent_content, attachments, kind, None)
                 .await
             {
-                self.state.error = Some(format!("Failed to send prompt: {e}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to send prompt: {0}", &[(e).to_string()]),
+                );
                 self.state.busy = false;
                 return Ok(false);
             }
             return Ok(true);
         }
-        self.state.error = Some("Agent not initialized".to_string());
+        self.state.error = Some(
+            self.state
+                .locale
+                .translate("Agent not initialized")
+                .to_string(),
+        );
         self.state.busy = false;
         Ok(false)
     }

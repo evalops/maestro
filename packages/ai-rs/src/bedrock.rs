@@ -143,7 +143,8 @@ impl BedrockClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-        let request_messages = build_messages(messages)?;
+        let messages = crate::cache_topology::messages_with_volatile_tail(messages, config);
+        let request_messages = build_messages(&messages)?;
         let model = provider_model_name(&config.model);
         let client = self.sdk_client().await?;
         let mut request = client

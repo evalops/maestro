@@ -2,7 +2,7 @@
 
 /**
  * Regenerate the bundled model catalog snapshot consumed by
- * `packages/tui-rs/src/model_catalog.rs` via `include_str!`.
+ * `packages/local-host-rs/src/model_catalog.rs` via `include_str!`.
  *
  * Native provider rows come from the MIT-licensed community catalog at
  * models.dev (https://models.dev/api.json). OpenRouter rows come from
@@ -26,7 +26,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const DESCRIPTION_MAX_LEN = 120;
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_OUT = path.join(REPO_ROOT, "packages/tui-rs/src/model_catalog_data.json");
+const DEFAULT_OUT = path.join(REPO_ROOT, "packages/local-host-rs/src/model_catalog_data.json");
 
 // Maestro provider id -> fixed catalog protocol. OpenAI is per-model below.
 const PROVIDER_PROTOCOLS = {

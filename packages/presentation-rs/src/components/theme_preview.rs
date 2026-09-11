@@ -21,13 +21,25 @@ impl Widget for ThemePreview {
             DexCompanion::new(DexCompanionState::Ready)
                 .theme(Some(theme))
                 .status_line(),
-            Line::from("Let's make something useful."),
+            Line::from(maestro_ui::localization::tr("Let's make something useful.")),
             Line::from(vec![
-                Span::styled("✓ Passed  ", Style::default().fg(theme.success)),
-                Span::styled("! Attention  ", Style::default().fg(theme.attention)),
-                Span::styled("× Failed", Style::default().fg(theme.error)),
+                Span::styled(
+                    maestro_ui::localization::tr("✓ Passed  "),
+                    Style::default().fg(theme.success),
+                ),
+                Span::styled(
+                    maestro_ui::localization::tr("! Attention  "),
+                    Style::default().fg(theme.attention),
+                ),
+                Span::styled(
+                    maestro_ui::localization::tr("× Failed"),
+                    Style::default().fg(theme.error),
+                ),
             ]),
-            Line::styled("A quieter hint", theme.muted_style()),
+            Line::styled(
+                maestro_ui::localization::tr("A quieter hint"),
+                theme.muted_style(),
+            ),
         ])
         .render(rows[0], buf);
         let editor = TextArea::new();
@@ -36,7 +48,7 @@ impl Widget for ThemePreview {
             queued: &[],
             busy: false,
             footer: None,
-            completion: Some("Ask Dex…"),
+            completion: Some(maestro_ui::localization::tr("Ask Dex…")),
             theme,
         }
         .render(rows[1], buf);

@@ -1,0 +1,29 @@
+{
+  "name": "zh-cn-palette",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language zh-CN"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "显示语言"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "显示语言"
+    },
+    {
+      "key": "C-k"
+    },
+    {
+      "wait": "搜索"
+    }
+  ]
+}

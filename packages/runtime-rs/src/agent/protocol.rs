@@ -707,6 +707,8 @@ pub struct InlineToolApprovalContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgent {
+    /// Request a fresh opaque capability; contains no authority or secret.
+    ManagedAuthorizationRequest { request_id: String },
     /// In-process content for local transcript persistence, before tool dispatch.
     /// Never serialize provider thinking/signatures onto a public transport.
     #[serde(skip)]
@@ -965,8 +967,31 @@ pub enum FromAgent {
         observation: crate::ai::StreamObservation,
     },
 
+    /// Input estimate and provider usage from the same completed primary request.
+    ContextCalibration {
+        observation: maestro_context::context_usage::ContextCalibration,
+    },
+
     /// A request retry actually started after its interruptible backoff.
     RequestRetryObservation,
+
+    /// The exact provider request and its local context accounting are ready.
+    RequestContextPrepared { response_id: String },
+
+    /// Content-free measurements associated with the exact native operation.
+    OperationObservation {
+        observation: maestro_runtime_contracts::operation_observation::OperationObservation,
+    },
+
+    /// One user turn entered the native runtime loop.
+    TurnStarted,
+
+    /// Privacy-safe retry schedule emitted before the interruptible backoff.
+    RequestRetryScheduled {
+        attempt: u32,
+        delay_ms: u64,
+        rate_limited: bool,
+    },
 
     /// Elapsed work for a completed context compaction, including enhancement.
     CompactionMeasured { duration_ms: u64 },
@@ -1189,6 +1214,41 @@ mod tests {
         let json = r#"{"type":"response_chunk","response_id":"123","content":"Hello","is_thinking":false}"#;
         let msg: FromAgent = serde_json::from_str(json).unwrap();
         assert!(matches!(msg, FromAgent::ResponseChunk { content, .. } if content == "Hello"));
+    }
+
+    #[test]
+    fn retry_schedule_is_typed_and_content_free() {
+        let value = serde_json::to_value(FromAgent::RequestRetryScheduled {
+            attempt: 2,
+            delay_ms: 1_500,
+            rate_limited: true,
+        })
+        .unwrap();
+        assert_eq!(value["type"], "request_retry_scheduled");
+        assert_eq!(value["attempt"], 2);
+        assert_eq!(value["delay_ms"], 1_500);
+        assert_eq!(value["rate_limited"], true);
+        assert!(value.get("message").is_none());
+        assert!(value.get("prompt").is_none());
+    }
+
+    #[test]
+    fn prepared_request_boundary_is_typed_and_content_free() {
+        let value = serde_json::to_value(FromAgent::RequestContextPrepared {
+            response_id: "response-1".into(),
+        })
+        .unwrap();
+        assert_eq!(value["type"], "request_context_prepared");
+        assert_eq!(value["response_id"], "response-1");
+        assert!(value.get("messages").is_none());
+        assert!(value.get("prompt").is_none());
+    }
+
+    #[test]
+    fn turn_start_boundary_is_typed_and_content_free() {
+        let value = serde_json::to_value(FromAgent::TurnStarted).unwrap();
+        assert_eq!(value["type"], "turn_started");
+        assert_eq!(value.as_object().unwrap().len(), 1);
     }
 
     #[test]
