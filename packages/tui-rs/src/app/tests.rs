@@ -4389,7 +4389,7 @@ fn assert_locked_resume_preserves_active(continue_latest: bool) {
             .unwrap();
         app.continue_last_session();
     } else {
-        app.apply_resumed_session(&locked);
+        app.resume_session_path(std::path::Path::new(&locked.file_path), &locked.header.id);
     }
 
     assert!(!app.session_resume_failed);
@@ -4427,6 +4427,60 @@ fn assert_locked_resume_preserves_active(continue_latest: bool) {
 }
 
 #[test]
+fn invalidated_resume_selection_preserves_active_writer_and_history() {
+    let temp = tempdir().unwrap();
+    let mut app = new_test_app();
+    app.session_manager = SessionManager::with_sessions_dir("/tmp", temp.path());
+    app.ensure_session_started().unwrap();
+    app.record_user_message("keep active history");
+    let active = app.session_manager.current_session_path().unwrap();
+    let active_id = app.state.session_id.clone();
+    app.resume_session_path(&active, active_id.as_deref().unwrap());
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|message| message.content == "keep active history")
+    );
+    let (child_id, child_path) = app.session_manager.fork_session_snapshot().unwrap();
+    let selected = app.session_manager.find_session(&child_id).unwrap();
+    // The picker metadata is only a locator. A target changed after selection
+    // must fail before replacing either the transcript or the active writer.
+    std::fs::write(&child_path, "{}\n").unwrap();
+    let messages = app
+        .state
+        .messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>();
+    app.resume_session_path(&selected.path, &selected.id);
+    assert_eq!(app.state.session_id, active_id);
+    assert_eq!(
+        app.session_manager.current_session_path(),
+        Some(active.clone())
+    );
+    assert_eq!(
+        app.state
+            .messages
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>(),
+        messages
+    );
+    assert!(!app.session_resume_failed);
+    assert!(app.state.error.is_some());
+    assert!(crate::session::SessionWriter::open_existing(&active).is_err());
+    app.record_user_message("still writable");
+    assert!(
+        crate::session::SessionReader::read_file(&active)
+            .unwrap()
+            .messages
+            .iter()
+            .any(|message| message.text_content() == "still writable")
+    );
+}
+
+#[test]
 fn reselecting_active_session_keeps_writer_and_clears_escape_sequence() {
     use std::io::Write;
 
@@ -4459,7 +4513,8 @@ fn reselecting_active_session_keeps_writer_and_clears_escape_sequence() {
         .load_session("active-session")
         .expect("load active transcript");
 
-    app.apply_resumed_session(&parsed);
+    app.record_user_message("written after selection");
+    app.resume_session_path(std::path::Path::new(&parsed.file_path), &parsed.header.id);
 
     assert!(!app.session_resume_failed);
     assert_eq!(
@@ -4472,6 +4527,12 @@ fn reselecting_active_session_keeps_writer_and_clears_escape_sequence() {
     );
     assert!(crate::session::SessionWriter::open_existing(&path).is_err());
     assert!(app.last_esc_at.is_none());
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|message| message.content == "written after selection")
+    );
 }
 
 #[test]
@@ -6475,7 +6536,7 @@ async fn assert_session_restore_provider_history(interactive: bool) {
     app.native_agent = Some(agent);
     if interactive {
         let session = crate::session::SessionReader::read_file(&child_path).unwrap();
-        app.apply_resumed_session(&session);
+        app.resume_session_path(std::path::Path::new(&session.file_path), &session.header.id);
     } else {
         app.continue_last_session();
     }
@@ -6612,7 +6673,7 @@ async fn resumed_continuation_survives_the_next_compaction() {
     )
     .unwrap();
     app.native_agent = Some(agent);
-    app.apply_resumed_session(&saved);
+    app.resume_session_path(std::path::Path::new(&saved.file_path), &saved.header.id);
     app.native_agent
         .as_ref()
         .unwrap()

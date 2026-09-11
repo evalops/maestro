@@ -1227,8 +1227,12 @@ impl App {
             );
             return;
         }
-        match self.session_manager.most_recent_session() {
-            Ok(Some(session)) => self.apply_resumed_session(&session),
+        match self
+            .session_manager
+            .recent_sessions(1)
+            .map(|sessions| sessions.into_iter().next())
+        {
+            Ok(Some(session)) => self.resume_session_path(&session.path, &session.id),
             Ok(None) => {
                 self.state.status.replace(
                     self.state
@@ -1247,11 +1251,50 @@ impl App {
         }
     }
 
-    /// Restore a fully-loaded session into the TUI: visible transcript, plan
-    /// review state, model/thinking configuration, usage hydration, and an
-    /// append-ready session writer. Shared by the session switcher and the
-    /// `maestro fork` startup resume.
-    pub(crate) fn apply_resumed_session(&mut self, session: &crate::session::ParsedSession) {
+    /// Prepare and read the selected transcript once, while retaining the
+    /// current writer until in-memory adoption succeeds.
+    pub(crate) fn resume_session_path(&mut self, path: &std::path::Path, target_session_id: &str) {
+        let same_active_session = self
+            .session_manager
+            .current_session_path()
+            .as_deref()
+            .is_some_and(|active| active == path);
+        // Re-selecting the active path uses our existing lock. Other targets
+        // are read under the prepared writer's lock, never before acquiring it.
+        let prepared = if same_active_session {
+            None
+        } else {
+            match self.session_manager.prepare_session_adoption(path) {
+                Ok(prepared) => Some(prepared),
+                Err(err) => {
+                    self.report_session_resume_failure(target_session_id, err);
+                    return;
+                }
+            }
+        };
+        let active_session;
+        let session = if let Some(prepared) = prepared.as_ref() {
+            prepared.session()
+        } else {
+            let result = self
+                .session_manager
+                .flush()
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    crate::session::SessionReader::read_file(path)
+                        .map_err(|error| error.to_string())
+                });
+            active_session = match result {
+                Ok(session) => session,
+                Err(err) => {
+                    self.report_session_resume_failure(target_session_id, err);
+                    return;
+                }
+            };
+            &active_session
+        };
+        // Use the locked transcript's workspace, not potentially stale listing
+        // metadata, to decide whether this requires a fresh runtime.
         let saved = std::path::Path::new(&session.header.cwd);
         let current = std::path::Path::new(self.session_manager.cwd());
         if saved != current
@@ -1271,53 +1314,6 @@ impl App {
             self.should_quit = true;
             return;
         }
-        let target_session_id = session.header.id.clone();
-        // Acquire and parse the target while the current writer is still
-        // retained. A locked or unreadable target must leave the active
-        // session usable; the prepared writer is committed only after all
-        // in-memory session replacement has succeeded. Re-selecting the
-        // already-active path is the one safe no-op because opening it again
-        // would collide with our own writer lock.
-        let active_path = self.session_manager.current_session_path();
-        let had_active_session = self.session_manager.current_session_id().is_some();
-        let same_active_session = active_path
-            .as_deref()
-            .is_some_and(|path| path == std::path::Path::new(&session.file_path));
-        let prepared = if same_active_session {
-            None
-        } else {
-            match self
-                .session_manager
-                .prepare_session_adoption(&session.file_path)
-            {
-                Ok(prepared) => Some(prepared),
-                Err(err) => {
-                    if !had_active_session {
-                        self.session_resume_failed = true;
-                    }
-                    self.state.error = Some(super::format_session_persistence_error(
-                        self.state.locale.translate("resume the session writer"),
-                        err,
-                    ));
-                    self.state.status = Some(if had_active_session {
-                        self.state.locale.format(
-                            "Session resume failed ({0}); current session unchanged",
-                            std::slice::from_ref(&(target_session_id)),
-                        )
-                    } else {
-                        self.state.locale.format(
-                            "Session resume failed ({0}); use /new to continue",
-                            std::slice::from_ref(&(target_session_id)),
-                        )
-                    });
-                    return;
-                }
-            }
-        };
-
-        let session = prepared
-            .as_ref()
-            .map_or(session, |prepared| prepared.session());
         let session_id = session.header.id.clone();
         self.dex_terminal = None;
         self.dex_delight = Default::default();
@@ -1431,15 +1427,38 @@ impl App {
         }
     }
 
+    fn report_session_resume_failure(
+        &mut self,
+        target_session_id: &str,
+        err: impl std::fmt::Display,
+    ) {
+        let had_active_session = self.session_manager.current_session_id().is_some();
+        if !had_active_session {
+            self.session_resume_failed = true;
+        }
+        self.state.error = Some(super::format_session_persistence_error(
+            self.state.locale.translate("resume the session writer"),
+            err,
+        ));
+        self.state.status = Some(self.state.locale.format(
+            if had_active_session {
+                "Session resume failed ({0}); current session unchanged"
+            } else {
+                "Session resume failed ({0}); use /new to continue"
+            },
+            &[target_session_id.to_string()],
+        ));
+    }
+
     /// Resume a specific session before the event loop starts.
     ///
     /// Used by `maestro fork` to continue a freshly forked session. At this
     /// point the native agent has not spawned yet, so the agent-facing parts
-    /// of [`App::apply_resumed_session`] are no-ops; the forked session's
+    /// of [`App::resume_session_path`] are no-ops; the forked session's
     /// model is adopted through `MAESTRO_MODEL` by the caller instead.
     pub fn resume_session_at_startup(&mut self, session_id: &str) {
-        match self.session_manager.load_session(session_id) {
-            Ok(session) => self.apply_resumed_session(&session),
+        match self.session_manager.find_session(session_id) {
+            Ok(session) => self.resume_session_path(&session.path, &session.id),
             Err(err) => {
                 self.state.error = Some(
                     self.state
@@ -1622,7 +1641,6 @@ impl App {
             }
             // Publish the branch before changing active history or files.
             let fork = crate::session::fork_session_prefix(&source, Some(boundary))?;
-            let session = crate::session::SessionReader::read_file(&fork.path)?;
             let source_id = self.state.session_id.clone();
             if let Some(source_id) = source_id.as_deref() {
                 let sessions = self.session_manager.sessions_dir();
@@ -1633,7 +1651,7 @@ impl App {
                 )?;
             }
 
-            self.apply_resumed_session(&session);
+            self.resume_session_path(&fork.path, &fork.id);
             if self.session_manager.current_session_id() != Some(fork.id.as_str()) {
                 anyhow::bail!("The saved branch could not be opened.");
             }
