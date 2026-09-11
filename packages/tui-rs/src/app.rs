@@ -1136,8 +1136,30 @@ impl App {
 
     /// Create an app, optionally submitting `initial_prompt` after the agent is ready.
     pub fn new_with_initial_prompt(initial_prompt: Option<String>) -> Result<Self> {
-        let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
-        let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt, true);
+        let (mut terminal, mut capabilities) =
+            terminal::init().context("Failed to initialize terminal")?;
+        let mut terminal_events =
+            if uncurses_input_enabled(std::env::var_os("MAESTRO_UNCURSES_INPUT").as_deref()) {
+                TerminalEventReader::open().ok()
+            } else {
+                None
+            };
+        let (prepared, draft) = match startup::prepare_with_composer(
+            &mut terminal,
+            &mut capabilities,
+            &mut terminal_events,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = terminal::restore();
+                return Err(error);
+            }
+        };
+        let mut app =
+            Self::new_with_prepared_startup(terminal, capabilities, initial_prompt, true, prepared);
+        app.state.textarea = draft;
+        // Keep the reader and its buffered input across the startup handoff.
+        app.terminal_events = terminal_events;
         app.initialize_terminal_events();
         app.note_goal_paused_on_restart_if_needed();
         app.note_orphan_background_tasks_if_any();
@@ -1333,12 +1355,26 @@ impl App {
         initial_prompt: Option<String>,
         terminal_clear_supported: bool,
     ) -> Self {
-        let workspace_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let config = crate::config::load_config(&workspace_dir, None);
+        Self::new_with_prepared_startup(
+            terminal,
+            capabilities,
+            initial_prompt,
+            terminal_clear_supported,
+            startup::PreparedStartup::load(PlatformSessionResolution::Detect),
+        )
+    }
+
+    fn new_with_prepared_startup(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        initial_prompt: Option<String>,
+        terminal_clear_supported: bool,
+        prepared: startup::PreparedStartup,
+    ) -> Self {
+        let config = &prepared.config;
         let context_window = config.model_context_window.map(|value| value as u64);
         let mut history_config = crate::history::HistoryConfig::default();
-        if let Some(history_settings) = config.history {
+        if let Some(history_settings) = &config.history {
             if let Some(max_bytes) = history_settings.max_bytes {
                 history_config = history_config.with_max_bytes(max_bytes);
             }
@@ -1359,13 +1395,14 @@ impl App {
             .as_ref()
             .and_then(|tui| tui.theme_follow)
             .unwrap_or(false);
-        let mut app = Self::new_with_terminal_with_history(
+        let mut app = Self::new_with_terminal_with_history_and_prepared(
             terminal,
             capabilities,
             prompt_history,
             initial_prompt,
             context_window,
             terminal_clear_supported,
+            prepared,
         );
         app.state.unknown_slash_command_fallback = slash_command_fallback;
         if theme_follow {
@@ -1379,25 +1416,7 @@ impl App {
         app
     }
 
-    fn new_with_terminal_with_history(
-        terminal: terminal::Terminal,
-        capabilities: TerminalCapabilities,
-        prompt_history: crate::history::PromptHistory,
-        initial_prompt: Option<String>,
-        context_window: Option<u64>,
-        terminal_clear_supported: bool,
-    ) -> Self {
-        Self::new_with_terminal_with_history_and_platform_session(
-            terminal,
-            capabilities,
-            prompt_history,
-            initial_prompt,
-            context_window,
-            terminal_clear_supported,
-            PlatformSessionResolution::Detect,
-        )
-    }
-
+    #[cfg(test)]
     fn new_with_terminal_with_history_and_platform_session(
         terminal: terminal::Terminal,
         capabilities: TerminalCapabilities,
@@ -1407,6 +1426,36 @@ impl App {
         terminal_clear_supported: bool,
         platform_session_resolution: PlatformSessionResolution,
     ) -> Self {
+        Self::new_with_terminal_with_history_and_prepared(
+            terminal,
+            capabilities,
+            prompt_history,
+            initial_prompt,
+            context_window,
+            terminal_clear_supported,
+            startup::PreparedStartup::load(platform_session_resolution),
+        )
+    }
+
+    fn new_with_terminal_with_history_and_prepared(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        prompt_history: crate::history::PromptHistory,
+        initial_prompt: Option<String>,
+        context_window: Option<u64>,
+        terminal_clear_supported: bool,
+        prepared: startup::PreparedStartup,
+    ) -> Self {
+        let startup::PreparedStartup {
+            config: app_config,
+            plugin_registry,
+            loaded_skills,
+            skill_load_errors,
+            custom_prompts,
+            exec_commands,
+            managed_setup,
+            managed_setup_identity_scope,
+        } = prepared;
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let workspace_dir = std::path::PathBuf::from(&cwd);
@@ -1434,9 +1483,6 @@ impl App {
             state.add_system_message(summary.clone());
         }
 
-        let plugin_registry = PluginRegistry::discover();
-        let loader = SkillLoader::with_plugins(&plugin_registry);
-        let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
         let mut skill_registry = SkillRegistry::new();
         for loaded in &loaded_skills {
             skill_registry.register(loaded.definition.clone());
@@ -1446,17 +1492,11 @@ impl App {
         }) {
             state.add_system_message(notice);
         }
-        let plugin_command_dirs = plugin_registry.command_dirs();
-        let custom_prompts =
-            crate::prompts::load_prompts_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
-        let exec_commands =
-            crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
         let (local_model_discovery, local_model_discovery_rx) =
             crate::local_models::spawn_local_model_discovery();
         local_model_discovery.refresh();
 
-        let app_config = crate::config::load_config(&workspace_dir, None);
         let initial_thinking = crate::model_dynamics::configured_thinking(
             &app_config,
             &crate::codex_auth::resolve_default_model(),
@@ -1499,19 +1539,6 @@ impl App {
         // start, before any MCP server can be dialed. A session bound to a
         // platform workspace with no reachable platform and no cache starts
         // with every MCP server refused; it never starts open.
-        let (managed_setup, managed_setup_identity_scope) = match platform_session_resolution {
-            PlatformSessionResolution::Detect => resolve_verified_managed_setup(
-                crate::credential_mode::current_verified_identity_session(),
-                || match crate::credential_mode::detect() {
-                    Ok(crate::credential_mode::DetectedMode::Platform(session)) => Some(session),
-                    _ => None,
-                },
-            ),
-            #[cfg(test)]
-            PlatformSessionResolution::UseNoPlatformSession => {
-                (crate::managed_setup::ManagedSetupClient::unmanaged(), None)
-            }
-        };
         for notice in managed_setup.notices() {
             state.add_system_message(notice.clone());
         }
@@ -1880,10 +1907,6 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     fn initialize_terminal_events(&mut self) {
-        if uncurses_input_enabled(std::env::var_os("MAESTRO_UNCURSES_INPUT").as_deref()) {
-            self.terminal_events = TerminalEventReader::open().ok();
-        }
-
         if self.state.theme_follower.is_some() {
             if self.terminal_events.is_some() {
                 // Discover whether mode 2031 is already active before
@@ -5606,6 +5629,7 @@ mod input_handlers;
 mod prompt_audit;
 mod prompt_queue;
 mod session_recording;
+mod startup;
 
 #[cfg(test)]
 mod tests;
