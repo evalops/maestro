@@ -6,6 +6,7 @@ license = "MIT"
 description = "Local JSONL session and checkpoint persistence for Deixic Code"
 
 [dependencies]
+dunce.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 fd-lock.workspace = true

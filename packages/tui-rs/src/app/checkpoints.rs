@@ -11,18 +11,33 @@ impl App {
         let Ok(cwd) = std::env::current_dir() else {
             return;
         };
+        self.capture_file_checkpoint(&cwd, prompt);
+    }
+
+    pub(super) fn capture_file_checkpoint(&mut self, cwd: &std::path::Path, prompt: &str) {
         let Some(session_id) = self.state.session_id.clone() else {
             return;
         };
-        let turn_index = self
+        let turn_index = match self
             .session_manager
-            .flush()
-            .ok()
-            .and_then(|()| self.session_manager.current_session_path())
-            .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
-            .map(|session| session.stats.user_messages);
+            .writer()
+            .map(|writer| writer.saved_user_turn_count())
+            .transpose()
+        {
+            // Ephemeral sessions intentionally have no writer, but still
+            // support file-only checkpoints without conversation coordinates.
+            Ok(index) => index,
+            Err(error) => {
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("File checkpoint unavailable: {0}", &[error.to_string()]),
+                );
+                return;
+            }
+        };
         self.pending_checkpoint = crate::checkpoints::begin_turn(
-            &cwd,
+            cwd,
             self.session_manager.sessions_dir(),
             &session_id,
             prompt,

@@ -1371,12 +1371,6 @@ impl App {
             }
         }
 
-        if let Some(agent) = &self.native_agent {
-            // The visible transcript and the next provider request must resume
-            // the same history, including any persisted compaction boundary.
-            agent.replace_history(crate::session::model_history(session));
-        }
-
         self.session_started_at = chrono::DateTime::parse_from_rfc3339(&session.header.timestamp)
             .ok()
             .and_then(|dt| {
@@ -1403,12 +1397,28 @@ impl App {
         }
 
         self.restore_pending_lifecycle_agent_notes(session);
+        let restored_history = self.native_agent.as_ref().map(|_| {
+            (
+                crate::session::model_history(session),
+                session
+                    .compactions
+                    .last()
+                    .and_then(|entry| entry.continuation.clone()),
+            )
+        });
         if let Some(prepared) = prepared {
             self.session_manager.adopt_prepared_session(prepared);
         }
         // Re-adopt this session's own scope: completions from children it
         // started earlier are parked, not discarded, and surface from here.
         self.adopt_session_context(Some(&session_id), "resume");
+        if let (Some(agent), Some((messages, continuation))) =
+            (&self.native_agent, restored_history)
+        {
+            // Session transition clears old tool-output references. Install the
+            // target history and its continuation together after that transition.
+            agent.replace_history_with_continuation(messages, continuation);
+        }
         self.session_resume_failed = false;
         self.last_esc_at = None;
         crate::plan_mode::set_active_session_id(Some(session_id.clone()));
@@ -1597,9 +1607,9 @@ impl App {
                 .session_manager
                 .current_session_path()
                 .ok_or_else(|| anyhow::anyhow!("No saved session to rewind."))?;
-            let boundary = crate::session::rewind_boundary(&source, turns)?;
-            let original = crate::session::SessionReader::read_file(&source)?;
-            let kept_turns = original.stats.user_messages.saturating_sub(turns);
+            let (boundary, saved_turns) =
+                crate::session::rewind_boundary_with_turn_count(&source, turns)?;
+            let kept_turns = saved_turns.saturating_sub(turns);
             if dry_run {
                 self.state.add_system_message(self.state.locale.format("Rewind before the last {0} user turn(s) into a new saved session. The original remains available.", &[(turns).to_string()]));
                 if files {
@@ -1623,20 +1633,9 @@ impl App {
                 )?;
             }
 
-            self.session_manager
-                .resume_session_by_path(fork.id.clone(), &fork.path)?;
             self.apply_resumed_session(&session);
-            if self.session_resume_failed {
+            if self.session_manager.current_session_id() != Some(fork.id.as_str()) {
                 anyhow::bail!("The saved branch could not be opened.");
-            }
-            if let Some(agent) = &self.native_agent {
-                agent.replace_history_with_continuation(
-                    crate::session::model_history(&session),
-                    session
-                        .compactions
-                        .last()
-                        .and_then(|entry| entry.continuation.clone()),
-                );
             }
             self.state.status = Some(self.state.locale.format(
                 "Rewound into saved session {0}.",

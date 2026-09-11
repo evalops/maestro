@@ -1104,11 +1104,8 @@ impl App {
                 if let Some(checkpoint) = self.rewind_picker.confirm() {
                     let total = self
                         .session_manager
-                        .flush()
-                        .ok()
-                        .and_then(|()| self.session_manager.current_session_path())
-                        .and_then(|path| crate::session::SessionReader::read_file(&path).ok())
-                        .map(|session| session.stats.user_messages);
+                        .writer()
+                        .and_then(|writer| writer.saved_user_turn_count().ok());
                     match (checkpoint.user_turn_index, total) {
                         (Some(index), Some(total)) if index < total =>
                             self.rewind_saved_turns(total - index, false, mode == 'b'),
