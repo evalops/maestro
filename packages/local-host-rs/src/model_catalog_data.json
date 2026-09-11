@@ -1,5 +1,5 @@
 {
-  "generated_at": 1789025450,
+  "generated_at": 1789111830,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1457,7 +1457,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 128000
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -2483,7 +2483,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 384000
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -2494,7 +2494,7 @@
       "id": "deepseek/deepseek-v4.1-flash",
       "name": "DeepSeek: DeepSeek V4.1 Flash",
       "provider": "openrouter",
-      "description": "DeepSeek V4.1 Flash is a sparse mixture-of-experts model from DeepSeek, and the cost-efficient tier of the V4.1…",
+      "description": "DeepSeek V4.1 Flash is a sparse mixture-of-experts model from DeepSeek, and the first built on the company's Causal…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -3014,8 +3014,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 16384
+        "context_tokens": 1000000,
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -3289,6 +3289,25 @@
       }
     },
     {
+      "id": "inclusionai/ling-3.0-flash-vl:free",
+      "name": "inclusionAI: Ling 3.0 Flash VL (free)",
+      "provider": "openrouter",
+      "description": "Ling 3.0 Flash VL builds on Ling 3.0 Flash (124B total / 5.5B active MoE from InclusionAI), further strengthening its…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 262144,
+        "output_tokens": 32768
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
       "id": "kwaipilot/kat-coder-pro-v2",
       "name": "Kwaipilot: KAT-Coder-Pro V2",
       "provider": "openrouter",
@@ -3395,7 +3414,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 131072,
-        "output_tokens": 16384
+        "output_tokens": 8192
       },
       "verification": {
         "state": "catalog",
@@ -7143,10 +7162,48 @@
       }
     },
     {
+      "id": "sakana/fugu-max",
+      "name": "Sakana: Fugu Max",
+      "provider": "openrouter",
+      "description": "Fugu Max is the cost-performance model in Sakana AI's Fugu family. Rather than a single monolithic model, Fugu is a…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1000000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
       "id": "sakana/fugu-ultra",
       "name": "Sakana: Fugu Ultra",
       "provider": "openrouter",
       "description": "Fugu Ultra is the higher-performance model in Sakana AI's Fugu family. Rather than a single monolithic model, Fugu is…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1000000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "sakana/fugu-ultra-v2",
+      "name": "Sakana: Fugu Ultra v2",
+      "provider": "openrouter",
+      "description": "Fugu Ultra v2 is the higher-performance model in Sakana AI's Fugu family. Rather than a single monolithic model, Fugu…",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -7894,7 +7951,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 202752,
+        "context_tokens": 200000,
         "output_tokens": 117964
       },
       "verification": {
