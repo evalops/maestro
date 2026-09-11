@@ -13867,6 +13867,8 @@ fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
 
     let temp = unique_test_dir("maestro-undo-checkpoint");
     std::fs::create_dir_all(&temp).unwrap();
+    // Match checkpoint capture: persist the resolved root, not a platform alias.
+    let temp = dunce::canonicalize(temp).unwrap();
     let file = temp.join("src.txt");
     let before = b"before";
     let after = b"after";
@@ -13915,7 +13917,7 @@ fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
     assert_eq!(summary["canUndo"], true);
 
     let restored = restore_undo_response_for_store(&store);
-    assert_eq!(restored["success"], true);
+    assert_eq!(restored["success"], true, "{restored}");
     assert_eq!(std::fs::read(&file).unwrap(), before);
     assert_eq!(store.list().len(), 0);
     // A missing restore blob must not become success after other file work.
