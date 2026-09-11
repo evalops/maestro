@@ -12,14 +12,20 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
 use anyhow::{Context, Result, anyhow, bail};
+
+const GIT_PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
+const PIPE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sanitize a user-supplied worktree name into a valid git branch name.
 ///
@@ -97,6 +103,7 @@ pub struct WorktreeSession {
     path: PathBuf,
     branch: String,
     initial_head: String,
+    force_abort: bool,
 }
 
 impl WorktreeSession {
@@ -107,10 +114,7 @@ impl WorktreeSession {
     pub fn create_in(cwd: &Path, name: &str) -> Result<Self> {
         let branch = sanitize_branch_name(name).map_err(anyhow::Error::msg)?;
 
-        let root_out = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(cwd)
-            .output()
+        let root_out = git_output(cwd, &["rev-parse", "--show-toplevel"])
             .context("failed to run git rev-parse")?;
         if !root_out.status.success() {
             bail!("-w/--worktree requires running inside a git repository");
@@ -135,17 +139,13 @@ impl WorktreeSession {
             })?
             .join(format!("{repo_name}-wt-{branch}"));
 
-        let branch_exists = Command::new("git")
-            .args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ])
-            .current_dir(&repo_root)
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
+        let branch_ref = format!("refs/heads/{branch}");
+        let branch_exists = git_output(
+            &repo_root,
+            &["rev-parse", "--verify", "--quiet", &branch_ref],
+        )
+        .map(|output| output.status.success())
+        .unwrap_or(false);
         if branch_exists {
             bail!(
                 "branch `{branch}` already exists; choose a different worktree name or delete the branch"
@@ -158,23 +158,31 @@ impl WorktreeSession {
             );
         }
 
-        let initial_head = Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD"])
-            .current_dir(&repo_root)
-            .output()
+        let initial_head = git_output(&repo_root, &["rev-parse", "--verify", "HEAD"])
             .context("failed to read initial worktree commit")?;
         if !initial_head.status.success() {
             bail!("cannot create a session worktree without a committed HEAD");
         }
         let initial_head = String::from_utf8(initial_head.stdout)?.trim().to_owned();
 
-        let add_out = Command::new("git")
-            .args(["worktree", "add", "-b", &branch])
+        let hooks_path = isolated_hooks_path();
+        fs::create_dir(&hooks_path)
+            .with_context(|| format!("create isolated hooks path {}", hooks_path.display()))?;
+        let hooks_config = format!("core.hooksPath={}", hooks_path.display());
+        let mut add = Command::new("git");
+        add.args(["-c", &hooks_config, "worktree", "add", "-b", &branch])
             .arg(&worktree_path)
             .arg(&initial_head)
-            .current_dir(&repo_root)
-            .output()
-            .context("failed to run git worktree add")?;
+            .current_dir(&repo_root);
+        let add_out = match output_with_deadline(&mut add).context("failed to run git worktree add")
+        {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&hooks_path);
+                return Err(error);
+            }
+        };
+        let _ = fs::remove_dir_all(&hooks_path);
         if !add_out.status.success() {
             let stderr = String::from_utf8_lossy(&add_out.stderr).trim().to_string();
             bail!("git worktree add failed: {stderr}");
@@ -185,6 +193,252 @@ impl WorktreeSession {
             path: worktree_path,
             branch,
             initial_head,
+            force_abort: true,
+        })
+    }
+
+    /// Create a worktree from an explicitly pinned commit.
+    ///
+    /// Workflow children must run against the revision recorded by the
+    /// coordinator.  `create_in` intentionally uses the current repository
+    /// `HEAD` for the interactive `-w` flow, while this constructor accepts a
+    /// commit (or another commit-ish) and resolves it before creating the
+    /// branch.  The resolved commit is retained as `initial_head`, so callers
+    /// can bind child evidence to the exact base they requested.
+    pub fn create_in_at(cwd: &Path, name: &str, revision: &str) -> Result<Self> {
+        let branch = sanitize_branch_name(name).map_err(anyhow::Error::msg)?;
+
+        let root_out = git_output(cwd, &["rev-parse", "--show-toplevel"])
+            .context("failed to run git rev-parse")?;
+        if !root_out.status.success() {
+            bail!("worktree creation requires running inside a git repository");
+        }
+        let repo_root = PathBuf::from(String::from_utf8_lossy(&root_out.stdout).trim());
+        let repo_name = repo_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                anyhow!(
+                    "cannot derive a repository name from {}",
+                    repo_root.display()
+                )
+            })?;
+        let worktree_path = repo_root
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "repository root {} has no parent directory",
+                    repo_root.display()
+                )
+            })?
+            .join(format!("{repo_name}-wt-{branch}"));
+
+        let branch_ref = format!("refs/heads/{branch}");
+        let branch_exists = git_output(
+            &repo_root,
+            &["rev-parse", "--verify", "--quiet", &branch_ref],
+        )
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+        if branch_exists {
+            bail!(
+                "branch `{branch}` already exists; choose a different worktree name or delete the branch"
+            );
+        }
+        if worktree_path.exists() {
+            bail!(
+                "worktree path {} already exists; remove it or choose a different name",
+                worktree_path.display()
+            );
+        }
+
+        let initial_head = git_output_os(
+            &repo_root,
+            &[
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from("--end-of-options"),
+                OsString::from(format!("{revision}^{{commit}}")),
+            ],
+        )
+        .context("failed to resolve pinned worktree revision")?;
+        if !initial_head.status.success() {
+            bail!(
+                "cannot resolve pinned worktree revision `{revision}`: {}",
+                String::from_utf8_lossy(&initial_head.stderr).trim()
+            );
+        }
+        let initial_head = String::from_utf8(initial_head.stdout)?.trim().to_owned();
+        if initial_head.is_empty() {
+            bail!("git returned an empty pinned worktree revision");
+        }
+
+        let hooks_path = isolated_hooks_path();
+        fs::create_dir(&hooks_path)
+            .with_context(|| format!("create isolated hooks path {}", hooks_path.display()))?;
+        let hooks_config = format!("core.hooksPath={}", hooks_path.display());
+        let mut add = Command::new("git");
+        add.args(["-c", &hooks_config, "worktree", "add", "-b", &branch])
+            .arg(&worktree_path)
+            .arg(&initial_head)
+            .current_dir(&repo_root);
+        let add_out = match output_with_deadline(&mut add).context("failed to run git worktree add")
+        {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&hooks_path);
+                return Err(error);
+            }
+        };
+        let _ = fs::remove_dir_all(&hooks_path);
+        if !add_out.status.success() {
+            let stderr = String::from_utf8_lossy(&add_out.stderr).trim().to_string();
+            bail!("git worktree add failed: {stderr}");
+        }
+
+        Ok(Self {
+            repo_root,
+            path: worktree_path,
+            branch,
+            initial_head,
+            force_abort: true,
+        })
+    }
+
+    /// Reopen an existing workflow child worktree after a process restart.
+    ///
+    /// This only accepts the deterministic branch/path owned by the caller.
+    /// It never resets, cleans, or removes anything. If the owned branch still
+    /// exists but its worktree path is missing, it reattaches that path to the
+    /// existing branch. Callers must validate the ownership marker and
+    /// cleanliness before using the session.
+    pub fn reopen_in_at(cwd: &Path, name: &str, revision: &str) -> Result<Self> {
+        let branch = sanitize_branch_name(name).map_err(anyhow::Error::msg)?;
+        let root_out = git_output(cwd, &["rev-parse", "--show-toplevel"])
+            .context("failed to run git rev-parse")?;
+        if !root_out.status.success() {
+            bail!("worktree reopening requires running inside a git repository");
+        }
+        let repo_root = PathBuf::from(String::from_utf8_lossy(&root_out.stdout).trim());
+        let repo_name = repo_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                anyhow!(
+                    "cannot derive a repository name from {}",
+                    repo_root.display()
+                )
+            })?;
+        let worktree_path = repo_root
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "repository root {} has no parent directory",
+                    repo_root.display()
+                )
+            })?
+            .join(format!("{repo_name}-wt-{branch}"));
+        let branch_ref = format!("refs/heads/{branch}");
+        let branch_exists = git_output(
+            &repo_root,
+            &["rev-parse", "--verify", "--quiet", &branch_ref],
+        )
+        .context("failed to inspect child worktree branch")?;
+        if !branch_exists.status.success() {
+            if worktree_path.exists() {
+                bail!("owned child worktree branch {branch} does not exist");
+            }
+            bail!(
+                "owned child worktree path {} and branch {branch} do not exist",
+                worktree_path.display()
+            );
+        }
+
+        let expected_head = git_output_os(
+            &repo_root,
+            &[
+                OsString::from("rev-parse"),
+                OsString::from("--verify"),
+                OsString::from("--end-of-options"),
+                OsString::from(format!("{revision}^{{commit}}")),
+            ],
+        )
+        .context("failed to resolve pinned worktree revision")?;
+        if !expected_head.status.success() {
+            bail!(
+                "cannot resolve pinned worktree revision {revision}: {}",
+                String::from_utf8_lossy(&expected_head.stderr).trim()
+            );
+        }
+        let initial_head = String::from_utf8(expected_head.stdout)?.trim().to_owned();
+        if !worktree_path.exists() {
+            let hooks_path = isolated_hooks_path();
+            fs::create_dir(&hooks_path)
+                .with_context(|| format!("create isolated hooks path {}", hooks_path.display()))?;
+            let hooks_config = format!("core.hooksPath={}", hooks_path.display());
+            let mut add = Command::new("git");
+            add.args(["-c", &hooks_config, "worktree", "add"])
+                .arg(&worktree_path)
+                .arg(&branch)
+                .current_dir(&repo_root);
+            let add_out = match output_with_deadline(&mut add)
+                .context("failed to run git worktree add for child recovery")
+            {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&hooks_path);
+                    return Err(error);
+                }
+            };
+            let _ = fs::remove_dir_all(&hooks_path);
+            if !add_out.status.success() {
+                bail!(
+                    "git worktree add failed while reopening child: {}",
+                    String::from_utf8_lossy(&add_out.stderr).trim()
+                );
+            }
+        }
+        let current_root = git_output(&worktree_path, &["rev-parse", "--show-toplevel"])
+            .context("failed to inspect existing child worktree")?;
+        if !current_root.status.success() {
+            bail!("existing child path is not a Git worktree");
+        }
+        let current_root =
+            dunce::canonicalize(String::from_utf8_lossy(&current_root.stdout).trim())
+                .context("canonicalize existing child worktree")?;
+        let expected_root =
+            dunce::canonicalize(&worktree_path).context("canonicalize child worktree")?;
+        if current_root != expected_root {
+            bail!(
+                "existing child path {} resolves to a different directory",
+                worktree_path.display()
+            );
+        }
+        let current_common = git_common_dir(&worktree_path)?;
+        let expected_common = git_common_dir(&repo_root)?;
+        if current_common != expected_common {
+            bail!(
+                "existing child path {} belongs to a different repository",
+                worktree_path.display()
+            );
+        }
+        let current_branch = git_output(&worktree_path, &["branch", "--show-current"])
+            .context("failed to inspect existing child branch")?;
+        if !current_branch.status.success()
+            || String::from_utf8_lossy(&current_branch.stdout).trim() != branch
+        {
+            bail!(
+                "existing child path {} is not checked out on branch {branch}",
+                worktree_path.display()
+            );
+        }
+
+        Ok(Self {
+            repo_root,
+            path: worktree_path,
+            branch,
+            initial_head,
+            force_abort: false,
         })
     }
 
@@ -201,11 +455,11 @@ impl WorktreeSession {
     /// isolation boundary.
     pub fn copy_changes_from(&self, source: &Path) -> Result<()> {
         let source_root = repository_root(source)?;
-        let staged_diff = Command::new("git")
-            .args(["diff", "--no-ext-diff", "--binary", "--cached", "--"])
-            .current_dir(&source_root)
-            .output()
-            .context("failed to inspect source staged changes")?;
+        let staged_diff = git_output(
+            &source_root,
+            &["diff", "--no-ext-diff", "--binary", "--cached", "--"],
+        )
+        .context("failed to inspect source staged changes")?;
         if !staged_diff.status.success() {
             bail!(
                 "git diff --cached failed: {}",
@@ -215,10 +469,7 @@ impl WorktreeSession {
         apply_diff(&self.path, &staged_diff.stdout, true)
             .context("apply source staged changes to child worktree")?;
 
-        let unstaged_diff = Command::new("git")
-            .args(["diff", "--no-ext-diff", "--binary", "--"])
-            .current_dir(&source_root)
-            .output()
+        let unstaged_diff = git_output(&source_root, &["diff", "--no-ext-diff", "--binary", "--"])
             .context("failed to inspect source unstaged changes")?;
         if !unstaged_diff.status.success() {
             bail!(
@@ -229,17 +480,17 @@ impl WorktreeSession {
         apply_diff(&self.path, &unstaged_diff.stdout, false)
             .context("apply source unstaged changes to child worktree")?;
 
-        let untracked = Command::new("git")
-            .args([
+        let untracked = git_output(
+            &source_root,
+            &[
                 "ls-files",
                 "--others",
                 "--exclude-standard",
                 "--full-name",
                 "-z",
-            ])
-            .current_dir(&source_root)
-            .output()
-            .context("failed to inspect source untracked files")?;
+            ],
+        )
+        .context("failed to inspect source untracked files")?;
         if !untracked.status.success() {
             bail!(
                 "git ls-files failed: {}",
@@ -278,11 +529,20 @@ impl WorktreeSession {
     /// This is intentionally forceful because the worktree is newly created
     /// by the caller and may contain a partially applied parent diff.
     pub fn abort(self) {
-        let removed = Command::new("git")
+        if !self.force_abort && !self.is_clean() {
+            eprintln!(
+                "Child worktree has local changes; keeping {} and branch {}",
+                self.path.display(),
+                self.branch
+            );
+            return;
+        }
+        let mut remove = Command::new("git");
+        remove
             .args(["worktree", "remove", "--force"])
             .arg(&self.path)
-            .current_dir(&self.repo_root)
-            .output()
+            .current_dir(&self.repo_root);
+        let removed = output_with_deadline(&mut remove)
             .map(|output| output.status.success())
             .unwrap_or(false);
         if !removed {
@@ -294,10 +554,7 @@ impl WorktreeSession {
             return;
         }
 
-        let deleted = Command::new("git")
-            .args(["branch", "-D", &self.branch])
-            .current_dir(&self.repo_root)
-            .output()
+        let deleted = git_output(&self.repo_root, &["branch", "-D", &self.branch])
             .map(|output| output.status.success())
             .unwrap_or(false);
         if !deleted {
@@ -315,13 +572,22 @@ impl WorktreeSession {
         &self.path
     }
 
+    /// The commit from which this worktree was created.
+    #[must_use]
+    pub fn initial_head(&self) -> &str {
+        &self.initial_head
+    }
+
+    /// The branch owned by this worktree session.
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
     /// True when the worktree has no uncommitted changes and no untracked files.
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&self.path)
-            .output()
+        git_output(&self.path, &["status", "--porcelain"])
             .map(|output| output.status.success() && output.stdout.is_empty())
             .unwrap_or(false)
     }
@@ -337,11 +603,8 @@ impl WorktreeSession {
 
     /// Remove only an unchanged, clean non-interactive worktree; keep its branch.
     pub fn finish(self) {
-        let unchanged = Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD"])
-            .current_dir(&self.path)
-            .output()
-            .is_ok_and(|output| {
+        let unchanged =
+            git_output(&self.path, &["rev-parse", "--verify", "HEAD"]).is_ok_and(|output| {
                 output.status.success()
                     && String::from_utf8_lossy(&output.stdout).trim() == self.initial_head
             });
@@ -349,12 +612,12 @@ impl WorktreeSession {
             self.keep();
             return;
         }
-        let removed = Command::new("git")
+        let mut remove = Command::new("git");
+        remove
             .args(["worktree", "remove"])
             .arg(&self.path)
-            .current_dir(&self.repo_root)
-            .output()
-            .is_ok_and(|output| output.status.success());
+            .current_dir(&self.repo_root);
+        let removed = output_with_deadline(&mut remove).is_ok_and(|output| output.status.success());
         if removed {
             eprintln!(
                 "Removed unchanged worktree {}\n  branch kept: {}",
@@ -367,11 +630,246 @@ impl WorktreeSession {
     }
 }
 
+fn isolated_hooks_path() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "maestro-worktree-hooks-{}-{nonce}",
+        std::process::id()
+    ))
+}
+
+fn output_with_deadline(command: &mut Command) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn_owned_command(command).context("failed to start git command")?;
+    let stdout = child.stdout.take().map(drain_output_pipe);
+    let stderr = child.stderr.take().map(drain_output_pipe);
+    let deadline = Instant::now() + GIT_PROCESS_TIMEOUT;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                kill_owned_process(&mut child);
+                break child
+                    .wait()
+                    .context("failed to reap timed-out git command")?;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                kill_owned_process(&mut child);
+                let _ = child.wait();
+                let _ = join_output_pipe(stdout);
+                let _ = join_output_pipe(stderr);
+                return Err(anyhow!("failed to wait for git command: {error}"));
+            }
+        }
+    };
+    let stdout = match join_output_pipe(stdout) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            kill_owned_process(&mut child);
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stderr = match join_output_pipe(stderr) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            kill_owned_process(&mut child);
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    if timed_out {
+        bail!(
+            "git command exceeded {}s deadline: {}",
+            GIT_PROCESS_TIMEOUT.as_secs(),
+            String::from_utf8_lossy(&stderr).trim()
+        );
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn output_with_stdin(command: &mut Command, input: &[u8]) -> Result<Output> {
+    command.stdin(Stdio::piped());
+    let mut child = spawn_owned_command(command).context("failed to start git command")?;
+    let stdout = child.stdout.take().map(drain_output_pipe);
+    let stderr = child.stderr.take().map(drain_output_pipe);
+    let (sender, receiver) = mpsc::channel();
+    match child.stdin.take() {
+        Some(mut stdin) => {
+            let input = input.to_vec();
+            thread::spawn(move || {
+                let result = stdin.write_all(&input);
+                drop(stdin);
+                let _ = sender.send(result);
+            });
+        }
+        None => {
+            let _ = sender.send(Err(io::Error::other("git command did not expose stdin")));
+        }
+    }
+    let deadline = Instant::now() + GIT_PROCESS_TIMEOUT;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                kill_owned_process(&mut child);
+                break child
+                    .wait()
+                    .context("failed to reap timed-out git command")?;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                kill_owned_process(&mut child);
+                let _ = child.wait();
+                let _ = join_output_pipe(stdout);
+                let _ = join_output_pipe(stderr);
+                let _ = receiver.recv_timeout(PIPE_DRAIN_TIMEOUT);
+                return Err(anyhow!("failed to wait for git command: {error}"));
+            }
+        }
+    };
+    let stdout = match join_output_pipe(stdout) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            kill_owned_process(&mut child);
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stderr = match join_output_pipe(stderr) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            kill_owned_process(&mut child);
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    if timed_out {
+        let _ = receiver.recv_timeout(PIPE_DRAIN_TIMEOUT);
+        bail!(
+            "git command exceeded {}s deadline: {}",
+            GIT_PROCESS_TIMEOUT.as_secs(),
+            String::from_utf8_lossy(&stderr).trim()
+        );
+    }
+    match receiver.recv_timeout(PIPE_DRAIN_TIMEOUT) {
+        Ok(result) => match result {
+            Ok(()) => {}
+            Err(error) => {
+                kill_owned_process(&mut child);
+                let _ = child.wait();
+                return Err(anyhow!("failed to write git command input: {error}"));
+            }
+        },
+        Err(error) => {
+            kill_owned_process(&mut child);
+            let _ = child.wait();
+            bail!("git command input did not finish: {error}");
+        }
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn git_output(cwd: &Path, args: &[&str]) -> Result<Output> {
+    output_with_deadline(Command::new("git").args(args).current_dir(cwd))
+}
+
+fn git_output_os(cwd: &Path, args: &[OsString]) -> Result<Output> {
+    output_with_deadline(Command::new("git").args(args).current_dir(cwd))
+}
+
+fn drain_output_pipe<R>(mut pipe: R) -> mpsc::Receiver<(Vec<u8>, io::Result<usize>)>
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = pipe.read_to_end(&mut bytes);
+        let _ = sender.send((bytes, result));
+    });
+    receiver
+}
+
+fn spawn_owned_command(command: &mut Command) -> io::Result<Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // Keep Git and hooks/drivers in a private process group so a timed
+        // out operation cannot leave a helper holding our output pipes.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+    command.spawn()
+}
+
+fn kill_owned_process(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as libc::pid_t);
+        unsafe {
+            let _ = libc::kill(process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+fn git_common_dir(cwd: &Path) -> Result<PathBuf> {
+    let output = git_output(cwd, &["rev-parse", "--git-common-dir"])
+        .context("failed to locate git common directory")?;
+    if !output.status.success() {
+        bail!(
+            "git common directory lookup failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let raw = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        cwd.join(raw)
+    };
+    dunce::canonicalize(&absolute)
+        .with_context(|| format!("canonicalize git common directory {}", absolute.display()))
+}
+
+fn join_output_pipe(pipe: Option<mpsc::Receiver<(Vec<u8>, io::Result<usize>)>>) -> Result<Vec<u8>> {
+    let Some(pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let (bytes, result) = pipe
+        .recv_timeout(PIPE_DRAIN_TIMEOUT)
+        .context("git output drain did not finish within deadline")?;
+    result.context("failed to drain git output")?;
+    Ok(bytes)
+}
+
 fn repository_root(cwd: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd)
-        .output()
+    let output = git_output(cwd, &["rev-parse", "--show-toplevel"])
         .context("failed to locate source git repository")?;
     if !output.status.success() {
         bail!(
@@ -402,18 +900,8 @@ fn apply_diff(worktree_path: &Path, diff: &[u8], update_index: bool) -> Result<(
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut apply = command
-        .spawn()
-        .context("failed to start git apply for worktree changes")?;
-    apply
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("git apply did not expose stdin"))?
-        .write_all(diff)
-        .context("failed to send worktree diff to git apply")?;
-    let output = apply
-        .wait_with_output()
-        .context("failed to apply source worktree changes")?;
+    let output =
+        output_with_stdin(&mut command, diff).context("failed to apply source worktree changes")?;
     if !output.status.success() {
         bail!(
             "git apply failed: {}",
