@@ -64,6 +64,7 @@ mod tests {
                         id: "call-1".to_string(),
                         name: tool_name.to_string(),
                         input: tool_args.clone(),
+                        gemini_context: None,
                     },
                 ]),
             },

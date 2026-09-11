@@ -155,7 +155,9 @@ impl GoogleClient {
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
                         text: format!("<thinking>{thinking}</thinking>"),
                     }),
-                    ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
+                    ContentBlock::ToolUse {
+                        id: _, name, input, ..
+                    } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -259,6 +261,7 @@ async fn stream_google_response(
                                                     id: format!("call_{}", uuid::Uuid::new_v4()),
                                                     name: function_call.name,
                                                     input: function_call.args,
+                                                    gemini_context: None,
                                                 },
                                             });
                                         }
@@ -480,11 +483,13 @@ mod tests {
                         id: "call_shared|fc_a".into(),
                         name: "read".into(),
                         input: json!({"path":"a"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_shared|fc_b".into(),
                         name: "search".into(),
                         input: json!({"query":"b"}),
+                        gemini_context: None,
                     },
                 ]),
             },
@@ -628,6 +633,7 @@ mod tests {
                 id: "call_123".to_string(),
                 name: "get_weather".to_string(),
                 input: json!({"city": "Seattle"}),
+                gemini_context: None,
             }]),
         };
 

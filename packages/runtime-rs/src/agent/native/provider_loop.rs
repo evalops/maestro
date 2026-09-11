@@ -271,7 +271,13 @@ impl NativeAgentRunner {
             let mut current_text = String::new();
             let mut current_thinking = String::new();
             // Track active tool plus any pre-start deltas (index, id, name, json)
-            let mut current_tool: Option<(usize, String, String, String)> = None;
+            let mut current_tool: Option<(
+                usize,
+                String,
+                String,
+                String,
+                Option<maestro_ai::GeminiToolContext>,
+            )> = None;
             let mut pending_tool_inputs: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut usage = TokenUsage::default();
@@ -318,9 +324,20 @@ impl NativeAgentRunner {
                         ContentBlock::Thinking { thinking, .. } => {
                             current_thinking = thinking.clone();
                         }
-                        ContentBlock::ToolUse { id, name, .. } => {
+                        ContentBlock::ToolUse {
+                            id,
+                            name,
+                            gemini_context,
+                            ..
+                        } => {
                             let buffered = pending_tool_inputs.remove(&index).unwrap_or_default();
-                            current_tool = Some((index, id.clone(), name.clone(), buffered));
+                            current_tool = Some((
+                                index,
+                                id.clone(),
+                                name.clone(),
+                                buffered,
+                                gemini_context.clone(),
+                            ));
                         }
                         _ => {}
                     },
@@ -386,7 +403,7 @@ impl NativeAgentRunner {
                         // Deltas can precede a block start. Once the matching
                         // block is active, append only there; buffering as well
                         // would append the same bytes a second time at stop.
-                        if let Some((active_index, _, _, ref mut json)) = current_tool {
+                        if let Some((active_index, _, _, ref mut json, _)) = current_tool {
                             if active_index == index {
                                 json.push_str(&partial_json);
                                 continue;
@@ -412,7 +429,9 @@ impl NativeAgentRunner {
                             &mut current_thinking,
                             thinking_signature,
                         );
-                        if let Some((active_index, id, name, mut json)) = current_tool.take() {
+                        if let Some((active_index, id, name, mut json, gemini_context)) =
+                            current_tool.take()
+                        {
                             // Merge any buffered deltas that arrived before the block start
                             if let Some(extra) = pending_tool_inputs.remove(&active_index) {
                                 json.push_str(&extra);
@@ -426,6 +445,7 @@ impl NativeAgentRunner {
                                 id: id.clone(),
                                 name: name.clone(),
                                 input: vaulted_input.clone(),
+                                gemini_context,
                             });
                             pending_tool_calls.push((id, name, input, parse_error));
                         }

@@ -4405,6 +4405,7 @@ fn append_codex_tool_use(
             id: call_id.to_owned(),
             name: tool_name.to_owned(),
             input,
+            gemini_context: None,
         }]),
     });
 }

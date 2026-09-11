@@ -1961,6 +1961,7 @@ fn assistant_tool_use(calls: &[(&str, &str)]) -> Message {
                     id: (*id).to_string(),
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 })
                 .collect(),
         ),
@@ -3705,6 +3706,7 @@ fn semantic_checkpoint_excludes_thinking_and_raw_tool_output_but_keeps_tool_pair
                     id: "call-1".to_owned(),
                     name: "read".to_owned(),
                     input: serde_json::json!({ "path": "src/lib.rs" }),
+                    gemini_context: None,
                 },
             ]),
         },
@@ -6196,6 +6198,7 @@ fn fatal_stream_error_discards_completed_tool_calls() {
             id: "call-1".to_string(),
             name: "bash".to_string(),
             input: serde_json::json!({"command": "true"}),
+            gemini_context: None,
         },
     ];
     let mut pending_tool_calls = vec![(
@@ -6832,6 +6835,7 @@ fn assistant_tool_use_message(calls: &[(&str, &str)]) -> Message {
                     id: (*id).to_string(),
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 })
                 .collect(),
         ),

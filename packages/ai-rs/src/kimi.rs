@@ -383,7 +383,9 @@ fn assistant_message(blocks: &[ContentBlock]) -> Option<Value> {
     let tool_calls = blocks
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, input } => Some(json!({
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => Some(json!({
                 "id": id.clone(),
                 "type": "function",
                 "function": {
@@ -492,6 +494,7 @@ fn flush_tool_calls(tx: &mpsc::UnboundedSender<StreamEvent>, calls: &[ToolCallAc
                 id,
                 name: call.name.clone(),
                 input,
+                gemini_context: None,
             },
         });
         let _ = tx.send(StreamEvent::InputJsonDelta {
@@ -599,6 +602,7 @@ mod tests {
                         id: "call_read".to_string(),
                         name: "read".to_string(),
                         input: json!({"path": "Cargo.toml"}),
+                        gemini_context: None,
                     },
                 ]),
             },
@@ -751,7 +755,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             event,
             StreamEvent::ContentBlockStart {
-                block: ContentBlock::ToolUse { id, name, input },
+                block: ContentBlock::ToolUse { id, name, input , .. },
                 ..
             } if id == "call_read" && name == "read" && input == &json!({"path": "Cargo.toml"})
         )));

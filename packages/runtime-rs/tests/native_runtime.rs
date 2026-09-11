@@ -1273,6 +1273,7 @@ async fn restored_provider_history_keeps_hidden_tool_pair_and_stable_id() {
                 id: "restored-call-9".to_owned(),
                 name: "bridge_tool".to_owned(),
                 input: serde_json::json!({"value": "restored"}),
+                gemini_context: None,
             }]),
         },
         Message {
@@ -1434,4 +1435,92 @@ async fn process_usage_refusal_persists_only_completed_assistant_content() {
         assert_eq!(scripted.remaining(), 0);
         agent.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn native_loop_retains_gemini_context_without_passing_it_to_tool_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for first in [true, false] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _request = read_provider_request(&mut stream).await;
+            let output = if first {
+                serde_json::json!([{"type":"function_call", "id":"native-item", "call_id":"call-native",
+                    "name":"bridge_tool", "arguments":"{\"value\":\"500500\"}",
+                    "extra_content":{"google":{"native_name":"bridge_tool", "thought_signature":"opaque-signature"}}}])
+            } else {
+                serde_json::json!([{"type":"message", "content":[{"type":"output_text", "text":"result consumed"}]}])
+            };
+            let event = serde_json::json!({"type":"response.completed", "response":{"id":"response-native", "output":output}});
+            let body = format!("data: {event}\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let client = UnifiedClient::OpenAI(
+        OpenAiClient::with_base_url("fixture-key", format!("http://{address}/v1")).unwrap(),
+    );
+    let host = FixtureHost::new(
+        workspace.path(),
+        client.clone(),
+        &["bridge_tool"],
+        ExecutionMode::Immediate,
+    );
+    let (agent, mut events) = start_agent(
+        config(
+            workspace.path(),
+            "openai/gpt-5.1-codex-max",
+            ApprovalMode::Yolo,
+        ),
+        Arc::clone(&host),
+        client,
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    agent
+        .prompt("Run the operation.".into(), Vec::new())
+        .await
+        .unwrap();
+    let seen = events_until_completed(&mut events).await;
+    server.await.unwrap();
+    assert_eq!(host.invocations().len(), 1);
+    assert_eq!(
+        host.invocations()[0].args,
+        serde_json::json!({"value":"500500"})
+    );
+    let content = seen
+        .iter()
+        .find_map(|event| match event {
+            FromAgent::LocalAssistantContent { content, .. }
+                if content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolUse { .. })) =>
+            {
+                Some(content)
+            }
+            _ => None,
+        })
+        .expect("durable assistant content");
+    assert!(content.iter().any(
+        |block| matches!(block, ContentBlock::ToolUse {gemini_context:Some(context), ..}
+        if context.thought_signature.as_deref() == Some("opaque-signature"))
+    ));
+    let snapshot = seen
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            FromAgent::ConversationSnapshot { messages, .. } => Some(messages),
+            _ => None,
+        })
+        .expect("completed conversation checkpoint");
+    assert!(snapshot.iter().any(|message| matches!(&message.content, MessageContent::Blocks(blocks)
+        if blocks.iter().any(|block| matches!(block, ContentBlock::ToolUse {gemini_context:Some(context), ..}
+            if context.thought_signature.as_deref() == Some("opaque-signature"))))));
+    agent.shutdown().await;
 }

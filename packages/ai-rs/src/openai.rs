@@ -604,6 +604,10 @@ fn responses_item_id(id: &str) -> Option<&str> {
 ///
 /// `Some((call_id, name, arguments))` if this is a `function_call` item,
 /// `None` otherwise.
+fn extract_gemini_context(item: &serde_json::Value) -> Option<crate::GeminiToolContext> {
+    serde_json::from_value(item.get("extra_content")?.get("google")?.clone()).ok()
+}
+
 fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, serde_json::Value)> {
     let item_type = item.get("type")?.as_str()?;
     if item_type != "function_call" {
@@ -1545,7 +1549,9 @@ impl OpenAiClient {
                     let tool_calls: Vec<OpenAiToolCall> = blocks
                         .iter()
                         .filter_map(|block| match block {
-                            ContentBlock::ToolUse { id, name, input } => Some(OpenAiToolCall {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => Some(OpenAiToolCall {
                                 index: None,
                                 id: Some(id.clone()),
                                 tool_type: Some("function".to_string()),
@@ -1872,6 +1878,7 @@ impl OpenAiClient {
                                     id,
                                     name,
                                     input: args,
+                                    gemini_context,
                                 } = block
                                 {
                                     let mut function_call = serde_json::json!({
@@ -1882,6 +1889,20 @@ impl OpenAiClient {
                                     });
                                     if let Some(item_id) = responses_item_id(id) {
                                         function_call["id"] = serde_json::json!(item_id);
+                                    }
+                                    if self.managed_gateway
+                                        && matches!(
+                                            self.request_extensions
+                                                .get("provider_ref")
+                                                .and_then(|provider| provider.get("provider"))
+                                                .and_then(serde_json::Value::as_str),
+                                            Some("gemini" | "vertex_ai")
+                                        )
+                                    {
+                                        if let Some(context) = gemini_context {
+                                            function_call["extra_content"] =
+                                                serde_json::json!({"google": context});
+                                        }
                                     }
                                     input.push(function_call);
                                 }
@@ -2360,6 +2381,7 @@ impl OpenAiClient {
                                                     id: call_id.clone(),
                                                     name: name.clone(),
                                                     input: arguments.clone(),
+                                                    gemini_context: extract_gemini_context(item),
                                                 },
                                             });
 
@@ -2466,6 +2488,8 @@ impl OpenAiClient {
                                                                 id: call_id,
                                                                 name,
                                                                 input: arguments,
+                                                                gemini_context:
+                                                                    extract_gemini_context(item),
                                                             },
                                                         });
                                                     if !streamed_tool_argument_indices
@@ -2656,6 +2680,7 @@ impl OpenAiClient {
                                                     name: call.name.clone(),
                                                     input: serde_json::from_str(&call.arguments)
                                                         .unwrap_or(serde_json::json!({})),
+                                                    gemini_context: None,
                                                 },
                                             });
                                             let _ = tx.send(StreamEvent::InputJsonDelta {
@@ -2786,6 +2811,7 @@ impl OpenAiClient {
                                                                     .unwrap_or(
                                                                         serde_json::json!({}),
                                                                     ),
+                                                                    gemini_context: None,
                                                                 },
                                                             },
                                                         );
@@ -5095,6 +5121,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                             id: (*id).to_string(),
                             name: (*name).to_string(),
                             input: input.clone(),
+                            gemini_context: None,
                         })
                         .collect(),
                 ),
@@ -5310,6 +5337,112 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
         }
     }
 
+    #[tokio::test]
+    async fn gemini_context_survives_stream_checkpoint_and_next_request() {
+        let item = serde_json::json!({
+            "type": "function_call", "id": "item-1", "call_id": "call-1",
+            "name": "computer.write_file", "arguments": "{\"content\":\"500500\"}",
+            "extra_content": {"google": {
+                "native_name": "computer_write_file", "native_id": "native-1",
+                "thought_signature": "opaque-provider-signature+/=="
+            }}
+        });
+        for include_done in [false, true] {
+            let mut wire = String::new();
+            if include_done {
+                wire.push_str(&format!(
+                    "data: {}\n\n",
+                    serde_json::json!({
+                        "type":"response.output_item.done", "output_index":0, "item":item
+                    })
+                ));
+            }
+            wire.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::json!({
+                    "type":"response.completed", "response":{"output":[item]}
+                })
+            ));
+            let events = collect_responses_sse(&wire).await;
+            let calls: Vec<_> = events
+                .into_iter()
+                .filter_map(|event| match event {
+                    StreamEvent::ContentBlockStart {
+                        block: block @ ContentBlock::ToolUse { .. },
+                        ..
+                    } => Some(block),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                calls.len(),
+                1,
+                "terminal fallback must not duplicate the call"
+            );
+            let ContentBlock::ToolUse {
+                id,
+                input,
+                gemini_context,
+                ..
+            } = &calls[0]
+            else {
+                unreachable!()
+            };
+            assert_eq!(input, &serde_json::json!({"content":"500500"}));
+            assert_eq!(
+                gemini_context
+                    .as_ref()
+                    .unwrap()
+                    .thought_signature
+                    .as_deref(),
+                Some("opaque-provider-signature+/==")
+            );
+            assert!(!format!("{:?}", gemini_context).contains("opaque-provider-signature"));
+            let history = vec![
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Blocks(calls.clone()),
+                },
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: "wrote 6 bytes\n".into(),
+                        is_error: None,
+                    }]),
+                },
+            ];
+            let restored: Vec<Message> =
+                serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+            let config = RequestConfig {
+                model: "gemini-3.6-flash".into(),
+                ..Default::default()
+            };
+            for provider in ["gemini", "vertex_ai", "openai"] {
+                let client = OpenAiClient::new("test-key")
+                    .unwrap()
+                    .with_managed_gateway_context(
+                        "org-test",
+                        "workspace-test",
+                        serde_json::json!({"provider":provider}),
+                    )
+                    .unwrap();
+                let body = client.build_responses_request_body(&restored, &config);
+                if provider == "openai" {
+                    assert!(body["input"][0].get("extra_content").is_none());
+                } else {
+                    assert_eq!(body["input"][0]["extra_content"], item["extra_content"]);
+                }
+                assert_eq!(body["input"][0]["call_id"], body["input"][1]["call_id"]);
+                assert_eq!(body["input"][1]["output"], "wrote 6 bytes\n");
+            }
+            let other = OpenAiClient::new("test-key")
+                .unwrap()
+                .build_responses_request_body(&restored, &config);
+            assert!(other["input"][0].get("extra_content").is_none());
+        }
+    }
+
     #[test]
     fn responses_requests_use_max_output_tokens() {
         let client = OpenAiClient::new("test-key").unwrap();
@@ -5345,6 +5478,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"message","cont
                     id: "call_1".to_string(),
                     name: "bash".to_string(),
                     input: serde_json::json!({"command": "sleep 120"}),
+                    gemini_context: None,
                 }]),
             },
             Message {
@@ -6068,7 +6202,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"function_call"
             event,
             StreamEvent::ContentBlockStart {
                 index: 1,
-                block: ContentBlock::ToolUse { id, name, input }
+                block: ContentBlock::ToolUse { id, name, input , .. }
             } if id == "call_1" && name == "read" && input == &serde_json::json!({"path": "Cargo.toml"})
         )));
         assert!(events.iter().any(|event| matches!(

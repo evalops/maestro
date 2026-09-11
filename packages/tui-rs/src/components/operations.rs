@@ -1338,6 +1338,7 @@ mod tests {
                     name: "read".to_string(),
                     args: serde_json::json!({"path": "README.md"}),
                     contract: None,
+                    gemini_context: None,
                 }],
                 api: None,
                 provider: None,
@@ -1440,6 +1441,7 @@ mod tests {
                         "long": "x".repeat(300)
                     }),
                     contract: None,
+                    gemini_context: None,
                 }],
                 api: None,
                 provider: None,

@@ -2482,6 +2482,7 @@ mod tests {
                     id: "tool-call-1".to_string(),
                     name: "bash".to_string(),
                     input: serde_json::json!({ "command": "pwd" }),
+                    gemini_context: None,
                 }]),
             },
             Message {
@@ -2506,6 +2507,7 @@ mod tests {
                 id: "tool-call-1".to_string(),
                 name: "http".to_string(),
                 input: serde_json::json!({ "api_key": "sk-secret-value" }),
+                gemini_context: None,
             }]),
         }]
     }
@@ -2700,6 +2702,7 @@ mod tests {
                                 id: "call-private".to_owned(),
                                 name: "read".to_owned(),
                                 input: serde_json::json!({}),
+                                gemini_context: None,
                             },
                         ]),
                     },

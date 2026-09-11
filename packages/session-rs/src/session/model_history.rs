@@ -90,10 +90,17 @@ fn convert_blocks(blocks: &[ContentBlock]) -> Vec<ai::ContentBlock> {
                     thinking: text.clone(),
                     signature: signature.clone(),
                 },
-                ContentBlock::ToolCall { id, name, args, .. } => ai::ContentBlock::ToolUse {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    args,
+                    gemini_context,
+                    ..
+                } => ai::ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
                     input: args.clone(),
+                    gemini_context: gemini_context.clone(),
                 },
                 ContentBlock::Image {
                     source,
@@ -123,6 +130,36 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn persisted_gemini_call_retains_native_replay_context() {
+        let context = serde_json::json!({"native_name":"computer_read_file", "native_id":"native-1", "thought_signature":"opaque-signature"});
+        let encoded = serde_json::json!({"type":"toolCall", "id":"call-1", "name":"computer.read_file",
+            "arguments":{"path":"a.rs"}, "gemini_context":context});
+        let block: ContentBlock = serde_json::from_value(encoded).unwrap();
+        let restored = convert_blocks(&[block]);
+        let ai::ContentBlock::ToolUse {
+            gemini_context,
+            input,
+            ..
+        } = &restored[0]
+        else {
+            panic!("tool call")
+        };
+        assert_eq!(serde_json::to_value(gemini_context).unwrap(), context);
+        assert_eq!(input, &serde_json::json!({"path":"a.rs"}));
+        let legacy: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"toolCall", "id":"old-call", "name":"read", "arguments":{}
+        }))
+        .unwrap();
+        assert!(matches!(
+            &convert_blocks(&[legacy])[0],
+            ai::ContentBlock::ToolUse {
+                gemini_context: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn restored_history_preserves_tool_calls_results_and_summary_framing() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("session.jsonl");
@@ -141,7 +178,7 @@ mod tests {
         assert_eq!(history.len(), 3);
         assert!(
             matches!(&history[1].content, ai::MessageContent::Blocks(blocks)
-            if matches!(&blocks[0], ai::ContentBlock::ToolUse { id, name, input }
+            if matches!(&blocks[0], ai::ContentBlock::ToolUse { id, name, input , .. }
                 if id == "read-1" && name == "read" && input["path"] == "a.rs"))
         );
         assert!(

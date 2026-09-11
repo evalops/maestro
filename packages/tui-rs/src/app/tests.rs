@@ -7016,11 +7016,13 @@ async fn local_response_content_persists_tool_calls_and_signed_thinking_before_d
             id: "call|fc_a".into(),
             name: "read".into(),
             input: serde_json::json!({"path":"a"}),
+            gemini_context: None,
         },
         crate::ai::ContentBlock::ToolUse {
             id: "call|fc_b".into(),
             name: "read".into(),
             input: serde_json::json!({"path":"b"}),
+            gemini_context: None,
         },
     ];
     let event = FromAgent::LocalAssistantContent {
