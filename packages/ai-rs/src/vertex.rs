@@ -237,7 +237,9 @@ impl VertexAiClient {
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
                         text: format!("<thinking>{thinking}</thinking>"),
                     }),
-                    ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
+                    ContentBlock::ToolUse {
+                        id: _, name, input, ..
+                    } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -400,6 +402,7 @@ fn emit_vertex_response(
                                     id: format!("call_{}", uuid::Uuid::new_v4()),
                                     name: function_call.name,
                                     input: json!({}),
+                                    gemini_context: None,
                                 },
                             });
                             let _ = tx.send(StreamEvent::InputJsonDelta {
@@ -666,11 +669,13 @@ mod tests {
                         id: "call_shared|fc_a".into(),
                         name: "read".into(),
                         input: json!({"path":"a"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_shared|fc_b".into(),
                         name: "search".into(),
                         input: json!({"query":"b"}),
+                        gemini_context: None,
                     },
                 ]),
             },
@@ -832,6 +837,7 @@ mod tests {
                 id: "call-123".to_string(),
                 name: "read_file".to_string(),
                 input: json!({"path": "/tmp/test.txt"}),
+                gemini_context: None,
             }]),
         };
 
@@ -1329,6 +1335,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "read".to_string(),
                     input: json!({"path": "/test"}),
+                    gemini_context: None,
                 },
                 ContentBlock::Thinking {
                     thinking: "Let me think...".to_string(),
@@ -1901,6 +1908,7 @@ mod tests {
                 id: "call_456".to_string(),
                 name: "test_tool".to_string(),
                 input: json!({"arg": "value"}),
+                gemini_context: None,
             }]),
         };
 

@@ -162,11 +162,17 @@ pub(super) fn display_messages(history: &[Message]) -> Vec<AppMessage> {
                     text: thinking,
                     signature,
                 },
-                ContentBlock::ToolUse { id, name, input } => super::ContentBlock::ToolCall {
+                ContentBlock::ToolUse {
+                    id,
+                    name,
+                    input,
+                    gemini_context,
+                } => super::ContentBlock::ToolCall {
                     id,
                     name,
                     args: input,
                     contract: None,
+                    gemini_context,
                 },
                 ContentBlock::Image {
                     source: ImageSource::Base64 { media_type, data },
@@ -228,8 +234,14 @@ pub(super) fn restore_display_timestamps(
             .map(|mut block| {
                 // A display key excludes dispatch metadata that is absent from the
                 // provider checkpoint. The original transcript remains untouched.
-                if let super::ContentBlock::ToolCall { contract, .. } = &mut block {
+                if let super::ContentBlock::ToolCall {
+                    contract,
+                    gemini_context,
+                    ..
+                } = &mut block
+                {
                     *contract = None;
+                    *gemini_context = None;
                 }
                 block
             })

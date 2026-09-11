@@ -520,6 +520,7 @@ fn parse_sse_event(data: &str, state: &mut SseParserState) -> Option<StreamEvent
                     id,
                     name,
                     input: input.unwrap_or(serde_json::Value::Object(Default::default())),
+                    gemini_context: None,
                 },
                 RawContentBlock::Thinking { thinking } => ContentBlock::Thinking {
                     thinking,
@@ -893,6 +894,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
                         id: "toolu_123".to_string(),
                         name: "read_file".to_string(),
                         input: serde_json::json!({"path": "README.md"}),
+                        gemini_context: None,
                     },
                 ]),
             },

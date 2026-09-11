@@ -1221,7 +1221,9 @@ fn semantic_messages_to_codex_items(messages: &[Message]) -> Vec<Value> {
                             items.push(codex_message_item(message.role, text));
                         }
                         ContentBlock::Text { .. } => {}
-                        ContentBlock::ToolUse { id, name, input } => items.push(json!({
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => items.push(json!({
                             "type": "function_call",
                             "call_id": id,
                             "name": name,
@@ -1675,6 +1677,7 @@ mod tests {
                     id: "call-42".to_owned(),
                     name: "read".to_owned(),
                     input: json!({ "path": "src/lib.rs" }),
+                    gemini_context: None,
                 }]),
             },
             Message {
@@ -1707,6 +1710,7 @@ mod tests {
                     id: "call-1".to_owned(),
                     name: "read".to_owned(),
                     input: json!({ "path": "src/lib.rs" }),
+                    gemini_context: None,
                 },
                 ContentBlock::Text {
                     text: "Then I'll explain.".to_owned(),

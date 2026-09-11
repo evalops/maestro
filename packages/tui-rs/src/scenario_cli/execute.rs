@@ -505,6 +505,7 @@ pub async fn execute_scripted_scenario_with_options(
                             name: tool.clone(),
                             args: args.clone(),
                             contract: None,
+                            gemini_context: None,
                         });
                     }
                     write_session_entry(

@@ -758,6 +758,7 @@ impl App {
                 // Pin the tool identity this call was issued against so a
                 // resume cannot dispatch a different tool of the same name.
                 contract: crate::tools::tool_call_contract::stamp(&call.call_id, &call.tool),
+                gemini_context: None,
             });
         }
 
@@ -783,14 +784,18 @@ impl App {
                         text: thinking,
                         signature,
                     }),
-                    crate::ai::ContentBlock::ToolUse { id, name, input } => {
-                        Some(SessionContentBlock::ToolCall {
-                            contract: crate::tools::tool_call_contract::stamp(&id, &name),
-                            id,
-                            name,
-                            args: input,
-                        })
-                    }
+                    crate::ai::ContentBlock::ToolUse {
+                        id,
+                        name,
+                        input,
+                        gemini_context,
+                    } => Some(SessionContentBlock::ToolCall {
+                        contract: crate::tools::tool_call_contract::stamp(&id, &name),
+                        id,
+                        name,
+                        args: input,
+                        gemini_context,
+                    }),
                     _ => None,
                 })
                 .collect();

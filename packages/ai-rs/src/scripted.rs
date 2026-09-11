@@ -174,6 +174,7 @@ impl ScriptedClient {
                             id: id.clone(),
                             name: name.clone(),
                             input: serde_json::json!({}),
+                            gemini_context: None,
                         },
                     });
                     let _ = tx.send(StreamEvent::InputJsonDelta {

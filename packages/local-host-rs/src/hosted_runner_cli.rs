@@ -2579,6 +2579,7 @@ mod tests {
                         id: "tool-call-1".to_string(),
                         name: "bash".to_string(),
                         input: json!({ "command": "pwd" }),
+                        gemini_context: None,
                     },
                 ]),
             },

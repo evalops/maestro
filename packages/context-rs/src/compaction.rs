@@ -1724,7 +1724,21 @@ fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
             content: close_dangling_untrusted_content_envelope(&elide_text(&content, max_chars)),
             is_error,
         },
-        ContentBlock::ToolUse { id, name, input } => {
+        // A signed native function call must be replayed without changing its arguments.
+        block @ ContentBlock::ToolUse {
+            gemini_context:
+                Some(maestro_ai::GeminiToolContext {
+                    thought_signature: Some(_),
+                    ..
+                }),
+            ..
+        } => block,
+        ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            gemini_context,
+        } => {
             let serialized_input = serde_json::to_string(&input).unwrap_or_default();
             ContentBlock::ToolUse {
                 id,
@@ -1736,6 +1750,7 @@ fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
                 } else {
                     input
                 },
+                gemini_context,
             }
         }
         other => other,
@@ -1804,6 +1819,53 @@ fn elide_message_to_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsigned_gemini_call_can_still_elide_arguments_without_losing_native_identity() {
+        let context = maestro_ai::GeminiToolContext {
+            native_name: "read".into(),
+            native_id: Some("native-1".into()),
+            thought_signature: None,
+        };
+        let block = ContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "read".into(),
+            input: serde_json::json!({"content":"large unsigned arguments".repeat(100)}),
+            gemini_context: Some(context.clone()),
+        };
+        let ContentBlock::ToolUse {
+            input,
+            gemini_context,
+            ..
+        } = elide_block(block, 16)
+        else {
+            panic!("tool call")
+        };
+        assert_eq!(
+            input["_maestro_compacted"],
+            "[tool input omitted during context compaction]"
+        );
+        assert_eq!(gemini_context, Some(context));
+    }
+
+    #[test]
+    fn gemini_signed_call_arguments_survive_oversized_block_elision() {
+        let block = ContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "write".into(),
+            input: serde_json::json!({"content": "original signed arguments".repeat(100)}),
+            gemini_context: Some(maestro_ai::GeminiToolContext {
+                native_name: "write".into(),
+                native_id: None,
+                thought_signature: Some("opaque-signature".into()),
+            }),
+        };
+        let original = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            serde_json::to_value(elide_block(block, 16)).unwrap(),
+            original
+        );
+    }
 
     #[test]
     fn long_semantic_history_rejects_before_rendering_without_changing_fallback() {
@@ -2035,6 +2097,7 @@ mod tests {
                     id: "write-1".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "apply-change"}),
+                    gemini_context: None,
                 }]),
             },
         ];
@@ -2542,6 +2605,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "web_fetch".to_string(),
                     input: serde_json::json!({"url": "https://attacker.example/page"}),
+                    gemini_context: None,
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "call-1".to_string(),
@@ -2574,6 +2638,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "bash".to_string(),
                     input: serde_json::json!({"command": "printf tool-output"}),
+                    gemini_context: None,
                 }]),
             },
             make_tool_result_message("call-1", "user-role tool output is retained"),
@@ -2672,6 +2737,7 @@ mod tests {
                         id: "123".to_string(),
                         name: "read".to_string(),
                         input: serde_json::json!({"path": "/tmp/test.txt"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "123".to_string(),
@@ -2721,6 +2787,7 @@ mod tests {
                 id: tool_id.to_string(),
                 name: tool_name.to_string(),
                 input: serde_json::json!({}),
+                gemini_context: None,
             }]),
         }
     }
@@ -3216,6 +3283,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "bash".to_string(),
                     input: serde_json::json!({"command": "cargo test -p maestro-tui compaction"}),
+                    gemini_context: None,
                 }]),
             },
             Message {
@@ -3295,6 +3363,7 @@ mod tests {
                     id: "verify-1".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "cargo test parser"}),
+                    gemini_context: None,
                 }]),
             },
         ];
@@ -3454,6 +3523,7 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "bash".to_string(),
                         input: serde_json::json!({"command": "cargo test"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "call-1".to_string(),

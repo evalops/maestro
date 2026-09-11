@@ -27,7 +27,7 @@ fn history(count: usize, bytes: usize) -> Vec<Message> {
         role: if index % 2 == 0 { Role::User } else { Role::Assistant },
         content: MessageContent::Blocks(vec![
             ContentBlock::Text { text: format!("message {index}: {}", "source λ\n".repeat(bytes / 10)) },
-            ContentBlock::ToolUse { id: format!("call-{index}"), name: "read".into(), input: serde_json::json!({"path":format!("src/{index}.rs"),"offset":index,"nested":{"literal":"\"\\\n"}}) },
+            ContentBlock::ToolUse { id: format!("call-{index}"), name: "read".into(), input: serde_json::json!({"path":format!("src/{index}.rs"),"offset":index,"nested":{"literal":"\"\\\n"}}) , gemini_context: None, },
             ContentBlock::ToolResult { tool_use_id: format!("call-{index}"), content: "result\twith\rcontrols\n".into(), is_error: Some(false) },
         ]),
     }).collect()

@@ -3458,6 +3458,7 @@ mod tests {
                             name: "edit".into(),
                             args: json!({ "path": "README.md" }),
                             contract: None,
+                            gemini_context: None,
                         },
                     ],
                     api: None,
