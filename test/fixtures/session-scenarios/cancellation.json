@@ -15,14 +15,14 @@
           "min": 1,
           "max": 1000
         },
-        "message_bytes": {
-          "max": 24000
-        },
         "pending_prompts": {
           "max": 0
         },
         "deferred_commands": {
           "max": 0
+        },
+        "message_tokens": {
+          "max": 4096
         }
       }
     },
