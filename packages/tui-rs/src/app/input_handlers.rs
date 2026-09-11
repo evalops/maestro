@@ -688,8 +688,8 @@ impl App {
                 }
                 if let Some(session_id) = self.session_switcher.confirm() {
                     // Load and restore the session
-                    match self.session_manager.load_session(&session_id) {
-                        Ok(session) => self.apply_resumed_session(&session),
+                    match self.session_manager.find_session(&session_id) {
+                        Ok(session) => self.resume_session_path(&session.path, &session.id),
                         Err(e) => {
                             self.state.error = Some(
                                 self.state
