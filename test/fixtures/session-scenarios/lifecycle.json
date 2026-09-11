@@ -1,0 +1,125 @@
+{
+  "schema": "evalops.maestro.session-scenario.v1",
+  "name": "compact-restore-cancel-reset",
+  "context_window": 4096,
+  "steps": [
+    {
+      "action": "turns",
+      "count": 80,
+      "prompt_bytes": 384,
+      "response_bytes": 8
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "retained_requests": {
+          "min": 1,
+          "max": 80
+        },
+        "message_bytes": {
+          "max": 24000
+        }
+      }
+    },
+    {
+      "action": "save"
+    },
+    {
+      "action": "clear"
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "messages": {
+          "max": 0
+        },
+        "continuation_bytes": {
+          "max": 0
+        },
+        "pending_prompts": {
+          "max": 0
+        },
+        "queued_system_prompts": {
+          "max": 0
+        }
+      }
+    },
+    {
+      "action": "restore"
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "retained_requests": {
+          "min": 1,
+          "max": 80
+        }
+      }
+    },
+    {
+      "action": "drop_checkpoint"
+    },
+    {
+      "action": "cancel",
+      "count": 3,
+      "prompt_bytes": 384
+    },
+    {
+      "action": "turns",
+      "count": 3,
+      "prompt_bytes": 384,
+      "response_bytes": 8
+    },
+    {
+      "action": "clear"
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "messages": {
+          "max": 0
+        },
+        "continuation_bytes": {
+          "max": 0
+        },
+        "pending_prompts": {
+          "max": 0
+        },
+        "deferred_commands": {
+          "max": 0
+        }
+      }
+    },
+    {
+      "action": "seed_history",
+      "messages": 4096,
+      "message_bytes": 256
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "messages": {
+          "min": 4096,
+          "max": 4096
+        }
+      }
+    },
+    {
+      "action": "clear"
+    },
+    {
+      "action": "assert",
+      "bounds": {
+        "messages": {
+          "max": 0
+        },
+        "message_slots": {
+          "max": 0
+        },
+        "continuation_bytes": {
+          "max": 0
+        }
+      }
+    }
+  ]
+}

@@ -1156,6 +1156,13 @@ enum AgentCommand {
     /// affect configuration (model, thinking, etc.).
     ClearHistory,
 
+    /// Test-only idle barrier; observes actual runner state after prior commands.
+    #[cfg(test)]
+    InspectSession {
+        capture: bool,
+        reply: tokio::sync::oneshot::Sender<tests::session_scenarios::SessionState>,
+    },
+
     /// Replace conversation history (used by /rewind and /fork rebuilds).
     ReplaceHistory {
         messages: Vec<Message>,
