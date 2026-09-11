@@ -115,6 +115,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "codex" => crate::codex_cli::run_codex(&args[1..]).await,
         "context" => crate::context_cli::run_context(&args[1..]).await,
         "run" => crate::run_cli::run_run(&args[1..]).await,
+        "workflow" => crate::workflow_cli::run_workflow(&args[1..]).await,
         "a2a" => crate::a2a_cli::run_a2a(&args[1..]).await,
         "acp" => crate::acp_cli::run_acp(&args[1..]).await,
         "mcp" => crate::mcp_config_cli::run_mcp_config(&args[1..]).await,

@@ -190,6 +190,7 @@ pub mod palette;
 
 pub mod a2a_cli;
 pub mod cli_commands;
+pub mod workflow_cli;
 pub use maestro_codex::codex_app_server;
 pub use maestro_codex::codex_session;
 pub use maestro_local_host::codex_auth;

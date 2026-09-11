@@ -3,19 +3,23 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::{SwarmPlan, SwarmTask, TaskResult, TaskStatus, validate_plan};
 
 /// Inputs for one admitted callback, including only its direct dependencies.
 #[derive(Debug, Clone)]
 pub struct SwarmTaskContext {
+    /// Stable callback admission identity. Owners can correlate this with a
+    /// persisted in-flight reservation when reconciling after a crash.
+    pub dispatch_id: String,
     pub task: SwarmTask,
     pub dependency_results: BTreeMap<String, TaskResult>,
 }
 
 /// A result and additional tasks admitted by the caller's execution owner.
 /// The scheduler never parses model prose into tasks or grants capabilities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwarmTaskOutcome {
     pub result: TaskResult,
     pub follow_up_tasks: Vec<SwarmTask>,

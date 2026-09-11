@@ -3,7 +3,9 @@
 //! Defines the core types for multi-agent task orchestration.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::recovery::{DispatchId, IndeterminateTask};
 
 /// Unique identifier for a swarm task
 pub type TaskId = String;
@@ -61,7 +63,7 @@ pub enum TaskPriority {
 }
 
 /// A single task in the swarm
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwarmTask {
     /// Unique identifier
     pub id: TaskId,
@@ -144,7 +146,7 @@ impl SwarmTask {
 }
 
 /// Result of a completed task
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskResult {
     /// Was the task successful
     pub success: bool,
@@ -159,7 +161,7 @@ pub struct TaskResult {
 }
 
 /// Swarm execution plan
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwarmPlan {
     /// Plan title
     pub title: String,
@@ -618,7 +620,7 @@ pub fn resolve_subagent_dispatch(
 }
 
 /// Configuration for swarm execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwarmConfig {
     /// Maximum number of concurrent agents
     pub max_concurrency: usize,
@@ -706,10 +708,24 @@ pub struct SwarmState {
     pub config: SwarmConfig,
     /// Completed task IDs
     pub completed_tasks: HashSet<TaskId>,
+    /// Accepted successful results keyed by task ID, kept in snapshot order.
+    pub completed_results: BTreeMap<TaskId, TaskResult>,
     /// Failed task IDs
     pub failed_tasks: HashSet<TaskId>,
+    /// Accepted failed results keyed by task ID, kept in snapshot order.
+    pub failed_results: BTreeMap<TaskId, TaskResult>,
     /// Currently running tasks (`task_id` -> `agent_id`)
     pub running_tasks: HashMap<TaskId, AgentId>,
+    /// Dispatch identity for every currently running task.
+    pub running_dispatches: HashMap<TaskId, DispatchId>,
+    /// Tasks whose interrupted effects remain unresolved after owner recovery.
+    pub indeterminate_tasks: HashMap<TaskId, IndeterminateTask>,
+    /// Monotonic state transition revision used by owner checkpoints.
+    pub revision: u64,
+    /// Lifetime task budget used by dynamic expansion and recovery.
+    pub task_budget: usize,
+    /// Cached graph digest reused by immutable checkpoints.
+    pub(crate) graph_digest: String,
     /// Start time (unix timestamp ms)
     pub started_at: Option<u64>,
     /// Events emitted
@@ -720,10 +736,12 @@ impl SwarmState {
     /// Create new state with a plan and config
     #[must_use]
     pub fn new(plan: SwarmPlan, config: SwarmConfig) -> Self {
+        let task_budget = plan.tasks.len();
         Self {
             status: SwarmStatus::Initializing,
             plan,
             config,
+            task_budget,
             ..Default::default()
         }
     }

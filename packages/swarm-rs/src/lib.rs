@@ -68,11 +68,17 @@
 mod executor;
 mod expansion;
 mod plan_parser;
+mod recovery;
 mod types;
 
 pub use executor::SwarmExecutor;
 pub use expansion::{SwarmTaskContext, SwarmTaskOutcome};
 pub use plan_parser::{parse_plan, parse_simple_list, validate_plan};
+pub use recovery::{
+    DispatchId, InFlightTask, IndeterminateTask, ReconcileFuture, RecoveryDecision, RecoveryHooks,
+    SWARM_SNAPSHOT_SCHEMA_VERSION, SnapshotFuture, SwarmRecoveryDecision, SwarmRecoveryHooks,
+    SwarmRecoverySnapshot, SwarmSnapshot,
+};
 pub use types::{
     AgentId, AgentMode, DispatchSource, ModelProvider, ModelTier, ReasoningEffort,
     ResolvedSubagentDispatch, SubagentType, SwarmConfig, SwarmEvent, SwarmPlan, SwarmState,
