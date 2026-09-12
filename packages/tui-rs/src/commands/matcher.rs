@@ -682,7 +682,7 @@ impl SlashCommandMatcher {
             return Some(InlineCompletion::new(
                 format!("/{matched_name}"),
                 suffix,
-                Some(best.command.description.clone()),
+                Some(best.command.display_description().to_string()),
                 best.score,
             ));
         }
@@ -717,7 +717,7 @@ impl SlashCommandMatcher {
 
                 RichCompletion {
                     command: format!("/{}", m.matched_name),
-                    description: m.command.description.clone(),
+                    description: m.command.display_description().to_string(),
                     usage: m.command.usage.clone(),
                     args,
                     score: m.score,

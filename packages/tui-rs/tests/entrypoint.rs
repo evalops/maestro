@@ -29,9 +29,18 @@ fn argv(words: &[&str]) -> Vec<OsString> {
 fn every_native_utility_command_routes_to_the_utility_handler() {
     assert_eq!(
         NATIVE_UTILITY_COMMANDS.len(),
-        41,
-        "this test's evidence baseline is 41 utility commands; update it deliberately \
+        42,
+        "this test's evidence baseline is 42 utility commands; update it deliberately \
          if the canonical table changes size"
+    );
+
+    let workflow_args = argv(&["workflow", "--help"]);
+    let workflow_tokens =
+        native_utility_tokens(&workflow_args[1..]).expect("workflow utility tokens");
+    assert_eq!(
+        workflow_tokens.first().map(String::as_str),
+        Some("workflow"),
+        "workflow should route to the utility handler"
     );
 
     for command in NATIVE_UTILITY_COMMANDS {

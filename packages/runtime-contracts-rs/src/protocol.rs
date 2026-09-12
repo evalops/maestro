@@ -186,6 +186,7 @@ pub enum ToRuntimeMessageType {
     ToolResponse,
     ClientToolResult,
     GovernedClientToolResult,
+    ManagedAuthorizationResult,
     ApplyWorkspaceCapabilitySet,
     ConfigurePromptExperiment,
     ServerRequestResponse,
@@ -218,6 +219,7 @@ pub enum FromRuntimeMessageType {
     ToolEnd,
     ClientToolRequest,
     GovernedClientToolRequest,
+    ManagedAuthorizationRequest,
     ServerRequest,
     ServerRequestResolved,
     RawAgentEvent,
@@ -313,6 +315,7 @@ pub const HEADLESS_TO_RUNTIME_MESSAGE_NAMES: &[&str] = &[
     "tool_response",
     "client_tool_result",
     "governed_client_tool_result",
+    "managed_authorization_result",
     "apply_workspace_capability_set",
     "configure_prompt_experiment",
     "server_request_response",
@@ -343,6 +346,7 @@ pub const HEADLESS_FROM_RUNTIME_MESSAGE_NAMES: &[&str] = &[
     "tool_end",
     "client_tool_request",
     "governed_client_tool_request",
+    "managed_authorization_request",
     "server_request",
     "server_request_resolved",
     "raw_agent_event",
@@ -475,6 +479,7 @@ const TO_RUNTIME_MESSAGES: &[ToRuntimeMessageType] = &[
     ToRuntimeMessageType::ToolResponse,
     ToRuntimeMessageType::ClientToolResult,
     ToRuntimeMessageType::GovernedClientToolResult,
+    ToRuntimeMessageType::ManagedAuthorizationResult,
     ToRuntimeMessageType::ApplyWorkspaceCapabilitySet,
     ToRuntimeMessageType::ConfigurePromptExperiment,
     ToRuntimeMessageType::ServerRequestResponse,
@@ -504,6 +509,7 @@ const FROM_RUNTIME_MESSAGES: &[FromRuntimeMessageType] = &[
     FromRuntimeMessageType::ToolEnd,
     FromRuntimeMessageType::ClientToolRequest,
     FromRuntimeMessageType::GovernedClientToolRequest,
+    FromRuntimeMessageType::ManagedAuthorizationRequest,
     FromRuntimeMessageType::ServerRequest,
     FromRuntimeMessageType::ServerRequestResolved,
     FromRuntimeMessageType::RawAgentEvent,
@@ -1186,7 +1192,7 @@ mod tests {
         assert_eq!(headless_protocol_capability_digest(), expected);
         assert_eq!(
             headless_protocol_capability_digest(),
-            "sha256:191794d318091af702b473448e446be5ab26d409a2890f453ea92d6ae933f6c7"
+            "sha256:641d393c709db54d139f93af6a3bcb1f93f97291518a1ef0ecd45e5b11b17c21"
         );
     }
 }

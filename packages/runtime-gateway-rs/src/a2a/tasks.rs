@@ -1082,6 +1082,17 @@ pub(super) fn a2a_task_tenant(task: &Value) -> (Option<String>, Option<String>) 
 }
 
 pub(crate) async fn publish_a2a_task_update(state: &AppState, task: &Value) {
+    let tasks = state.a2a_tasks.lock().await;
+    publish_a2a_task_update_locked(state, task, &tasks).await;
+}
+
+/// Callers already serializing task updates must keep that same lock through
+/// publication so concurrent callbacks cannot reorder their replay snapshots.
+pub(super) async fn publish_a2a_task_update_locked(
+    state: &AppState,
+    task: &Value,
+    tasks: &HashMap<String, Value>,
+) {
     let Some(task_id) = task
         .get("id")
         .and_then(Value::as_str)
@@ -1090,8 +1101,17 @@ pub(crate) async fn publish_a2a_task_update(state: &AppState, task: &Value) {
         return;
     };
     let event = {
+        // Keep the task lock until history is updated: a delayed publication
+        // must not recreate replay payloads after another writer evicts a task.
         let mut histories = state.a2a_task_event_history.lock().await;
-        let history = histories.entry(task_id.to_string()).or_default();
+        histories.retain(|id, _| tasks.contains_key(id));
+        let mut transient_history = A2ATaskEventHistory::default();
+        let history = if tasks.contains_key(task_id) {
+            histories.entry(task_id.to_string()).or_default()
+        } else {
+            // Still notify existing subscribers, without retaining the payload.
+            &mut transient_history
+        };
         let event = A2ATaskUpdateEvent {
             task_id: task_id.to_string(),
             sequence: history.next_sequence,
@@ -1598,6 +1618,7 @@ async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task:
         publish_a2a_task_update(state, &previous_task).await;
     } else {
         tasks.remove(task_id);
+        state.a2a_task_event_history.lock().await.remove(task_id);
         drop(tasks);
     }
     persist_a2a_tasks(state).await;

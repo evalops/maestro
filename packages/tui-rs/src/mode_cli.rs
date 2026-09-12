@@ -299,7 +299,11 @@ pub async fn run_modes(args: &[String]) -> Result<i32> {
                     || value.starts_with("--config=")
                     || value.starts_with("--worktree=") => {}
             value if GLOBAL_BOOLEAN_FLAGS.contains(&value) => {}
-            value if value.starts_with('-') => bail!("Unknown modes option: {value}"),
+            value if value.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("Unknown modes option: {0}", &[(value).to_string()])
+            ),
             value => positionals.push(value),
         }
         index += 1;
@@ -334,7 +338,11 @@ pub async fn run_modes(args: &[String]) -> Result<i32> {
         let suffix = requested_mode_name
             .map(|name| format!(": {name}"))
             .unwrap_or_default();
-        eprintln!("Unknown mode{suffix}");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Unknown mode{0}", std::slice::from_ref(&(suffix)))
+        );
         println!("{}", usage());
         return Ok(1);
     };
@@ -364,9 +372,7 @@ fn parse_provider(value: &str) -> Result<ModelProvider> {
         "openai" => Ok(ModelProvider::OpenAi),
         "openai-codex" => Ok(ModelProvider::OpenAiCodex),
         "google" => Ok(ModelProvider::Google),
-        _ => bail!(
-            "Unknown provider \"{value}\". Supported providers: anthropic, openai, openai-codex, google"
-        ),
+        _ => bail!("{}", crate::localization::cli_locale().format("Unknown provider \"{0}\". Supported providers: anthropic, openai, openai-codex, google", &[(value).to_string()])),
     }
 }
 
@@ -687,7 +693,10 @@ fn profile_json(mode: AgentMode, provider: ModelProvider) -> Option<Value> {
 }
 
 fn print_list(include_hidden: bool, legacy_all_format: bool) {
-    println!("Agent modes:\n");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Agent modes:\n", &[])
+    );
     for config in MODES
         .iter()
         .filter(|config| config.visible || include_hidden)
@@ -702,8 +711,11 @@ fn print_list(include_hidden: bool, legacy_all_format: bool) {
             );
         } else {
             println!(
-                "  describe: maestro modes describe {}",
-                mode_name(config.mode)
+                "{}",
+                crate::localization::cli_locale().format(
+                    "  describe: maestro modes describe {0}",
+                    &[(mode_name(config.mode)).to_string()]
+                )
             );
         }
     }
@@ -711,63 +723,102 @@ fn print_list(include_hidden: bool, legacy_all_format: bool) {
 
 fn render_description(config: &ModeConfig, provider: ModelProvider) -> String {
     let mut lines = vec![
-        format!("Mode: {} ({})", config.name, mode_name(config.mode)),
+        crate::localization::cli_locale().format(
+            "Mode: {0} ({1})",
+            &[
+                (config.name).to_string(),
+                (mode_name(config.mode)).to_string(),
+            ],
+        ),
         config.description.into(),
         String::new(),
-        format!(
-            "Visibility: {}",
-            if config.visible { "visible" } else { "hidden" }
+        crate::localization::cli_locale().format(
+            "Visibility: {0}",
+            &[(if config.visible { "visible" } else { "hidden" }).to_string()],
         ),
-        format!(
-            "Primary: {} -> {}/{}",
-            tier_name(config.primary),
-            provider_name(provider),
-            model_for_tier(config.primary, provider)
+        crate::localization::cli_locale().format(
+            "Primary: {0} -> {1}/{2}",
+            &[
+                (tier_name(config.primary)).to_string(),
+                (provider_name(provider)).to_string(),
+                (model_for_tier(config.primary, provider)).to_string(),
+            ],
         ),
-        format!(
-            "Fallback: {} -> {}/{}",
-            tier_name(config.fallback),
-            provider_name(provider),
-            model_for_tier(config.fallback, provider)
+        crate::localization::cli_locale().format(
+            "Fallback: {0} -> {1}/{2}",
+            &[
+                (tier_name(config.fallback)).to_string(),
+                (provider_name(provider)).to_string(),
+                (model_for_tier(config.fallback, provider)).to_string(),
+            ],
         ),
-        format!("Reasoning: {}", effort_name(config.reasoning)),
-        format!(
-            "Thinking: {} (budget {})",
-            if config.thinking {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            config.thinking_budget
+        crate::localization::cli_locale().format(
+            "Reasoning: {0}",
+            &[(effort_name(config.reasoning)).to_string()],
         ),
-        format!(
-            "Context: {}",
-            if config.extended_context {
+        crate::localization::cli_locale().format(
+            "Thinking: {0} (budget {1})",
+            &[
+                (if config.thinking {
+                    "enabled"
+                } else {
+                    "disabled"
+                })
+                .to_string(),
+                (config.thinking_budget).to_string(),
+            ],
+        ),
+        crate::localization::cli_locale().format(
+            "Context: {0}",
+            &[(if config.extended_context {
                 "extended"
             } else {
                 "standard"
-            }
+            })
+            .to_string()],
         ),
-        format!("Retries: {}", config.retries),
+        crate::localization::cli_locale().format("Retries: {0}", &[(config.retries).to_string()]),
     ];
     if let Some(profile) = profile_json(config.mode, provider) {
-        lines.push(format!(
-            "Profile: {}",
-            profile["id"].as_str().unwrap_or("-")
+        lines.push(crate::localization::cli_locale().format(
+            "Profile: {0}",
+            &[profile["id"].as_str().unwrap_or("-").to_string()],
         ));
-        lines.push(format!(
-            "Oracle: {}/{} ({})",
-            profile["oracle"]["provider"].as_str().unwrap_or("-"),
-            profile["oracle"]["model"].as_str().unwrap_or("-"),
-            profile["oracle"]["reasoningEffort"].as_str().unwrap_or("-")
-        ));
+        lines.push(
+            crate::localization::cli_locale().format(
+                "Oracle: {0}/{1} ({2})",
+                &[
+                    profile["oracle"]["provider"]
+                        .as_str()
+                        .unwrap_or("-")
+                        .to_string(),
+                    profile["oracle"]["model"]
+                        .as_str()
+                        .unwrap_or("-")
+                        .to_string(),
+                    profile["oracle"]["reasoningEffort"]
+                        .as_str()
+                        .unwrap_or("-")
+                        .to_string(),
+                ],
+            ),
+        );
     }
     lines.extend([
         String::new(),
-        format!("Subagent dispatch (provider: {})", provider_name(provider)),
-        format!(
-            "{:<12} {:<8} {:<14} {:<34} {:<8} Tier",
-            "Type", "Source", "Provider", "Model", "Effort"
+        crate::localization::cli_locale().format(
+            "Subagent dispatch (provider: {0})",
+            &[(provider_name(provider)).to_string()],
+        ),
+        crate::localization::cli_locale().format(
+            "{0} {1} {2} {3} {4} Tier",
+            &[
+                format!("{:<12}", "Type"),
+                format!("{:<8}", "Source"),
+                format!("{:<14}", "Provider"),
+                format!("{:<34}", "Model"),
+                format!("{:<8}", "Effort"),
+            ],
         ),
         format!(
             "{} {} {} {} {} {}",
@@ -798,7 +849,7 @@ fn render_description(config: &ModeConfig, provider: ModelProvider) -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  maestro modes list\n  maestro modes describe <mode> [--provider <provider>] [--json]\n\nExamples:\n  maestro modes describe smart\n  maestro modes describe frontier --provider openai --json"
+    crate::localization::cli_locale().translate("Usage:\n  maestro modes list\n  maestro modes describe <mode> [--provider <provider>] [--json]\n\nExamples:\n  maestro modes describe smart\n  maestro modes describe frontier --provider openai --json")
 }
 
 #[cfg(test)]

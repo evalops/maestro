@@ -87,6 +87,21 @@ test("Docker runtime guard accepts the checked-in Dockerfile and workspace", () 
 	assert.match(output, /Verified native-only Docker runtime contract\./);
 });
 
+test("Docker runtime guard rejects missing or late vendored Cargo inputs", () => {
+	const paths = [...sourceCargoManifest.matchAll(/\bpath\s*=\s*"(vendor\/[^"\n]+)"/g)]
+		.map((match) => match[1]);
+	assert.equal(new Set(paths).size, 3);
+	for (const path of new Set(paths)) {
+		const copy = `COPY ${path} ./${path}`;
+		const without = sourceDockerfile.replaceAll(`${copy}\n`, "");
+		assert.throws(() => runChecker(without), /before cargo chef/);
+		const tooLate = without
+			.replace("RUN cargo chef prepare --recipe-path recipe.json", `RUN cargo chef prepare --recipe-path recipe.json\n${copy}`)
+			.replace("RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json", `RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json\n${copy}`);
+		assert.throws(() => runChecker(tooLate), /before cargo chef/);
+	}
+});
+
 test("Docker runtime guard rejects a workspace member no stage copies", () => {
 	const ledgerCopy = "COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs";
 	assert.ok(

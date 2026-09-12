@@ -56,7 +56,11 @@ fn parse_options(args: &[String]) -> Result<SetupOptions> {
                 options.model = Some(value[8..].to_owned());
             }
             "--help" | "-h" | "help" => bail!("help"),
-            other => bail!("unknown setup option: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unknown setup option: {0}", &[(other).to_string()])
+            ),
         }
         index += 1;
     }
@@ -157,20 +161,27 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
     let options = match parse_options(args) {
         Ok(options) => options,
         Err(error) if error.to_string() == "help" => {
-            println!(
-                "Usage: deixic-code setup [--json] [--live] [--model <provider/model>] [--platform|--byok]"
-            );
+            println!("{}", crate::localization::cli_locale().format("Usage: deixic-code setup [--json] [--live] [--model <provider/model>] [--platform|--byok]", &[]));
             return Ok(0);
         }
         Err(error) => return Err(error),
     };
     if options.platform && options.byok {
-        bail!("choose either --platform or --byok");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("choose either --platform or --byok", &[])
+        );
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if options.platform {
         crate::init_cli::perform_evalops_login().await?;
-        println!("EvalOps Identity login saved. Run deixic-code to start a session.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps Identity login saved. Run deixic-code to start a session.",
+                &[]
+            )
+        );
         return Ok(0);
     }
     if options.byok {
@@ -184,18 +195,30 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(i32::from(!report.ready));
     }
-    println!("Deixic Code Setup (schema v{})", report.schema_version);
     println!(
-        "Model: {} ({}, {})",
-        report.doctor.selected_model.requested,
-        report.doctor.selected_model.provider,
-        report.doctor.selected_model.protocol
+        "{}",
+        crate::localization::cli_locale().format(
+            "Deixic Code Setup (schema v{0})",
+            &[(report.schema_version).to_string()]
+        )
+    );
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "Model: {0} ({1}, {2})",
+            &[
+                (report.doctor.selected_model.requested).clone(),
+                (report.doctor.selected_model.provider).clone(),
+                (report.doctor.selected_model.protocol).clone()
+            ]
+        )
     );
     if report.ready {
+        println!("{}", crate::localization::cli_locale().format("Ready: EvalOps Identity is configured with managed inference or a local provider credential.", &[]));
         println!(
-            "Ready: EvalOps Identity is configured with managed inference or a local provider credential."
+            "{}",
+            crate::localization::cli_locale().format("Run deixic-code to start a session.", &[])
         );
-        println!("Run deixic-code to start a session.");
         return Ok(0);
     }
     if report
@@ -206,10 +229,26 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         && io::stdin().is_terminal()
         && io::stdout().is_terminal()
     {
-        println!("EvalOps Identity is required before Deixic Code can run.");
-        println!("Choose how to continue:");
-        println!("  1. Sign in and use managed inference");
-        println!("  2. Sign in, then use your own API key");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "EvalOps Identity is required before Deixic Code can run.",
+                &[]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Choose how to continue:", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  1. Sign in and use managed inference", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("  2. Sign in, then use your own API key", &[])
+        );
         print!("Selection [1/2]: ");
         let _ = io::stdout().flush();
         let mut selection = String::new();
@@ -217,7 +256,13 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
         match selection.trim() {
             "1" | "" => {
                 crate::init_cli::perform_evalops_login().await?;
-                println!("EvalOps Identity login saved. Run deixic-code to start a session.");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "EvalOps Identity login saved. Run deixic-code to start a session.",
+                        &[]
+                    )
+                );
                 return Ok(0);
             }
             "2" => {
@@ -225,13 +270,24 @@ pub async fn run_setup(args: &[String]) -> Result<i32> {
                 crate::connections_cli::run_add_wizard(None)?;
                 return Ok(0);
             }
-            other => bail!("unknown setup selection: {other}"),
+            other => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unknown setup selection: {0}", &[(other).to_string()])
+            ),
         }
     }
-    println!("Next steps:");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Next steps:", &[])
+    );
     for (index, step) in report.next_steps.iter().enumerate() {
         println!("  {}. {}", index + 1, step.reason);
-        println!("     Run: {}", step.command);
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("     Run: {0}", std::slice::from_ref(&(step.command)))
+        );
     }
     Ok(i32::from(!report.ready))
 }

@@ -45,11 +45,15 @@ use tokio::net::TcpListener;
 
 fn empty_runtime_audit() -> Arc<RwLock<RuntimeAuditSnapshot>> {
     Arc::new(RwLock::new(RuntimeAuditSnapshot {
+        request_cache: None,
+        cache_reuse: None,
         request_context: None,
         excluded_context_tools: HashSet::new(),
         prompt_revision: 0,
         system_prompt: None,
         tools: Vec::new(),
+        max_output_tokens: 16_384,
+        context_window: Some(128_000),
     }))
 }
 
@@ -67,8 +71,12 @@ struct RuntimeTestHost {
     session_id: Arc<Mutex<Option<String>>>,
     provider_admission_blocked: Arc<AtomicBool>,
     block_provider_after_tool: bool,
+    post_tool_context: Option<String>,
+    checkpoint_barrier: Option<Arc<(tokio::sync::Notify, tokio::sync::Notify, AtomicBool)>>,
     completed_tool_executions: Arc<AtomicUsize>,
     tool_definitions: Arc<Vec<ToolDefinition>>,
+    reserved_tools: HashSet<String>,
+    mcp_permission_tools: HashSet<String>,
     code_authority: bool,
     sandbox_policy: bool,
     max_output_tokens: u32,
@@ -105,8 +113,12 @@ impl RuntimeTestHost {
             session_id: Arc::new(Mutex::new(None)),
             provider_admission_blocked: Arc::new(AtomicBool::new(false)),
             block_provider_after_tool: false,
+            post_tool_context: None,
+            checkpoint_barrier: None,
             completed_tool_executions: Arc::new(AtomicUsize::new(0)),
             tool_definitions: Arc::new(tool_definitions),
+            reserved_tools: HashSet::new(),
+            mcp_permission_tools: HashSet::new(),
             code_authority: true,
             sandbox_policy: false,
             max_output_tokens: 16_384,
@@ -201,8 +213,8 @@ impl NativeExecutionHost for RuntimeTestHost {
             .any(|definition| definition.tool.name.eq_ignore_ascii_case(name))
     }
 
-    fn is_reserved_tool(&self, _name: &str) -> bool {
-        false
+    fn is_reserved_tool(&self, name: &str) -> bool {
+        self.reserved_tools.contains(&name.to_ascii_lowercase())
     }
 
     fn goal_tools_visible(&self) -> bool {
@@ -237,8 +249,9 @@ impl NativeExecutionHost for RuntimeTestHost {
                 .unwrap_or(false)
     }
 
-    fn mcp_permission_allows(&self, _name: &str) -> bool {
-        false
+    fn mcp_permission_allows(&self, name: &str) -> bool {
+        self.mcp_permission_tools
+            .contains(&name.to_ascii_lowercase())
     }
 
     fn requires_approval(&self, name: &str, args: &Value) -> bool {
@@ -264,8 +277,9 @@ impl NativeExecutionHost for RuntimeTestHost {
         }
     }
 
-    fn is_mcp_tool(&self, _name: &str) -> bool {
-        false
+    fn is_mcp_tool(&self, name: &str) -> bool {
+        self.mcp_permission_tools
+            .contains(&name.to_ascii_lowercase())
     }
 
     fn tool_annotations(&self, _name: &str) -> Option<NativeToolAnnotations> {
@@ -394,7 +408,15 @@ impl NativeExecutionHost for RuntimeTestHost {
         _is_error: bool,
         _duration_ms: u64,
     ) -> NativeHostFuture<'a, NativeHookResult> {
-        Box::pin(async { Self::hook_result() })
+        Box::pin(async {
+            self.post_tool_context
+                .as_ref()
+                .map_or_else(Self::hook_result, |context| {
+                    NativeHookResult::InjectContext {
+                        context: context.clone(),
+                    }
+                })
+        })
     }
 
     fn hook_eval_gate<'a>(
@@ -450,7 +472,15 @@ impl NativeExecutionHost for RuntimeTestHost {
         _duration_ms: u64,
         _stop_reason: Option<&'a str>,
     ) -> NativeHostFuture<'a, NativeHookResult> {
-        Box::pin(async { Self::hook_result() })
+        Box::pin(async {
+            if let Some(barrier) = &self.checkpoint_barrier {
+                if !barrier.2.swap(true, Ordering::SeqCst) {
+                    barrier.0.notify_one();
+                    barrier.1.notified().await;
+                }
+            }
+            Self::hook_result()
+        })
     }
 
     fn hook_on_error<'a>(
@@ -615,6 +645,31 @@ impl NativeExecutionHost for RuntimeTestHost {
         _spill_dir: Option<&Path>,
     ) -> String {
         content.to_owned()
+    }
+
+    fn project_tool_output(
+        &self,
+        content: &str,
+        _tool: &str,
+        spill_dir: Option<&Path>,
+    ) -> super::super::native_host::NativeToolOutput {
+        let mut output = super::super::native_host::NativeToolOutput {
+            content: content.to_owned(),
+            saved_path: None,
+        };
+        if self.post_tool_context.is_some() && content.len() > 40_000 {
+            let dir = spill_dir.expect("fixture must have a session-owned spill directory");
+            std::fs::create_dir_all(dir).unwrap();
+            let path = dir.join("full-output.txt");
+            std::fs::write(&path, content).unwrap();
+            output.content = format!(
+                "{}\n[Truncated. Full output: {}. Read with offset and limit.]",
+                &content[..1000],
+                path.display()
+            );
+            output.saved_path = Some(path);
+        }
+        output
     }
 
     fn model_tool_spill_dir(&self, cwd: &str, session_id: &str) -> std::path::PathBuf {
@@ -885,13 +940,8 @@ impl NativeAgent {
             return new_runtime_test_agent(config, client)
                 .map(|(agent, events)| (Self(agent), events));
         }
-        let mut host = RuntimeTestHost::new(config.cwd.clone(), client.clone())
+        let host = RuntimeTestHost::new(config.cwd.clone(), client.clone())
             .with_code_authority(config.approval_mode != ApprovalMode::Selective);
-        if !external_tool_definitions.is_empty() {
-            let mut definitions = host.tool_definitions.as_ref().clone();
-            definitions.extend(external_tool_definitions.clone());
-            host.tool_definitions = Arc::new(definitions);
-        }
         let host = NativeExecutionHostHandle::new(Arc::new(host));
         let resolved = NativeResolvedClient {
             provider_name: client.provider_name().to_owned(),
@@ -928,6 +978,96 @@ impl NativeAgent {
     async fn shutdown(self) {
         self.0.shutdown().await;
     }
+}
+
+fn external_tool_definition(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool: Tool::new(name, "Caller-owned test tool").with_schema(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false
+        })),
+        requires_approval: true,
+    }
+}
+
+#[test]
+fn external_tool_names_reject_duplicates_and_reserved_names() {
+    let client = UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+        "runtime-test/tool-validation",
+        Vec::new(),
+    ));
+    let mut host = RuntimeTestHost::new(".", client);
+    host.reserved_tools.insert("runtime_reserved".to_owned());
+    let host = NativeExecutionHostHandle::new(Arc::new(host));
+
+    let duplicate = validate_tools_with_host(
+        &host,
+        None,
+        &[
+            external_tool_definition("caller_tool"),
+            external_tool_definition("CALLER_TOOL"),
+        ],
+    )
+    .expect_err("case-insensitive duplicate external names must be rejected");
+    assert!(duplicate.to_string().contains("multiple owners"));
+
+    let host_collision = validate_tools_with_host(&host, None, &[external_tool_definition("BASH")])
+        .expect_err("case-insensitive host tool collision must be rejected");
+    assert!(
+        host_collision
+            .to_string()
+            .contains("host, MCP, or reserved tool")
+    );
+
+    let reserved =
+        validate_tools_with_host(&host, None, &[external_tool_definition("RUNTIME_RESERVED")])
+            .expect_err("reserved external name must be rejected");
+    assert!(reserved.to_string().contains("host, MCP, or reserved tool"));
+}
+
+#[test]
+fn ungoverned_external_tool_cannot_claim_dynamic_mcp_tool_with_remembered_grant() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let name = "mcp__project__apply";
+    let client = UnifiedClient::Scripted(crate::ai::ScriptedClient::new(
+        "runtime-test/mcp-collision",
+        Vec::new(),
+    ));
+    let config = NativeAgentConfig {
+        model: "runtime-test/mcp-collision".to_owned(),
+        cwd: workspace.path().display().to_string(),
+        ..NativeAgentConfig::default()
+    };
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client.clone());
+    host.mcp_permission_tools.insert(name.to_owned());
+    assert!(
+        host.is_mcp_tool(name) && host.mcp_permission_allows(name),
+        "fixture must model a dynamic MCP tool with a remembered grant"
+    );
+    let executions = Arc::clone(&host.completed_tool_executions);
+    let result = super::NativeAgent::start_with_resolved_client(
+        config,
+        NativeExecutionHostHandle::new(Arc::new(host)),
+        vec![external_tool_definition("MCP__PROJECT__APPLY")],
+        CredentialVault::new(),
+        None,
+        NativeResolvedClient {
+            provider_name: client.provider_name().to_owned(),
+            client: Some(client),
+            model_route: NativeModelRoute::DirectProvider,
+        },
+    );
+
+    let error = match result {
+        Ok(_) => panic!("external tool must not overwrite a host MCP tool"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("host, MCP, or reserved tool"));
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "rejected external tools must never reach host dispatch"
+    );
 }
 
 #[test]
@@ -1128,6 +1268,7 @@ async fn native_agent_projects_managed_gateway_receipt_without_signed_payload() 
         NativeAgent::new_with_test_client(config, client).expect("hosted agent");
     let authorization = serde_json::json!({
         "claims": {
+            "endpoint": "chat.completions",
             "lineage_id": "lineage-native",
             "session_id": "session-native",
             "thread_id": "thread-native",
@@ -1258,6 +1399,165 @@ async fn native_agent_projects_managed_gateway_receipt_without_signed_payload() 
     assert!(
         request.get("provider_ref").is_none(),
         "the unsigned fallback provider must not accompany a signed route"
+    );
+}
+
+#[tokio::test]
+async fn managed_tool_continuation_uses_fresh_invocation_authority() {
+    assert_managed_invocation_renewal(false).await;
+}
+
+#[tokio::test]
+async fn managed_transport_retry_and_tool_continuation_use_fresh_authority() {
+    assert_managed_invocation_renewal(true).await;
+}
+
+async fn assert_managed_invocation_renewal(fail_first_open: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        let mut consumed = HashSet::new();
+        let mut successful_invocations = 0;
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let request = read_scripted_provider_request(&mut stream).await;
+            let authorization =
+                request["managed_inference_authorization"]["claims"]["authorization_id"]
+                    .as_str()
+                    .expect("invocation authority")
+                    .to_owned();
+            let first_attempt = consumed.is_empty();
+            let fresh = consumed.insert(authorization);
+            captured.lock().unwrap().push(request);
+            let (status, content_type, body) = if fresh && first_attempt && fail_first_open {
+                ("503 Service Unavailable", "application/json", serde_json::json!({"error": {
+                    "code": "provider_unavailable", "message": "injected failure after admission"
+                }}).to_string())
+            } else if fresh {
+                let first = successful_invocations == 0;
+                successful_invocations += 1;
+                (
+                    "200 OK",
+                    "text/event-stream",
+                    chat_sse_response("managed-round", if first { "" } else { "done" }, first),
+                )
+            } else {
+                (
+                    "409 Conflict",
+                    "application/json",
+                    serde_json::json!({"error": {
+                        "code": "managed_authorization_replay",
+                        "message": "managed inference authorization has already been consumed"
+                    }})
+                    .to_string(),
+                )
+            };
+            let wire = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Request-ID: request-round\r\nX-EvalOps-Record-ID: record-round\r\nX-EvalOps-Lineage-ID: lineage-round\r\nX-EvalOps-Record-Status: planned\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            if stream.write_all(wire.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "evalops/openai/gpt-5.6-terra".to_owned(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        max_turn_steps: 4,
+        ..NativeAgentConfig::default()
+    };
+    let client = UnifiedClient::from_model_with_env(
+        &config.model,
+        &HashMap::from([
+            ("MAESTRO_EVALOPS_ACCESS_TOKEN".into(), "test-token".into()),
+            (
+                "MAESTRO_EVALOPS_BASE_URL".into(),
+                format!("http://{address}/v1"),
+            ),
+            ("MAESTRO_EVALOPS_ORG_ID".into(), "org-test".into()),
+            (
+                "MAESTRO_EVALOPS_WORKSPACE_ID".into(),
+                "workspace-test".into(),
+            ),
+            ("MAESTRO_EVALOPS_PROVIDER".into(), "openrouter".into()),
+            ("MAESTRO_EVALOPS_ENVIRONMENT".into(), "production".into()),
+        ]),
+    )
+    .unwrap();
+    let host = RuntimeTestHost::new(config.cwd.clone(), client);
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    let authorization = serde_json::json!({
+        "claims": {
+            "authorization_id": "initial-invocation",
+            "endpoint": "chat.completions",
+            "lineage_id": "lineage-round",
+            "session_id": "session-round", "thread_id": "thread-round",
+            "run_id": "run-round", "turn_id": "turn-round",
+            "model": "openai/gpt-5.6-terra",
+            "providerCandidates": [{"provider": "openrouter", "environment": "production",
+                "credentialName": "default", "teamId": "", "model": "openai/gpt-5.6-terra"}],
+            "routing": "ordered",
+            "output_token_budget": {"value": 4096, "origin": "route_policy",
+                "origin_reference": "managed-round-test"}
+        },
+        "signature": "test-signature"
+    });
+    agent
+        .prompt_with_kind_and_managed_context(
+            "read then answer".into(),
+            Vec::new(),
+            PromptKind::Prompt,
+            None,
+            Some("lineage-round".into()),
+            Some(ManagedInferenceAuthorization::new(
+                authorization.to_string(),
+            )),
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match events.recv().await {
+                Some(FromAgent::ManagedAuthorizationRequest { request_id }) => {
+                    let mut renewed = authorization.clone();
+                    renewed["claims"]["authorization_id"] = request_id.clone().into();
+                    agent
+                        .managed_authorization_coordinator()
+                        .respond(
+                            &request_id,
+                            ManagedInferenceAuthorization::new(renewed.to_string()),
+                        )
+                        .unwrap();
+                }
+                Some(FromAgent::TurnCompleted { .. }) => break Ok(()),
+                Some(FromAgent::ProviderError { message, .. }) => break Err(message),
+                Some(FromAgent::Error {
+                    message,
+                    terminal: true,
+                    ..
+                }) => break Err(message),
+                Some(_) => {}
+                None => break Err("agent closed before completing the continuation".into()),
+            }
+        }
+    })
+    .await;
+    agent.shutdown().await;
+    server.abort();
+    let _ = server.await;
+    assert!(result.is_ok(), "managed continuation timed out");
+    assert_eq!(
+        result.unwrap(),
+        Ok(()),
+        "a tool continuation needs fresh authority"
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        if fail_first_open { 3 } else { 2 }
     );
 }
 
@@ -1395,6 +1695,110 @@ async fn injected_user_note_acknowledges_history_application() {
     ));
 
     agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn overflowing_pending_note_reaches_provider_before_consumption_ack() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        request_tx
+            .send(read_scripted_provider_request(&mut stream).await)
+            .unwrap();
+        release_rx.await.unwrap();
+        drop(stream);
+        let (mut stream, _) = listener.accept().await.unwrap();
+        request_tx
+            .send(read_scripted_provider_request(&mut stream).await)
+            .unwrap();
+        let response = chat_sse_response("note-delivery", "Done.", false);
+        let wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        );
+        stream.write_all(wire.as_bytes()).await.unwrap();
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1")).unwrap(),
+    );
+    let (agent, mut events) =
+        new_runtime_test_agent_with_host(config.clone(), RuntimeTestHost::new(config.cwd, client))
+            .unwrap();
+    let note = (0..2048)
+        .map(|i| format!("unseen-note-{i} "))
+        .collect::<String>();
+    let (applied, mut consumed) = agent.inject_user_note(note.clone()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), applied)
+        .await
+        .unwrap()
+        .unwrap();
+    agent
+        .prompt("Acknowledge the note.".into(), vec![])
+        .await
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(10), request_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == note.trim())
+    );
+    assert!(matches!(
+        consumed.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    agent.cancel();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnInterrupted { .. }) {
+                return;
+            }
+        }
+        panic!("missing interruption");
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        consumed.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    release_tx.send(()).unwrap();
+    agent
+        .prompt("Retry the note.".into(), vec![])
+        .await
+        .unwrap();
+    let retry = tokio::time::timeout(Duration::from_secs(10), request_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        retry["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == note.trim())
+    );
+    tokio::time::timeout(Duration::from_secs(10), consumed)
+        .await
+        .unwrap()
+        .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
 }
 
 #[test]
@@ -1557,6 +1961,7 @@ fn assistant_tool_use(calls: &[(&str, &str)]) -> Message {
                     id: (*id).to_string(),
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 })
                 .collect(),
         ),
@@ -1838,6 +2243,10 @@ fn chat_sse_indexed_tool_response(index: usize) -> String {
 /// A provider that never stops asking for tools, and counts how many
 /// requests the runner made before it gave up.
 async fn scripted_tool_loop_provider() -> (String, Arc<AtomicUsize>) {
+    scripted_tool_loop_provider_with_repetition(false).await
+}
+
+async fn scripted_tool_loop_provider_with_repetition(repeat: bool) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind provider");
@@ -1849,6 +2258,11 @@ async fn scripted_tool_loop_provider() -> (String, Arc<AtomicUsize>) {
             let _ = read_scripted_provider_request(&mut stream).await;
             let index = counted.fetch_add(1, Ordering::SeqCst);
             let response = chat_sse_indexed_tool_response(index);
+            let response = if repeat {
+                response.replace(&format!("loop-{index}.md"), "same.md")
+            } else {
+                response
+            };
             let wire = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response.len(),
@@ -1990,6 +2404,15 @@ fn process_budget_provider_cost_preserves_exact_gateway_micros_and_real_fraction
 
 #[tokio::test]
 async fn process_budget_refuses_model_tool_effects_before_replay_can_intervene() {
+    assert_process_budget_refuses_model_tool_effects(0).await;
+}
+
+#[tokio::test]
+async fn process_budget_counts_cached_input_before_tool_execution() {
+    assert_process_budget_refuses_model_tool_effects(6).await;
+}
+
+async fn assert_process_budget_refuses_model_tool_effects(cached_tokens: u64) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -1997,7 +2420,8 @@ async fn process_budget_refuses_model_tool_effects_before_replay_can_intervene()
         read_scripted_provider_request(&mut stream).await;
         let usage = serde_json::json!({"id":"budget-response", "object":"chat.completion.chunk",
             "created":0, "model":"gpt-4o", "choices":[],
-            "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}});
+            "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11,
+                "prompt_tokens_details":{"cached_tokens":cached_tokens}}});
         let body = chat_sse_response("budget-response", "Read the file.", true)
             .replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
         let wire = format!(
@@ -2116,6 +2540,55 @@ async fn turn_loop_stops_at_the_step_budget_and_names_the_refused_tool_calls() {
         4,
         "the turn must stop after exactly max_turn_steps provider requests"
     );
+}
+
+#[tokio::test]
+async fn native_identical_tool_guard_stops_an_unbounded_turn() {
+    let (base_url, requests) = scripted_tool_loop_provider_with_repetition(true).await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".to_owned(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        allow_unbounded_turn: true,
+        ..NativeAgentConfig::default()
+    };
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("scripted client"),
+    );
+    let (agent, mut events) =
+        NativeAgent::new_with_test_client(config, client).expect("looping agent");
+
+    agent
+        .prompt("Read every file you can find.".to_owned(), vec![])
+        .await
+        .expect("looping prompt");
+
+    let message = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Error {
+                    message,
+                    terminal: true,
+                    ..
+                }) => break message,
+                Some(FromAgent::TurnCompleted { .. }) => {
+                    panic!("a turn that never stops calling tools must not complete")
+                }
+                Some(_) => {}
+                None => panic!("agent event channel closed before the step-budget terminal"),
+            }
+        }
+    })
+    .await
+    .expect("step budget terminal timeout");
+    agent.shutdown().await;
+
+    assert!(
+        message.contains("three identical tool proposals"),
+        "{message}"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
@@ -2323,10 +2796,23 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
                 .unwrap();
         }
         agent.prompt("Say done.".into(), vec![]).await.unwrap();
+        let mut observed_prepared_context = false;
+        let mut turn_starts = 0;
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 match events.recv().await.unwrap() {
                     FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::TurnStarted => turn_starts += 1,
+                    FromAgent::ResponseStart { .. } => {
+                        assert_eq!(
+                            turn_starts, 1,
+                            "turn attribution must precede its responses"
+                        );
+                    }
+                    FromAgent::RequestContextPrepared { .. } => {
+                        assert!(agent.runtime_audit_snapshot().request_context.is_some());
+                        observed_prepared_context = true;
+                    }
                     FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
                         panic!("{message}")
                     }
@@ -2336,7 +2822,29 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
         })
         .await
         .unwrap();
+        assert!(observed_prepared_context);
+        assert_eq!(turn_starts, 1);
         let snapshot = agent.runtime_audit_snapshot();
+        let topology = snapshot
+            .request_cache
+            .as_ref()
+            .unwrap()
+            .cache_topology
+            .as_ref()
+            .unwrap();
+        assert_eq!(topology.generation, index + 1);
+        if index > 0 {
+            assert_eq!(
+                topology.transition,
+                maestro_ai::cache_topology::CacheTransition::ToolsChanged
+            );
+            assert_eq!(
+                snapshot.cache_reuse,
+                Some(maestro_context::token_counting::CacheReuse::ToolsChanged)
+            );
+        } else {
+            assert!(snapshot.cache_reuse.is_none());
+        }
         let report = snapshot.request_context.unwrap();
         counts.push(
             report
@@ -2366,17 +2874,17 @@ async fn context_exclusion_changes_next_request_and_its_schema_report() {
 }
 
 #[tokio::test]
-async fn max_tokens_overflow_compaction_is_measured_as_automatic() {
+async fn max_tokens_does_not_rewrite_input_history() {
     let workspace = tempfile::tempdir().unwrap();
     let config = NativeAgentConfig {
         model: "openai/gpt-4o".into(),
         cwd: workspace.path().display().to_string(),
-        context_window: Some(1024),
+        context_window: Some(128_000),
         ..Default::default()
     };
-    let mut response = crate::ai::ScriptedResponse::text("Done.");
+    let mut response = crate::ai::ScriptedResponse::text("Partial answer.");
     response.stop_reason = crate::ai::StopReason::MaxTokens;
-    let client = crate::ai::ScriptedClient::new("overflow", vec![response]);
+    let client = crate::ai::ScriptedClient::new("output-limit", vec![response]);
     let (agent, mut events) =
         NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(client)).unwrap();
     agent.replace_history_with_continuation(
@@ -2394,22 +2902,90 @@ async fn max_tokens_overflow_compaction_is_measured_as_automatic() {
     );
     agent.prompt("Continue".into(), vec![]).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
-        let mut measured = false;
-        while let Some(event) = events.recv().await {
-            match event {
-                FromAgent::CompactionMeasured { .. } => measured = true,
-                FromAgent::Compaction { auto, .. } => {
-                    assert!(measured, "overflow must measure completed compaction");
-                    assert!(auto, "MaxTokens is an automatic compaction trigger");
-                    return;
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Compaction { .. } | FromAgent::CompactionMeasured { .. }) => {
+                    panic!("an output limit must not compact input history")
                 }
-                _ => {}
+                Some(FromAgent::TurnCompleted { .. }) => break,
+                Some(FromAgent::Error {
+                    terminal: true,
+                    message,
+                    ..
+                }) => panic!("{message}"),
+                Some(_) => {}
+                None => panic!("agent ended before completing the response"),
             }
         }
-        panic!("runner ended without overflow compaction");
     })
     .await
-    .expect("overflow should compact");
+    .expect("turn completed");
+    agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn max_tokens_refuses_complete_json_tool_calls_without_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scripted = crate::ai::ScriptedClient::new(
+        "output-limit",
+        vec![
+            crate::ai::ScriptedResponse {
+                blocks: vec![crate::ai::ScriptedBlock::ToolUse {
+                    id: "truncated-write".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({"path":"result.txt","content":"valid but incomplete"}),
+                }],
+                stop_reason: crate::ai::StopReason::MaxTokens,
+                error: None,
+            },
+            crate::ai::ScriptedResponse::text("The truncated call did not execute."),
+        ],
+    );
+    let config = NativeAgentConfig {
+        model: "scripted/output-limit".into(),
+        cwd: workspace.path().display().to_string(),
+        approval_mode: ApprovalMode::Yolo,
+        ..Default::default()
+    };
+    let host = RuntimeTestHost::new(workspace.path(), UnifiedClient::Scripted(scripted.clone()));
+    let executions = Arc::clone(&host.completed_tool_executions);
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    let mut refused = false;
+    agent.prompt("Write a file".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match events.recv().await {
+                Some(FromAgent::Error {
+                    message,
+                    terminal: false,
+                    ..
+                }) => {
+                    refused |= message.contains("not_executed") && message.contains("truncated");
+                }
+                Some(FromAgent::Error {
+                    message,
+                    terminal: true,
+                    ..
+                }) => panic!("{message}"),
+                Some(FromAgent::TurnCompleted { .. }) => break,
+                Some(_) => {}
+                None => panic!("agent ended before completing the response"),
+            }
+        }
+    })
+    .await
+    .expect("turn completed");
+    assert!(
+        refused,
+        "the truncated call must produce an explicit refusal"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        scripted.remaining(),
+        0,
+        "the model receives the refusal and can continue"
+    );
+    assert!(!workspace.path().join("result.txt").exists());
     agent.shutdown().await;
 }
 
@@ -2478,7 +3054,25 @@ async fn ordinary_compaction_keeps_restored_user_boundaries_in_checkpoint() {
     })
     .await
     .expect("compaction should complete");
+    let audit = Arc::clone(&agent.runtime_audit);
     agent.shutdown().await;
+    let snapshot = audit.read().unwrap().clone();
+    let topology = snapshot
+        .request_cache
+        .as_ref()
+        .unwrap()
+        .cache_topology
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        topology.generation, 2,
+        "checkpoint must be installed without another model request"
+    );
+    assert_eq!(
+        topology.transition,
+        maestro_ai::cache_topology::CacheTransition::HistoryRewritten
+    );
+
     assert_eq!(
         checkpoint.user_requests.first().map(String::as_str),
         Some("Do not publish. Work locally.")
@@ -2486,6 +3080,119 @@ async fn ordinary_compaction_keeps_restored_user_boundaries_in_checkpoint() {
     let restored: super::super::compaction::ContinuationRecord =
         serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
     assert_eq!(restored.user_requests, checkpoint.user_requests);
+}
+
+#[tokio::test]
+async fn manual_summary_installs_next_generation_before_another_primary_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let client = crate::ai::ScriptedClient::new(
+        "manual-summary",
+        vec![
+            crate::ai::ScriptedResponse::text("Original answer."),
+            crate::ai::ScriptedResponse::text("Continued summary."),
+            crate::ai::ScriptedResponse::text("Unrelated session."),
+        ],
+    );
+    let (agent, mut events) =
+        NativeAgent::new_with_test_client(config, UnifiedClient::Scripted(client)).unwrap();
+    agent
+        .set_session_context(Some("source".into()), "new", false)
+        .unwrap();
+    agent
+        .prompt("Retain this constraint".into(), vec![])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnCompleted { .. }) {
+                return;
+            }
+        }
+        panic!("turn did not complete");
+    })
+    .await
+    .unwrap();
+    let before = agent
+        .runtime_audit_snapshot()
+        .request_cache
+        .unwrap()
+        .cache_topology
+        .unwrap();
+    let preview = agent
+        .start_selective_summary_preview()
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    agent
+        .apply_selective_summary(
+            vec![Message {
+                role: Role::User,
+                content: MessageContent::text("Reviewed summary: retain this constraint"),
+            }],
+            preview.history_digest,
+        )
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    let after = agent
+        .runtime_audit_snapshot()
+        .request_cache
+        .unwrap()
+        .cache_topology
+        .unwrap();
+    assert_eq!(after.generation, before.generation + 1);
+    assert_eq!(
+        after.transition,
+        maestro_ai::cache_topology::CacheTransition::HistoryRewritten
+    );
+    agent
+        .set_compacted_session_context_with_transcript("summary-child".into(), None, false)
+        .unwrap();
+    for (prompt, generation, transition) in [
+        (
+            "Continue the summary",
+            2,
+            maestro_ai::cache_topology::CacheTransition::Append,
+        ),
+        (
+            "A separate conversation",
+            1,
+            maestro_ai::cache_topology::CacheTransition::Initial,
+        ),
+    ] {
+        if generation == 1 {
+            agent
+                .set_session_context(Some("unrelated".into()), "new", false)
+                .unwrap();
+        }
+        agent.prompt(prompt.into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.recv().await {
+                if matches!(event, FromAgent::TurnCompleted { .. }) {
+                    return;
+                }
+            }
+            panic!("turn did not complete");
+        })
+        .await
+        .unwrap();
+        let topology = agent
+            .runtime_audit_snapshot()
+            .request_cache
+            .unwrap()
+            .cache_topology
+            .unwrap();
+        assert_eq!(topology.generation, generation);
+        assert_eq!(topology.transition, transition);
+    }
+    agent.shutdown().await;
 }
 
 #[tokio::test]
@@ -2545,9 +3252,10 @@ async fn selective_summary_uses_only_selected_history_without_tools_and_applies_
         .unwrap()
         .unwrap();
     let request = agent
-        .start_selective_summary(
+        .start_selective_summary_with_instructions(
             super::super::RangeSelection::FromTurn(2),
             preview.history_digest.clone(),
+            Some("Retain selected evidence".into()),
         )
         .unwrap();
     let outcome = tokio::time::timeout(Duration::from_secs(5), request.receiver)
@@ -2566,6 +3274,7 @@ async fn selective_summary_uses_only_selected_history_without_tools_and_applies_
     let captured = server.await.unwrap();
     let sent = serde_json::to_string(&captured["messages"]).unwrap();
     assert!(sent.contains("SELECTED_TURN_FACT"));
+    assert!(sent.contains("Retain selected evidence"));
     assert!(!sent.contains("PRIVATE_UNSELECTED_PREFIX"));
     assert!(
         captured
@@ -2997,6 +3706,7 @@ fn semantic_checkpoint_excludes_thinking_and_raw_tool_output_but_keeps_tool_pair
                     id: "call-1".to_owned(),
                     name: "read".to_owned(),
                     input: serde_json::json!({ "path": "src/lib.rs" }),
+                    gemini_context: None,
                 },
             ]),
         },
@@ -3403,6 +4113,9 @@ async fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
     let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let agent = super::NativeAgent {
+        managed_authorization: Arc::new(crate::agent::ManagedAuthorizationCoordinator::new(
+            event_tx.clone(),
+        )),
         host: runtime_test_host_handle(),
         managed_run_id: "test-run".to_owned(),
         command_tx,
@@ -3478,6 +4191,9 @@ async fn shutdown_preempts_buffered_prompts_and_awaits_runner_exit() {
         runner_exited_in_task.store(true, Ordering::SeqCst);
     });
     let agent = super::NativeAgent {
+        managed_authorization: Arc::new(crate::agent::ManagedAuthorizationCoordinator::new(
+            event_tx.clone(),
+        )),
         host: runtime_test_host_handle(),
         managed_run_id: "test-run".to_owned(),
         command_tx,
@@ -3557,6 +4273,9 @@ fn agent_cancel_interrupts_an_approval_wait_without_dropping_the_request() {
     let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let agent = super::NativeAgent {
+        managed_authorization: Arc::new(crate::agent::ManagedAuthorizationCoordinator::new(
+            event_tx.clone(),
+        )),
         host: runtime_test_host_handle(),
         managed_run_id: "test-run".to_owned(),
         command_tx,
@@ -3603,6 +4322,9 @@ async fn agent_cancel_keeps_tool_batch_cleanup_alive_between_operations() {
     let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let agent = super::NativeAgent {
+        managed_authorization: Arc::new(crate::agent::ManagedAuthorizationCoordinator::new(
+            event_tx.clone(),
+        )),
         host: runtime_test_host_handle(),
         managed_run_id: "test-run".to_owned(),
         command_tx,
@@ -5476,6 +6198,7 @@ fn fatal_stream_error_discards_completed_tool_calls() {
             id: "call-1".to_string(),
             name: "bash".to_string(),
             input: serde_json::json!({"command": "true"}),
+            gemini_context: None,
         },
     ];
     let mut pending_tool_calls = vec![(
@@ -6112,6 +6835,7 @@ fn assistant_tool_use_message(calls: &[(&str, &str)]) -> Message {
                     id: (*id).to_string(),
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 })
                 .collect(),
         ),
@@ -6760,3 +7484,454 @@ fn model_capabilities_from_prompt(system: &str) -> Value {
     )
     .unwrap()
 }
+
+#[test]
+fn file_provenance_requires_successful_typed_result() {
+    let details = crate::ToolDetails::Write(crate::tool_details::WriteDetails {
+        path: "src/result.rs".into(),
+        ..Default::default()
+    });
+    let mut result = ToolExecution::from_legacy(
+        "write-1",
+        "write",
+        ExecutionSource::Native,
+        ToolResult::success("wrote file"),
+    );
+    assert!(successful_file_operation("write-1", &result.receipt).is_none());
+    result.receipt.details = super::super::protocol::ToolReceiptDetails::BuiltIn(details.clone());
+    let operation = successful_file_operation("write-1", &result.receipt).unwrap();
+    assert_eq!(operation.path, "src/result.rs");
+    assert!(successful_file_operation("wrong-call", &result.receipt).is_none());
+    let mut failed = ToolExecution::from_legacy(
+        "write-2",
+        "write",
+        ExecutionSource::Native,
+        ToolResult::failure("write failed"),
+    );
+    failed.receipt.details = super::super::protocol::ToolReceiptDetails::BuiltIn(details);
+    assert!(successful_file_operation("write-2", &failed.receipt).is_none());
+    assert!(
+        successful_file_operation(
+            "denied",
+            &ToolExecution::denied("denied", "write", DenialReason::User).receipt
+        )
+        .is_none()
+    );
+}
+
+async fn two_request_context_fixture(
+    tool_first: bool,
+    with_usage: bool,
+) -> (
+    UnifiedClient,
+    Arc<Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_scripted_provider_request(&mut stream).await;
+            captured.lock().unwrap().push(request);
+            let mut body = chat_sse_response("continuity", "Done.", tool_first && index == 0);
+            if with_usage {
+                let usage = json!({"id":"continuity","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":360,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":300}}});
+                body = body.replace("data: [DONE]", &format!("data: {usage}\n\ndata: [DONE]"));
+            }
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+        }
+    });
+    let client = UnifiedClient::OpenAI(
+        crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1")).unwrap(),
+    );
+    (client, requests, server)
+}
+
+#[tokio::test]
+async fn final_tool_projection_bounds_hook_output_and_retains_full_capture() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, requests, server) = two_request_context_fixture(true, false).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client);
+    host.post_tool_context = Some(format!(
+        "{}unique-end-marker",
+        "large tool context ".repeat(5000)
+    ));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    agent
+        .set_session_context(Some("output-fixture".into()), "new", true)
+        .unwrap();
+    agent.prompt("Read the file".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::ContextCalibration { .. } => {
+                    panic!("missing usage must stay unobserved")
+                }
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
+    let captured = requests.lock().unwrap();
+    let messages = captured[1]["messages"].as_array().unwrap();
+    let tool = messages.iter().find(|m| m["role"] == "tool").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(tool.len() < 40_000);
+    assert!(tool.contains("Truncated"));
+    let path = workspace
+        .path()
+        .join(".maestro/output-fixture/full-output.txt");
+    assert!(tool.contains(path.to_str().unwrap()));
+    let full = std::fs::read_to_string(path).unwrap();
+    assert!(full.len() > 40_000);
+    assert!(full.contains("unique-end-marker"));
+}
+
+#[tokio::test]
+async fn steering_queued_before_checkpoint_install_reaches_next_request_once() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, requests, server) = two_request_context_fixture(false, false).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let barrier = Arc::new((
+        tokio::sync::Notify::new(),
+        tokio::sync::Notify::new(),
+        AtomicBool::new(false),
+    ));
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), client);
+    host.checkpoint_barrier = Some(Arc::clone(&barrier));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    agent.set_steering_mode(QueueMode::One).unwrap();
+    agent.replace_history(
+        (0..20)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: MessageContent::text("earlier context ".repeat(100)),
+            })
+            .collect(),
+    );
+    agent.prompt("Continue".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+        .await
+        .unwrap();
+    agent
+        .prompt_with_kind(
+            "Correction: preserve the database".into(),
+            vec![],
+            PromptKind::Steer,
+            None,
+        )
+        .await
+        .unwrap();
+    barrier.1.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let snapshot = agent.runtime_audit_snapshot();
+    agent.shutdown().await;
+    server.await.unwrap();
+    assert!(
+        snapshot
+            .request_cache
+            .unwrap()
+            .cache_topology
+            .unwrap()
+            .generation
+            >= 2
+    );
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(
+        captured[1]
+            .to_string()
+            .matches("Correction: preserve the database")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn calibration_is_bound_to_each_completed_primary_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, _requests, server) = two_request_context_fixture(true, true).await;
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        ..Default::default()
+    };
+    let (agent, mut events) =
+        new_runtime_test_agent_with_host(config.clone(), RuntimeTestHost::new(config.cwd, client))
+            .unwrap();
+    agent.prompt("Read the file".into(), vec![]).await.unwrap();
+    let mut observations = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::ContextCalibration { observation } => observations.push(observation),
+                FromAgent::TurnCompleted { .. } => break,
+                FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => {
+                    panic!("{message}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    server.await.unwrap();
+    assert_eq!(observations.len(), 2);
+    assert_ne!(observations[0].request_id, observations[1].request_id);
+    assert!(
+        observations[1].estimated_input_tokens > observations[0].estimated_input_tokens,
+        "accounting must come from each prepared history, not a stale earlier request"
+    );
+    for observation in observations {
+        assert_eq!(observation.observed_input_tokens, 360);
+        assert_eq!(observation.generation, 1);
+        assert!(observation.estimated_input_tokens > 0);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_prepared_compaction_does_not_duplicate_user_history() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(1024),
+        ..Default::default()
+    };
+    let large_response = (0..512)
+        .map(|i| format!("response-{i} "))
+        .collect::<String>();
+    let scripted = crate::ai::ScriptedClient::new(
+        "cancel-compaction",
+        vec![
+            crate::ai::ScriptedResponse::text(large_response.clone()),
+            crate::ai::ScriptedResponse::text(large_response.clone()),
+        ],
+    );
+    let barrier = Arc::new((
+        tokio::sync::Notify::new(),
+        tokio::sync::Notify::new(),
+        AtomicBool::new(false),
+    ));
+    let mut host = RuntimeTestHost::new(config.cwd.clone(), UnifiedClient::Scripted(scripted));
+    host.checkpoint_barrier = Some(Arc::clone(&barrier));
+    let (agent, mut events) = new_runtime_test_agent_with_host(config, host).unwrap();
+    let sentinel = "original-boundary: retain this context".to_owned();
+    let history = vec![Message {
+        role: Role::User,
+        content: MessageContent::text(sentinel.clone()),
+    }];
+    let compactor = crate::agent::compaction::ContextCompactor::new(
+        crate::agent::compaction::CompactionConfig::for_model("openai/gpt-4o", Some(1024)),
+    );
+    assert!(!compactor.should_auto_compact(&history));
+    let mut completed = history.clone();
+    completed.push(Message {
+        role: Role::User,
+        content: MessageContent::text("Continue"),
+    });
+    completed.push(Message {
+        role: Role::Assistant,
+        content: MessageContent::text(large_response),
+    });
+    assert!(compactor.should_auto_compact(&completed));
+    assert!(compactor.compact_with_tokens(&completed).was_compacted());
+    agent.replace_history(history);
+    agent.prompt("Continue".into(), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+        .await
+        .unwrap();
+    agent.cancel();
+    barrier.1.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, FromAgent::TurnInterrupted { .. }) {
+                return;
+            }
+        }
+        panic!("missing interruption");
+    })
+    .await
+    .unwrap();
+    agent.prompt("Resume".into(), vec![]).await.unwrap();
+    let record = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                FromAgent::Compaction {
+                    continuation: Some(record),
+                    ..
+                } => return record,
+                FromAgent::ProviderError { message, .. } => panic!("{message}"),
+                _ => {}
+            }
+        }
+        panic!("missing resumed compaction");
+    })
+    .await
+    .unwrap();
+    agent.shutdown().await;
+    assert_eq!(
+        record
+            .user_requests
+            .iter()
+            .filter(|request| **request == sentinel)
+            .count(),
+        1,
+        "a cancelled prepared checkpoint must not retain the original history twice"
+    );
+}
+
+/// Manual soak test: drains the real actor stream, retains only scalar metrics,
+/// and uses a scripted provider so no credentials or paid requests are needed.
+#[tokio::test]
+#[ignore = "manual repeated-turn memory measurement"]
+async fn many_turns_memory_probe() {
+    let turns: usize = std::env::var("MAESTRO_MEMORY_TURNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2000);
+    let reset_every: usize = std::env::var("MAESTRO_MEMORY_RESET_EVERY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let workspace = tempfile::tempdir().unwrap();
+    let scripted = crate::ai::ScriptedClient::new(
+        "memory-soak",
+        (0..turns)
+            .map(|_| crate::ai::ScriptedResponse::text("Done."))
+            .collect(),
+    );
+    let config = NativeAgentConfig {
+        model: "openai/gpt-4o".into(),
+        cwd: workspace.path().display().to_string(),
+        context_window: Some(4096),
+        ..Default::default()
+    };
+    let (agent, mut events) =
+        new_runtime_test_agent(config, UnifiedClient::Scripted(scripted.clone())).unwrap();
+    let mut messages_bytes = 0;
+    let mut continuation_bytes = 0;
+    let mut retained_requests = 0;
+    let started = Instant::now();
+    eprintln!(
+        "MEMORY_PROBE pid={} turns={turns} reset_every={reset_every}",
+        std::process::id()
+    );
+    tokio::time::timeout(Duration::from_secs(600), async {
+        for turn in 0..turns {
+            if reset_every > 0 && turn % reset_every == 0 {
+                agent.clear_history();
+                continuation_bytes = 0;
+                retained_requests = 0;
+            }
+            agent.prompt(format!("request-{turn}: {}", "Keep the task local and preserve the evidence. ".repeat(8)), vec![]).await.unwrap();
+            while let Some(event) = events.recv().await {
+                match event {
+                    FromAgent::ConversationSnapshot { messages, .. } => {
+                        messages_bytes = serde_json::to_vec(&messages).unwrap().len();
+                    }
+                    FromAgent::Compaction { continuation: Some(record), .. } => {
+                        continuation_bytes = serde_json::to_vec(&record).unwrap().len();
+                        retained_requests = record.user_requests.len();
+                        assert!(retained_requests <= if reset_every > 0 { reset_every } else { turn + 1 }, "compaction duplicated requests");
+                    }
+                    FromAgent::TurnCompleted { .. } => break,
+                    FromAgent::Error { message, .. } | FromAgent::ProviderError { message, .. } => panic!("turn {turn}: {message}"),
+                    FromAgent::TurnInterrupted { reason, .. } => panic!("turn {turn}: {reason}"),
+                    _ => {}
+                }
+            }
+            if (turn + 1) % 100 == 0 || turn + 1 == turns {
+                eprintln!("MEMORY_SAMPLE turn={} elapsed_ms={} messages_bytes={messages_bytes} continuation_bytes={continuation_bytes} retained_requests={retained_requests}", turn + 1, started.elapsed().as_millis());
+            }
+        }
+    }).await.unwrap();
+    agent.shutdown().await;
+    assert_eq!(scripted.remaining(), 0);
+}
+
+#[test]
+fn codex_turn_boundary_releases_patches_and_rejects_stale_item_approvals() {
+    let mut correlations = CodexTurnCorrelations::default();
+    for turn in 0..2000 {
+        correlations.reset();
+        assert_eq!(correlations.file_changes.capacity(), 0);
+        assert!(correlations.approved.is_empty());
+        assert!(correlations.pending_completions.is_empty());
+        if turn > 0 {
+            let stale = json!({"itemId": format!("item-{}", turn - 1)});
+            assert!(
+                codex_native_file_change_paths(&stale, Some(&correlations.file_changes)).is_empty(),
+                "prior-turn metadata must not authorize a new approval"
+            );
+        }
+        let id = format!("item-{turn}");
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".into(),
+            params: Some(
+                json!({"item":{"id": id, "type":"fileChange", "status":"completed",
+                "changes":[{"path":"/tmp/workspace/file.rs", "kind":{"type":"update", "content":"x".repeat(64*1024)}}]}}),
+            ),
+        };
+        remember_codex_file_change_completion_paths(&notification, &mut correlations.file_changes);
+        assert_eq!(
+            codex_native_file_change_paths(
+                &json!({"itemId": id}),
+                Some(&correlations.file_changes)
+            ),
+            ["/tmp/workspace/file.rs"],
+            "same-turn late approvals retain their policy metadata"
+        );
+        correlations.approved.insert(
+            id.clone(),
+            CodexNativeToolCorrelation {
+                call_id: id.clone(),
+                tool_name: "codex_file_change".into(),
+            },
+        );
+        correlations.pending_completions.insert(id, true);
+    }
+    correlations.reset();
+    assert_eq!(correlations.file_changes.capacity(), 0);
+}
+
+#[path = "session_scenarios.rs"]
+pub(super) mod session_scenarios;

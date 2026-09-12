@@ -434,17 +434,17 @@ test("source-root receipt generation supports the legacy v1-only recovery source
 	const sources = readCanonicalSources();
 	const sourcePaths = {
 		headlessSchema: "proto/maestro/v1/headless.proto",
-		headlessGenerated: "packages/tui-rs/src/headless/generated_protocol.rs",
-		headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
+		headlessGenerated: "packages/local-host-rs/src/headless/generated_protocol.rs",
+		headlessRuntime: "packages/local-host-rs/src/headless/messages.rs",
 		runtimeProtocol: "packages/runtime-contracts-rs/src/protocol.rs",
 		runtimeFixture: "packages/runtime-contracts-rs/fixtures/headless-protocol-v1.json",
 		runtimeReceipts: "packages/runtime-contracts-rs/src/receipts.rs",
 		runtimeReceiptFixture: "packages/runtime-contracts-rs/fixtures/runtime-receipt-v1.json",
-		transcript: "packages/tui-rs/src/transcript.rs",
-		thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
-		resident: "packages/tui-rs/src/hosted_runner_cli.rs",
-		hostedRunner: "packages/tui-rs/src/hosted_runner.rs",
-		rendezvous: "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs",
+		transcript: "packages/local-host-rs/src/transcript.rs",
+		thread: "packages/local-host-rs/src/hosted_runner/thread_protocol.rs",
+		resident: "packages/local-host-rs/src/hosted_runner_cli.rs",
+		hostedRunner: "packages/local-host-rs/src/hosted_runner.rs",
+		rendezvous: "packages/local-host-rs/src/hosted_runner/rendezvous_protocol.rs",
 	};
 	const legacyCodeMode = `/// Runtime execution mode negotiated by a governing controller.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

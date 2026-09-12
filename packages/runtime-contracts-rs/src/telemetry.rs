@@ -745,6 +745,77 @@ mod tests {
 
     const PARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
+    #[test]
+    fn batch_otlp_exporter_delivers_a_span_over_http() {
+        use opentelemetry::trace::{Span as _, Tracer as _};
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("collector listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let endpoint = format!("http://{}/v1/traces", listener.local_addr().unwrap());
+        let collector = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "no OTLP request arrived");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("collector accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 4096];
+            loop {
+                let count = stream.read(&mut chunk).expect("OTLP request bytes");
+                assert!(count > 0, "incomplete OTLP request");
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .expect("OTLP content length")
+                        .parse()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        assert!(headers.starts_with("post /v1/traces http/1.1"));
+                        assert!(headers.contains("content-type: application/x-protobuf"));
+                        assert!(length > 0, "exported span payload must not be empty");
+                        break;
+                    }
+                }
+                assert!(request.len() < 65536, "unexpectedly large test trace");
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let exporter = SpanExporter::builder()
+            .with_http()
+            .with_endpoint(endpoint)
+            .with_timeout(Duration::from_secs(2))
+            .build()
+            .expect("configured HTTP exporter");
+        let provider = SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .build();
+        provider
+            .tracer("collector-regression")
+            .start("test-span")
+            .end();
+        provider.force_flush().expect("batch export completed");
+        provider.shutdown().expect("exporter shutdown");
+        collector.join().expect("collector accepted OTLP trace");
+    }
+
     fn harness(
         service_name: &'static str,
         version: &'static str,

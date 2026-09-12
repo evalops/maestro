@@ -3,9 +3,13 @@ WORKDIR /app
 
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/zstd-0.13.3 ./vendor/zstd-0.13.3
+COPY vendor/zstd-safe-7.2.4 ./vendor/zstd-safe-7.2.4
+COPY vendor/zstd-sys-2.0.16+zstd.1.5.7 ./vendor/zstd-sys-2.0.16+zstd.1.5.7
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/local-host-rs ./packages/local-host-rs
 COPY packages/sandbox-rs ./packages/sandbox-rs
 COPY packages/workspace-rs ./packages/workspace-rs
 COPY packages/codex-rs ./packages/codex-rs
@@ -29,11 +33,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS native
 COPY --from=planner /app/recipe.json recipe.json
+COPY vendor/zstd-0.13.3 ./vendor/zstd-0.13.3
+COPY vendor/zstd-safe-7.2.4 ./vendor/zstd-safe-7.2.4
+COPY vendor/zstd-sys-2.0.16+zstd.1.5.7 ./vendor/zstd-sys-2.0.16+zstd.1.5.7
 RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/context-rs ./packages/context-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/local-host-rs ./packages/local-host-rs
 COPY packages/sandbox-rs ./packages/sandbox-rs
 COPY packages/workspace-rs ./packages/workspace-rs
 COPY packages/codex-rs ./packages/codex-rs

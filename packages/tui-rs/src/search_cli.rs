@@ -537,8 +537,20 @@ pub fn run_search(args: &[String]) -> Result<i32> {
     else {
         println!("{USAGE}");
         println!();
-        println!("Search local session transcripts (user/assistant text and tool results).");
-        println!("Exit codes: 0 = matches found, 1 = no matches, 2 = error.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Search local session transcripts (user/assistant text and tool results).",
+                &[]
+            )
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Exit codes: 0 = matches found, 1 = no matches, 2 = error.",
+                &[]
+            )
+        );
         return Ok(0);
     };
 
@@ -546,7 +558,10 @@ pub fn run_search(args: &[String]) -> Result<i32> {
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
     // sessions_dir is `~/.composer/agent/sessions/<slug>`; search spans all slugs.
     let Some(root) = manager.sessions_dir().parent().map(Path::to_path_buf) else {
-        eprintln!("could not resolve sessions directory");
+        eprintln!(
+            "{}",
+            crate::localization::cli_locale().format("could not resolve sessions directory", &[])
+        );
         return Ok(2);
     };
     let cache_path = root
@@ -565,7 +580,11 @@ pub fn run_search(args: &[String]) -> Result<i32> {
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else if matches.is_empty() {
-        println!("No matches for \"{query}\".");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("No matches for \"{0}\".", std::slice::from_ref(&(query)))
+        );
     } else {
         print_human(&matches, io::stdout().is_terminal());
     }

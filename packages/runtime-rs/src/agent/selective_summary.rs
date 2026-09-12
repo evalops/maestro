@@ -245,6 +245,7 @@ mod tests {
                     id: "call".into(),
                     name: "read".into(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 }]),
             },
         ];

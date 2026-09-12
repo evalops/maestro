@@ -9,7 +9,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fs2::FileExt;
 use hmac::{Hmac, KeyInit, Mac};
-use maestro_tui::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
+use maestro_local_host::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1327,16 +1327,33 @@ mod tests {
         let mut extended_api = crate::extended::ExtendedApiState::default();
         extended_api.automations = Some(store);
         let api = std::sync::Arc::new(Mutex::new(extended_api));
-        let mutation = retry_automation_mutation(api, |store| store.mutate(|_| Ok(())));
+        let runtime_thread = thread::current().id();
+        let (attempt_tx, attempt_rx) = tokio::sync::oneshot::channel();
+        let mut attempt_tx = Some(attempt_tx);
+        let mutation = retry_automation_mutation(api, move |store| {
+            assert_ne!(thread::current().id(), runtime_thread);
+            let result = store.mutate(|_| Ok(()));
+            if let Some(attempt_tx) = attempt_tx.take() {
+                let contended = matches!(
+                    &result,
+                    Err(AutomationStoreError::Io(error)) if error.kind() == ErrorKind::WouldBlock
+                );
+                let _ = attempt_tx.send(contended);
+            }
+            result
+        });
         tokio::pin!(mutation);
 
+        // Observe an actual contended attempt, rather than assuming that a
+        // worker started within a short sleep on a loaded CI runner.
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            attempt = attempt_rx => assert!(attempt.expect("worker should report its first attempt")),
             _ = &mut mutation => panic!("live owner should keep the durable mutation pending"),
         }
 
         drop(owner);
-        tokio::time::timeout(Duration::from_secs(1), mutation)
+        // This is a hang guard, not a one-second scheduler latency contract.
+        tokio::time::timeout(MUTATION_RETRY_TIMEOUT + Duration::from_secs(5), mutation)
             .await
             .expect("mutation should finish after contention clears")
             .expect("blocking worker should finish")

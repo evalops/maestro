@@ -221,7 +221,7 @@ test("Rust validation uses the pinned canonical nextest split", () => {
 
 test("rust-tests explicitly proves CI machine auth fails closed without privileged tokens", () => {
   const rust = pipeline.split('key: "rust-tests"')[1]?.split('key: "')[0] ?? "";
-  assert.match(rust, /cargo test --locked -p maestro-tui ci_auth_conformance/);
+  assert.match(rust, /cargo test --locked -p maestro-local-host ci_auth_conformance/);
   assert.doesNotMatch(rust, /ACTIONS_ID_TOKEN_REQUEST_TOKEN/);
 });
 

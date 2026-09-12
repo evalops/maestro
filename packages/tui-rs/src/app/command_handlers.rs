@@ -29,11 +29,15 @@ pub(crate) fn normalize_slash_completion(cmd: &str) -> String {
 #[must_use]
 pub(crate) fn cleanup_result_message(removed: usize, errors: usize) -> String {
     if removed == 0 && errors == 0 {
-        "No sessions to prune.".to_string()
+        maestro_ui::localization::tr("No sessions to prune.").to_string()
     } else if removed == 0 {
-        format!("Failed to prune sessions: {errors} error(s).")
+        maestro_ui::localization::format(
+            "Failed to prune sessions: {0} error(s).",
+            &[(errors).to_string()],
+        )
     } else {
-        let mut msg = format!("Pruned {removed} session(s).");
+        let mut msg =
+            maestro_ui::localization::format("Pruned {0} session(s).", &[(removed).to_string()]);
         if errors > 0 {
             msg.push_str(&format!(" {errors} error(s)."));
         }
@@ -156,7 +160,12 @@ impl App {
 
     pub(super) fn cycle_model(&mut self, backward: bool) {
         if self.state.busy || self.pending_model_change.is_some() || self.pending_agent_spawn {
-            self.state.status = Some("Wait for the current turn or model switch to finish.".into());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Wait for the current turn or model switch to finish.")
+                    .into(),
+            );
             return;
         }
         let config = crate::config::model_dynamics_config();
@@ -188,7 +197,12 @@ impl App {
         {
             self.switch_model(next, false);
         } else {
-            self.state.status = Some("No other configured model is available to cycle to.".into());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("No other configured model is available to cycle to.")
+                    .into(),
+            );
         }
     }
 
@@ -205,26 +219,41 @@ impl App {
         if persist_default {
             match crate::config_cli::persist_user_model_default(model_id) {
                 Ok(path) => {
-                    self.state
-                        .add_system_message(format!("Default model saved to {}", path.display()));
+                    self.state.add_system_message(self.state.locale.format(
+                        "Default model saved to {0}",
+                        &[(path.display()).to_string()],
+                    ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Failed to save default model: {error}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Failed to save default model: {0}", &[(error).to_string()]),
+                    );
                     return;
                 }
             }
         }
         if let Some(agent) = &self.native_agent {
             if let Err(e) = agent.set_model(model_id) {
-                self.state.error = Some(format!("Failed to set model: {e}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to set model: {0}", &[(e).to_string()]),
+                );
             } else {
                 self.pending_model_change = Some(PendingModelChange {
                     model: model_id.to_owned(),
                 });
                 self.state.status = Some(if persist_default {
-                    format!("Switching model: {model_id} (saved as default)")
+                    self.state.locale.format(
+                        "Switching model: {0} (saved as default)",
+                        &[(model_id).to_string()],
+                    )
                 } else {
-                    format!("Switching model: {model_id}")
+                    self.state
+                        .locale
+                        .format("Switching model: {0}", &[(model_id).to_string()])
                 });
             }
         } else {
@@ -242,9 +271,13 @@ impl App {
             self.state.model = Some(model_id.to_owned());
             self.pending_agent_spawn = true;
             self.state.status = Some(if persist_default {
-                format!("Default model saved: {model_id}")
+                self.state
+                    .locale
+                    .format("Default model saved: {0}", &[(model_id).to_string()])
             } else {
-                format!("Model set to {model_id}")
+                self.state
+                    .locale
+                    .format("Model set to {0}", &[(model_id).to_string()])
             });
         }
     }
@@ -254,14 +287,14 @@ impl App {
             CommandAction::OpenPanel(panel) => self.show_control_panel(panel),
             CommandAction::SetOutputDetail(detail) => self.apply_output_detail(detail),
             CommandAction::ClearMessages => {
-                self.start_new_session("New session started.");
+                self.start_new_session(self.state.locale.translate("New session started."));
             }
             CommandAction::ToggleZenMode => {
                 self.state.zen_mode = !self.state.zen_mode;
                 if self.state.zen_mode {
-                    self.state.status = Some("Zen mode enabled".to_string());
+                    self.state.status = Some(self.state.locale.translate("Zen mode enabled").to_string());
                 } else {
-                    self.state.status = Some("Zen mode disabled".to_string());
+                    self.state.status = Some(self.state.locale.translate("Zen mode disabled").to_string());
                 }
             }
             CommandAction::SetCompactTools(mode) => {
@@ -278,9 +311,7 @@ impl App {
                 } else if let Some(m) = ApprovalMode::parse(&mode) {
                     self.state.approval_mode = m;
                 } else {
-                    self.state.error = Some(format!(
-                        "Unknown approval mode: {mode}. Use: yolo, selective, safe"
-                    ));
+                    self.state.error = Some(self.state.locale.format("Unknown approval mode: {0}. Use: yolo, selective, safe", std::slice::from_ref(&(mode))));
                     return;
                 }
                 self.sync_agent_approval_mode();
@@ -295,10 +326,7 @@ impl App {
                         }
                     }
                 };
-                self.state.status = Some(format!(
-                    "Approval mode: {}",
-                    self.state.approval_mode.label()
-                ));
+                self.state.status = Some(self.state.locale.format("Approval mode: {0}", &[(self.state.approval_mode.label()).to_string()]));
             }
             CommandAction::CycleInteractionMode => {
                 self.cycle_interaction_mode();
@@ -324,10 +352,10 @@ impl App {
             CommandAction::Boost => {
                 if let Some(agent) = &self.native_agent {
                     if let Err(error) = agent.boost() {
-                        self.state.error = Some(format!("Could not request boost: {error}"));
+                        self.state.error = Some(self.state.locale.format("Could not request boost: {0}", &[(error).to_string()]));
                     }
                 } else {
-                    self.state.status = Some("Start a conversation before using /boost.".into());
+                    self.state.status = Some(self.state.locale.translate("Start a conversation before using /boost.").into());
                 }
             }
             CommandAction::SetThinkingLevel(level_str) => {
@@ -336,7 +364,7 @@ impl App {
                     let (enabled, budget) = level.to_config();
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_thinking(enabled, budget) {
-                            self.state.error = Some(format!("Failed to set thinking: {e}"));
+                            self.state.error = Some(self.state.locale.format("Failed to set thinking: {0}", &[(e).to_string()]));
                             return;
                         }
                     }
@@ -344,11 +372,9 @@ impl App {
                     self.state.thinking_level = self.current_thinking_level;
                     self.record_thinking_level_change(level);
                     self.state.status =
-                        Some(format!("Thinking: {} (budget: {})", level.label(), budget));
+                        Some(self.state.locale.format("Thinking: {0} (budget: {1})", &[(level.label()).to_string(), (budget).to_string()]));
                 } else {
-                    self.state.error = Some(format!(
-                        "Unknown thinking level: {level_str}. Use: off, minimal, low, medium, high, max"
-                    ));
+                    self.state.error = Some(self.state.locale.format("Unknown thinking level: {0}. Use: off, minimal, low, medium, high, max", std::slice::from_ref(&(level_str))));
                 }
             }
             CommandAction::Quit => {
@@ -359,39 +385,16 @@ impl App {
                 // applies the result (and confirms it) when it arrives.
                 self.spawn_workspace_scan();
                 self.workspace_refresh_pending = true;
-                self.state.status = Some("Refreshing workspace files...".to_string());
+                self.state.status = Some(self.state.locale.translate("Refreshing workspace files...").to_string());
             }
-            CommandAction::CopyLastMessage => {
-                if let Some(msg) = self
-                    .state
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|m| m.is_assistant_reply() && !m.content.is_empty())
-                {
-                    match self.clipboard.copy(&msg.content) {
-                        Ok(()) => {
-                            let chars: Vec<char> = msg.content.chars().collect();
-                            let preview = if chars.len() > 50 {
-                                format!("{}...", chars[..47].iter().collect::<String>())
-                            } else {
-                                msg.content.clone()
-                            };
-                            self.state.status = Some(format!("Copied: {preview}"));
-                        }
-                        Err(e) => {
-                            self.state.error = Some(format!("Failed to copy: {e}"));
-                        }
-                    }
-                } else {
-                    self.state.status = Some("No message to copy".to_string());
-                }
-            }
+            CommandAction::CopyLastMessage => self.copy_transcript(&crate::transcript_copy::CopyTarget::Response),
+            CommandAction::CopyTranscript(target) => self.copy_transcript(&target),
+            CommandAction::SetLanguage(locale) => self.apply_language(locale),
             CommandAction::SetTheme(theme_name) => {
                 if let Err(e) = crate::themes::set_theme_by_name(&theme_name) {
-                    self.state.error = Some(format!("Failed to set theme: {e}"));
+                    self.state.error = Some(self.state.locale.format("Failed to set theme: {0}", &[(e).to_string()]));
                 } else {
-                    self.state.status = Some(format!("Theme set to: {theme_name}"));
+                    self.state.status = Some(self.state.locale.format("Theme set to: {0}", std::slice::from_ref(&(theme_name))));
                 }
             }
             CommandAction::SetModel(model_id) => {
@@ -406,17 +409,14 @@ impl App {
             CommandAction::BackgroundMonitor(action) => match action {
                 BackgroundMonitorAction::Add { task_id, pattern } => {
                     match crate::tools::background_tasks::attach_monitor(&task_id, &pattern) {
-                        Ok(monitor) => self.state.add_system_message(format!(
-                            "Background monitor {} attached to task {}. Matches are notifications only.",
-                            monitor.id, monitor.task_id
-                        )),
+                        Ok(monitor) => self.state.add_system_message(self.state.locale.format("Background monitor {0} attached to task {1}. Matches are notifications only.", &[(monitor.id).clone(), (monitor.task_id).clone()])),
                         Err(error) => self.state.error = Some(error),
                     }
                 }
                 BackgroundMonitorAction::List => {
                     let monitors = crate::tools::background_tasks::list_monitors();
                     let message = if monitors.is_empty() {
-                        "No background monitors.".to_string()
+                        self.state.locale.translate("No background monitors.").to_string()
                     } else {
                         monitors
                             .iter()
@@ -435,7 +435,7 @@ impl App {
                     match crate::tools::background_tasks::remove_monitor(&monitor_id) {
                         Ok(_) => self
                             .state
-                            .add_system_message(format!("Removed background monitor {monitor_id}.")),
+                            .add_system_message(self.state.locale.format("Removed background monitor {0}.", std::slice::from_ref(&(monitor_id)))),
                         Err(error) => self.state.error = Some(error),
                     }
                 }
@@ -450,26 +450,20 @@ impl App {
                         prompt: prompt.clone(),
                         next_fire: Instant::now() + Duration::from_secs(interval_secs),
                     });
-                    self.state.add_system_message(format!(
-                        "Loop started: every {interval_secs}s — \"{prompt}\". Use /loop stop to cancel."
-                    ));
+                    self.state.add_system_message(self.state.locale.format("Loop started: every {0}s — \"{1}\". Use /loop stop to cancel.", &[(interval_secs).to_string(), (prompt).clone()]));
                 }
                 LoopAction::Stop => {
                     if self.loop_schedule.take().is_some() {
-                        self.state.add_system_message("Loop stopped.".to_string());
+                        self.state.add_system_message(self.state.locale.translate("Loop stopped.").to_string());
                     } else {
-                        self.state.status = Some("No active loop.".to_string());
+                        self.state.status = Some(self.state.locale.translate("No active loop.").to_string());
                     }
                 }
                 LoopAction::Status => match &self.loop_schedule {
-                    Some(schedule) => self.state.add_system_message(format!(
-                        "Loop active: every {}s — \"{}\"",
-                        schedule.interval.as_secs(),
-                        schedule.prompt
-                    )),
+                    Some(schedule) => self.state.add_system_message(self.state.locale.format("Loop active: every {0}s — \"{1}\"", &[(schedule.interval.as_secs()).to_string(), (schedule.prompt).clone()])),
                     None => self
                         .state
-                        .add_system_message("No active loop. Usage: /loop <interval> <prompt>".to_string()),
+                        .add_system_message(self.state.locale.translate("No active loop. Usage: /loop <interval> <prompt>").to_string()),
                 },
             },
             CommandAction::Goal(action) => self.handle_goal_action(action),
@@ -491,77 +485,20 @@ impl App {
                 let mut prefs = crate::ui_prefs::UiPrefs::load_default();
                 prefs.set_footer_style(style);
                 if let Err(e) = prefs.save_default() {
-                    self.state.error = Some(format!(
-                        "Footer style unchanged; failed to persist {}: {e}",
-                        style.as_str()
-                    ));
+                    self.state.error = Some(self.state.locale.format("Footer style unchanged; failed to persist {0}: {1}", &[(style.as_str()).to_string(), (e).to_string()]));
                 } else {
                     self.footer_style = style;
                     self.ui_prefs = prefs;
                     self.state.error = None;
                     self.state
                         .status
-                        .replace(format!("Footer style: {} (saved)", style.as_str()));
+                        .replace(self.state.locale.format("Footer style: {0} (saved)", &[(self.state.locale.translate(style.as_str())).to_string()]));
                 }
             }
             CommandAction::Attach(action) => self.handle_attach_action(action),
             CommandAction::SummarizeConversation => self.open_selective_summary(),
             CommandAction::CompactConversation(instructions) => {
-                // Compact conversation by summarizing older messages
-                let transcript_messages: Vec<_> = self
-                    .state
-                    .messages
-                    .iter()
-                    .filter(|message| message.counts_toward_compaction_index())
-                    .cloned()
-                    .collect();
-                let msg_count = transcript_messages.len();
-                if msg_count <= 4 {
-                    self.state.status = Some("Conversation too short to compact".to_string());
-                    return;
-                }
-
-                // Keep last 2 messages, summarize the rest
-                let keep_count = 2;
-                let to_summarize = msg_count - keep_count;
-                let tokens_before = self.usage_tracker.total_tokens();
-
-                // Build summary of compacted messages
-                let mut summary = String::new();
-                summary.push_str("## Conversation Summary\n\n");
-
-                for (i, msg) in transcript_messages.iter().take(to_summarize).enumerate() {
-                    let role = match msg.role {
-                        MessageRole::User => "User",
-                        MessageRole::Assistant => "Assistant",
-                    };
-                    let chars: Vec<char> = msg.content.chars().collect();
-                    let preview = if chars.len() > 100 {
-                        format!("{}...", chars[..97].iter().collect::<String>())
-                    } else {
-                        msg.content.clone()
-                    };
-                    summary.push_str(&format!("{}. **{}**: {}\n", i + 1, role, preview));
-                }
-
-                if let Some(ref instr) = instructions {
-                    summary.push_str(&format!("\n*Focus: {instr}*\n"));
-                }
-
-                let summary_clone = summary.clone();
-                self.state
-                    .apply_compaction(summary, to_summarize, SystemTime::now());
-
-                self.record_compaction_entry(
-                    summary_clone,
-                    to_summarize,
-                    tokens_before,
-                    false,
-                    instructions.clone(),
-                    None,
-                );
-
-                self.state.status = Some(format!("Compacted {to_summarize} messages into summary"));
+                self.open_selective_summary_with_instructions(instructions);
             }
             CommandAction::Mcp(action) => {
                 self.handle_mcp_action(action).await;
@@ -580,13 +517,13 @@ impl App {
             }
             CommandAction::SetContextTool { name, excluded } => {
                 if self.state.busy {
-                    self.state.status = Some("Wait for the active response to finish before changing context tools.".into());
+                    self.state.status = Some(self.state.locale.translate("Wait for the active response to finish before changing context tools.").into());
                 } else if let Some(agent) = &self.native_agent {
                     if let Err(error) = agent.set_context_tool_excluded(name, excluded) {
                         self.state.error = Some(error.to_string());
                     }
                 } else {
-                    self.state.error = Some("The agent is not running.".into());
+                    self.state.error = Some(self.state.locale.translate("The agent is not running.").into());
                 }
             }
             CommandAction::ShowContext => {
@@ -610,7 +547,7 @@ impl App {
                     return;
                 }
                 if let Err(error) = self.handle_bug_report(&args).await {
-                    self.state.add_system_message(format!("Bug report: {error}"));
+                    self.state.add_system_message(self.state.locale.format("Bug report: {0}", &[(error).to_string()]));
                 }
             }
             CommandAction::ExportSession(export_action) => {
@@ -669,40 +606,25 @@ impl App {
                 diag.push_str("## Diagnostics\n\n");
 
                 // Model & Provider
-                diag.push_str(&format!(
-                    "**Model:** {}\n",
-                    self.state.model.as_deref().unwrap_or("(none)")
-                ));
-                diag.push_str(&format!(
-                    "**Provider:** {}\n",
-                    self.state.provider.as_deref().unwrap_or("(none)")
-                ));
+                diag.push_str(&self.state.locale.format("**Model:** {0}\n", &[self.state.model.as_deref().unwrap_or("(none)").to_string()]));
+                diag.push_str(&self.state.locale.format("**Provider:** {0}\n", &[self.state.provider.as_deref().unwrap_or("(none)").to_string()]));
 
                 // Working directory & Git
                 diag.push_str(&format!(
                     "**CWD:** {}\n",
                     self.state.cwd.as_deref().unwrap_or("(unknown)")
                 ));
-                diag.push_str(&format!(
-                    "**Git Branch:** {}\n",
-                    self.state.git_branch.as_deref().unwrap_or("(not a repo)")
-                ));
+                diag.push_str(&self.state.locale.format("**Git Branch:** {0}\n", &[self.state.git_branch.as_deref().unwrap_or("(not a repo)").to_string()]));
 
                 // Session
-                diag.push_str(&format!(
-                    "**Session:** {}\n",
-                    self.state.session_id.as_deref().unwrap_or("(ephemeral)")
-                ));
+                diag.push_str(&self.state.locale.format("**Session:** {0}\n", &[self.state.session_id.as_deref().unwrap_or("(ephemeral)").to_string()]));
 
                 // Modes
-                diag.push_str(&format!(
-                    "**Approval Mode:** {}\n",
-                    self.state.approval_mode.label()
-                ));
+                diag.push_str(&self.state.locale.format("**Approval Mode:** {0}\n", &[(self.state.approval_mode.label()).to_string()]));
                 let sandbox = self
                     .sandbox_policy
                     .as_ref()
-                    .map_or("none", crate::sandbox::SandboxPolicy::mode_label);
+                    .map_or(self.state.locale.translate("none"), crate::sandbox::SandboxPolicy::mode_label);
                 diag.push_str(&format!("**Sandbox:** {sandbox}\n"));
                 let cwd_path = self
                     .state
@@ -718,18 +640,9 @@ impl App {
                         "untrusted"
                     }
                 ));
-                diag.push_str(&format!(
-                    "**Zen Mode:** {}\n",
-                    if self.state.zen_mode { "on" } else { "off" }
-                ));
-                diag.push_str(&format!(
-                    "**Steering Mode:** {}\n",
-                    self.state.steering_mode.label()
-                ));
-                diag.push_str(&format!(
-                    "**Follow-up Mode:** {}\n",
-                    self.state.follow_up_mode.label()
-                ));
+                diag.push_str(&self.state.locale.format("**Zen Mode:** {0}\n", &[(if self.state.zen_mode { "on" } else { "off" }).to_string()]));
+                diag.push_str(&self.state.locale.format("**Steering Mode:** {0}\n", &[(self.state.steering_mode.label()).to_string()]));
+                diag.push_str(&self.state.locale.format("**Follow-up Mode:** {0}\n", &[(self.state.follow_up_mode.label()).to_string()]));
 
                 // Terminal info
                 if let Ok((cols, rows)) = crossterm::terminal::size() {
@@ -787,11 +700,12 @@ impl App {
                 self.state.add_system_message(result.output);
             }
         } else {
-            self.state.error = Some(
-                result
-                    .error
-                    .unwrap_or_else(|| "Hosted Computer operation failed".to_string()),
-            );
+            self.state.error = Some(result.error.unwrap_or_else(|| {
+                self.state
+                    .locale
+                    .translate("Hosted Computer operation failed")
+                    .to_string()
+            }));
         }
     }
 
@@ -805,17 +719,27 @@ impl App {
                 // Put the numbers on the first content line. The composer
                 // covers the last line of the last message, so a heading-
                 // then-body layout only showed "## Usage Summary".
-                self.state
-                    .add_system_message(format!("## Usage Summary — {summary}"));
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .format("## Usage Summary — {0}", std::slice::from_ref(&(summary))),
+                );
             }
             UsageAction::Detailed => {
                 let detailed = self.usage_tracker.detailed_summary();
-                self.state
-                    .add_system_message(format!("## Usage Details\n\n```\n{detailed}\n```"));
+                self.state.add_system_message(self.state.locale.format(
+                    "## Usage Details\n\n```\n{0}\n```",
+                    std::slice::from_ref(&(detailed)),
+                ));
             }
             UsageAction::Reset => {
                 self.usage_tracker.reset();
-                self.state.status = Some("Usage tracking reset".to_string());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("Usage tracking reset")
+                        .to_string(),
+                );
             }
         }
     }
@@ -831,10 +755,24 @@ impl App {
         );
         let mut tool_rows = Vec::new();
         let mut excluded = Vec::new();
-        let mut basis = "Visible transcript estimate; provider request framing is not included.";
+        let mut basis = self
+            .state
+            .locale
+            .translate("Visible transcript estimate; provider request framing is not included.");
         let mut report_model = self.current_model.clone();
+        let mut cache_explanation = self
+            .state
+            .locale
+            .translate("No comparison is available for the current request.");
+        let mut response_reserve = None;
+        let mut runtime_context_window = None;
         if let Some(agent) = &self.native_agent {
             let snapshot = agent.runtime_audit_snapshot();
+            response_reserve = Some(u64::from(snapshot.max_output_tokens));
+            runtime_context_window = snapshot.context_window;
+            if let Some(reason) = snapshot.cache_reuse {
+                cache_explanation = reason.explanation();
+            }
             excluded.extend(snapshot.excluded_context_tools);
             if let Some(request) = snapshot.request_context {
                 report_model = request.model;
@@ -843,7 +781,7 @@ impl App {
                 breakdown.tool_results = request.tool_results;
                 breakdown.other = request.other;
                 tool_rows = request.tools;
-                basis = "Last prepared request estimate, not provider-reported usage. Wire framing and provider-side context are not included.";
+                basis = self.state.locale.translate("Last prepared request estimate, not provider-reported usage. Wire framing and provider-side context are not included.");
             } else {
                 breakdown.system_prompt = snapshot.system_prompt.as_deref().map_or(0, |prompt| {
                     maestro_context::token_counting::count_tokens(prompt, model)
@@ -861,40 +799,74 @@ impl App {
                         )
                     })
                     .collect();
-                basis = "Current context estimate; these tool schemas have not been counted as dispatched usage.";
+                basis = self.state.locale.translate("Current context estimate; these tool schemas have not been counted as dispatched usage.");
             }
         }
         breakdown.tool_schemas = tool_rows.iter().map(|(_, tokens)| tokens).sum();
-        let context_window = self.state.context_window.or_else(|| {
-            crate::model_catalog::find_model(&self.current_model)
-                .map(|info| u64::from(info.capabilities.context_tokens))
+        let context_window = runtime_context_window
+            .or(self.state.context_window)
+            .or_else(|| {
+                crate::model_catalog::find_model(&self.current_model)
+                    .map(|info| u64::from(info.capabilities.context_tokens))
+            });
+        let remaining_headroom = context_window.map(|window| {
+            window.saturating_sub(
+                breakdown
+                    .total()
+                    .saturating_add(response_reserve.unwrap_or(0))
+                    .saturating_add(maestro_runtime::agent::REQUEST_CONTEXT_SAFETY_TOKENS),
+            )
         });
-        let mut report = breakdown.render(Some(&report_model), context_window);
+        let mut report = crate::localization::with_locale(self.state.locale, || {
+            breakdown.render_with_budget(
+                Some(&report_model),
+                context_window,
+                response_reserve,
+                remaining_headroom,
+            )
+        });
         report.push_str(&format!("\n\n{basis}"));
+        report.push_str(&self.state.locale.format("\n\nPrompt cache estimate: {0} Provider-reported cache usage is shown separately in /usage.", &[(cache_explanation).to_string()]));
         tool_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         if !tool_rows.is_empty() {
-            report.push_str("\n\nTool schemas:");
+            report.push_str(self.state.locale.translate("\n\nTool schemas:"));
             for (name, tokens) in tool_rows.iter().take(10) {
-                report.push_str(&format!("\n- {name}: {tokens} tokens"));
+                report.push_str(&self.state.locale.format(
+                    "\n- {0}: {1} tokens",
+                    &[(name).clone(), (tokens).to_string()],
+                ));
             }
-            report.push_str("\n\nUse /context exclude TOOL to omit its schema for this session; /context include TOOL restores it.");
+            report.push_str(self.state.locale.translate("\n\nUse /context exclude TOOL to omit its schema for this session; /context include TOOL restores it."));
         }
         excluded.sort();
         if !excluded.is_empty() {
-            report.push_str(&format!("\nExcluded schemas: {}.", excluded.join(", ")));
+            report.push_str(
+                &self
+                    .state
+                    .locale
+                    .format("\nExcluded schemas: {0}.", &[(excluded.join(", ")).clone()]),
+            );
         }
         let audit = self.build_system_prompt_assembly().audit(model, Vec::new());
         let mut fragments = audit.fragments;
         fragments.sort_by_key(|fragment| std::cmp::Reverse(fragment.token_count));
-        report.push_str("\n\nCurrent instruction sources:");
+        report.push_str(
+            self.state
+                .locale
+                .translate("\n\nCurrent instruction sources:"),
+        );
         for fragment in fragments
             .iter()
             .filter(|fragment| fragment.token_count > 0)
             .take(8)
         {
-            report.push_str(&format!(
-                "\n- {}: {} tokens ({})",
-                fragment.name, fragment.token_count, fragment.source
+            report.push_str(&self.state.locale.format(
+                "\n- {0}: {1} tokens ({2})",
+                &[
+                    (fragment.name).clone(),
+                    (fragment.token_count).to_string(),
+                    (fragment.source).clone(),
+                ],
             ));
         }
         self.state.add_system_message(report);
@@ -907,7 +879,11 @@ impl App {
         let value = match serde_json::to_value(&report) {
             Ok(value) => crate::agent::credential_store::redact_credentials_in_json(&value),
             Err(error) => {
-                self.state.error = Some(format!("Prompt audit failed: {error}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Prompt audit failed: {0}", &[(error).to_string()]),
+                );
                 return;
             }
         };
@@ -948,7 +924,7 @@ impl App {
                     .add_system_message(cleanup_result_message(removed, errors));
             }
             SessionAction::New => {
-                self.start_new_session("New session started.");
+                self.start_new_session(self.state.locale.translate("New session started."));
             }
             SessionAction::Fork => {
                 self.fork_session();
@@ -985,28 +961,16 @@ impl App {
         match action {
             TrustAction::Status => {
                 let trusted = crate::config::workspace_trusted_in_global_config(cwd);
-                self.state.add_system_message(format!(
-                    "Workspace trust for {}: **{}**\n\nUse `/trust grant` to load project skills/plugins/hooks, or `/trust revoke` to disable them.",
-                    cwd.display(),
-                    if trusted { "trusted" } else { "untrusted" }
-                ));
+                self.state.add_system_message(self.state.locale.format("Workspace trust for {0}: **{1}**\n\nUse `/trust grant` to load project skills/plugins/hooks, or `/trust revoke` to disable them.", &[(cwd.display()).to_string(), (if trusted { "trusted" } else { "untrusted" }).to_string()]));
             }
             TrustAction::Grant => match crate::config::set_workspace_trust_in_global_config(cwd, true)
             {
-                Ok(path) => self.state.add_system_message(format!(
-                    "Trusted {}. Project skills/plugins/hooks will load on the next `/skills reload` or restart.\nWrote {}.",
-                    cwd.display(),
-                    path.display()
-                )),
+                Ok(path) => self.state.add_system_message(self.state.locale.format("Trusted {0}. Project skills/plugins/hooks will load on the next `/skills reload` or restart.\nWrote {1}.", &[(cwd.display()).to_string(), (path.display()).to_string()])),
                 Err(error) => self.state.error = Some(error),
             },
             TrustAction::Revoke => {
                 match crate::config::set_workspace_trust_in_global_config(cwd, false) {
-                    Ok(path) => self.state.add_system_message(format!(
-                        "Revoked trust for {}. Project config will not load after restart.\nWrote {}.",
-                        cwd.display(),
-                        path.display()
-                    )),
+                    Ok(path) => self.state.add_system_message(self.state.locale.format("Revoked trust for {0}. Project config will not load after restart.\nWrote {1}.", &[(cwd.display()).to_string(), (path.display()).to_string()])),
                     Err(error) => self.state.error = Some(error),
                 }
             }
@@ -1017,41 +981,62 @@ impl App {
         let mut msg = String::from("## Sandbox\n\n");
         match &self.sandbox_policy {
             None => {
-                msg.push_str("**Policy:** none (session is not OS-sandboxed)\n");
                 msg.push_str(
-                    "Interactive default is gated (stage-1). Set `MAESTRO_SANDBOX_MODE` or config sandbox settings to enable.\n",
+                    self.state
+                        .locale
+                        .translate("**Policy:** none (session is not OS-sandboxed)\n"),
+                );
+                msg.push_str(
+                    self.state.locale.translate("Interactive default is gated (stage-1). Set `MAESTRO_SANDBOX_MODE` or config sandbox settings to enable.\n"),
                 );
             }
             Some(policy) => {
                 msg.push_str(&format!("**Policy:** `{}`\n", policy.mode_label()));
                 match policy {
                     crate::sandbox::SandboxPolicy::ReadOnly => {
-                        msg.push_str("Reads allowed; writes and many network tools are blocked.\n");
+                        msg.push_str(self.state.locale.translate(
+                            "Reads allowed; writes and many network tools are blocked.\n",
+                        ));
                     }
                     crate::sandbox::SandboxPolicy::WorkspaceWrite { network_access, .. } => {
                         msg.push_str(
-                            "In-workspace writes allowed under existing trees; `.git` stays read-only.\n",
+                            self.state.locale.translate("In-workspace writes allowed under existing trees; `.git` stays read-only.\n"),
                         );
                         msg.push_str(
-                            "Stage-1 note: writing content into a *new* file at the repo root can fail closed under Landlock (no WriteFile on root).\n",
+                            self.state.locale.translate("Stage-1 note: writing content into a *new* file at the repo root can fail closed under Landlock (no WriteFile on root).\n"),
                         );
-                        msg.push_str(&format!(
-                            "Network: {}\n",
-                            if *network_access {
-                                "enabled"
-                            } else {
-                                "disabled"
-                            }
-                        ));
+                        msg.push_str(
+                            &self.state.locale.format(
+                                "Network: {0}\n",
+                                &[(if *network_access {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                })
+                                .to_string()],
+                            ),
+                        );
                     }
                     crate::sandbox::SandboxPolicy::DangerFullAccess => {
-                        msg.push_str("Full host access; native OS sandbox not applied.\n");
+                        msg.push_str(
+                            self.state
+                                .locale
+                                .translate("Full host access; native OS sandbox not applied.\n"),
+                        );
                     }
                 }
                 if !crate::sandbox::is_sandbox_available() {
-                    let reason = crate::sandbox::sandbox_unavailable_reason()
-                        .unwrap_or_else(|| "native sandbox unavailable".to_string());
-                    msg.push_str(&format!("\n**Host:** sandbox unavailable ({reason})\n"));
+                    let reason =
+                        crate::sandbox::sandbox_unavailable_reason().unwrap_or_else(|| {
+                            self.state
+                                .locale
+                                .translate("native sandbox unavailable")
+                                .to_string()
+                        });
+                    msg.push_str(&self.state.locale.format(
+                        "\n**Host:** sandbox unavailable ({0})\n",
+                        std::slice::from_ref(&(reason)),
+                    ));
                 }
             }
         }
@@ -1059,35 +1044,49 @@ impl App {
     }
 
     fn show_session_status(&mut self) {
-        let mut msg = String::from("## Session\n\n");
-        msg.push_str(&format!(
-            "**Session id:** {}\n",
-            self.state.session_id.as_deref().unwrap_or("(ephemeral)")
-        ));
+        let mut msg = String::from(self.state.locale.translate("## Session\n\n"));
+        msg.push_str(
+            &self.state.locale.format(
+                "**Session id:** {0}\n",
+                &[self
+                    .state
+                    .session_id
+                    .as_deref()
+                    .unwrap_or("(ephemeral)")
+                    .to_string()],
+            ),
+        );
         if let Some(path) = self.session_manager.current_session_path() {
             msg.push_str(&format!("**Path:** {}\n", path.display()));
         } else {
-            msg.push_str(&format!(
-                "**Sessions dir:** {}\n",
-                self.session_manager.sessions_dir().display()
+            msg.push_str(&self.state.locale.format(
+                "**Sessions dir:** {0}\n",
+                &[(self.session_manager.sessions_dir().display()).to_string()],
             ));
         }
-        msg.push_str(&format!(
-            "**Model:** {}\n",
-            self.state.model.as_deref().unwrap_or("(none)")
+        msg.push_str(&self.state.locale.format(
+            "**Model:** {0}\n",
+            &[self.state.model.as_deref().unwrap_or("(none)").to_string()],
         ));
-        msg.push_str(&format!(
-            "**Provider:** {}\n",
-            self.state.provider.as_deref().unwrap_or("(none)")
-        ));
+        msg.push_str(
+            &self.state.locale.format(
+                "**Provider:** {0}\n",
+                &[self
+                    .state
+                    .provider
+                    .as_deref()
+                    .unwrap_or("(none)")
+                    .to_string()],
+            ),
+        );
         msg.push_str(&format!(
             "**Approval:** {}\n",
             self.state.approval_mode.label()
         ));
-        let sandbox = self
-            .sandbox_policy
-            .as_ref()
-            .map_or("none", crate::sandbox::SandboxPolicy::mode_label);
+        let sandbox = self.sandbox_policy.as_ref().map_or(
+            self.state.locale.translate("none"),
+            crate::sandbox::SandboxPolicy::mode_label,
+        );
         msg.push_str(&format!("**Sandbox:** {sandbox}\n"));
         let cwd = self
             .state
@@ -1120,21 +1119,25 @@ impl App {
             })
             .collect();
         names.sort();
-        let mut msg = String::from("## Built-in tools\n\n");
+        let mut msg = String::from(self.state.locale.translate("## Built-in tools\n\n"));
         if names.is_empty() {
-            msg.push_str("*No tools registered*\n");
+            msg.push_str(self.state.locale.translate("*No tools registered*\n"));
         } else {
             msg.push_str(&names.join("\n"));
             msg.push('\n');
         }
-        msg.push_str("\nMCP tools: `/mcp` · `/tools mcp` for status\n");
+        msg.push_str(
+            self.state
+                .locale
+                .translate("\nMCP tools: `/mcp` · `/tools mcp` for status\n"),
+        );
         self.state.add_system_message(msg);
     }
 
     fn show_memory_status(&mut self) {
         use crate::path_utils::maestro_home_dir;
         let mut msg = String::from(
-            "## Memory\n\nReview proposed corrections with `/memory review`; save one with `/memory save <proposal-id>`. Saved notes: `/memory list`, `/memory edit <entry-id> <text>`, `/memory forget <entry-id>`. Proposals include their scope and evidence and stay inactive until saved. These commands manage local supplemental context; account memory remains under its account controls.\n\n",
+            self.state.locale.translate("## Memory\n\nReview proposed corrections with `/memory review`; save one with `/memory save <proposal-id>`. Saved notes: `/memory list`, `/memory edit <entry-id> <text>`, `/memory forget <entry-id>`. Proposals include their scope and evidence and stay inactive until saved. These commands manage local supplemental context; account memory remains under its account controls.\n\n"),
         );
         msg.push_str(&format!(
             "**{}**\n\n",
@@ -1142,7 +1145,10 @@ impl App {
         ));
         if let Some(home) = maestro_home_dir() {
             let memory_dir = home.join("memory");
-            msg.push_str(&format!("**Local dir:** `{}`\n", memory_dir.display()));
+            msg.push_str(&self.state.locale.format(
+                "**Local dir:** `{0}`\n",
+                &[(memory_dir.display()).to_string()],
+            ));
             if memory_dir.is_dir() {
                 match std::fs::read_dir(&memory_dir) {
                     Ok(entries) => {
@@ -1153,33 +1159,58 @@ impl App {
                             .collect();
                         files.sort();
                         if files.is_empty() {
-                            msg.push_str("*No local memory files yet.*\n");
+                            msg.push_str(
+                                self.state
+                                    .locale
+                                    .translate("*No local memory files yet.*\n"),
+                            );
                         } else {
-                            msg.push_str(&format!("**Files ({}):**\n", files.len()));
+                            msg.push_str(
+                                &self
+                                    .state
+                                    .locale
+                                    .format("**Files ({0}):**\n", &[(files.len()).to_string()]),
+                            );
                             for f in files.iter().take(30) {
                                 msg.push_str(&format!("- `{f}`\n"));
                             }
                             if files.len() > 30 {
-                                msg.push_str(&format!("- …and {} more\n", files.len() - 30));
+                                msg.push_str(&self.state.locale.format(
+                                    "- …and {0} more\n",
+                                    &[(files.len() - 30).to_string()],
+                                ));
                             }
                         }
                     }
-                    Err(err) => msg.push_str(&format!("Could not list memory dir: {err}\n")),
+                    Err(err) => msg.push_str(
+                        &self
+                            .state
+                            .locale
+                            .format("Could not list memory dir: {0}\n", &[(err).to_string()]),
+                    ),
                 }
             } else {
                 msg.push_str(
-                    "*Directory not created yet.* Local notes land here when memory writes are enabled.\n",
+                    self.state.locale.translate("*Directory not created yet.* Local notes land here when memory writes are enabled.\n"),
                 );
             }
         } else {
-            msg.push_str("*Could not resolve MAESTRO_HOME / ~/.maestro*\n");
+            msg.push_str(
+                self.state
+                    .locale
+                    .translate("*Could not resolve MAESTRO_HOME / ~/.maestro*\n"),
+            );
         }
         if std::env::var("MAESTRO_SHARED_MEMORY_BASE").is_ok() {
             msg.push_str(
-                "\n**Shared memory sync:** configured (`MAESTRO_SHARED_MEMORY_BASE`). The account-memory commands use EvalOps instead.\n",
+                self.state.locale.translate("\n**Shared memory sync:** configured (`MAESTRO_SHARED_MEMORY_BASE`). The account-memory commands use EvalOps instead.\n"),
             );
         } else {
-            msg.push_str("\n**Shared memory sync:** not configured.\n");
+            msg.push_str(
+                self.state
+                    .locale
+                    .translate("\n**Shared memory sync:** not configured.\n"),
+            );
         }
         self.state.add_system_message(msg);
     }
@@ -1187,29 +1218,83 @@ impl App {
     pub(super) fn continue_last_session(&mut self) {
         if self.state.busy {
             self.state.status = Some(
-                "Wait for the active response to finish before continuing another session."
+                self.state
+                    .locale
+                    .translate(
+                        "Wait for the active response to finish before continuing another session.",
+                    )
                     .to_string(),
             );
             return;
         }
-        match self.session_manager.most_recent_session() {
-            Ok(Some(session)) => self.apply_resumed_session(&session),
+        match self
+            .session_manager
+            .recent_sessions(1)
+            .map(|sessions| sessions.into_iter().next())
+        {
+            Ok(Some(session)) => self.resume_session_path(&session.path, &session.id),
             Ok(None) => {
-                self.state
-                    .status
-                    .replace("No previous session found for this workspace.".to_string());
+                self.state.status.replace(
+                    self.state
+                        .locale
+                        .translate("No previous session found for this workspace.")
+                        .to_string(),
+                );
             }
             Err(err) => {
-                self.state.error = Some(format!("Failed to load last session: {err}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to load last session: {0}", &[(err).to_string()]),
+                );
             }
         }
     }
 
-    /// Restore a fully-loaded session into the TUI: visible transcript, plan
-    /// review state, model/thinking configuration, usage hydration, and an
-    /// append-ready session writer. Shared by the session switcher and the
-    /// `maestro fork` startup resume.
-    pub(crate) fn apply_resumed_session(&mut self, session: &crate::session::ParsedSession) {
+    /// Prepare and read the selected transcript once, while retaining the
+    /// current writer until in-memory adoption succeeds.
+    pub(crate) fn resume_session_path(&mut self, path: &std::path::Path, target_session_id: &str) {
+        let same_active_session = self
+            .session_manager
+            .current_session_path()
+            .as_deref()
+            .is_some_and(|active| active == path);
+        // Re-selecting the active path uses our existing lock. Other targets
+        // are read under the prepared writer's lock, never before acquiring it.
+        let prepared = if same_active_session {
+            None
+        } else {
+            match self.session_manager.prepare_session_adoption(path) {
+                Ok(prepared) => Some(prepared),
+                Err(err) => {
+                    self.report_session_resume_failure(target_session_id, err);
+                    return;
+                }
+            }
+        };
+        let active_session;
+        let session = if let Some(prepared) = prepared.as_ref() {
+            prepared.session()
+        } else {
+            let result = self
+                .session_manager
+                .flush()
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    crate::session::SessionReader::read_file(path)
+                        .map_err(|error| error.to_string())
+                });
+            active_session = match result {
+                Ok(session) => session,
+                Err(err) => {
+                    self.report_session_resume_failure(target_session_id, err);
+                    return;
+                }
+            };
+            &active_session
+        };
+        // Use the locked transcript's workspace, not potentially stale listing
+        // metadata, to decide whether this requires a fresh runtime.
         let saved = std::path::Path::new(&session.header.cwd);
         let current = std::path::Path::new(self.session_manager.cwd());
         if saved != current
@@ -1219,10 +1304,7 @@ impl App {
                 .is_none_or(|(saved, current)| saved != current)
         {
             if !saved.is_absolute() || !saved.is_dir() {
-                self.state.error = Some(format!(
-                    "Cannot resume: workspace {} is missing. Restore that directory and try again.",
-                    saved.display()
-                ));
+                self.state.error = Some(self.state.locale.format("Cannot resume: workspace {0} is missing. Restore that directory and try again.", &[(saved.display()).to_string()]));
                 return;
             }
             // Tools, trust, hooks, and project configuration are bound at startup.
@@ -1232,49 +1314,6 @@ impl App {
             self.should_quit = true;
             return;
         }
-        let target_session_id = session.header.id.clone();
-        // Acquire and parse the target while the current writer is still
-        // retained. A locked or unreadable target must leave the active
-        // session usable; the prepared writer is committed only after all
-        // in-memory session replacement has succeeded. Re-selecting the
-        // already-active path is the one safe no-op because opening it again
-        // would collide with our own writer lock.
-        let active_path = self.session_manager.current_session_path();
-        let had_active_session = self.session_manager.current_session_id().is_some();
-        let same_active_session = active_path
-            .as_deref()
-            .is_some_and(|path| path == std::path::Path::new(&session.file_path));
-        let prepared = if same_active_session {
-            None
-        } else {
-            match self
-                .session_manager
-                .prepare_session_adoption(&session.file_path)
-            {
-                Ok(prepared) => Some(prepared),
-                Err(err) => {
-                    if !had_active_session {
-                        self.session_resume_failed = true;
-                    }
-                    self.state.error = Some(super::format_session_persistence_error(
-                        "resume the session writer",
-                        err,
-                    ));
-                    self.state.status = Some(if had_active_session {
-                        format!(
-                            "Session resume failed ({target_session_id}); current session unchanged"
-                        )
-                    } else {
-                        format!("Session resume failed ({target_session_id}); use /new to continue")
-                    });
-                    return;
-                }
-            }
-        };
-
-        let session = prepared
-            .as_ref()
-            .map_or(session, |prepared| prepared.session());
         let session_id = session.header.id.clone();
         self.dex_terminal = None;
         self.dex_delight = Default::default();
@@ -1298,28 +1337,34 @@ impl App {
             crate::session::reconstruct_plan_review(&session.plan_review_events);
 
         self.state.session_id = Some(session_id.clone());
-        self.state.status = Some(format!("Resumed session: {session_id}"));
+        self.state.status = Some(
+            self.state
+                .locale
+                .format("Resumed session: {0}", std::slice::from_ref(&(session_id))),
+        );
 
         let mut model_applied = true;
         let mut thinking_applied = true;
         if let Some(agent) = &self.native_agent {
             if let Err(e) = agent.set_model(&session.header.model) {
-                self.state.error = Some(format!("Failed to set model: {e}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to set model: {0}", &[(e).to_string()]),
+                );
                 model_applied = false;
                 thinking_applied = false;
             } else {
                 let (enabled, budget) = session.header.thinking_level.to_config();
                 if let Err(e) = agent.set_thinking(enabled, budget) {
-                    self.state.error = Some(format!("Failed to set thinking: {e}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Failed to set thinking: {0}", &[(e).to_string()]),
+                    );
                     thinking_applied = false;
                 }
             }
-        }
-
-        if let Some(agent) = &self.native_agent {
-            // The visible transcript and the next provider request must resume
-            // the same history, including any persisted compaction boundary.
-            agent.replace_history(crate::session::model_history(session));
         }
 
         self.session_started_at = chrono::DateTime::parse_from_rfc3339(&session.header.timestamp)
@@ -1348,28 +1393,78 @@ impl App {
         }
 
         self.restore_pending_lifecycle_agent_notes(session);
+        let restored_history = self.native_agent.as_ref().map(|_| {
+            (
+                crate::session::model_history(session),
+                session
+                    .compactions
+                    .last()
+                    .and_then(|entry| entry.continuation.clone()),
+            )
+        });
         if let Some(prepared) = prepared {
             self.session_manager.adopt_prepared_session(prepared);
         }
         // Re-adopt this session's own scope: completions from children it
         // started earlier are parked, not discarded, and surface from here.
         self.adopt_session_context(Some(&session_id), "resume");
+        if let (Some(agent), Some((messages, continuation))) =
+            (&self.native_agent, restored_history)
+        {
+            // Session transition clears old tool-output references. Install the
+            // target history and its continuation together after that transition.
+            agent.replace_history_with_continuation(messages, continuation);
+        }
         self.session_resume_failed = false;
         self.last_esc_at = None;
         crate::plan_mode::set_active_session_id(Some(session_id.clone()));
+        if let Some(event) = self.new_session_event(
+            maestro_runtime_contracts::SessionEventLane::Runtime,
+            "session.resumed",
+            maestro_runtime_contracts::SessionEventPhase::Completed,
+        ) {
+            self.record_session_event(event);
+        }
+    }
+
+    fn report_session_resume_failure(
+        &mut self,
+        target_session_id: &str,
+        err: impl std::fmt::Display,
+    ) {
+        let had_active_session = self.session_manager.current_session_id().is_some();
+        if !had_active_session {
+            self.session_resume_failed = true;
+        }
+        self.state.error = Some(super::format_session_persistence_error(
+            self.state.locale.translate("resume the session writer"),
+            err,
+        ));
+        self.state.status = Some(self.state.locale.format(
+            if had_active_session {
+                "Session resume failed ({0}); current session unchanged"
+            } else {
+                "Session resume failed ({0}); use /new to continue"
+            },
+            &[target_session_id.to_string()],
+        ));
     }
 
     /// Resume a specific session before the event loop starts.
     ///
     /// Used by `maestro fork` to continue a freshly forked session. At this
     /// point the native agent has not spawned yet, so the agent-facing parts
-    /// of [`App::apply_resumed_session`] are no-ops; the forked session's
+    /// of [`App::resume_session_path`] are no-ops; the forked session's
     /// model is adopted through `MAESTRO_MODEL` by the caller instead.
     pub fn resume_session_at_startup(&mut self, session_id: &str) {
-        match self.session_manager.load_session(session_id) {
-            Ok(session) => self.apply_resumed_session(&session),
+        match self.session_manager.find_session(session_id) {
+            Ok(session) => self.resume_session_path(&session.path, &session.id),
             Err(err) => {
-                self.state.error = Some(format!("Failed to load session: {err}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to load session: {0}", &[(err).to_string()]),
+                );
             }
         }
     }
@@ -1378,14 +1473,21 @@ impl App {
     fn show_alerts(&mut self) {
         const MAX_LISTED: usize = 10;
         if self.state.alerts.is_empty() {
-            self.state
-                .add_system_message("No alerts recorded this session.".to_string());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("No alerts recorded this session.")
+                    .to_string(),
+            );
             return;
         }
         let total = self.state.alerts.len();
         let skipped = total.saturating_sub(MAX_LISTED);
         let mut text = if skipped > 0 {
-            format!("## Alerts ({total} recorded; latest {MAX_LISTED} shown)\n")
+            self.state.locale.format(
+                "## Alerts ({0} recorded; latest {1} shown)\n",
+                &[(total).to_string(), (MAX_LISTED).to_string()],
+            )
         } else {
             format!("## Alerts ({total} recorded)\n")
         };
@@ -1399,7 +1501,12 @@ impl App {
     fn start_new_session(&mut self, status: &str) {
         if self.state.busy {
             self.state.status = Some(
-                "Wait for the active response to finish before starting a new session.".to_string(),
+                self.state
+                    .locale
+                    .translate(
+                        "Wait for the active response to finish before starting a new session.",
+                    )
+                    .to_string(),
             );
             return;
         }
@@ -1456,33 +1563,45 @@ impl App {
             .last()
             .map(|m| m.id.clone())
             .unwrap_or_else(|| "start".to_string());
-        let branch = BranchPoint::new(fork_id, fork_index).with_description("Forked via /fork");
+        let branch = BranchPoint::new(fork_id, fork_index)
+            .with_description(self.state.locale.translate("Forked via /fork"));
         if let Err(error) = self.ensure_session_started() {
-            self.state.error = Some(format!("Failed to start session before fork: {error}"));
+            self.state.error = Some(self.state.locale.format(
+                "Failed to start session before fork: {0}",
+                &[(error).to_string()],
+            ));
             return;
         }
         match self.session_manager.fork_session_snapshot() {
             Ok((fork_session_id, path)) => {
                 let activity = if self.state.busy {
-                    " The parent remains active and its current response continues."
+                    self.state
+                        .locale
+                        .translate(" The parent remains active and its current response continues.")
                 } else {
-                    " The parent remains selected."
+                    self.state.locale.translate(" The parent remains selected.")
                 };
-                self.state.status = Some(format!(
-                    "Fork {} created without switching sessions.",
-                    &fork_session_id[..8.min(fork_session_id.len())]
+                self.state.status = Some(self.state.locale.format(
+                    "Fork {0} created without switching sessions.",
+                    &[fork_session_id[..8.min(fork_session_id.len())].to_string()],
                 ));
-                self.state.add_system_message(format!(
-                    "Forked at message {} (branch {}) into session {} at {}.{}",
-                    branch.fork_index + 1,
-                    &branch.id[..8.min(branch.id.len())],
-                    fork_session_id,
-                    path.display(),
-                    activity,
+                self.state.add_system_message(self.state.locale.format(
+                    "Forked at message {0} (branch {1}) into session {2} at {3}.{4}",
+                    &[
+                        (branch.fork_index + 1).to_string(),
+                        branch.id[..8.min(branch.id.len())].to_string(),
+                        (fork_session_id).clone(),
+                        (path.display()).to_string(),
+                        (activity).to_string(),
+                    ],
                 ));
             }
             Err(error) => {
-                self.state.error = Some(format!("Failed to fork session: {error}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to fork session: {0}", &[(error).to_string()]),
+                );
             }
         }
     }
@@ -1493,8 +1612,12 @@ impl App {
 
     pub(super) fn rewind_saved_turns(&mut self, turns: usize, dry_run: bool, files: bool) {
         if self.state.busy {
-            self.state.status =
-                Some("Wait for the active response to finish before rewinding.".to_string());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Wait for the active response to finish before rewinding.")
+                    .to_string(),
+            );
             return;
         }
         let result = (|| -> anyhow::Result<()> {
@@ -1503,13 +1626,11 @@ impl App {
                 .session_manager
                 .current_session_path()
                 .ok_or_else(|| anyhow::anyhow!("No saved session to rewind."))?;
-            let boundary = crate::session::rewind_boundary(&source, turns)?;
-            let original = crate::session::SessionReader::read_file(&source)?;
-            let kept_turns = original.stats.user_messages.saturating_sub(turns);
+            let (boundary, saved_turns) =
+                crate::session::rewind_boundary_with_turn_count(&source, turns)?;
+            let kept_turns = saved_turns.saturating_sub(turns);
             if dry_run {
-                self.state.add_system_message(format!(
-                    "Rewind before the last {turns} user turn(s) into a new saved session. The original remains available."
-                ));
+                self.state.add_system_message(self.state.locale.format("Rewind before the last {0} user turn(s) into a new saved session. The original remains available.", &[(turns).to_string()]));
                 if files {
                     self.preview_rewind_files(kept_turns)?;
                 }
@@ -1520,7 +1641,6 @@ impl App {
             }
             // Publish the branch before changing active history or files.
             let fork = crate::session::fork_session_prefix(&source, Some(boundary))?;
-            let session = crate::session::SessionReader::read_file(&fork.path)?;
             let source_id = self.state.session_id.clone();
             if let Some(source_id) = source_id.as_deref() {
                 let sessions = self.session_manager.sessions_dir();
@@ -1531,29 +1651,25 @@ impl App {
                 )?;
             }
 
-            self.session_manager
-                .resume_session_by_path(fork.id.clone(), &fork.path)?;
-            self.apply_resumed_session(&session);
-            if self.session_resume_failed {
+            self.resume_session_path(&fork.path, &fork.id);
+            if self.session_manager.current_session_id() != Some(fork.id.as_str()) {
                 anyhow::bail!("The saved branch could not be opened.");
             }
-            if let Some(agent) = &self.native_agent {
-                agent.replace_history_with_continuation(
-                    crate::session::model_history(&session),
-                    session
-                        .compactions
-                        .last()
-                        .and_then(|entry| entry.continuation.clone()),
-                );
-            }
-            self.state.status = Some(format!("Rewound into saved session {}.", fork.id));
+            self.state.status = Some(self.state.locale.format(
+                "Rewound into saved session {0}.",
+                std::slice::from_ref(&(fork.id)),
+            ));
             if files {
                 self.restore_rewind_files(source_id.as_deref(), kept_turns)?;
             }
             Ok(())
         })();
         if let Err(error) = result {
-            self.state.error = Some(format!("Rewind failed: {error}"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Rewind failed: {0}", &[(error).to_string()]),
+            );
         }
     }
 
@@ -1581,10 +1697,12 @@ impl App {
                 self.update_agent_system_prompt();
             }
         }
-        self.state.status = Some(format!(
-            "Mode: {} (approvals: {})",
-            mode.label(),
-            self.state.approval_mode.label()
+        self.state.status = Some(self.state.locale.format(
+            "Mode: {0} (approvals: {1})",
+            &[
+                (mode.label()).to_string(),
+                (self.state.approval_mode.label()).to_string(),
+            ],
         ));
     }
 
@@ -1596,15 +1714,23 @@ impl App {
     /// a different model. The finished review arrives via `poll_rubber_duck`.
     fn start_rubber_duck_review(&mut self, requested_model: Option<String>) {
         if self.rubber_duck_running {
-            self.state
-                .add_system_message("A rubber duck review is already running.".to_string());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("A rubber duck review is already running.")
+                    .to_string(),
+            );
             return;
         }
         let cwd = self.plan_cwd();
         let cwd_path = std::path::Path::new(&cwd);
         if !crate::git::is_git_repo(cwd_path) {
-            self.state
-                .add_system_message("Not a git repository; nothing to review.".to_string());
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .translate("Not a git repository; nothing to review.")
+                    .to_string(),
+            );
             return;
         }
         let review_model = match crate::rubber_duck::pick_review_model(
@@ -1620,11 +1746,11 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.rubber_duck_rx = Some(rx);
         self.rubber_duck_running = true;
-        self.state.status = Some(format!("Rubber duck reviewing with {review_model}…"));
-        self.state.add_system_message(format!(
-            "Rubber duck review started with {review_model} (current model: {}). The result will appear here when done.",
-            self.current_model
+        self.state.status = Some(self.state.locale.format(
+            "Rubber duck reviewing with {0}…",
+            std::slice::from_ref(&(review_model)),
         ));
+        self.state.add_system_message(self.state.locale.format("Rubber duck review started with {0} (current model: {1}). The result will appear here when done.", &[(review_model).clone(), (self.current_model).clone()]));
         tokio::spawn(crate::rubber_duck::run_review(
             review_model,
             cwd,
@@ -1648,9 +1774,13 @@ impl App {
             let cwd = self.plan_cwd();
             let _plan_path = crate::plan_mode::ensure_plan_file(&cwd)
                 .unwrap_or_else(|_| crate::plan_mode::plan_file_path(&cwd));
-            self.state.status =
-                Some("Plan mode on. Use /plan view to review, then /plan approve.".into());
-            self.state.add_system_message("Plan mode enabled. Changes are limited to the plan until you approve it. Use /plan view to review.".into());
+            self.state.status = Some(
+                self.state
+                    .locale
+                    .translate("Plan mode on. Use /plan view to review, then /plan approve.")
+                    .into(),
+            );
+            self.state.add_system_message(self.state.locale.translate("Plan mode enabled. Changes are limited to the plan until you approve it. Use /plan view to review.").into());
             // Nudge the agent with plan-mode instructions when possible.
             if let Some(agent) = &self.native_agent {
                 let prompt = format!(
@@ -1664,7 +1794,7 @@ impl App {
             if !self.leave_plan_mode() {
                 return;
             }
-            self.state.status = Some("Plan mode off.".to_string());
+            self.state.status = Some(self.state.locale.translate("Plan mode off.").to_string());
         }
     }
 
@@ -1692,18 +1822,14 @@ impl App {
             .filter(|comment| !comment.resolved)
             .count();
         if open_count > 0 {
-            return Some(format!(
-                "Plan exit blocked by {open_count} open review comment{}. Use `/plan comments`.",
-                if open_count == 1 { "" } else { "s" }
+            return Some(self.state.locale.format(
+                "Open review comments prevent leaving plan mode: {0}. Use `/plan comments`.",
+                &[open_count.to_string()],
             ));
         }
         let stale = self.stale_plan_review_ids();
         (!stale.is_empty()).then(|| {
-            format!(
-                "Plan changed after {} review comment{} were created. Recreate stale comments before leaving plan mode.",
-                stale.len(),
-                if stale.len() == 1 { "" } else { "s" }
-            )
+            self.state.locale.format("Review comments on an earlier plan: {0}. Recreate stale comments before leaving plan mode.", &[stale.len().to_string()])
         })
     }
 
@@ -1727,17 +1853,17 @@ impl App {
         let cwd = self.plan_cwd();
         match crate::plan_mode::read_plan(&cwd) {
             Some(text) => {
-                self.state.status = Some("Showing plan.md".to_string());
-                self.state
-                    .add_system_message(format!("## Current plan\n\n{text}"));
+                self.state.status =
+                    Some(self.state.locale.translate("Showing plan.md").to_string());
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .format("## Current plan\n\n{0}", std::slice::from_ref(&(text))),
+                );
             }
             None => {
                 let path = crate::plan_mode::plan_file_path(&cwd);
-                self.state.add_system_message(format!(
-                    "No plan written yet. In plan mode, write to `.maestro/plan.md` \
-(session copy: `{}`).",
-                    path.display()
-                ));
+                self.state.add_system_message(self.state.locale.format("No plan written yet. In plan mode, write to `.maestro/plan.md` (session copy: `{0}`).", &[(path.display()).to_string()]));
             }
         }
     }
@@ -1748,14 +1874,25 @@ impl App {
         if !self.leave_plan_mode() {
             return;
         }
-        self.state.status = Some("Plan approved. Implementation tools are enabled.".to_string());
+        self.state.status = Some(
+            self.state
+                .locale
+                .translate("Plan approved. Implementation tools are enabled.")
+                .to_string(),
+        );
         if let Some(text) = preview {
-            self.state.add_system_message(format!(
-                "Plan approved. Leaving plan mode. Summary of approved plan:\n\n{text}"
+            self.state.add_system_message(self.state.locale.format(
+                "Plan approved. Leaving plan mode. Summary of approved plan:\n\n{0}",
+                std::slice::from_ref(&(text)),
             ));
         } else {
             self.state.add_system_message(
-                "Plan approved (empty plan). Leaving plan mode so you can implement.".to_string(),
+                self.state
+                    .locale
+                    .translate(
+                        "Plan approved (empty plan). Leaving plan mode so you can implement.",
+                    )
+                    .to_string(),
             );
         }
     }
@@ -1768,13 +1905,19 @@ impl App {
                 text,
             } => {
                 let Some(plan) = crate::plan_mode::read_plan(&self.plan_cwd()) else {
-                    self.state.error = Some("No plan is available for review.".to_string());
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .translate("No plan is available for review.")
+                            .to_string(),
+                    );
                     return;
                 };
                 let line_count = plan.lines().count();
                 if end_line > line_count {
-                    self.state.error = Some(format!(
-                        "Plan has {line_count} lines; comment range ends at {end_line}."
+                    self.state.error = Some(self.state.locale.format(
+                        "Plan has {0} lines; comment range ends at {1}.",
+                        &[(line_count).to_string(), (end_line).to_string()],
                     ));
                     return;
                 }
@@ -1805,13 +1948,18 @@ impl App {
                     revision,
                     excerpt,
                 });
-                self.state.status = Some(format!("Added plan comment #{id}."));
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Added plan comment #{0}.", &[(id).to_string()]),
+                );
             }
             PlanReviewAction::List => {
-                let mut message = String::from("## Plan review comments\n\n");
+                let mut message =
+                    String::from(self.state.locale.translate("## Plan review comments\n\n"));
                 let stale = self.stale_plan_review_ids();
                 if self.plan_review_comments.is_empty() {
-                    message.push_str("No review comments.");
+                    message.push_str(self.state.locale.translate("No review comments."));
                 } else {
                     for comment in &self.plan_review_comments {
                         let state = if stale.contains(&comment.id) {
@@ -1836,8 +1984,9 @@ impl App {
             }
             PlanReviewAction::Resolve { id } => {
                 if self.stale_plan_review_ids().contains(&id) {
-                    self.state.error = Some(format!(
-                        "Plan comment #{id} is stale. Recreate it against the current plan."
+                    self.state.error = Some(self.state.locale.format(
+                        "Plan comment #{0} is stale. Recreate it against the current plan.",
+                        &[(id).to_string()],
                     ));
                     return;
                 }
@@ -1846,17 +1995,26 @@ impl App {
                     .iter_mut()
                     .find(|comment| comment.id == id)
                 else {
-                    self.state.error = Some(format!("Plan comment #{id} does not exist."));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Plan comment #{0} does not exist.", &[(id).to_string()]),
+                    );
                     return;
                 };
                 comment.resolved = true;
                 self.record_plan_review_event(PlanReviewEvent::Resolve { id });
-                self.state.status = Some(format!("Plan comment #{id} resolved."));
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Plan comment #{0} resolved.", &[(id).to_string()]),
+                );
             }
             PlanReviewAction::Reopen { id } => {
                 if self.stale_plan_review_ids().contains(&id) {
-                    self.state.error = Some(format!(
-                        "Plan comment #{id} is stale. Recreate it against the current plan."
+                    self.state.error = Some(self.state.locale.format(
+                        "Plan comment #{0} is stale. Recreate it against the current plan.",
+                        &[(id).to_string()],
                     ));
                     return;
                 }
@@ -1865,12 +2023,20 @@ impl App {
                     .iter_mut()
                     .find(|comment| comment.id == id)
                 else {
-                    self.state.error = Some(format!("Plan comment #{id} does not exist."));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Plan comment #{0} does not exist.", &[(id).to_string()]),
+                    );
                     return;
                 };
                 comment.resolved = false;
                 self.record_plan_review_event(PlanReviewEvent::Reopen { id });
-                self.state.status = Some(format!("Plan comment #{id} reopened."));
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Plan comment #{0} reopened.", &[(id).to_string()]),
+                );
             }
         }
     }
@@ -1880,28 +2046,34 @@ impl App {
         match action {
             MagicTraceAction::Stop => {
                 crate::magic_trace::stop_indicator();
-                self.state.status =
-                    Some("magic-trace: stop indicator fired (snapshot if attached)".into());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("magic-trace: stop indicator fired (snapshot if attached)")
+                        .into(),
+                );
             }
             MagicTraceAction::EnableSlowFrame => {
                 crate::magic_trace::set_slow_frame_trigger(true);
-                self.state.status =
-                    Some("magic-trace: slow-frame auto snapshot ON (attach first)".into());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("magic-trace: slow-frame auto snapshot ON (attach first)")
+                        .into(),
+                );
             }
             MagicTraceAction::DisableSlowFrame => {
                 crate::magic_trace::set_slow_frame_trigger(false);
-                self.state.status = Some("magic-trace: slow-frame auto snapshot OFF".into());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("magic-trace: slow-frame auto snapshot OFF")
+                        .into(),
+                );
             }
             MagicTraceAction::Status => {
                 let on = crate::magic_trace::slow_frame_trigger_enabled();
-                self.state.add_system_message(format!(
-                    "## magic-trace\n\n\
-Linux + Intel PT only. Build: `cargo build --profile magic-trace`.\n\n\
-Attach: `scripts/magic-trace-tui.sh attach`\n\n\
-Slow-frame trigger: **{}** (`/magic-trace on|off`)\n\n\
-Manual snapshot: `/magic-trace stop`",
-                    if on { "on" } else { "off" }
-                ));
+                self.state.add_system_message(self.state.locale.format("## magic-trace\n\nLinux + Intel PT only. Build: `cargo build --profile magic-trace`.\n\nAttach: `scripts/magic-trace-tui.sh attach`\n\nSlow-frame trigger: **{0}** (`/magic-trace on|off`)\n\nManual snapshot: `/magic-trace stop`", &[(if on { "on" } else { "off" }).to_string()]));
             }
         }
     }
@@ -1917,16 +2089,7 @@ Manual snapshot: `/magic-trace stop`",
             ExportAction::PlainText(p) => (ExportFormat::PlainText, p),
             ExportAction::ShowOptions => {
                 self.state.add_system_message(
-                    "## Session Export\n\n\
-                    Usage: `/export <format> [path]`\n\n\
-                    **Formats:**\n\
-                    - `markdown` or `md` - Human-readable markdown\n\
-                    - `html` - Styled HTML page\n\
-                    - `json` - Structured JSON data\n\
-                    - `text` or `txt` - Plain text\n\n\
-                    **Examples:**\n\
-                    - `/export markdown` - Output to terminal\n\
-                    - `/export html session.html` - Save to file\n"
+                    self.state.locale.translate("## Session Export\n\nUsage: `/export <format> [path]`\n\n**Formats:**\n- `markdown` or `md` - Human-readable markdown\n- `html` - Styled HTML page\n- `json` - Structured JSON data\n- `text` or `txt` - Plain text\n\n**Examples:**\n- `/export markdown` - Output to terminal\n- `/export html session.html` - Save to file\n")
                         .to_string(),
                 );
                 return;
@@ -1951,7 +2114,12 @@ Manual snapshot: `/magic-trace stop`",
         });
 
         let Some(session_path) = session_path else {
-            self.state.error = Some("No active session to export".to_string());
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .translate("No active session to export")
+                    .to_string(),
+            );
             return;
         };
 
@@ -1982,7 +2150,10 @@ Manual snapshot: `/magic-trace stop`",
 
         if let Some(parent) = output_path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                self.state.error = Some(format!("Failed to create export directory: {err}"));
+                self.state.error = Some(self.state.locale.format(
+                    "Failed to create export directory: {0}",
+                    &[(err).to_string()],
+                ));
                 return;
             }
         }
@@ -1990,7 +2161,11 @@ Manual snapshot: `/magic-trace stop`",
         let session = match SessionReader::read_file(&session_path) {
             Ok(session) => session,
             Err(err) => {
-                self.state.error = Some(format!("Failed to read session: {err}"));
+                self.state.error = Some(
+                    self.state
+                        .locale
+                        .format("Failed to read session: {0}", &[(err).to_string()]),
+                );
                 return;
             }
         };
@@ -1998,13 +2173,17 @@ Manual snapshot: `/magic-trace stop`",
         let exporter = SessionExporter::from_session(&session, options);
         let output = exporter.export_to_string();
         if let Err(err) = std::fs::write(&output_path, output) {
-            self.state.error = Some(format!("Failed to write export: {err}"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Failed to write export: {0}", &[(err).to_string()]),
+            );
             return;
         }
 
-        self.state.status = Some(format!(
-            "Session exported to {}",
-            output_path.to_string_lossy()
+        self.state.status = Some(self.state.locale.format(
+            "Session exported to {0}",
+            &[(output_path.to_string_lossy()).to_string()],
         ));
     }
 
@@ -2016,11 +2195,12 @@ Manual snapshot: `/magic-trace stop`",
             HistoryAction::Recent(count) => {
                 let recent = self.prompt_history.recent(count);
                 if recent.is_empty() {
-                    self.state.status = Some("No prompt history".to_string());
+                    self.state.status =
+                        Some(self.state.locale.translate("No prompt history").to_string());
                     return;
                 }
 
-                let mut msg = String::from("## Recent Prompts\n\n");
+                let mut msg = String::from(self.state.locale.translate("## Recent Prompts\n\n"));
                 for (i, entry) in recent.iter().enumerate() {
                     let chars: Vec<char> = entry.prompt.chars().collect();
                     let preview = if chars.len() > 60 {
@@ -2035,11 +2215,18 @@ Manual snapshot: `/magic-trace stop`",
             HistoryAction::Search(query) => {
                 let results = self.prompt_history.search(&query);
                 if results.matches.is_empty() {
-                    self.state.status = Some(format!("No matches for '{query}'"));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("No matches for '{0}'", std::slice::from_ref(&(query))),
+                    );
                     return;
                 }
 
-                let mut msg = format!("## Search Results for '{query}'\n\n");
+                let mut msg = self.state.locale.format(
+                    "## Search Results for '{0}'\n\n",
+                    std::slice::from_ref(&(query)),
+                );
                 for (i, m) in results.matches.iter().take(10).enumerate() {
                     let chars: Vec<char> = m.entry.prompt.chars().collect();
                     let preview = if chars.len() > 60 {
@@ -2054,7 +2241,12 @@ Manual snapshot: `/magic-trace stop`",
             HistoryAction::Clear => {
                 self.prompt_history.clear();
                 let _ = self.prompt_history.delete_file();
-                self.state.status = Some("Prompt history cleared".to_string());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("Prompt history cleared")
+                        .to_string(),
+                );
             }
         }
     }
@@ -2070,11 +2262,13 @@ Manual snapshot: `/magic-trace stop`",
             ToolHistoryAction::Recent(count) => {
                 let recent = self.tool_history.recent(count);
                 if recent.is_empty() {
-                    self.state.status = Some("No tool history".to_string());
+                    self.state.status =
+                        Some(self.state.locale.translate("No tool history").to_string());
                     return;
                 }
 
-                let mut msg = String::from("## Recent Tool Executions\n\n");
+                let mut msg =
+                    String::from(self.state.locale.translate("## Recent Tool Executions\n\n"));
                 for exec in recent {
                     let status = if exec.success { "✓" } else { "✗" };
                     let duration = exec
@@ -2089,17 +2283,26 @@ Manual snapshot: `/magic-trace stop`",
             }
             ToolHistoryAction::Stats => {
                 let summary = self.tool_history.summary();
-                self.state
-                    .add_system_message(format!("## Tool Statistics\n\n```\n{summary}\n```"));
+                self.state.add_system_message(self.state.locale.format(
+                    "## Tool Statistics\n\n```\n{0}\n```",
+                    std::slice::from_ref(&(summary)),
+                ));
             }
             ToolHistoryAction::ForTool(name) => {
                 let execs = self.tool_history.for_tool(&name);
                 if execs.is_empty() {
-                    self.state.status = Some(format!("No history for tool '{name}'"));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("No history for tool '{0}'", std::slice::from_ref(&(name))),
+                    );
                     return;
                 }
 
-                let mut msg = format!("## History for '{name}'\n\n");
+                let mut msg = self
+                    .state
+                    .locale
+                    .format("## History for '{0}'\n\n", std::slice::from_ref(&(name)));
                 for exec in execs.iter().take(10) {
                     let status = if exec.success { "✓" } else { "✗" };
                     let duration = exec
@@ -2116,7 +2319,12 @@ Manual snapshot: `/magic-trace stop`",
             }
             ToolHistoryAction::Clear => {
                 self.tool_history.clear();
-                self.state.status = Some("Tool history cleared".to_string());
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .translate("Tool history cleared")
+                        .to_string(),
+                );
             }
         }
     }
@@ -2130,13 +2338,19 @@ Manual snapshot: `/magic-trace stop`",
                 if args.first().is_some_and(|arg| arg == "auth") {
                     if self.mcp_config_in_flight {
                         self.state.add_system_message(
-                            "An MCP authentication flow is already in progress.".to_string(),
+                            self.state
+                                .locale
+                                .translate("An MCP authentication flow is already in progress.")
+                                .to_string(),
                         );
                         return;
                     }
                     self.mcp_config_in_flight = true;
                     self.state.add_system_message(
-                        "Finish MCP authentication in your browser.".to_string(),
+                        self.state
+                            .locale
+                            .translate("Finish MCP authentication in your browser.")
+                            .to_string(),
                     );
                     let tx = self.mcp_config_tx.clone();
                     tokio::spawn(async move {
@@ -2147,13 +2361,16 @@ Manual snapshot: `/magic-trace stop`",
                 } else {
                     match crate::mcp_config_cli::apply_mcp_config_async(&args).await {
                         Ok(message) => self.state.add_system_message(message),
-                        Err(error) => self
-                            .state
-                            .add_system_message(format!("MCP configuration failed: {error}")),
+                        Err(error) => self.state.add_system_message(
+                            self.state
+                                .locale
+                                .format("MCP configuration failed: {0}", &[(error).to_string()]),
+                        ),
                     }
                 }
             }
             McpAction::Status => {
+                self.mcp_manager.locale = self.state.locale;
                 self.active_modal = ActiveModal::McpManager;
                 self.last_mcp_status_refresh = None;
                 self.refresh_mcp_badges_with_force(true).await;
@@ -2162,8 +2379,10 @@ Manual snapshot: `/magic-trace stop`",
                 let servers = match self.tool_executor.mcp_status().await {
                     Ok(servers) => servers,
                     Err(err) => {
-                        self.state
-                            .add_system_message(format!("Failed to load MCP status: {err}"));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Failed to load MCP status: {0}",
+                            std::slice::from_ref(&(err)),
+                        ));
                         return;
                     }
                 };
@@ -2173,8 +2392,10 @@ Manual snapshot: `/magic-trace stop`",
                     let status = servers.iter().find(|s| s.name == server);
                     if let Some(status) = status {
                         if !status.connected {
-                            self.state
-                                .add_system_message(format!("Server '{server}' not connected"));
+                            self.state.add_system_message(self.state.locale.format(
+                                "Server '{0}' not connected",
+                                std::slice::from_ref(&(server)),
+                            ));
                             return;
                         }
                     }
@@ -2182,27 +2403,43 @@ Manual snapshot: `/magic-trace stop`",
                     match self.tool_executor.mcp_read_resource(&server, &uri).await {
                         Ok(result) => {
                             let mut lines = Vec::new();
-                            lines.push(format!("Resource: {uri}"));
+                            lines.push(
+                                self.state
+                                    .locale
+                                    .format("Resource: {0}", std::slice::from_ref(&(uri))),
+                            );
                             lines.push(String::new());
                             for content in &result.contents {
                                 if let Some(text) = &content.text {
                                     lines.push(text.clone());
                                 } else {
-                                    let mime = content.mime_type.as_deref().unwrap_or("unknown");
-                                    lines.push(format!("[Binary data: {mime}]"));
+                                    let mime = content
+                                        .mime_type
+                                        .as_deref()
+                                        .unwrap_or(self.state.locale.translate("unknown"));
+                                    lines.push(
+                                        self.state
+                                            .locale
+                                            .format("[Binary data: {0}]", &[(mime).to_string()]),
+                                    );
                                 }
                             }
                             self.state.add_system_message(lines.join("\n"));
                         }
                         Err(err) => {
-                            self.state
-                                .add_system_message(format!("Failed to read resource: {err}"));
+                            self.state.add_system_message(self.state.locale.format(
+                                "Failed to read resource: {0}",
+                                std::slice::from_ref(&(err)),
+                            ));
                         }
                     }
                     return;
                 }
 
-                let mut lines = vec!["MCP Resources".to_string(), String::new()];
+                let mut lines = vec![
+                    self.state.locale.translate("MCP Resources").to_string(),
+                    String::new(),
+                ];
                 let mut has_resources = false;
                 for server in servers {
                     if !server.connected || server.resources.is_empty() {
@@ -2216,10 +2453,20 @@ Manual snapshot: `/magic-trace stop`",
                     lines.push(String::new());
                 }
                 if !has_resources {
-                    lines.push("No resources available from connected servers.".to_string());
+                    lines.push(
+                        self.state
+                            .locale
+                            .translate("No resources available from connected servers.")
+                            .to_string(),
+                    );
                 }
                 lines.push(String::new());
-                lines.push("Usage: /mcp resources <server> <uri>".to_string());
+                lines.push(
+                    self.state
+                        .locale
+                        .translate("Usage: /mcp resources <server> <uri>")
+                        .to_string(),
+                );
                 self.state.add_system_message(lines.join("\n"));
             }
             McpAction::Prompts {
@@ -2230,8 +2477,10 @@ Manual snapshot: `/magic-trace stop`",
                 let servers = match self.tool_executor.mcp_status().await {
                     Ok(servers) => servers,
                     Err(err) => {
-                        self.state
-                            .add_system_message(format!("Failed to load MCP status: {err}"));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Failed to load MCP status: {0}",
+                            std::slice::from_ref(&(err)),
+                        ));
                         return;
                     }
                 };
@@ -2241,13 +2490,19 @@ Manual snapshot: `/magic-trace stop`",
                 if let Some(server_name) = server_filter.as_deref() {
                     let Some(status) = servers.iter().find(|entry| entry.name == server_name)
                     else {
-                        self.state
-                            .add_system_message(format!("Server '{server_name}' not found"));
+                        self.state.add_system_message(
+                            self.state
+                                .locale
+                                .format("Server '{0}' not found", &[(server_name).to_string()]),
+                        );
                         return;
                     };
                     if !status.connected {
-                        self.state
-                            .add_system_message(format!("Server '{server_name}' not connected"));
+                        self.state.add_system_message(
+                            self.state
+                                .locale
+                                .format("Server '{0}' not connected", &[(server_name).to_string()]),
+                        );
                         return;
                     }
                 }
@@ -2259,8 +2514,10 @@ Manual snapshot: `/magic-trace stop`",
                 {
                     Ok(entries) => entries,
                     Err(err) => {
-                        self.state
-                            .add_system_message(format!("Failed to load MCP prompts: {err}"));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Failed to load MCP prompts: {0}",
+                            std::slice::from_ref(&(err)),
+                        ));
                         return;
                     }
                 };
@@ -2270,8 +2527,9 @@ Manual snapshot: `/magic-trace stop`",
                         server_name == &server && prompts.iter().any(|prompt| prompt.name == name)
                     });
                     if !prompt_exists {
-                        self.state.add_system_message(format!(
-                            "Prompt '{name}' not found on server '{server}'"
+                        self.state.add_system_message(self.state.locale.format(
+                            "Prompt '{0}' not found on server '{1}'",
+                            &[(name).clone(), (server).clone()],
                         ));
                         return;
                     }
@@ -2289,23 +2547,38 @@ Manual snapshot: `/magic-trace stop`",
                     {
                         Ok(result) => {
                             let mut lines = Vec::new();
-                            lines.push(format!("Prompt: {name}"));
+                            lines.push(
+                                self.state
+                                    .locale
+                                    .format("Prompt: {0}", std::slice::from_ref(&(name))),
+                            );
                             if let Some(desc) = result.description {
                                 lines.push(String::new());
-                                lines.push(format!("Description: {desc}"));
+                                lines.push(
+                                    self.state
+                                        .locale
+                                        .format("Description: {0}", std::slice::from_ref(&(desc))),
+                                );
                             }
                             lines.push(String::new());
                             for msg in result.messages {
                                 lines.push(format!("[{}]", msg.role));
-                                let content = msg.content.as_text().unwrap_or("[non-text content]");
+                                let content = msg
+                                    .content
+                                    .as_text()
+                                    .unwrap_or(self.state.locale.translate("[non-text content]"));
                                 lines.push(content.to_string());
                                 lines.push(String::new());
                             }
                             self.state.add_system_message(lines.join("\n"));
                         }
                         Err(err) => {
-                            self.state
-                                .add_system_message(format!("Failed to get prompt: {err}"));
+                            self.state.add_system_message(
+                                self.state.locale.format(
+                                    "Failed to get prompt: {0}",
+                                    std::slice::from_ref(&(err)),
+                                ),
+                            );
                         }
                     }
                     return;
@@ -2326,7 +2599,7 @@ Manual snapshot: `/magic-trace stop`",
             A2aAction::Help => {
                 self.state.add_system_message(
                     [
-                        "## A2A peer pairing",
+                        self.state.locale.translate("## A2A peer pairing"),
                         "",
                         "/a2a fleet",
                         "/a2a peers",
@@ -2339,20 +2612,20 @@ Manual snapshot: `/magic-trace stop`",
                         "/a2a send <peer> <text>",
                         "/handoff <text>",
                         "",
-                        "Native pairing codes, fleet views, and delegation ledgers are shared with the TypeScript CLI/TUI.",
+                        self.state.locale.translate("Native pairing codes, fleet views, and delegation ledgers are shared with the TypeScript CLI/TUI."),
                     ]
                     .join("\n"),
                 );
             }
             A2aAction::Fleet => {
                 self.state.add_system_message(
-                    "A2A fleet inspection uses the shared Maestro peer registry. Run `deixic-code a2a fleet` for live health and task summaries until the Rust fleet reader is wired into this view."
+                    self.state.locale.translate("A2A fleet inspection uses the shared Maestro peer registry. Run `deixic-code a2a fleet` for live health and task summaries until the Rust fleet reader is wired into this view.")
                         .to_string(),
                 );
             }
             A2aAction::Peers => {
                 self.state.add_system_message(
-                    "A2A peer listing uses the shared Maestro peer registry. Run `deixic-code a2a peers` for the current registry until the Rust registry reader is wired into this view."
+                    self.state.locale.translate("A2A peer listing uses the shared Maestro peer registry. Run `deixic-code a2a peers` for the current registry until the Rust registry reader is wired into this view.")
                         .to_string(),
                 );
             }
@@ -2360,9 +2633,13 @@ Manual snapshot: `/magic-trace stop`",
                 peer,
                 include_work_graph,
             } => {
-                let scope = peer.as_deref().unwrap_or("all peers");
+                let scope = peer
+                    .as_deref()
+                    .unwrap_or(self.state.locale.translate("all peers"));
                 let graph_hint = if include_work_graph {
-                    " with Platform work graph and Codex subagent summaries"
+                    self.state
+                        .locale
+                        .translate(" with Platform work graph and Codex subagent summaries")
                 } else {
                     ""
                 };
@@ -2371,22 +2648,28 @@ Manual snapshot: `/magic-trace stop`",
                 } else {
                     ""
                 };
-                self.state.add_system_message(format!(
-                    "A2A task ledger requested for {scope}{graph_hint}. Run `deixic-code a2a tasks{graph_flag}` for the current durable ledger until the Rust task reader is wired into this view."
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A task ledger requested for {0}{1}. Run `deixic-code a2a tasks{2}` for the current durable ledger until the Rust task reader is wired into this view.", &[(scope).to_string(), (graph_hint).to_string(), (graph_flag).to_string()]));
             }
             A2aAction::Coordinate {
                 peer,
                 reply,
                 include_work_graph,
             } => {
-                let scope = peer.as_deref().unwrap_or("all peers");
+                let scope = peer
+                    .as_deref()
+                    .unwrap_or(self.state.locale.translate("all peers"));
                 let reply_hint = reply
                     .as_ref()
-                    .map(|value| format!(" with a {} character reply", value.len()))
+                    .map(|value| {
+                        self.state
+                            .locale
+                            .format(" with a {0} character reply", &[(value.len()).to_string()])
+                    })
                     .unwrap_or_default();
                 let graph_hint = if include_work_graph {
-                    " and Platform work graph context"
+                    self.state
+                        .locale
+                        .translate(" and Platform work graph context")
                 } else {
                     ""
                 };
@@ -2395,15 +2678,10 @@ Manual snapshot: `/magic-trace stop`",
                 } else {
                     ""
                 };
-                self.state.add_system_message(format!(
-                    "A2A coordination requested for {scope}{reply_hint}{graph_hint}. Run `deixic-code a2a coordinate [peer] --reply <text> --wait{graph_flag}` while the Rust coordination controller is connected to the shared A2A client."
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A coordination requested for {0}{1}{2}. Run `deixic-code a2a coordinate [peer] --reply <text> --wait{3}` while the Rust coordination controller is connected to the shared A2A client.", &[(scope).to_string(), (reply_hint).clone(), (graph_hint).to_string(), (graph_flag).to_string()]));
             }
             A2aAction::Accept { code } => {
-                self.state.add_system_message(format!(
-                    "A2A pairing code captured ({} chars). Run `deixic-code a2a accept <code>` Persist it with `/a2a accept <code>` in this TUI, or `deixic-code a2a accept <code>` from the CLI.",
-                    code.len()
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A pairing code captured ({0} chars). Run `deixic-code a2a accept <code>` Persist it with `/a2a accept <code>` in this TUI, or `deixic-code a2a accept <code>` from the CLI.", &[(code.len()).to_string()]));
             }
             A2aAction::Register {
                 agent_id,
@@ -2424,35 +2702,32 @@ Manual snapshot: `/magic-trace stop`",
                     "deixic-code a2a register --url <base-url> [--agent-id <id>]"
                 };
                 let action_hint = if heartbeat_only {
-                    "refresh the existing Platform heartbeat without requiring a public A2A URL"
+                    self.state.locale.translate("refresh the existing Platform heartbeat without requiring a public A2A URL")
                 } else {
-                    "publish the Rust Agent Card, Codex subagent lanes, and heartbeat to Agent Registry"
+                    self.state.locale.translate("publish the Rust Agent Card, Codex subagent lanes, and heartbeat to Agent Registry")
                 };
-                self.state.add_system_message(format!(
-                    "Platform A2A peer registration prepared{agent_hint}{url_hint}. Run `{command_hint}` to {action_hint}."
+                self.state.add_system_message(self.state.locale.format(
+                    "Platform A2A peer registration prepared{0}{1}. Run `{2}` to {3}.",
+                    &[
+                        (agent_hint).clone(),
+                        (url_hint).clone(),
+                        (command_hint).to_string(),
+                        (action_hint).to_string(),
+                    ],
                 ));
             }
             A2aAction::Delegate { peer, text } => {
-                self.state.add_system_message(format!(
-                    "A2A delegation prepared for `{peer}` ({} chars). Run `deixic-code a2a delegate {peer} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.",
-                    text.len()
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A delegation prepared for `{0}` ({1} chars). Run `deixic-code a2a delegate {2} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.", &[(peer).clone(), (text.len()).to_string(), (peer).clone()]));
             }
             A2aAction::Reply {
                 peer,
                 task_id,
                 text,
             } => {
-                self.state.add_system_message(format!(
-                    "A2A task reply prepared for `{peer}` task `{task_id}` ({} chars). Run `deixic-code a2a reply {peer} {task_id} <text> --wait` while the Rust task-continuation controller is connected to the shared A2A client.",
-                    text.len()
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A task reply prepared for `{0}` task `{1}` ({2} chars). Run `deixic-code a2a reply {3} {4} <text> --wait` while the Rust task-continuation controller is connected to the shared A2A client.", &[(peer).clone(), (task_id).clone(), (text.len()).to_string(), (peer).clone(), (task_id).clone()]));
             }
             A2aAction::Send { peer, text } => {
-                self.state.add_system_message(format!(
-                    "A2A send request prepared for `{peer}` ({} chars). Run `deixic-code a2a send {peer} <text> --wait` while the Rust send controller is connected to the shared A2A client.",
-                    text.len()
-                ));
+                self.state.add_system_message(self.state.locale.format("A2A send request prepared for `{0}` ({1} chars). Run `deixic-code a2a send {2} <text> --wait` while the Rust send controller is connected to the shared A2A client.", &[(peer).clone(), (text.len()).to_string(), (peer).clone()]));
             }
             A2aAction::Handoff {
                 peer,
@@ -2473,50 +2748,65 @@ Manual snapshot: `/magic-trace stop`",
         match action {
             HooksAction::List => {
                 let mut msg = String::new();
-                msg.push_str("## Hook System\n\n");
+                msg.push_str(self.state.locale.translate("## Hook System\n\n"));
                 msg.push_str("| Type | Count | Status |\n");
                 msg.push_str("|------|-------|--------|\n");
                 msg.push_str("| Native | 1 | SafetyHook |\n");
                 msg.push_str("| Lua | 0 | - |\n");
                 msg.push_str("| WASM | 0 | - |\n");
                 msg.push_str("| TypeScript | 0 | - |\n\n");
-                msg.push_str(
+                msg.push_str(self.state.locale.translate(
                     "*Configure hooks in `~/.composer/hooks.toml` or `.composer/hooks.toml`*\n",
-                );
+                ));
                 self.state.add_system_message(msg);
             }
             HooksAction::Toggle => {
-                self.state.status = Some("Hooks toggled".to_string());
+                self.state.status = Some(self.state.locale.translate("Hooks toggled").to_string());
                 self.state.add_system_message(
-                    "Hooks have been toggled. Use `/hooks` to see current status.".to_string(),
+                    self.state
+                        .locale
+                        .translate("Hooks have been toggled. Use `/hooks` to see current status.")
+                        .to_string(),
                 );
             }
             HooksAction::Reload => {
-                self.state.status = Some("Hooks reloaded".to_string());
-                self.state
-                    .add_system_message("Hook configuration reloaded from disk.".to_string());
+                self.state.status = Some(self.state.locale.translate("Hooks reloaded").to_string());
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .translate("Hook configuration reloaded from disk.")
+                        .to_string(),
+                );
             }
             HooksAction::Metrics => {
                 let mut msg = String::new();
-                msg.push_str("## Hook Metrics\n\n");
+                msg.push_str(self.state.locale.translate("## Hook Metrics\n\n"));
                 msg.push_str("| Metric | Value |\n");
                 msg.push_str("|--------|-------|\n");
-                msg.push_str("| PreToolUse calls | 0 |\n");
-                msg.push_str("| PostToolUse calls | 0 |\n");
+                msg.push_str(self.state.locale.translate("| PreToolUse calls | 0 |\n"));
+                msg.push_str(self.state.locale.translate("| PostToolUse calls | 0 |\n"));
                 msg.push_str("| Blocks | 0 |\n");
-                msg.push_str("| Total duration | 0ms |\n");
-                msg.push_str("| Avg duration | 0ms |\n");
+                msg.push_str(self.state.locale.translate("| Total duration | 0ms |\n"));
+                msg.push_str(self.state.locale.translate("| Avg duration | 0ms |\n"));
                 self.state.add_system_message(msg);
             }
             HooksAction::Enable => {
-                self.state.status = Some("Hooks enabled".to_string());
-                self.state
-                    .add_system_message("Hook system enabled.".to_string());
+                self.state.status = Some(self.state.locale.translate("Hooks enabled").to_string());
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .translate("Hook system enabled.")
+                        .to_string(),
+                );
             }
             HooksAction::Disable => {
-                self.state.status = Some("Hooks disabled".to_string());
-                self.state
-                    .add_system_message("Hook system disabled.".to_string());
+                self.state.status = Some(self.state.locale.translate("Hooks disabled").to_string());
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .translate("Hook system disabled.")
+                        .to_string(),
+                );
             }
         }
     }
@@ -2531,12 +2821,17 @@ Manual snapshot: `/magic-trace stop`",
             }
         };
         let Some(loaded) = self.find_loaded_skill(&id) else {
-            self.state.error = Some(format!("Skill '{name}' not found"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Skill '{0}' not found", &[(name).to_string()]),
+            );
             return;
         };
         if !loaded.definition.user_invocable {
-            self.state.error = Some(format!(
-                "Skill '{name}' is not user-invocable (set user-invocable: true)"
+            self.state.error = Some(self.state.locale.format(
+                "Skill '{0}' is not user-invocable (set user-invocable: true)",
+                &[(name).to_string()],
             ));
             return;
         }
@@ -2549,7 +2844,11 @@ Manual snapshot: `/magic-trace stop`",
     /// Invoke a flat markdown prompt/command template as a slash command.
     pub(super) async fn handle_invoke_prompt_template(&mut self, name: &str, args: &str) {
         let Some(prompt) = crate::prompts::find_prompt(&self.custom_prompts, name) else {
-            self.state.error = Some(format!("Prompt template '{name}' not found"));
+            self.state.error = Some(
+                self.state
+                    .locale
+                    .format("Prompt template '{0}' not found", &[(name).to_string()]),
+            );
             return;
         };
         match crate::prompts::format_prompt_invoke(prompt, args) {
@@ -2568,7 +2867,7 @@ Manual snapshot: `/magic-trace stop`",
 
         match action {
             SkillsAction::List => {
-                let mut msg = String::from("## Available Skills\n\n");
+                let mut msg = String::from(self.state.locale.translate("## Available Skills\n\n"));
                 let cwd = self
                     .state
                     .cwd
@@ -2577,15 +2876,15 @@ Manual snapshot: `/magic-trace stop`",
                     .unwrap_or_else(|| std::path::Path::new("."));
                 if !crate::config::workspace_trusted_in_global_config(cwd) {
                     msg.push_str(
-                        "*Workspace is untrusted — project skill dirs are skipped. Use `/trust grant` to enable them.*\n\n",
+                        self.state.locale.translate("*Workspace is untrusted — project skill dirs are skipped. Use `/trust grant` to enable them.*\n\n"),
                     );
                 }
                 if self.loaded_skills.is_empty() && self.skill_load_errors.is_empty() {
-                    msg.push_str("*No skills found*\n\n");
-                    msg.push_str("Skills are loaded from:\n");
+                    msg.push_str(self.state.locale.translate("*No skills found*\n\n"));
+                    msg.push_str(self.state.locale.translate("Skills are loaded from:\n"));
                     msg.push_str("- `~/.composer/skills/` (global)\n");
                     msg.push_str("- `.composer/skills/` (project)\n\n");
-                    msg.push_str("Create a `SKILL.md` file following the [Agent Skills spec](https://agentskills.io/specification).\n");
+                    msg.push_str(self.state.locale.translate("Create a `SKILL.md` file following the [Agent Skills spec](https://agentskills.io/specification).\n"));
                 } else {
                     msg.push_str("| Name | Description | Source | Active | Tools |\n");
                     msg.push_str("|------|-------------|--------|--------|-------|\n");
@@ -2625,14 +2924,19 @@ Manual snapshot: `/magic-trace stop`",
                         .map(|skill| skill.definition.name.clone())
                         .collect();
                     if !active_ids.is_empty() {
-                        msg.push_str(&format!("Active: {}\n", active_ids.join(", ")));
+                        msg.push_str(
+                            &self
+                                .state
+                                .locale
+                                .format("Active: {0}\n", &[(active_ids.join(", ")).clone()]),
+                        );
                     }
                 }
 
                 if !self.skill_load_errors.is_empty() {
-                    msg.push_str(&format!(
-                        "\n**{} error(s) loading skills:**\n",
-                        self.skill_load_errors.len()
+                    msg.push_str(&self.state.locale.format(
+                        "\n**{0} error(s) loading skills:**\n",
+                        &[(self.skill_load_errors.len()).to_string()],
                     ));
                     for err in self.skill_load_errors.iter().take(5) {
                         msg.push_str(&format!("- {err}\n"));
@@ -2652,13 +2956,20 @@ Manual snapshot: `/magic-trace stop`",
                 let skill = match self.skill_registry.get(&id) {
                     Some(skill) => skill,
                     None => {
-                        self.state.error = Some(format!("Skill '{name}' not found"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Skill '{0}' not found", std::slice::from_ref(&(name))),
+                        );
                         return;
                     }
                 };
                 let skill_name = skill.definition.name.clone();
                 if skill.is_active() {
-                    self.state.status = Some(format!("Skill '{}' already active", skill_name));
+                    self.state.status = Some(self.state.locale.format(
+                        "Skill '{0}' already active",
+                        std::slice::from_ref(&(skill_name)),
+                    ));
                     return;
                 }
                 if let Err(err) = self.skill_registry.activate(&id) {
@@ -2666,10 +2977,14 @@ Manual snapshot: `/magic-trace stop`",
                     return;
                 }
                 self.update_agent_system_prompt();
-                self.state.status = Some(format!("Activated skill '{}'", skill_name));
-                self.state.add_system_message(format!(
-                    "Activated skill **{}**. System prompt updated.",
-                    skill_name
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Activated skill '{0}'", std::slice::from_ref(&(skill_name))),
+                );
+                self.state.add_system_message(self.state.locale.format(
+                    "Activated skill **{0}**. System prompt updated.",
+                    std::slice::from_ref(&(skill_name)),
                 ));
             }
             SkillsAction::Deactivate(name) => {
@@ -2683,13 +2998,20 @@ Manual snapshot: `/magic-trace stop`",
                 let skill = match self.skill_registry.get(&id) {
                     Some(skill) => skill,
                     None => {
-                        self.state.error = Some(format!("Skill '{name}' not found"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Skill '{0}' not found", std::slice::from_ref(&(name))),
+                        );
                         return;
                     }
                 };
                 let skill_name = skill.definition.name.clone();
                 if !skill.is_active() {
-                    self.state.status = Some(format!("Skill '{}' not active", skill_name));
+                    self.state.status = Some(self.state.locale.format(
+                        "Skill '{0}' not active",
+                        std::slice::from_ref(&(skill_name)),
+                    ));
                     return;
                 }
                 if let Err(err) = self.skill_registry.deactivate(&id) {
@@ -2697,32 +3019,38 @@ Manual snapshot: `/magic-trace stop`",
                     return;
                 }
                 self.update_agent_system_prompt();
-                self.state.status = Some(format!("Deactivated skill '{}'", skill_name));
-                self.state.add_system_message(format!(
-                    "Deactivated skill **{}**. System prompt updated.",
-                    skill_name
+                self.state.status = Some(self.state.locale.format(
+                    "Deactivated skill '{0}'",
+                    std::slice::from_ref(&(skill_name)),
+                ));
+                self.state.add_system_message(self.state.locale.format(
+                    "Deactivated skill **{0}**. System prompt updated.",
+                    std::slice::from_ref(&(skill_name)),
                 ));
             }
             SkillsAction::Reload => {
                 self.refresh_skills(true);
                 self.update_agent_system_prompt();
                 if self.skill_load_errors.is_empty() {
-                    self.state
-                        .status
-                        .replace(format!("Loaded {} skill(s)", self.loaded_skills.len()));
+                    self.state.status.replace(self.state.locale.format(
+                        "Loaded {0} skill(s)",
+                        &[(self.loaded_skills.len()).to_string()],
+                    ));
                 } else {
-                    self.state.status.replace(format!(
-                        "Loaded {} skill(s), {} error(s)",
-                        self.loaded_skills.len(),
-                        self.skill_load_errors.len()
+                    self.state.status.replace(self.state.locale.format(
+                        "Loaded {0} skill(s), {1} error(s)",
+                        &[
+                            (self.loaded_skills.len()).to_string(),
+                            (self.skill_load_errors.len()).to_string(),
+                        ],
                     ));
                 }
-                let mut msg = format!(
-                    "Reloaded skills from filesystem. Found {} skill(s).",
-                    self.loaded_skills.len()
+                let mut msg = self.state.locale.format(
+                    "Reloaded skills from filesystem. Found {0} skill(s).",
+                    &[(self.loaded_skills.len()).to_string()],
                 );
                 if !self.skill_load_errors.is_empty() {
-                    msg.push_str("\n\nErrors:\n");
+                    msg.push_str(self.state.locale.translate("\n\nErrors:\n"));
                     for err in self.skill_load_errors.iter().take(5) {
                         msg.push_str(&format!("- {err}\n"));
                     }
@@ -2739,24 +3067,35 @@ Manual snapshot: `/magic-trace stop`",
                 };
                 if let Some(loaded) = self.find_loaded_skill(&id) {
                     let skill = &loaded.definition;
-                    let mut msg = format!("## Skill: {}\n\n", skill.name);
-                    msg.push_str(&format!("**Description:** {}\n\n", skill.description));
+                    let mut msg = self
+                        .state
+                        .locale
+                        .format("## Skill: {0}\n\n", std::slice::from_ref(&(skill.name)));
+                    msg.push_str(&self.state.locale.format(
+                        "**Description:** {0}\n\n",
+                        std::slice::from_ref(&(skill.description)),
+                    ));
                     let active = self
                         .skill_registry
                         .get(&skill.id)
                         .map(|s| s.is_active())
                         .unwrap_or(false);
-                    msg.push_str(&format!(
-                        "**Status:** {}\n\n",
-                        if active { "active" } else { "inactive" }
+                    msg.push_str(&self.state.locale.format(
+                        "**Status:** {0}\n\n",
+                        &[(if active { "active" } else { "inactive" }).to_string()],
                     ));
-                    msg.push_str(&format!("**Source:** {:?}\n\n", skill.source));
+                    msg.push_str(
+                        &self
+                            .state
+                            .locale
+                            .format("**Source:** {0}\n\n", &[format!("{:?}", skill.source)]),
+                    );
                     msg.push_str(&format!("**Path:** `{}`\n\n", loaded.source_path.display()));
 
                     if !skill.provided_tools.is_empty() {
-                        msg.push_str(&format!(
-                            "**Tools:** {}\n\n",
-                            skill.provided_tools.join(", ")
+                        msg.push_str(&self.state.locale.format(
+                            "**Tools:** {0}\n\n",
+                            &[(skill.provided_tools.join(", ")).clone()],
                         ));
                     }
 
@@ -2769,14 +3108,19 @@ Manual snapshot: `/magic-trace stop`",
 
                     if let Some(ref prompt) = skill.system_prompt_additions {
                         let preview: String = prompt.chars().take(200).collect();
-                        msg.push_str(&format!(
-                            "**Instructions preview:**\n```\n{preview}...\n```\n"
+                        msg.push_str(&self.state.locale.format(
+                            "**Instructions preview:**\n```\n{0}...\n```\n",
+                            std::slice::from_ref(&(preview)),
                         ));
                     }
 
                     self.state.add_system_message(msg);
                 } else {
-                    self.state.error = Some(format!("Skill '{name}' not found"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Skill '{0}' not found", std::slice::from_ref(&(name))),
+                    );
                 }
             }
         }
@@ -2788,7 +3132,9 @@ Manual snapshot: `/magic-trace stop`",
 
         match action {
             PluginsAction::List => {
-                let mut report = self.plugin_registry.list_report();
+                let mut report = crate::localization::with_locale(self.state.locale, || {
+                    self.plugin_registry.list_report()
+                });
                 let cwd = self
                     .state
                     .cwd
@@ -2796,9 +3142,7 @@ Manual snapshot: `/magic-trace stop`",
                     .map(std::path::Path::new)
                     .unwrap_or_else(|| std::path::Path::new("."));
                 if !crate::config::workspace_trusted_in_global_config(cwd) {
-                    report = format!(
-                        "*Workspace is untrusted — project plugin roots are skipped. Use `/trust grant` to enable them.*\n\n{report}"
-                    );
+                    report = self.state.locale.format("*Workspace is untrusted — project plugin roots are skipped. Use `/trust grant` to enable them.*\n\n{0}", &[(report).clone()]);
                 }
                 if let Some(skip) = self.plugin_registry.untrusted_skip_notice() {
                     report.push_str("\n\n");
@@ -2808,11 +3152,16 @@ Manual snapshot: `/magic-trace stop`",
             }
             PluginsAction::Info(name) => match self.plugin_registry.get(&name) {
                 Some(plugin) => {
-                    self.state.add_system_message(plugin.detail_report());
+                    self.state
+                        .add_system_message(crate::localization::with_locale(
+                            self.state.locale,
+                            || plugin.detail_report(),
+                        ));
                 }
                 None => {
-                    self.state.error = Some(format!(
-                        "Plugin '{name}' not found. Use `/plugins` to list discovered plugins."
+                    self.state.error = Some(self.state.locale.format(
+                        "Plugin '{0}' not found. Use `/plugins` to list discovered plugins.",
+                        std::slice::from_ref(&(name)),
                     ));
                 }
             },
@@ -2820,14 +3169,30 @@ Manual snapshot: `/magic-trace stop`",
                 // Rediscover plugins and reload skills that may come from them.
                 self.refresh_skills(true);
                 let count = self.plugin_registry.len();
-                self.state.status = Some(format!("Discovered {count} plugin(s)"));
-                self.state.add_system_message(format!(
-                    "Reloaded plugins from filesystem. Found {count} plugin(s).\n\n{}",
-                    self.plugin_registry.list_report()
-                ));
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Discovered {0} plugin(s)", &[(count).to_string()]),
+                );
+                self.state.add_system_message(
+                    self.state.locale.format(
+                        "Reloaded plugins from filesystem. Found {0} plugin(s).\n\n{1}",
+                        &[
+                            (count).to_string(),
+                            (crate::localization::with_locale(self.state.locale, || {
+                                self.plugin_registry.list_report()
+                            }))
+                            .clone(),
+                        ],
+                    ),
+                );
             }
             PluginsAction::MarketplaceList => {
-                let catalog = crate::plugins::builtin_catalog();
+                let mut catalog = crate::plugins::builtin_catalog();
+                // Only this built-in display copy is translated; third-party manifests stay verbatim.
+                for entry in &mut catalog {
+                    entry.description = self.state.locale.translate(&entry.description).to_owned();
+                }
                 let installed: std::collections::HashSet<String> = self
                     .plugin_registry
                     .plugins()
@@ -2835,35 +3200,46 @@ Manual snapshot: `/magic-trace stop`",
                     .map(|p| p.name.clone())
                     .collect();
                 self.state
-                    .add_system_message(crate::plugins::format_catalog(&catalog, &installed));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || crate::plugins::format_catalog(&catalog, &installed),
+                    ));
             }
             PluginsAction::MarketplaceInstall { id, trust } => {
                 let catalog = crate::plugins::builtin_catalog();
                 let Some(entry) = crate::plugins::find_entry(&catalog, &id) else {
-                    self.state.error = Some(format!(
-                        "Marketplace entry '{id}' not found. Use `/plugins marketplace list`."
+                    self.state.error = Some(self.state.locale.format(
+                        "Marketplace entry '{0}' not found. Use `/plugins marketplace list`.",
+                        std::slice::from_ref(&(id)),
                     ));
                     return;
                 };
                 if entry.tier.requires_explicit_trust() && !trust {
-                    self.state.error = Some(format!(
-                        "Entry '{}' ({}) requires explicit trust. Re-run with `--trust`.",
-                        entry.id,
-                        entry.tier.as_str()
+                    self.state.error = Some(self.state.locale.format(
+                        "Entry '{0}' ({1}) requires explicit trust. Re-run with `--trust`.",
+                        &[(entry.id).clone(), (entry.tier.as_str()).to_string()],
                     ));
                     return;
                 }
                 let source = match crate::plugins::resolve_install_source(entry) {
                     Ok(s) => s,
                     Err(e) => {
-                        self.state.error = Some(format!("Cannot install '{}': {e}", entry.id));
+                        self.state.error = Some(self.state.locale.format(
+                            "Cannot install '{0}': {1}",
+                            &[(entry.id).clone(), (e).to_string()],
+                        ));
                         return;
                     }
                 };
                 let home = match crate::path_utils::maestro_home_dir() {
                     Some(h) => h,
                     None => {
-                        self.state.error = Some("Could not resolve ~/.maestro".to_string());
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .translate("Could not resolve ~/.maestro")
+                                .to_string(),
+                        );
                         return;
                     }
                 };
@@ -2879,18 +3255,18 @@ Manual snapshot: `/magic-trace stop`",
                 ) {
                     Ok(preview) => {
                         self.refresh_skills(true);
-                        self.state.add_system_message(format!(
-                            "Installed marketplace plugin **{}** (`{}`, {}) from `{}`.\nCapabilities: {:?}\n\nUse `/plugins list` to verify. Provenance written to plugin-state.json.",
-                            preview.name,
-                            entry.id,
-                            entry.tier.as_str(),
-                            preview.source,
-                            preview.capabilities
+                        self.state.add_system_message(self.state.locale.format("Installed marketplace plugin **{0}** (`{1}`, {2}) from `{3}`.\nCapabilities: {4}\n\nUse `/plugins list` to verify. Provenance written to plugin-state.json.", &[(preview.name).clone(), (entry.id).clone(), (entry.tier.as_str()).to_string(), (preview.source).clone(), format!("{:?}", preview.capabilities)]));
+                        self.state.status = Some(self.state.locale.format(
+                            "Installed plugin {0}",
+                            std::slice::from_ref(&(preview.name)),
                         ));
-                        self.state.status = Some(format!("Installed plugin {}", preview.name));
                     }
                     Err(e) => {
-                        self.state.error = Some(format!("Install failed: {e}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Install failed: {0}", &[(e).to_string()]),
+                        );
                     }
                 }
             }
@@ -2902,18 +3278,22 @@ Manual snapshot: `/magic-trace stop`",
         match action {
             AttachAction::List => {
                 if self.pending_attachments.is_empty() {
-                    self.state
-                        .add_system_message("No pending attachments. Use `/attach <path>`.".into());
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .translate("No pending attachments. Use `/attach <path>`.")
+                            .into(),
+                    );
                 } else {
-                    let mut msg = format!(
-                        "## Pending attachments ({})\n\n",
-                        self.pending_attachments.len()
+                    let mut msg = self.state.locale.format(
+                        "## Pending attachments ({0})\n\n",
+                        &[(self.pending_attachments.len()).to_string()],
                     );
                     for (i, path) in self.pending_attachments.iter().enumerate() {
                         msg.push_str(&format!("{}. `{path}`\n", i + 1));
                     }
                     msg.push_str(
-                        "\nSent with the next user prompt. `/attach clear` drops all; `/attach remove <n>` drops one (1-based).\n",
+                        self.state.locale.translate("\nSent with the next user prompt. `/attach clear` drops all; `/attach remove <n>` drops one (1-based).\n"),
                     );
                     self.state.add_system_message(msg);
                 }
@@ -2921,21 +3301,30 @@ Manual snapshot: `/magic-trace stop`",
             AttachAction::Clear => {
                 let n = self.pending_attachments.len();
                 self.pending_attachments.clear();
-                self.state.status = Some(format!("Cleared {n} attachment(s)"));
-                self.state
-                    .add_system_message(format!("Cleared {n} pending attachment(s)."));
+                self.state.status = Some(
+                    self.state
+                        .locale
+                        .format("Cleared {0} attachment(s)", &[(n).to_string()]),
+                );
+                self.state.add_system_message(
+                    self.state
+                        .locale
+                        .format("Cleared {0} pending attachment(s).", &[(n).to_string()]),
+                );
             }
             AttachAction::Remove { index } => {
                 if index == 0 || index > self.pending_attachments.len() {
-                    self.state.error = Some(format!(
-                        "No attachment at index {index}. Use `/attach list` (1-based indices)."
+                    self.state.error = Some(self.state.locale.format(
+                        "No attachment at index {0}. Use `/attach list` (1-based indices).",
+                        &[(index).to_string()],
                     ));
                 } else {
                     let removed = self.pending_attachments.remove(index - 1);
                     let n = self.pending_attachments.len();
                     self.state.status = Some(format!("Detached #{index}; {n} remaining"));
-                    self.state.add_system_message(format!(
-                        "Removed attachment #{index}: `{removed}` ({n} remaining)."
+                    self.state.add_system_message(self.state.locale.format(
+                        "Removed attachment #{0}: `{1}` ({2} remaining).",
+                        &[(index).to_string(), (removed).clone(), (n).to_string()],
                     ));
                 }
             }
@@ -2949,13 +3338,17 @@ Manual snapshot: `/magic-trace stop`",
                 };
                 let p = std::path::Path::new(&expanded);
                 if !p.exists() {
-                    self.state.error = Some(format!("Attach path does not exist: {expanded}"));
+                    self.state.error = Some(self.state.locale.format(
+                        "Attach path does not exist: {0}",
+                        std::slice::from_ref(&(expanded)),
+                    ));
                 } else {
                     self.pending_attachments.push(expanded.clone());
                     let n = self.pending_attachments.len();
                     self.state.status = Some(format!("Attached ({n}): {expanded}"));
-                    self.state.add_system_message(format!(
-                        "Attached `{expanded}`. It will be sent with the next user prompt ({n} pending)."
+                    self.state.add_system_message(self.state.locale.format(
+                        "Attached `{0}`. It will be sent with the next user prompt ({1} pending).",
+                        &[(expanded).clone(), (n).to_string()],
                     ));
                 }
             }
@@ -2967,7 +3360,11 @@ Manual snapshot: `/magic-trace stop`",
         let previous_tools_visible = self.goal_store.tools_visible();
         match action {
             GoalAction::Status => {
-                self.state.add_system_message(self.goal_store.report());
+                self.state
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.goal_store.report(),
+                    ));
             }
             GoalAction::Create {
                 text,
@@ -2991,53 +3388,62 @@ Manual snapshot: `/magic-trace stop`",
                     self.goal_auto_continue_armed =
                         goal.auto_continue && self.native_agent.is_some();
                     let budget = match goal.token_budget {
-                        Some(b) => format!("Token budget: {b}. "),
+                        Some(b) => self
+                            .state
+                            .locale
+                            .format("Token budget: {0}. ", &[(b).to_string()]),
                         None => String::new(),
                     };
                     let time_budget = match goal.max_duration_secs {
-                        Some(seconds) => format!("Wall-clock budget: {seconds}s. "),
+                        Some(seconds) => self
+                            .state
+                            .locale
+                            .format("Wall-clock budget: {0}s. ", &[(seconds).to_string()]),
                         None => String::new(),
                     };
                     let kickoff = if self.native_agent.is_some() {
-                        "Auto-continue will inject a kickoff turn while idle."
+                        self.state
+                            .locale
+                            .translate("Auto-continue will inject a kickoff turn while idle.")
                     } else {
-                        "Agent is not available yet — send a prompt after login, or restart with credentials; auto-continue will arm after a successful worker turn."
+                        self.state.locale.translate("Agent is not available yet — send a prompt after login, or restart with credentials; auto-continue will arm after a successful worker turn.")
                     };
-                    self.state.add_system_message(format!(
-                        "Goal {} set (**{}**).\n\n{}\n\n\
-                         Auto-continue (Codex-style): after each turn, if the goal is still active the TUI injects a continuation prompt. \
-                         Mark done with the **`update_goal`** tool (`complete` or `blocked`) — same model. \
-                         {budget}{time_budget}Safety max_turns={}. `/goal pause` stops. Skipped while `/loop` or queue is active. \
-                         Goal tools are hidden from the model when no goal exists.\n\n{kickoff}",
-                        goal.id,
-                        goal.status.as_str(),
-                        goal.text,
-                        goal.max_turns
-                    ));
-                    self.state.status = Some(format!("Goal {}", goal.id));
+                    self.state.add_system_message(self.state.locale.format("Goal {0} set (**{1}**).\n\n{2}\n\nAuto-continue (Codex-style): after each turn, if the goal is still active the TUI injects a continuation prompt. Mark done with the **`update_goal`** tool (`complete` or `blocked`) — same model. {3}{4}Safety max_turns={5}. `/goal pause` stops. Skipped while `/loop` or queue is active. Goal tools are hidden from the model when no goal exists.\n\n{6}", &[(goal.id).clone(), (goal.status.as_str()).to_string(), (goal.text).clone(), (budget).clone(), (time_budget).clone(), (goal.max_turns).to_string(), (kickoff).to_string()]));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("Goal {0}", std::slice::from_ref(&(goal.id))),
+                    );
                 }
                 Err(e) => self.state.error = Some(e.to_string()),
             },
             GoalAction::Pause => match self.goal_store.pause() {
                 Ok(goal) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} paused", goal.id));
-                    self.state
-                        .add_system_message(format!("Goal {} paused.", goal.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} paused", std::slice::from_ref(&goal.id)),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Goal {0} paused.", std::slice::from_ref(&(goal.id))),
+                    );
                 }
                 Err(e) => self.state.error = Some(e.to_string()),
             },
             GoalAction::Resume => match self.goal_store.resume() {
                 Ok(goal) => {
                     self.goal_auto_continue_armed = true;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} resumed", goal.id));
-                    self.state.add_system_message(format!(
-                        "Goal {} resumed (auto-continue on).",
-                        goal.id
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} resumed", std::slice::from_ref(&goal.id)),
+                    );
+                    self.state.add_system_message(self.state.locale.format(
+                        "Goal {0} resumed (auto-continue on).",
+                        std::slice::from_ref(&(goal.id)),
                     ));
                 }
                 Err(e) => self.state.error = Some(e.to_string()),
@@ -3046,8 +3452,14 @@ Manual snapshot: `/magic-trace stop`",
                 Ok(goal) => {
                     self.goal_auto_continue_armed = false;
                     let msg = match &goal.block_reason {
-                        Some(r) => format!("Goal {} blocked: {r}", goal.id),
-                        None => format!("Goal {} blocked.", goal.id),
+                        Some(r) => self
+                            .state
+                            .locale
+                            .format("Goal {0} blocked: {1}", &[(goal.id).clone(), (r).clone()]),
+                        None => self
+                            .state
+                            .locale
+                            .format("Goal {0} blocked.", std::slice::from_ref(&(goal.id))),
                     };
                     self.state.status.replace(msg.clone());
                     self.state.add_system_message(msg);
@@ -3057,12 +3469,14 @@ Manual snapshot: `/magic-trace stop`",
             GoalAction::Complete => match self.goal_store.complete() {
                 Ok(done) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} complete", done.id));
-                    self.state.add_system_message(format!(
-                        "Goal {} marked complete.\n\n{}",
-                        done.id, done.text
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} complete", std::slice::from_ref(&done.id)),
+                    );
+                    self.state.add_system_message(self.state.locale.format(
+                        "Goal {0} marked complete.\n\n{1}",
+                        &[(done.id).clone(), (done.text).clone()],
                     ));
                 }
                 Err(e) => self.state.error = Some(e.to_string()),
@@ -3070,14 +3484,20 @@ Manual snapshot: `/magic-trace stop`",
             GoalAction::Clear => match self.goal_store.clear() {
                 Ok(Some(prev)) => {
                     self.goal_auto_continue_armed = false;
-                    self.state
-                        .status
-                        .replace(format!("Goal {} cleared", prev.id));
-                    self.state
-                        .add_system_message(format!("Cleared goal {}.", prev.id));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("Goal {0} cleared", std::slice::from_ref(&prev.id)),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Cleared goal {0}.", std::slice::from_ref(&(prev.id))),
+                    );
                 }
                 Ok(None) => {
-                    self.state.status = Some("No goal to clear".to_string());
+                    self.state.status =
+                        Some(self.state.locale.translate("No goal to clear").to_string());
                 }
                 Err(e) => self.state.error = Some(e.to_string()),
             },
@@ -3085,13 +3505,19 @@ Manual snapshot: `/magic-trace stop`",
                 match self.goal_store.set_auto_continue(enabled) {
                     Ok(goal) => {
                         self.goal_auto_continue_armed = enabled && goal.status.as_str() == "active";
-                        let label = if enabled { "on" } else { "off" };
-                        self.state
-                            .status
-                            .replace(format!("Goal auto-continue {label}"));
-                        self.state.add_system_message(format!(
-                            "Goal {} auto-continue: {label}.",
-                            goal.id
+                        let label = if enabled {
+                            self.state.locale.translate("on")
+                        } else {
+                            self.state.locale.translate("off")
+                        };
+                        self.state.status.replace(
+                            self.state
+                                .locale
+                                .format("Goal auto-continue {0}", &[(label).to_string()]),
+                        );
+                        self.state.add_system_message(self.state.locale.format(
+                            "Goal {0} auto-continue: {1}.",
+                            &[(goal.id).clone(), (label).to_string()],
                         ));
                     }
                     Err(e) => self.state.error = Some(e.to_string()),
@@ -3113,15 +3539,24 @@ Manual snapshot: `/magic-trace stop`",
         match action {
             HarnessAction::Status => {
                 self.state
-                    .add_system_message(self.harness_store.report(workspace, session_id));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.report(workspace, session_id),
+                    ));
             }
             HarnessAction::List => {
                 self.state
-                    .add_system_message(self.harness_store.list_report(workspace, session_id));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.list_report(workspace, session_id),
+                    ));
             }
             HarnessAction::Review => {
                 self.state
-                    .add_system_message(self.harness_store.proposal_report());
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.harness_store.proposal_report(),
+                    ));
             }
             HarnessAction::Propose {
                 scope,
@@ -3133,14 +3568,22 @@ Manual snapshot: `/magic-trace stop`",
                 let scope = match crate::harness::HarnessScope::parse(&scope) {
                     Ok(scope) => scope,
                     Err(error) => {
-                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                        self.state.error =
+                            Some(self.state.locale.format(
+                                "Refinement proposal failed: {0}",
+                                &[format!("{:#}", error)],
+                            ));
                         return;
                     }
                 };
                 let kind = match crate::harness::HarnessKind::parse(&kind) {
                     Ok(kind) => kind,
                     Err(error) => {
-                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                        self.state.error =
+                            Some(self.state.locale.format(
+                                "Refinement proposal failed: {0}",
+                                &[format!("{:#}", error)],
+                            ));
                         return;
                     }
                 };
@@ -3148,8 +3591,10 @@ Manual snapshot: `/magic-trace stop`",
                     match crate::harness::HarnessStore::scope_key(scope, workspace, session_id) {
                         Ok(scope_key) => scope_key,
                         Err(error) => {
-                            self.state.error =
-                                Some(format!("Refinement proposal failed: {error:#}"));
+                            self.state.error = Some(self.state.locale.format(
+                                "Refinement proposal failed: {0}",
+                                &[format!("{:#}", error)],
+                            ));
                             return;
                         }
                     };
@@ -3159,14 +3604,18 @@ Manual snapshot: `/magic-trace stop`",
                     .propose(kind, scope, scope_key, name, content, evidence)
                 {
                     Ok(id) => {
-                        self.state.status = Some(format!("Refinement proposal {id} staged"));
-                        self.state.add_system_message(format!(
-                            "Staged refinement proposal `{id}` for {} harness entry `{proposal_name}`. Use `/refine review`, then `/refine apply {id}`.",
-                            kind.as_str()
+                        self.state.status = Some(self.state.locale.format(
+                            "Refinement proposal {0} staged",
+                            std::slice::from_ref(&(id)),
                         ));
+                        self.state.add_system_message(self.state.locale.format("Staged refinement proposal `{0}` for {1} harness entry `{2}`. Use `/refine review`, then `/refine apply {3}`.", &[(id).clone(), (kind.as_str()).to_string(), (proposal_name).clone(), (id).clone()]));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                        self.state.error =
+                            Some(self.state.locale.format(
+                                "Refinement proposal failed: {0}",
+                                &[format!("{:#}", error)],
+                            ));
                     }
                 }
             }
@@ -3180,14 +3629,22 @@ Manual snapshot: `/magic-trace stop`",
                 let scope = match crate::harness::HarnessScope::parse(&scope) {
                     Ok(scope) => scope,
                     Err(error) => {
-                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Harness add failed: {0}", &[format!("{:#}", error)]),
+                        );
                         return;
                     }
                 };
                 let kind = match crate::harness::HarnessKind::parse(&kind) {
                     Ok(kind) => kind,
                     Err(error) => {
-                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Harness add failed: {0}", &[format!("{:#}", error)]),
+                        );
                         return;
                     }
                 };
@@ -3195,7 +3652,11 @@ Manual snapshot: `/magic-trace stop`",
                     match crate::harness::HarnessStore::scope_key(scope, workspace, session_id) {
                         Ok(scope_key) => scope_key,
                         Err(error) => {
-                            self.state.error = Some(format!("Harness add failed: {error:#}"));
+                            self.state.error = Some(
+                                self.state
+                                    .locale
+                                    .format("Harness add failed: {0}", &[format!("{:#}", error)]),
+                            );
                             return;
                         }
                     };
@@ -3206,15 +3667,27 @@ Manual snapshot: `/magic-trace stop`",
                 {
                     Ok(id) => {
                         self.update_agent_system_prompt();
-                        self.state.status = Some(format!("Harness entry {id} added"));
-                        self.state.add_system_message(format!(
-                            "Added {} harness entry `{entry_name}` in {} scope as `{id}`.",
-                            kind.as_str(),
-                            scope.as_str()
+                        self.state.status = Some(
+                            self.state
+                                .locale
+                                .format("Harness entry {0} added", std::slice::from_ref(&(id))),
+                        );
+                        self.state.add_system_message(self.state.locale.format(
+                            "Added {0} harness entry `{1}` in {2} scope as `{3}`.",
+                            &[
+                                (kind.as_str()).to_string(),
+                                (entry_name).clone(),
+                                (scope.as_str()).to_string(),
+                                (id).clone(),
+                            ],
                         ));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Harness add failed: {0}", &[format!("{:#}", error)]),
+                        );
                     }
                 }
             }
@@ -3225,58 +3698,105 @@ Manual snapshot: `/magic-trace stop`",
             } => match self.harness_store.update(&id, content, evidence) {
                 Ok(()) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("Harness entry {id} updated"));
-                    self.state
-                        .add_system_message(format!("Updated harness entry `{id}`."));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("Harness entry {0} updated", std::slice::from_ref(&(id))),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Updated harness entry `{0}`.", std::slice::from_ref(&(id))),
+                    );
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Harness update failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Harness update failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             HarnessAction::Delete(id) => match self.harness_store.delete(&id) {
                 Ok(()) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("Harness entry {id} deleted"));
-                    self.state
-                        .add_system_message(format!("Deleted harness entry `{id}`."));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("Harness entry {0} deleted", std::slice::from_ref(&(id))),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Deleted harness entry `{0}`.", std::slice::from_ref(&(id))),
+                    );
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Harness delete failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Harness delete failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             HarnessAction::Rollback(revision) => match self.harness_store.rollback(revision) {
                 Ok(()) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("Harness rolled back to revision {revision}"));
-                    self.state.add_system_message(format!(
-                        "Restored harness snapshot at revision {revision}."
+                    self.state.status = Some(self.state.locale.format(
+                        "Harness rolled back to revision {0}",
+                        &[(revision).to_string()],
+                    ));
+                    self.state.add_system_message(self.state.locale.format(
+                        "Restored harness snapshot at revision {0}.",
+                        &[(revision).to_string()],
                     ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Harness rollback failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Harness rollback failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             HarnessAction::Apply(id) => match self.harness_store.apply_proposal(&id) {
                 Ok(entry_id) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("Refinement proposal {id} applied"));
-                    self.state.add_system_message(format!(
-                        "Applied refinement proposal `{id}` to harness entry `{entry_id}`."
+                    self.state.status = Some(self.state.locale.format(
+                        "Refinement proposal {0} applied",
+                        std::slice::from_ref(&(id)),
+                    ));
+                    self.state.add_system_message(self.state.locale.format(
+                        "Applied refinement proposal `{0}` to harness entry `{1}`.",
+                        &[(id).clone(), (entry_id).clone()],
                     ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Refinement apply failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Refinement apply failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             HarnessAction::Reject { id, note } => {
                 match self.harness_store.reject_proposal(&id, note) {
                     Ok(()) => {
-                        self.state.status = Some(format!("Refinement proposal {id} rejected"));
-                        self.state
-                            .add_system_message(format!("Rejected refinement proposal `{id}`."));
+                        self.state.status = Some(self.state.locale.format(
+                            "Refinement proposal {0} rejected",
+                            std::slice::from_ref(&(id)),
+                        ));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Rejected refinement proposal `{0}`.",
+                            std::slice::from_ref(&(id)),
+                        ));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Refinement reject failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Refinement reject failed: {0}", &[format!("{:#}", error)]),
+                        );
                     }
                 }
             }
@@ -3286,7 +3806,11 @@ Manual snapshot: `/magic-trace stop`",
     /// Handle `/rlm` persistent context variable actions.
     pub(super) fn handle_rlm_action(&mut self, action: RlmAction) {
         match action {
-            RlmAction::List => self.state.add_system_message(self.rlm_store.report()),
+            RlmAction::List => self
+                .state
+                .add_system_message(crate::localization::with_locale(self.state.locale, || {
+                    self.rlm_store.report()
+                })),
             RlmAction::Set {
                 name,
                 value,
@@ -3294,45 +3818,86 @@ Manual snapshot: `/magic-trace stop`",
             } => match self.rlm_store.set(name.clone(), value, description) {
                 Ok(()) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("RLM variable `{name}` saved"));
-                    self.state
-                        .add_system_message(format!("Saved RLM variable `{name}`."));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("RLM variable `{0}` saved", std::slice::from_ref(&(name))),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Saved RLM variable `{0}`.", std::slice::from_ref(&(name))),
+                    );
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("RLM set failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("RLM set failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             RlmAction::Append { name, value } => match self.rlm_store.append(name.clone(), value) {
                 Ok(()) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("RLM variable `{name}` appended"));
-                    self.state
-                        .add_system_message(format!("Appended to RLM variable `{name}`."));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("RLM variable `{0}` appended", std::slice::from_ref(&(name))),
+                    );
+                    self.state.add_system_message(self.state.locale.format(
+                        "Appended to RLM variable `{0}`.",
+                        std::slice::from_ref(&(name)),
+                    ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("RLM append failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("RLM append failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             RlmAction::Render(template) => match self.rlm_store.render_template(&template) {
-                Ok(rendered) => self
-                    .state
-                    .add_system_message(format!("## RLM rendered context\n\n{rendered}")),
+                Ok(rendered) => self.state.add_system_message(self.state.locale.format(
+                    "## RLM rendered context\n\n{0}",
+                    std::slice::from_ref(&(rendered)),
+                )),
                 Err(error) => {
-                    self.state.error = Some(format!("RLM render failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("RLM render failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             RlmAction::Clear(name) => match self.rlm_store.clear(&name) {
                 Ok(true) => {
                     self.update_agent_system_prompt();
-                    self.state.status = Some(format!("RLM variable `{name}` cleared"));
-                    self.state
-                        .add_system_message(format!("Cleared RLM variable `{name}`."));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("RLM variable `{0}` cleared", std::slice::from_ref(&(name))),
+                    );
+                    self.state.add_system_message(
+                        self.state
+                            .locale
+                            .format("Cleared RLM variable `{0}`.", std::slice::from_ref(&(name))),
+                    );
                 }
                 Ok(false) => {
-                    self.state.status = Some(format!("No RLM variable named `{name}`"));
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .format("No RLM variable named `{0}`", std::slice::from_ref(&(name))),
+                    );
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("RLM clear failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("RLM clear failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
         }
@@ -3345,20 +3910,32 @@ Manual snapshot: `/magic-trace stop`",
                 let mut recipients = self.tool_executor.subagent_mailbox_recipients();
                 recipients.push(crate::mailbox::local_identity());
                 self.state
-                    .add_system_message(self.mailbox_store.report_for_recipients(&recipients));
+                    .add_system_message(crate::localization::with_locale(
+                        self.state.locale,
+                        || self.mailbox_store.report_for_recipients(&recipients),
+                    ));
             }
             crate::commands::MailboxAction::Send { recipient, body } => {
                 let sender = crate::mailbox::local_identity();
                 match self.mailbox_store.send(sender, recipient.clone(), body) {
                     Ok(id) => {
                         self.update_agent_system_prompt();
-                        self.state.status = Some(format!("Mailbox message {id} sent"));
-                        self.state.add_system_message(format!(
-                            "Sent mailbox message `{id}` to `{recipient}`."
+                        self.state.status = Some(
+                            self.state
+                                .locale
+                                .format("Mailbox message {0} sent", std::slice::from_ref(&(id))),
+                        );
+                        self.state.add_system_message(self.state.locale.format(
+                            "Sent mailbox message `{0}` to `{1}`.",
+                            &[(id).clone(), (recipient).clone()],
                         ));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Mailbox send failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Mailbox send failed: {0}", &[format!("{:#}", error)]),
+                        );
                     }
                 }
             }
@@ -3368,13 +3945,22 @@ Manual snapshot: `/magic-trace stop`",
             {
                 Ok(message) => {
                     self.update_agent_system_prompt();
-                    self.state.add_system_message(format!(
-                        "## Mailbox message `{}`\n\nFrom: `{}`\nTo: `{}`\n\n{}",
-                        message.id, message.sender, message.recipient, message.body
+                    self.state.add_system_message(self.state.locale.format(
+                        "## Mailbox message `{0}`\n\nFrom: `{1}`\nTo: `{2}`\n\n{3}",
+                        &[
+                            (message.id).clone(),
+                            (message.sender).clone(),
+                            (message.recipient).clone(),
+                            (message.body).clone(),
+                        ],
                     ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Mailbox read failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Mailbox read failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
             crate::commands::MailboxAction::Inspect(id) => {
@@ -3388,23 +3974,20 @@ Manual snapshot: `/magic-trace stop`",
                         let next_action = if message.delivery_state
                             == crate::mailbox::MailboxDeliveryState::Held
                         {
-                            format!("\n\nApprove: `/mailbox approve {}`", message.id)
+                            self.state.locale.format(
+                                "\n\nApprove: `/mailbox approve {0}`",
+                                std::slice::from_ref(&(message.id)),
+                            )
                         } else {
                             String::new()
                         };
-                        self.state.add_system_message(format!(
-                            "## Subagent mailbox control `{}`\n\nFrom: `{}`\nTo: `{}`\nMode: `{}`\nState: `{:?}`\n\n{}{}",
-                            message.id,
-                            message.sender,
-                            message.recipient,
-                            mode.label(),
-                            message.delivery_state,
-                            message.body,
-                            next_action
-                        ));
+                        self.state.add_system_message(self.state.locale.format("## Subagent mailbox control `{0}`\n\nFrom: `{1}`\nTo: `{2}`\nMode: `{3}`\nState: `{4}`\n\n{5}{6}", &[(message.id).clone(), (message.sender).clone(), (message.recipient).clone(), (mode.label()).to_string(), format!("{:?}", message.delivery_state), (message.body).clone(), (next_action).clone()]));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Mailbox inspection failed: {error}"));
+                        self.state.error = Some(self.state.locale.format(
+                            "Mailbox inspection failed: {0}",
+                            std::slice::from_ref(&(error)),
+                        ));
                     }
                 }
             }
@@ -3415,12 +3998,21 @@ Manual snapshot: `/magic-trace stop`",
                 {
                     Ok(()) => {
                         self.update_agent_system_prompt();
-                        self.state.status = Some(format!("Mailbox message {id} acknowledged"));
-                        self.state
-                            .add_system_message(format!("Acknowledged mailbox message `{id}`."));
+                        self.state.status = Some(self.state.locale.format(
+                            "Mailbox message {0} acknowledged",
+                            std::slice::from_ref(&(id)),
+                        ));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Acknowledged mailbox message `{0}`.",
+                            std::slice::from_ref(&(id)),
+                        ));
                     }
                     Err(error) => {
-                        self.state.error = Some(format!("Mailbox acknowledge failed: {error:#}"));
+                        self.state.error =
+                            Some(self.state.locale.format(
+                                "Mailbox acknowledge failed: {0}",
+                                &[format!("{:#}", error)],
+                            ));
                     }
                 }
             }
@@ -3428,27 +4020,40 @@ Manual snapshot: `/magic-trace stop`",
                 match self.tool_executor.approve_held_subagent_control(&id) {
                     Ok(message) => {
                         let _ = self.mailbox_store.reload_from_disk();
-                        self.state.status = Some(format!("Mailbox message {id} approved"));
-                        self.state.add_system_message(format!(
-                            "Approved held mailbox message `{id}` for delivery to `{}`.",
-                            message.recipient
+                        self.state.status =
+                            Some(self.state.locale.format(
+                                "Mailbox message {0} approved",
+                                std::slice::from_ref(&(id)),
+                            ));
+                        self.state.add_system_message(self.state.locale.format(
+                            "Approved held mailbox message `{0}` for delivery to `{1}`.",
+                            &[(id).clone(), (message.recipient).clone()],
                         ));
                     }
                     Err(error) => {
                         let _ = self.mailbox_store.reload_from_disk();
-                        self.state.error = Some(format!("Mailbox approval failed: {error:#}"));
+                        self.state.error = Some(
+                            self.state
+                                .locale
+                                .format("Mailbox approval failed: {0}", &[format!("{:#}", error)]),
+                        );
                     }
                 }
             }
             crate::commands::MailboxAction::Compact => match self.mailbox_store.compact() {
                 Ok(removed) => {
                     self.update_agent_system_prompt();
-                    self.state.add_system_message(format!(
-                        "Removed {removed} acknowledged mailbox message(s)."
+                    self.state.add_system_message(self.state.locale.format(
+                        "Removed {0} acknowledged mailbox message(s).",
+                        &[(removed).to_string()],
                     ));
                 }
                 Err(error) => {
-                    self.state.error = Some(format!("Mailbox compact failed: {error:#}"));
+                    self.state.error = Some(
+                        self.state
+                            .locale
+                            .format("Mailbox compact failed: {0}", &[format!("{:#}", error)]),
+                    );
                 }
             },
         }
@@ -3461,16 +4066,21 @@ Manual snapshot: `/magic-trace stop`",
                 let steer_count = self.state.queued_steering_count;
                 let follow_up_count = self.state.queued_follow_up_count;
                 let mut msg = String::new();
-                msg.push_str("## Queue\n\n");
-                msg.push_str(&format!(
-                    "**Steering mode:** {}\n",
-                    self.state.steering_mode.label()
+                msg.push_str(self.state.locale.translate("## Queue\n\n"));
+                msg.push_str(&self.state.locale.format(
+                    "**Steering mode:** {0}\n",
+                    &[(self.state.steering_mode.label()).to_string()],
                 ));
-                msg.push_str(&format!(
-                    "**Follow-up mode:** {}\n",
-                    self.state.follow_up_mode.label()
+                msg.push_str(&self.state.locale.format(
+                    "**Follow-up mode:** {0}\n",
+                    &[(self.state.follow_up_mode.label()).to_string()],
                 ));
-                msg.push_str(&format!("**Pending:** {total}\n"));
+                msg.push_str(
+                    &self
+                        .state
+                        .locale
+                        .format("**Pending:** {0}\n", &[(total).to_string()]),
+                );
                 if total > 0 {
                     msg.push_str(&format!(
                         "- steer: {steer_count}, follow-up: {follow_up_count}\n"
@@ -3478,16 +4088,22 @@ Manual snapshot: `/magic-trace stop`",
                     if let Some(summary) = Self::describe_next_queue_batch(
                         steer_count,
                         self.state.steering_mode,
-                        "at the next tool boundary",
+                        self.state.locale.translate("at the next tool boundary"),
                     ) {
-                        msg.push_str(&format!("**Next steering batch:** {summary}\n"));
+                        msg.push_str(&self.state.locale.format(
+                            "**Next steering batch:** {0}\n",
+                            std::slice::from_ref(&(summary)),
+                        ));
                     }
                     if let Some(summary) = Self::describe_next_queue_batch(
                         follow_up_count,
                         self.state.follow_up_mode,
-                        "after turn end",
+                        self.state.locale.translate("after turn end"),
                     ) {
-                        msg.push_str(&format!("**Next follow-up batch:** {summary}\n"));
+                        msg.push_str(&self.state.locale.format(
+                            "**Next follow-up batch:** {0}\n",
+                            std::slice::from_ref(&(summary)),
+                        ));
                     }
                 }
                 if let Some(active) = &self.queued_prompt_active {
@@ -3499,9 +4115,9 @@ Manual snapshot: `/magic-trace stop`",
                     ));
                 }
                 if self.queued_prompts.is_empty() {
-                    msg.push_str("\nNo queued prompts.\n");
+                    msg.push_str(self.state.locale.translate("\nNo queued prompts.\n"));
                 } else {
-                    msg.push_str("\n**Pending prompts:**\n");
+                    msg.push_str(self.state.locale.translate("\n**Pending prompts:**\n"));
                     let inflight_id = self.queued_prompt_inflight.map(|cursor| cursor.id);
                     for (index, prompt) in self.queued_prompts.iter().enumerate() {
                         let marker = if inflight_id == Some(prompt.id) {
@@ -3520,7 +4136,7 @@ Manual snapshot: `/magic-trace stop`",
                     }
                 }
                 msg.push_str(
-                    "\nUse /queue cancel <id> to remove a prompt, /queue move <id> <up|down> to reorder, or /queue send <id> to send one next. Use /queue mode [steer|followup] <one|all> to change behavior.",
+                    self.state.locale.translate("\nUse /queue cancel <id> to remove a prompt, /queue move <id> <up|down> to reorder, or /queue send <id> to send one next. Use /queue mode [steer|followup] <one|all> to change behavior."),
                 );
                 self.state.add_system_message(msg);
             }
@@ -3530,17 +4146,19 @@ Manual snapshot: `/magic-trace stop`",
                     .as_ref()
                     .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already processing."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already processing.",
+                        &[(id).to_string()],
+                    ));
                     return;
                 }
                 if self
                     .queued_prompt_inflight
                     .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state.status.replace(format!(
-                        "Queued prompt #{id} is starting; try again if it re-queues."
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is starting; try again if it re-queues.",
+                        &[(id).to_string()],
                     ));
                     return;
                 }
@@ -3549,24 +4167,31 @@ Manual snapshot: `/magic-trace stop`",
                         if let Some(agent) = &self.native_agent {
                             agent.cancel_queued(id);
                         }
-                        self.state.status.replace(format!(
-                            "Removed queued {} #{}.",
-                            removed.kind.label(),
-                            removed.id
+                        self.state.status.replace(self.state.locale.format(
+                            "Removed queued {0} #{1}.",
+                            &[
+                                (self.state.locale.translate(removed.kind.label())).to_string(),
+                                (removed.id).to_string(),
+                            ],
                         ));
                     }
                     None => {
-                        self.state
-                            .status
-                            .replace(format!("No queued prompt found with id #{id}."));
+                        self.state.status.replace(
+                            self.state.locale.format(
+                                "No queued prompt found with id #{0}.",
+                                &[(id).to_string()],
+                            ),
+                        );
                     }
                 }
             }
             QueueAction::Move { id, direction } => {
                 if !self.queued_prompts.iter().any(|prompt| prompt.id == id) {
-                    self.state
-                        .status
-                        .replace(format!("No queued prompt found with id #{id}."));
+                    self.state.status.replace(
+                        self.state
+                            .locale
+                            .format("No queued prompt found with id #{0}.", &[(id).to_string()]),
+                    );
                     return;
                 }
                 if self
@@ -3577,9 +4202,10 @@ Manual snapshot: `/magic-trace stop`",
                         .queued_prompt_inflight
                         .is_some_and(|prompt| prompt.id == id)
                 {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already processing."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already processing.",
+                        &[(id).to_string()],
+                    ));
                     return;
                 }
                 if let Some(placement) = self.move_queued_prompt(id, direction) {
@@ -3587,17 +4213,19 @@ Manual snapshot: `/magic-trace stop`",
                         agent.reorder_queued(id, placement);
                     }
                     let action = match direction {
-                        QueueMoveDirection::Up => "moved up",
-                        QueueMoveDirection::Down => "moved down",
-                        QueueMoveDirection::Now => "will send next",
+                        QueueMoveDirection::Up => self.state.locale.translate("moved up"),
+                        QueueMoveDirection::Down => self.state.locale.translate("moved down"),
+                        QueueMoveDirection::Now => self.state.locale.translate("will send next"),
                     };
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} {action}."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} {1}.",
+                        &[(id).to_string(), (action).to_string()],
+                    ));
                 } else {
-                    self.state
-                        .status
-                        .replace(format!("Queued prompt #{id} is already in that position."));
+                    self.state.status.replace(self.state.locale.format(
+                        "Queued prompt #{0} is already in that position.",
+                        &[(id).to_string()],
+                    ));
                 }
             }
             QueueAction::Mode { kind, mode } => {
@@ -3607,7 +4235,7 @@ Manual snapshot: `/magic-trace stop`",
                         if let Some(agent) = &self.native_agent {
                             let _ = agent.set_steering_mode(mode);
                         }
-                        "Steering"
+                        self.state.locale.translate("Steering")
                     }
                     QueueModeKind::FollowUp => {
                         self.state.follow_up_mode = mode;
@@ -3621,9 +4249,10 @@ Manual snapshot: `/magic-trace stop`",
                     self.state.steering_mode,
                     self.state.follow_up_mode,
                 );
-                self.state
-                    .status
-                    .replace(format!("{label} mode: {}", mode.label()));
+                self.state.status.replace(self.state.locale.format(
+                    "{0} mode: {1}",
+                    &[(label).to_string(), (mode.label()).to_string()],
+                ));
             }
         }
     }
@@ -3659,17 +4288,19 @@ Manual snapshot: `/magic-trace stop`",
             match prefix {
                 Ok(Some(cmd)) => {
                     let expanded = expand(&cmd.name.clone());
-                    self.state
-                        .status
-                        .replace(format!("Expanded /{typed_word} → /{}", cmd.name));
+                    self.state.status.replace(self.state.locale.format(
+                        "Expanded /{0} → /{1}",
+                        &[(typed_word).to_string(), (cmd.name).clone()],
+                    ));
                     expanded
                 }
                 Ok(None) => match self.command_registry.resolve_typo(&word) {
                     Ok(Some(cmd)) => {
                         let expanded = expand(&cmd.name.clone());
-                        self.state
-                            .status
-                            .replace(format!("Interpreted /{typed_word} as /{}", cmd.name));
+                        self.state.status.replace(self.state.locale.format(
+                            "Interpreted /{0} as /{1}",
+                            &[(typed_word).to_string(), (cmd.name).clone()],
+                        ));
                         expanded
                     }
                     Ok(None) => input,
@@ -3683,8 +4314,9 @@ Manual snapshot: `/magic-trace stop`",
                             .join(", ");
                         self.state.set_input(&input);
                         self.update_slash_state();
-                        self.state.error = Some(format!(
-                            "Unknown command: /{typed_word} — did you mean {list}?"
+                        self.state.error = Some(self.state.locale.format(
+                            "Unknown command: /{0} — did you mean {1}?",
+                            &[(typed_word).to_string(), (list).clone()],
                         ));
                         return Ok(());
                     }
@@ -3699,8 +4331,9 @@ Manual snapshot: `/magic-trace stop`",
                         .join(", ");
                     self.state.set_input(&input);
                     self.update_slash_state();
-                    self.state.error = Some(format!(
-                        "Ambiguous command: /{typed_word} (could be {list})"
+                    self.state.error = Some(self.state.locale.format(
+                        "Ambiguous command: /{0} (could be {1})",
+                        &[(typed_word).to_string(), (list).clone()],
                     ));
                     return Ok(());
                 }
@@ -3714,29 +4347,35 @@ Manual snapshot: `/magic-trace stop`",
         let session_id = self.state.session_id.clone();
         let model = self.state.model.clone();
 
-        match self
-            .command_registry
-            .execute(&input, &cwd, session_id.as_deref(), model.as_deref())
-        {
+        let result = crate::localization::with_locale(self.state.locale, || {
+            self.command_registry
+                .execute(&input, &cwd, session_id.as_deref(), model.as_deref())
+        });
+        match result {
             Ok(output) => {
                 self.handle_command_output(output).await;
                 self.slash_state.reset();
                 return Ok(());
             }
             Err(e) => {
-                if e.message.contains("Unknown command") {
+                if e.kind == crate::commands::CommandErrorKind::UnknownCommand {
                     if self.state.unknown_slash_command_fallback {
                         if let Some(agent) = &self.native_agent {
                             let _ = agent.prompt(input.clone(), vec![]).await;
                             self.state.busy = true;
                         } else {
-                            self.state.error = Some(format!("Unknown command: {input}"));
+                            self.state.error = Some(
+                                self.state
+                                    .locale
+                                    .format("Unknown command: {0}", std::slice::from_ref(&(input))),
+                            );
                         }
                     } else {
                         // Fallback disabled via tui.slash_command_fallback = false:
                         // never turn an unknown slash command into an agent prompt.
-                        self.state.error = Some(format!(
-                            "Unknown command: {input} (Type /help to see available commands)"
+                        self.state.error = Some(self.state.locale.format(
+                            "Unknown command: {0} (Type /help to see available commands)",
+                            std::slice::from_ref(&(input)),
                         ));
                     }
                 } else {
@@ -3765,9 +4404,10 @@ Manual snapshot: `/magic-trace stop`",
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                self.state
-                    .error
-                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+                self.state.error.replace(self.state.locale.format(
+                    "Failed to scaffold AGENTS.md: {0}",
+                    &[(format!("{error:#}")).to_string()],
+                ));
                 return;
             }
         };
@@ -3777,16 +4417,21 @@ Manual snapshot: `/magic-trace stop`",
                     .strip_prefix(&cwd)
                     .map(|relative| format!("./{}", relative.display()))
                     .unwrap_or_else(|_| path.display().to_string());
-                self.state
-                    .add_system_message(format!("Drafting AGENTS.md at {display}..."));
+                self.state.add_system_message(self.state.locale.format(
+                    "Drafting AGENTS.md at {0}...",
+                    std::slice::from_ref(&(display)),
+                ));
                 if let Err(error) = self.submit_prompt(prompt).await {
-                    self.state.error = Some(format!("Failed to start AGENTS.md draft: {error}"));
+                    self.state.error = Some(self.state.locale.format(
+                        "Failed to start AGENTS.md draft: {0}",
+                        &[(error).to_string()],
+                    ));
                 }
             }
             Ok(crate::agents_cli::InitWorkspaceResult::Updated { path }) => {
-                self.state.add_system_message(format!(
-                    "Updated AGENTS instructions at {}.",
-                    path.display()
+                self.state.add_system_message(self.state.locale.format(
+                    "Updated AGENTS instructions at {0}.",
+                    &[(path.display()).to_string()],
                 ));
             }
             Ok(crate::agents_cli::InitWorkspaceResult::Exists {
@@ -3799,15 +4444,13 @@ Manual snapshot: `/magic-trace stop`",
                 } else {
                     rerun.as_str()
                 };
-                self.state.add_system_message(format!(
-                    "AGENTS instructions already exist at {}.\nPreview the proposed update below, then re-run `{hint}` to apply it.\n\n{preview}",
-                    path.display()
-                ));
+                self.state.add_system_message(self.state.locale.format("AGENTS instructions already exist at {0}.\nPreview the proposed update below, then re-run `{1}` to apply it.\n\n{2}", &[(path.display()).to_string(), (hint).to_string(), (preview).clone()]));
             }
             Err(error) => {
-                self.state
-                    .error
-                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+                self.state.error.replace(self.state.locale.format(
+                    "Failed to scaffold AGENTS.md: {0}",
+                    &[(format!("{error:#}")).to_string()],
+                ));
             }
         }
     }
@@ -3855,4 +4498,35 @@ pub(crate) fn unanswered_tool_call_contracts(
         }
     }
     contracts
+}
+
+impl App {
+    fn copy_transcript(&mut self, target: &crate::transcript_copy::CopyTarget) {
+        match crate::transcript_copy::copy_text(
+            target,
+            &self.state.messages,
+            self.session_manager.current_session_id(),
+        ) {
+            Ok(text) => match self.clipboard.copy(&text) {
+                Ok(()) => {
+                    self.state.status = Some(
+                        self.state
+                            .locale
+                            .text(crate::localization::TextKey::Copied)
+                            .into(),
+                    );
+                    self.state.error = None;
+                }
+                Err(error) => {
+                    self.state.error = Some(format!(
+                        "{}: {error}",
+                        self.state
+                            .locale
+                            .text(crate::localization::TextKey::CopyFailed)
+                    ));
+                }
+            },
+            Err(error) => self.state.error = Some(error),
+        }
+    }
 }

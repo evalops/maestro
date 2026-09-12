@@ -9,11 +9,10 @@ description = "Task graph planning and parallel agent orchestration for Maestro"
 anyhow.workspace = true
 regex.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 # Preserve the lint policy applied before extraction from maestro-tui.
 [lints.clippy]

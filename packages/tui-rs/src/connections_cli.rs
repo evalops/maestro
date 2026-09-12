@@ -30,6 +30,9 @@ use crate::service_connections::{
     keyring_secret_ref, now_ms,
 };
 
+#[path = "connections_one_password.rs"]
+mod one_password;
+
 #[derive(Debug, Default)]
 struct Args {
     command: Option<String>,
@@ -72,12 +75,32 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
     match command {
         "ui" | "dashboard" => {
             if parsed.json {
-                bail!("deixic-code connections ui does not support --json")
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("deixic-code connections ui does not support --json", &[])
+                )
             }
             if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                bail!("deixic-code connections ui requires an interactive terminal")
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "deixic-code connections ui requires an interactive terminal",
+                        &[]
+                    )
+                )
             }
             run_dashboard(parsed.workspace.as_deref())
+        }
+        "1password" => {
+            if parsed.json || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .translate("1Password capability setup requires an interactive terminal")
+                );
+            }
+            one_password::run(parsed.workspace.as_deref()).map(|()| 0)
         }
         "types" => run_types(&parsed),
         "list" | "ls" => {
@@ -120,7 +143,13 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
             }
             run_remove(&parsed)
         }
-        other => bail!("unknown connections subcommand: {other}"),
+        other => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unknown connections subcommand: {0}",
+                &[(other).to_string()]
+            )
+        ),
     }
 }
 
@@ -139,12 +168,15 @@ fn run_types(args: &Args) -> Result<i32> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
     } else {
-        println!("Connection types");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Connection types", &[])
+        );
         for report in reports {
             println!(
                 "- {} — {} [{}; {:?}; source={}]",
                 report.definition.id,
-                report.definition.display_name,
+                localized_connection_type_name(&report, crate::localization::cli_locale()),
                 report.definition.provider_id,
                 report.definition.auth_kind,
                 report.source
@@ -159,11 +191,12 @@ fn run_list(json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&store.connections)?);
     } else if store.connections.is_empty() {
-        println!(
-            "No managed connections. Run `deixic-code connections types` to see available types."
-        );
+        println!("{}", crate::localization::cli_locale().format("No managed connections. Run `deixic-code connections types` to see available types.", &[]));
     } else {
-        println!("Connections");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Connections", &[])
+        );
         for connection in store.connections {
             println!(
                 "- {} — {} [{}; {:?}; generation={}; {}]",
@@ -187,12 +220,14 @@ fn run_add(args: &Args) -> Result<i32> {
     let type_id = required_position(
         args,
         0,
-        "Usage: deixic-code connections add <type> <id> [source]",
+        crate::localization::cli_locale()
+            .translate("Usage: deixic-code connections add <type> <id> [source]"),
     )?;
     let id = required_position(
         args,
         1,
-        "Usage: deixic-code connections add <type> <id> [source]",
+        crate::localization::cli_locale()
+            .translate("Usage: deixic-code connections add <type> <id> [source]"),
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
     let definition = resolve_connection_type(&definitions, type_id)?;
@@ -200,12 +235,20 @@ fn run_add(args: &Args) -> Result<i32> {
     let backend = KeyringSecretBackend;
     let connection = with_locked_store(&path, |store| {
         if store.get(id).is_some() {
-            bail!("connection already exists: {id}");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("connection already exists: {0}", &[(id).to_string()])
+            );
         }
         let (secret_ref, stored_key) = source_for_add(args, &definition, id, &backend)?;
         let timestamp = now_ms();
         let provider_id = definition.provider_id.clone();
-        let is_default = should_be_default(store, &provider_id, args.default);
+        let is_default = if args.from_one_password.is_some() {
+            args.default
+        } else {
+            should_be_default(store, &provider_id, args.default)
+        };
         let connection = ServiceConnection {
             id: id.to_owned(),
             type_id: definition.id.clone(),
@@ -248,7 +291,11 @@ fn should_be_default(store: &ConnectionStore, provider_id: &str, requested: bool
 }
 
 fn run_status(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections status <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections status <id>"),
+    )?;
     let store = load_store()?;
     let connection = store
         .get(id)
@@ -293,13 +340,23 @@ fn run_status(args: &Args) -> Result<i32> {
 }
 
 fn run_use(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections use <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections use <id>"),
+    )?;
     let path = ConnectionStore::default_path()?;
     with_locked_store(&path, |store| {
         store.set_default(id)?;
         store.save(&path)
     })?;
-    println!("{id}: default connection for its provider");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format(
+            "{0}: default connection for its provider",
+            &[(id).to_string()]
+        )
+    );
     Ok(0)
 }
 
@@ -307,7 +364,8 @@ fn run_rotate(args: &Args) -> Result<i32> {
     let id = required_position(
         args,
         0,
-        "Usage: deixic-code connections rotate <id> [--secret-stdin]",
+        crate::localization::cli_locale()
+            .translate("Usage: deixic-code connections rotate <id> [--secret-stdin]"),
     )?;
     let path = ConnectionStore::default_path()?;
     let backend = KeyringSecretBackend;
@@ -328,9 +386,7 @@ fn run_rotate(args: &Args) -> Result<i32> {
                     .checked_add(1)
                     .context("connection generation overflow")?,
             ),
-            _ => bail!(
-                "only OS-credential-store connections can be rotated; update the referenced source instead"
-            ),
+            _ => bail!("{}", crate::localization::cli_locale().format("only OS-credential-store connections can be rotated; update the referenced source instead", &[])),
         };
         let new_secret_ref = keyring_secret_ref(id, next_generation);
         let (new_service, new_account) = match &new_secret_ref {
@@ -353,9 +409,7 @@ fn run_rotate(args: &Args) -> Result<i32> {
             return Err(error);
         }
         if let Err(error) = backend.delete(&old_service, &old_account) {
-            eprintln!(
-                "warning: rotated connection is active, but the obsolete generation could not be deleted: {error}"
-            );
+            eprintln!("{}", crate::localization::cli_locale().format("warning: rotated connection is active, but the obsolete generation could not be deleted: {0}", &[(error).to_string()]));
         }
         Ok(generation)
     })?;
@@ -364,11 +418,18 @@ fn run_rotate(args: &Args) -> Result<i32> {
 }
 
 fn run_remove(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections remove <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections remove <id>"),
+    )?;
     let path = ConnectionStore::default_path()?;
     let backend = KeyringSecretBackend;
     remove_connection(&path, id, &backend)?;
-    println!("{id}: removed and revoked");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("{0}: removed and revoked", &[(id).to_string()])
+    );
     Ok(0)
 }
 
@@ -380,9 +441,7 @@ fn remove_connection(path: &Path, id: &str, backend: &impl SecretBackend) -> Res
         store.save(path)?;
         if let ConnectionSecretRef::Keyring { service, account } = &connection.secret_ref {
             if let Err(error) = backend.delete(service, account) {
-                eprintln!(
-                    "warning: connection metadata was removed, but the obsolete credential could not be deleted: {error}"
-                );
+                eprintln!("{}", crate::localization::cli_locale().format("warning: connection metadata was removed, but the obsolete credential could not be deleted: {0}", &[(error).to_string()]));
             }
         }
         Ok(())
@@ -396,9 +455,7 @@ fn source_for_add(
     backend: &impl SecretBackend,
 ) -> Result<(ConnectionSecretRef, Option<(String, String)>)> {
     if definition.placement == ConnectionPlacement::Platform {
-        bail!(
-            "platform-only connection types must be configured by the Platform credential broker"
-        );
+        bail!("{}", crate::localization::cli_locale().format("platform-only connection types must be configured by the Platform credential broker", &[]));
     }
     let configured = usize::from(args.from_env.is_some())
         + usize::from(args.from_file.is_some())
@@ -406,16 +463,28 @@ fn source_for_add(
         + usize::from(args.delegated_profile.is_some())
         + usize::from(args.secret_stdin);
     if configured > 1 {
-        bail!("choose exactly one credential source");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("choose exactly one credential source", &[])
+        );
     }
     if definition.auth_kind != ConnectionAuthKind::ApiKey {
         if configured > 0 && args.delegated_profile.is_none() {
-            bail!("subscription and OAuth connection types use delegated authentication");
+            bail!(
+                "{}",
+                crate::localization::cli_locale().format(
+                    "subscription and OAuth connection types use delegated authentication",
+                    &[]
+                )
+            );
         }
         if definition.provider_id != "openai-codex" {
             bail!(
-                "no verified delegated authentication transport is available for provider {}",
-                definition.provider_id
+                "{}",
+                crate::localization::cli_locale().format(
+                    "no verified delegated authentication transport is available for provider {0}",
+                    std::slice::from_ref(&(definition.provider_id))
+                )
             );
         }
         return Ok((
@@ -427,7 +496,13 @@ fn source_for_add(
         ));
     }
     if args.delegated_profile.is_some() {
-        bail!("--delegated-profile is only valid for subscription and OAuth connection types");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "--delegated-profile is only valid for subscription and OAuth connection types",
+                &[]
+            )
+        );
     }
     if let Some(name) = &args.from_env {
         return Ok((
@@ -443,13 +518,27 @@ fn source_for_add(
             )
         })?;
         if !path.is_file() {
-            bail!("connection source file is not a regular file");
+            bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("connection source file is not a regular file", &[])
+            );
         }
         return Ok((ConnectionSecretRef::File { path }, None));
     }
     if let Some(reference) = &args.from_one_password {
-        if !crate::ai::op_secret::is_op_reference(reference) {
-            bail!("--from-1password requires an op:// reference");
+        crate::ai::op_secret::validate_reference(reference)?;
+        if definition.capabilities != ["models.invoke"]
+            || crate::ai::ProviderRegistry::descriptor(&definition.provider_id)
+                .and_then(|provider| provider.default_base_url)
+                .is_none_or(|url| !url.starts_with("https://"))
+        {
+            bail!(
+                "{}",
+                crate::localization::cli_locale().translate(
+                    "1Password supports native model capabilities with fixed HTTPS destinations"
+                )
+            );
         }
         return Ok((
             ConnectionSecretRef::OnePassword {
@@ -478,7 +567,10 @@ fn read_secret(force_stdin: bool) -> Result<zeroize::Zeroizing<String>> {
     };
     let value = value.trim().to_owned();
     if value.is_empty() {
-        bail!("credential value must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("credential value must not be empty", &[])
+        );
     }
     Ok(zeroize::Zeroizing::new(value))
 }
@@ -527,8 +619,16 @@ fn print_connection(connection: &ServiceConnection, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(connection)?);
     } else {
         println!(
-            "{}: added {} connection for {} (generation={})",
-            connection.id, connection.type_id, connection.provider_id, connection.generation
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}: added {1} connection for {2} (generation={3})",
+                &[
+                    (connection.id).clone(),
+                    (connection.type_id).clone(),
+                    (connection.provider_id).clone(),
+                    (connection.generation).to_string()
+                ]
+            )
         );
     }
     Ok(())
@@ -547,7 +647,13 @@ fn resolve_connection_type(
 ) -> Result<ConnectionTypeDefinition> {
     let needle = type_id.trim();
     if needle.is_empty() {
-        bail!("unknown or untrusted connection type: {type_id}");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unknown or untrusted connection type: {0}",
+                &[(type_id).to_string()]
+            )
+        );
     }
     if let Some(report) = definitions
         .iter()
@@ -561,7 +667,13 @@ fn resolve_connection_type(
         .collect::<Vec<_>>();
     match aliased.as_slice() {
         [report] => Ok(report.definition.clone()),
-        [] => bail!("unknown or untrusted connection type: {needle}"),
+        [] => bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "unknown or untrusted connection type: {0}",
+                &[(needle).to_string()]
+            )
+        ),
         many => {
             let mut ids = many
                 .iter()
@@ -569,8 +681,11 @@ fn resolve_connection_type(
                 .collect::<Vec<_>>();
             ids.sort_unstable();
             bail!(
-                "ambiguous connection type {needle}; specify one of: {}",
-                ids.join(", ")
+                "{}",
+                crate::localization::cli_locale().format(
+                    "ambiguous connection type {0}; specify one of: {1}",
+                    &[(needle).to_string(), (ids.join(", ")).clone()]
+                )
             )
         }
     }
@@ -603,9 +718,11 @@ fn connection_types(workspace: Option<&Path>) -> Result<Vec<ConnectionTypeReport
             }
             if definitions.contains_key(&definition.id) {
                 bail!(
-                    "plugin {} connection type {} conflicts with an existing type",
-                    plugin.name,
-                    definition.id
+                    "{}",
+                    crate::localization::cli_locale().format(
+                        "plugin {0} connection type {1} conflicts with an existing type",
+                        &[(plugin.name).clone(), (definition.id).clone()]
+                    )
                 );
             }
             definitions.insert(
@@ -618,6 +735,19 @@ fn connection_types(workspace: Option<&Path>) -> Result<Vec<ConnectionTypeReport
         }
     }
     Ok(definitions.into_values().collect())
+}
+
+fn localized_connection_type_name(
+    report: &ConnectionTypeReport,
+    locale: crate::localization::Locale,
+) -> String {
+    if report.source == "maestro" {
+        if let Some(provider) = report.definition.display_name.strip_suffix(" API key") {
+            return locale.format("{0} API key", &[provider.to_owned()]);
+        }
+        return locale.translate(&report.definition.display_name).to_owned();
+    }
+    report.definition.display_name.clone()
 }
 
 fn builtin_connection_types() -> Vec<ConnectionTypeDefinition> {
@@ -693,7 +823,11 @@ fn parse_args(args: &[String]) -> Result<Args> {
             "--workspace" | "--cwd" => {
                 parsed.workspace = Some(PathBuf::from(take_value(&mut index)?));
             }
-            unknown if unknown.starts_with('-') => bail!("unknown connections option: {unknown}"),
+            unknown if unknown.starts_with('-') => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("unknown connections option: {0}", &[(unknown).to_string()])
+            ),
             command if parsed.command.is_none() => parsed.command = Some(command.to_owned()),
             positional => parsed.positionals.push(positional.to_owned()),
         }
@@ -732,9 +866,19 @@ fn run_list_platform(
     if json {
         println!("{}", serde_json::to_string_pretty(&store.refs)?);
     } else if store.refs.is_empty() {
-        println!("No org provider refs stored. Run `deixic-code connections add` to upload a key.");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "No org provider refs stored. Run `deixic-code connections add` to upload a key.",
+                &[]
+            )
+        );
     } else {
-        println!("Org provider refs (secrets live in EvalOps keys)");
+        println!(
+            "{}",
+            crate::localization::cli_locale()
+                .format("Org provider refs (secrets live in EvalOps keys)", &[])
+        );
         for item in store.refs {
             println!(
                 "- {} — {}/{}/{}{}",
@@ -755,17 +899,25 @@ fn run_add_platform(args: &Args) -> Result<i32> {
     let type_id = required_position(
         args,
         0,
-        "Usage: deixic-code connections add <type> <id> [source]",
+        crate::localization::cli_locale()
+            .translate("Usage: deixic-code connections add <type> <id> [source]"),
     )?;
     let id = required_position(
         args,
         1,
-        "Usage: deixic-code connections add <type> <id> [source]",
+        crate::localization::cli_locale()
+            .translate("Usage: deixic-code connections add <type> <id> [source]"),
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
     let definition = resolve_connection_type(&definitions, type_id)?;
     if definition.auth_kind != crate::service_connections::ConnectionAuthKind::ApiKey {
-        bail!("Platform mode only uploads API-key connections to EvalOps keys");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format(
+                "Platform mode only uploads API-key connections to EvalOps keys",
+                &[]
+            )
+        );
     }
     let secret = read_secret(args.secret_stdin)?;
     let stored = crate::platform_provider_refs::upsert_org_provider_ref(
@@ -792,8 +944,11 @@ fn run_add_platform(args: &Args) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&stored)?);
     } else {
         println!(
-            "{}: uploaded {} provider ref to EvalOps keys (secret not stored locally)",
-            stored.id, stored.provider
+            "{}",
+            crate::localization::cli_locale().format(
+                "{0}: uploaded {1} provider ref to EvalOps keys (secret not stored locally)",
+                &[(stored.id).clone(), (stored.provider).clone()]
+            )
         );
     }
     Ok(0)
@@ -803,7 +958,11 @@ fn run_status_platform(
     session: &crate::credential_mode::PlatformSession,
     args: &Args,
 ) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections status <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections status <id>"),
+    )?;
     let store = crate::platform_provider_refs::load_default_store()?;
     let stored = store
         .get(id)
@@ -817,7 +976,11 @@ fn run_status_platform(
                     serde_json::json!({ "id": id, "status": "ready", "placement": "platform" })
                 );
             } else {
-                println!("{id}: ready (org provider ref)");
+                println!(
+                    "{}",
+                    crate::localization::cli_locale()
+                        .format("{0}: ready (org provider ref)", &[(id).to_string()])
+                );
             }
             Ok(0)
         }
@@ -842,11 +1005,18 @@ fn run_status_platform(
 }
 
 fn run_use_platform(args: &Args) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections use <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections use <id>"),
+    )?;
     let selected = crate::platform_provider_refs::select_default(id)?;
     println!(
-        "{}: default org provider ref for {}",
-        selected.id, selected.provider
+        "{}",
+        crate::localization::cli_locale().format(
+            "{0}: default org provider ref for {1}",
+            &[(selected.id).clone(), (selected.provider).clone()]
+        )
     );
     Ok(0)
 }
@@ -855,38 +1025,30 @@ fn run_remove_platform(
     session: &crate::credential_mode::PlatformSession,
     args: &Args,
 ) -> Result<i32> {
-    let id = required_position(args, 0, "Usage: deixic-code connections remove <id>")?;
+    let id = required_position(
+        args,
+        0,
+        crate::localization::cli_locale().translate("Usage: deixic-code connections remove <id>"),
+    )?;
     let store = crate::platform_provider_refs::load_default_store()?;
     let stored = store
         .get(id)
         .cloned()
         .with_context(|| format!("provider ref not found: {id}"))?;
     crate::platform_provider_refs::delete_org_provider_ref(session, &stored)?;
-    println!("{id}: revoked in EvalOps keys");
+    println!(
+        "{}",
+        crate::localization::cli_locale()
+            .format("{0}: revoked in EvalOps keys", &[(id).to_string()])
+    );
     Ok(0)
 }
 
 fn print_help() {
+    println!("{}", crate::localization::cli_locale().format("deixic-code connections <command> [options]\n\nCommands:\nui                              Open the interactive connection manager\ntypes [--json]                 List built-in and trusted-plugin connection types\nlist [--json]                  List non-secret connection metadata\nadd [<type> <id>] [source]     Add an API key or delegated account\nType may be a type id (anthropic-api-key)\nor a provider id (anthropic)\nstatus <id> [--json]           Validate that the credential source is available\nuse <id>                       Select the provider's default connection\nrotate <id> [--secret-stdin]   Replace a keyring credential and revoke old leases\nremove <id>                    Delete metadata and keyring credential\n\nCredential sources for add:\n--from-env NAME                Resolve from an existing environment variable\n--from-file PATH               Resolve from an operator-owned file\n--from-1password op://...      Resolve with the 1Password CLI\n--secret-stdin                 Read a literal key from stdin into the OS credential store\n--delegated-profile NAME       Name a vendor-owned subscription/OAuth profile\n\nLiteral keys are never accepted as command-line arguments or written to connections.json.", &[]));
     println!(
-        "deixic-code connections <command> [options]\n\n\
-Commands:\n\
-  ui                              Open the interactive connection manager\n\
-  types [--json]                 List built-in and trusted-plugin connection types\n\
-  list [--json]                  List non-secret connection metadata\n\
-  add [<type> <id>] [source]     Add an API key or delegated account\n\
-                                 Type may be a type id (anthropic-api-key)\n\
-                                 or a provider id (anthropic)\n\
-  status <id> [--json]           Validate that the credential source is available\n\
-  use <id>                       Select the provider's default connection\n\
-  rotate <id> [--secret-stdin]   Replace a keyring credential and revoke old leases\n\
-  remove <id>                    Delete metadata and keyring credential\n\n\
-Credential sources for add:\n\
-  --from-env NAME                Resolve from an existing environment variable\n\
-  --from-file PATH               Resolve from an operator-owned file\n\
-  --from-1password op://...      Resolve with the 1Password CLI\n\
-  --secret-stdin                 Read a literal key from stdin into the OS credential store\n\
-  --delegated-profile NAME       Name a vendor-owned subscription/OAuth profile\n\n\
-Literal keys are never accepted as command-line arguments or written to connections.json."
+        "\n1password                       {}",
+        crate::localization::cli_locale().translate("Add a native 1Password capability")
     );
 }
 
@@ -901,14 +1063,18 @@ enum ConnectionHealth {
 }
 
 impl ConnectionHealth {
-    const fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
-            Self::Unknown => "Not checked",
-            Self::Ready => "Ready",
-            Self::ReadyDelegated => "Ready via sign-in",
-            Self::ManagedUnverified => "Managed (remote health not probed)",
-            Self::Unavailable => "Unavailable",
-            Self::Revoked => "Revoked",
+            Self::Unknown => crate::localization::cli_locale().translate("Not checked"),
+            Self::Ready => crate::localization::cli_locale().translate("Ready"),
+            Self::ReadyDelegated => {
+                crate::localization::cli_locale().translate("Ready via sign-in")
+            }
+            Self::ManagedUnverified => {
+                crate::localization::cli_locale().translate("Managed (remote health not probed)")
+            }
+            Self::Unavailable => crate::localization::cli_locale().translate("Unavailable"),
+            Self::Revoked => crate::localization::cli_locale().translate("Revoked"),
         }
     }
 
@@ -991,13 +1157,21 @@ impl DashboardState {
         self.health.retain(|id, _| self.store.get(id).is_some());
         self.remove_confirmation = false;
         self.sync_selection();
-        self.message = Some("Connection list refreshed.".to_owned());
+        self.message = Some(
+            crate::localization::cli_locale()
+                .translate("Connection list refreshed.")
+                .to_owned(),
+        );
         Ok(())
     }
 
     fn make_selected_default(&mut self) -> Result<()> {
         let Some(id) = self.selected_id() else {
-            self.message = Some("Select a connection before setting a default.".to_owned());
+            self.message = Some(
+                crate::localization::cli_locale()
+                    .translate("Select a connection before setting a default.")
+                    .to_owned(),
+            );
             return Ok(());
         };
         let path = ConnectionStore::default_path()?;
@@ -1006,7 +1180,10 @@ impl DashboardState {
             store.save(&path)
         })?;
         self.refresh()?;
-        self.message = Some(format!("{id} is now the default for its provider."));
+        self.message = Some(crate::localization::cli_locale().format(
+            "{0} is now the default for its provider.",
+            std::slice::from_ref(&id),
+        ));
         Ok(())
     }
 
@@ -1018,7 +1195,9 @@ impl DashboardState {
         let path = ConnectionStore::default_path()?;
         remove_connection(&path, &id, &KeyringSecretBackend)?;
         self.refresh()?;
-        self.message = Some(format!("{id} was removed."));
+        self.message = Some(
+            crate::localization::cli_locale().format("{0} was removed.", std::slice::from_ref(&id)),
+        );
         Ok(())
     }
 }
@@ -1045,31 +1224,51 @@ fn check_connection_health(store: &ConnectionStore, id: &str) -> ConnectionHealt
 
 fn credential_source_label(connection: &ServiceConnection) -> String {
     match &connection.secret_ref {
-        ConnectionSecretRef::Keyring { .. } => "OS credential store".to_owned(),
-        ConnectionSecretRef::Environment { name } => format!("Environment variable: {name}"),
-        ConnectionSecretRef::File { .. } => "Credential file".to_owned(),
-        ConnectionSecretRef::OnePassword { .. } => "1Password reference".to_owned(),
+        ConnectionSecretRef::Keyring { .. } => crate::localization::cli_locale()
+            .translate("OS credential store")
+            .to_owned(),
+        ConnectionSecretRef::Environment { name } => crate::localization::cli_locale()
+            .format("Environment variable: {0}", std::slice::from_ref(name)),
+        ConnectionSecretRef::File { .. } => crate::localization::cli_locale()
+            .translate("Credential file")
+            .to_owned(),
+        ConnectionSecretRef::OnePassword { .. } => crate::localization::cli_locale()
+            .translate("1Password reference")
+            .to_owned(),
         ConnectionSecretRef::Delegated { profile, .. } => profile.as_deref().map_or_else(
-            || "Provider sign-in".to_owned(),
-            |profile| format!("Provider sign-in: {profile}"),
+            || {
+                crate::localization::cli_locale()
+                    .translate("Provider sign-in")
+                    .to_owned()
+            },
+            |profile| {
+                crate::localization::cli_locale()
+                    .format("Provider sign-in: {0}", &[(profile).to_string()])
+            },
         ),
     }
 }
 
-const fn placement_label(placement: ConnectionPlacement) -> &'static str {
+fn placement_label(placement: ConnectionPlacement) -> &'static str {
     match placement {
-        ConnectionPlacement::Local => "Local",
-        ConnectionPlacement::Platform => "Platform",
-        ConnectionPlacement::Either => "Local or Platform",
+        ConnectionPlacement::Local => crate::localization::cli_locale().translate("Local"),
+        ConnectionPlacement::Platform => crate::localization::cli_locale().translate("Platform"),
+        ConnectionPlacement::Either => {
+            crate::localization::cli_locale().translate("Local or Platform")
+        }
     }
 }
 
-const fn auth_kind_label(auth_kind: ConnectionAuthKind) -> &'static str {
+fn auth_kind_label(auth_kind: ConnectionAuthKind) -> &'static str {
     match auth_kind {
-        ConnectionAuthKind::ApiKey => "API key",
-        ConnectionAuthKind::Subscription => "Subscription",
+        ConnectionAuthKind::ApiKey => crate::localization::cli_locale().translate("API key"),
+        ConnectionAuthKind::Subscription => {
+            crate::localization::cli_locale().translate("Subscription")
+        }
         ConnectionAuthKind::OAuth => "OAuth",
-        ConnectionAuthKind::WorkloadIdentity => "Workload identity",
+        ConnectionAuthKind::WorkloadIdentity => {
+            crate::localization::cli_locale().translate("Workload identity")
+        }
     }
 }
 
@@ -1108,7 +1307,10 @@ fn dashboard_loop(
             KeyCode::Down | KeyCode::Char('n') => state.move_selection(1),
             KeyCode::Char('r') => {
                 if let Err(error) = state.refresh() {
-                    state.message = Some(format!("Could not refresh connections: {error}"));
+                    state.message = Some(
+                        crate::localization::cli_locale()
+                            .format("Could not refresh connections: {0}", &[(error).to_string()]),
+                    );
                 }
             }
             KeyCode::Char('t') => {
@@ -1116,7 +1318,10 @@ fn dashboard_loop(
             }
             KeyCode::Char('d') => {
                 if let Err(error) = state.make_selected_default() {
-                    state.message = Some(format!("Could not set the default: {error}"));
+                    state.message = Some(
+                        crate::localization::cli_locale()
+                            .format("Could not set the default: {0}", &[(error).to_string()]),
+                    );
                 }
             }
             KeyCode::Char('x') if state.selected_connection().is_some() => {
@@ -1124,8 +1329,20 @@ fn dashboard_loop(
             }
             KeyCode::Char('y') if state.remove_confirmation => {
                 if let Err(error) = state.remove_selected() {
-                    state.message = Some(format!("Could not remove the connection: {error}"));
+                    state.message = Some(crate::localization::cli_locale().format(
+                        "Could not remove the connection: {0}",
+                        &[(error).to_string()],
+                    ));
                 }
+            }
+            KeyCode::Char('1') => {
+                let workspace = workspace.map(Path::to_path_buf);
+                run_dashboard_prompt(
+                    terminal,
+                    state,
+                    || one_password::run(workspace.as_deref()),
+                    crate::localization::cli_locale().translate("1Password capability added. Select it explicitly or set it as the default."),
+                )?;
             }
             KeyCode::Char('a') => {
                 let workspace = workspace.map(Path::to_path_buf);
@@ -1133,12 +1350,16 @@ fn dashboard_loop(
                     terminal,
                     state,
                     || run_add_wizard(workspace.as_deref()),
-                    "Connection added.",
+                    crate::localization::cli_locale().translate("Connection added."),
                 )?;
             }
             KeyCode::Char('k') => {
                 let Some(id) = state.selected_id() else {
-                    state.message = Some("Select a connection before rotating a key.".to_owned());
+                    state.message = Some(
+                        crate::localization::cli_locale()
+                            .translate("Select a connection before rotating a key.")
+                            .to_owned(),
+                    );
                     continue;
                 };
                 if !matches!(
@@ -1147,8 +1368,11 @@ fn dashboard_loop(
                         .map(|connection| &connection.secret_ref),
                     Some(ConnectionSecretRef::Keyring { .. })
                 ) {
-                    state.message =
-                        Some("Only OS credential store connections can be rotated.".to_owned());
+                    state.message = Some(
+                        crate::localization::cli_locale()
+                            .translate("Only OS credential store connections can be rotated.")
+                            .to_owned(),
+                    );
                     continue;
                 }
                 run_dashboard_prompt(
@@ -1162,7 +1386,7 @@ fn dashboard_loop(
                         })
                         .map(|_| ())
                     },
-                    "Key rotated.",
+                    crate::localization::cli_locale().translate("Key rotated."),
                 )?;
             }
             _ => {}
@@ -1172,7 +1396,11 @@ fn dashboard_loop(
 
 fn run_dashboard_check(terminal: &mut DashboardTerminal, state: &mut DashboardState) -> Result<()> {
     let Some(id) = state.selected_id() else {
-        state.message = Some("Add a connection before checking its credential source.".to_owned());
+        state.message = Some(
+            crate::localization::cli_locale()
+                .translate("Add a connection before checking its credential source.")
+                .to_owned(),
+        );
         return Ok(());
     };
     let store = state.store.clone();
@@ -1197,7 +1425,10 @@ fn run_dashboard_prompt(
         Ok(()) => match state.refresh() {
             Ok(()) => state.message = Some(success_message.to_owned()),
             Err(error) => {
-                state.message = Some(format!("{success_message} Refresh failed: {error}"));
+                state.message = Some(crate::localization::cli_locale().format(
+                    "{0} Refresh failed: {1}",
+                    &[(success_message).to_string(), (error).to_string()],
+                ));
             }
         },
         Err(error) => state.message = Some(format!("{error}")),
@@ -1287,12 +1518,15 @@ fn render_dashboard_with_theme(
     .split(area);
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
-            "Connections & access",
+            crate::localization::cli_locale().translate("Connections & access"),
             Style::default()
                 .fg(theme.focus)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Provider credentials and sign-ins used by Deixic Code."),
+        Line::from(
+            crate::localization::cli_locale()
+                .translate("Provider credentials and sign-ins used by Deixic Code."),
+        ),
     ]);
     frame.render_widget(header, layout[0]);
 
@@ -1300,9 +1534,12 @@ fn render_dashboard_with_theme(
         .split(layout[1]);
     let items = if state.store.connections.is_empty() {
         vec![ListItem::new(vec![
-            Line::styled("No managed connections", Style::default().fg(theme.muted)),
             Line::styled(
-                "Press a to add a connection.",
+                crate::localization::cli_locale().translate("No managed connections"),
+                Style::default().fg(theme.muted),
+            ),
+            Line::styled(
+                crate::localization::cli_locale().translate("Press a to add a connection."),
                 Style::default().fg(theme.focus),
             ),
         ])]
@@ -1318,7 +1555,7 @@ fn render_dashboard_with_theme(
                     .copied()
                     .unwrap_or(ConnectionHealth::Unknown);
                 let default = if connection.is_default {
-                    "  default"
+                    crate::localization::cli_locale().translate("  default")
                 } else {
                     ""
                 };
@@ -1343,7 +1580,7 @@ fn render_dashboard_with_theme(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border))
-                .title("Connections"),
+                .title(crate::localization::cli_locale().translate("Connections")),
         )
         .highlight_symbol("› ")
         .style(theme.text_style())
@@ -1353,8 +1590,11 @@ fn render_dashboard_with_theme(
     let detail = state.selected_connection().map_or_else(
         || {
             vec![
-                Line::from("No connection selected."),
-                Line::from("Press a to add a provider connection."),
+                Line::from(crate::localization::cli_locale().translate("No connection selected.")),
+                Line::from(
+                    crate::localization::cli_locale()
+                        .translate("Press a to add a provider connection."),
+                ),
             ]
         },
         |connection| {
@@ -1364,28 +1604,55 @@ fn render_dashboard_with_theme(
                 .copied()
                 .unwrap_or(ConnectionHealth::Unknown);
             vec![
-                detail_line("Name", &connection.label, theme),
-                detail_line("Provider", &connection.provider_id, theme),
                 detail_line(
-                    "Authentication",
+                    crate::localization::cli_locale().translate("Name"),
+                    &connection.label,
+                    theme,
+                ),
+                detail_line(
+                    crate::localization::cli_locale().translate("Provider"),
+                    &connection.provider_id,
+                    theme,
+                ),
+                detail_line(
+                    crate::localization::cli_locale().translate("Authentication"),
                     auth_kind_label(connection.auth_kind),
                     theme,
                 ),
-                detail_line("Access", &connection.capabilities.join(", "), theme),
-                detail_line("Runs in", placement_label(connection.placement), theme),
                 detail_line(
-                    "Credential source",
+                    crate::localization::cli_locale().translate("Access"),
+                    &connection.capabilities.join(", "),
+                    theme,
+                ),
+                detail_line(
+                    crate::localization::cli_locale().translate("Runs in"),
+                    placement_label(connection.placement),
+                    theme,
+                ),
+                detail_line(
+                    crate::localization::cli_locale().translate("Credential source"),
                     &credential_source_label(connection),
                     theme,
                 ),
-                detail_line("Generation", &connection.generation.to_string(), theme),
                 detail_line(
-                    "Default",
-                    if connection.is_default { "Yes" } else { "No" },
+                    crate::localization::cli_locale().translate("Generation"),
+                    &connection.generation.to_string(),
+                    theme,
+                ),
+                detail_line(
+                    crate::localization::cli_locale().translate("Default"),
+                    if connection.is_default {
+                        crate::localization::cli_locale().translate("Yes")
+                    } else {
+                        crate::localization::cli_locale().translate("No")
+                    },
                     theme,
                 ),
                 Line::from(vec![
-                    Span::styled("Status: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        crate::localization::cli_locale().translate("Status: "),
+                        Style::default().fg(theme.muted),
+                    ),
                     Span::styled(health.label(), Style::default().fg(health.color(theme))),
                 ]),
             ]
@@ -1395,20 +1662,27 @@ fn render_dashboard_with_theme(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Connection details")
+                .title(crate::localization::cli_locale().translate("Connection details"))
                 .border_style(Style::default().fg(theme.border)),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(detail, panes[1]);
 
+    let default_shortcuts = format!(
+        "1 1Password   {}",
+        crate::localization::cli_locale().translate(
+            "a Add   t Check source   d Set default   k Rotate key   x Remove   r Refresh   q Close"
+        )
+    );
     let footer = if state.remove_confirmation {
-        Paragraph::new("Remove this connection? Press y to remove it, or Esc to cancel.")
-            .style(Style::default().fg(theme.error))
+        Paragraph::new(
+            crate::localization::cli_locale()
+                .translate("Remove this connection? Press y to remove it, or Esc to cancel."),
+        )
+        .style(Style::default().fg(theme.error))
     } else {
-        Paragraph::new(state.message.as_deref().unwrap_or(
-                "a Add   t Check source   d Set default   k Rotate key   x Remove   r Refresh   q Close",
-        ))
-        .style(Style::default().fg(theme.muted))
+        Paragraph::new(state.message.as_deref().unwrap_or(&default_shortcuts))
+            .style(Style::default().fg(theme.muted))
     };
     frame.render_widget(footer, layout[2]);
 }
@@ -1424,7 +1698,10 @@ fn detail_line(label: &str, value: &str, theme: maestro_ui::UiTheme) -> Line<'st
 pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<String> {
     let secret = secret.trim();
     if secret.is_empty() {
-        bail!("credential value must not be empty");
+        bail!(
+            "{}",
+            crate::localization::cli_locale().format("credential value must not be empty", &[])
+        );
     }
     let definition = connection_types(None)?
         .into_iter()
@@ -1446,7 +1723,10 @@ pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<Stri
             let next = connection.generation.saturating_add(1);
             let next_ref = keyring_secret_ref(&id, next);
             let ConnectionSecretRef::Keyring { service, account } = &next_ref else {
-                bail!("expected keyring secret");
+                bail!(
+                    "{}",
+                    crate::localization::cli_locale().format("expected keyring secret", &[])
+                );
             };
             backend.set(service, account, &replacement)?;
             let old_ref = connection.secret_ref.clone();
@@ -1466,7 +1746,10 @@ pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<Stri
         let secret_ref = keyring_secret_ref(&id, 1);
         let (service, account) = match &secret_ref {
             ConnectionSecretRef::Keyring { service, account } => (service.clone(), account.clone()),
-            _ => bail!("expected keyring secret"),
+            _ => bail!(
+                "{}",
+                crate::localization::cli_locale().format("expected keyring secret", &[])
+            ),
         };
         backend.set(&service, &account, secret)?;
         let timestamp = now_ms();
@@ -1497,12 +1780,15 @@ pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<Stri
 
 pub(crate) fn run_add_wizard(workspace: Option<&Path>) -> Result<()> {
     let types = connection_types(workspace)?;
-    println!("Add connection");
+    println!(
+        "{}",
+        crate::localization::cli_locale().format("Add connection", &[])
+    );
     for (index, report) in types.iter().enumerate() {
         println!(
             "  {}. {} ({})",
             index + 1,
-            report.definition.display_name,
+            localized_connection_type_name(report, crate::localization::cli_locale()),
             report.source
         );
     }
@@ -1523,17 +1809,36 @@ pub(crate) fn run_add_wizard(workspace: Option<&Path>) -> Result<()> {
         ..Args::default()
     };
     if definition.definition.auth_kind == ConnectionAuthKind::ApiKey {
-        println!("Credential source");
-        println!("  1. OS credential store");
-        println!("  2. Environment variable");
-        println!("  3. Credential file");
-        println!("  4. 1Password reference");
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("Credential source", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  1. OS credential store", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  2. Environment variable", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  3. Credential file", &[])
+        );
+        println!(
+            "{}",
+            crate::localization::cli_locale().format("  4. 1Password reference", &[])
+        );
         match prompt_required("Credential source number")?.as_str() {
             "1" => {}
             "2" => args.from_env = Some(prompt_required("Environment variable")?),
             "3" => args.from_file = Some(PathBuf::from(prompt_required("Credential file path")?)),
-            "4" => args.from_one_password = Some(prompt_required("1Password reference")?),
-            _ => bail!("credential source number must be 1, 2, 3, or 4"),
+            "4" => return one_password::run(workspace),
+            _ => bail!(
+                "{}",
+                crate::localization::cli_locale()
+                    .format("credential source number must be 1, 2, 3, or 4", &[])
+            ),
         }
     } else {
         args.delegated_profile = prompt_optional("Provider profile")?;

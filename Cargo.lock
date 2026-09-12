@@ -3509,7 +3509,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "maestro"
-version = "0.10.84"
+version = "0.10.86"
 dependencies = [
  "anyhow",
  "ctor",
@@ -3607,6 +3607,83 @@ name = "maestro-interaction"
 version = "0.1.0"
 
 [[package]]
+name = "maestro-local-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "dirs",
+ "dunce",
+ "ed25519-dalek",
+ "eventsource-stream",
+ "fd-lock",
+ "futures",
+ "glob",
+ "image",
+ "ipnet",
+ "kani-verifier",
+ "keyring",
+ "libc",
+ "maestro-ai",
+ "maestro-codex",
+ "maestro-context",
+ "maestro-presentation",
+ "maestro-runtime",
+ "maestro-runtime-contracts",
+ "maestro-sandbox",
+ "maestro-session",
+ "maestro-session-history",
+ "maestro-ui",
+ "maestro-workspace",
+ "mlua",
+ "notify",
+ "once_cell",
+ "pathdiff",
+ "pdf-extract",
+ "portable-pty",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protoc-bin-vendored",
+ "rand 0.9.5",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "ring",
+ "rustls",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "shlex 1.3.0",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wait-timeout",
+ "wasmtime",
+ "wat",
+ "windows-sys 0.61.2",
+ "x509-parser",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
 name = "maestro-presentation"
 version = "0.1.0"
 dependencies = [
@@ -3679,8 +3756,8 @@ dependencies = [
  "jsonwebtoken 11.0.0",
  "libc",
  "maestro-a2a-ledger",
+ "maestro-local-host",
  "maestro-runtime",
- "maestro-tui",
  "pdf-extract",
  "reqwest",
  "serde",
@@ -3719,6 +3796,7 @@ name = "maestro-scenario"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "dunce",
  "serde",
  "serde_json",
@@ -3731,6 +3809,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs",
+ "dunce",
  "fd-lock",
  "libc",
  "maestro-ai",
@@ -3773,6 +3852,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "uuid",
 ]
@@ -3807,8 +3887,10 @@ dependencies = [
  "maestro-context",
  "maestro-execpolicy",
  "maestro-interaction",
+ "maestro-local-host",
  "maestro-presentation",
  "maestro-runtime",
+ "maestro-runtime-contracts",
  "maestro-sandbox",
  "maestro-session",
  "maestro-session-history",
@@ -3824,9 +3906,7 @@ dependencies = [
  "portable-pty",
  "pretty_assertions",
  "prost",
- "prost-build",
  "prost-types",
- "protoc-bin-vendored",
  "pulldown-cmark",
  "rand 0.9.5",
  "ratatui",
@@ -3912,7 +3992,10 @@ dependencies = [
  "dunce",
  "libc",
  "rayon",
+ "serde",
+ "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
 ]
 

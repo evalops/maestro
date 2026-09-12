@@ -1,0 +1,41 @@
+{
+  "name": "mcp-catalog-spanish",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language es"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Idioma de la interfaz"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "Idioma de la interfaz"
+    },
+    {
+      "text": "/mcp"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Servidores MCP"
+    },
+    {
+      "text": "c"
+    },
+    {
+      "text": "linear"
+    },
+    {
+      "wait": "(?s)linear.*Buscar: linear"
+    }
+  ]
+}

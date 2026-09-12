@@ -1,0 +1,32 @@
+{
+  "name": "fr-permissions",
+  "steps": [
+    {
+      "wait": "(?s)Dex.*GPT-6 Astra.*release-planner"
+    },
+    {
+      "text": "/language fr"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Langue d’affichage"
+    },
+    {
+      "key": "Escape"
+    },
+    {
+      "absent": "Langue d’affichage"
+    },
+    {
+      "text": "/settings permissions"
+    },
+    {
+      "key": "Enter"
+    },
+    {
+      "wait": "Appliquer"
+    }
+  ]
+}

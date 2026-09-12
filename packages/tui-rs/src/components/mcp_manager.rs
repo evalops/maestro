@@ -13,11 +13,13 @@ use crate::tools::{McpLifecycleState, McpServerStatus};
 #[derive(Debug, Default)]
 pub struct McpManager {
     statuses: Vec<McpServerStatus>,
+    pub locale: crate::localization::Locale,
     selected: usize,
     show_tools: bool,
     selected_tool: usize,
     catalog_mode: bool,
     selected_catalog: usize,
+    catalog_query: String,
 }
 
 impl McpManager {
@@ -53,11 +55,8 @@ impl McpManager {
 
     pub fn move_down(&mut self) {
         if self.catalog_mode {
-            self.selected_catalog = (self.selected_catalog + 1).min(
-                crate::mcp_config_cli::catalog_entries()
-                    .len()
-                    .saturating_sub(1),
-            );
+            self.selected_catalog =
+                (self.selected_catalog + 1).min(self.filtered_catalog().len().saturating_sub(1));
         } else if self.show_tools {
             self.selected_tool =
                 (self.selected_tool + 1).min(self.selected_tool_count().saturating_sub(1));
@@ -76,6 +75,9 @@ impl McpManager {
 
     #[must_use]
     pub fn selected_tool(&self) -> Option<(&str, bool)> {
+        if !self.show_tools {
+            return None;
+        }
         let status = self.selected()?;
         status
             .tools
@@ -98,6 +100,7 @@ impl McpManager {
     pub fn enter_catalog(&mut self) {
         self.catalog_mode = true;
         self.selected_catalog = 0;
+        self.catalog_query.clear();
     }
 
     pub fn leave_catalog(&mut self) {
@@ -111,7 +114,27 @@ impl McpManager {
 
     #[must_use]
     pub fn selected_catalog(&self) -> Option<&'static crate::mcp_config_cli::McpCatalogEntry> {
-        crate::mcp_config_cli::catalog_entries().get(self.selected_catalog)
+        self.filtered_catalog().get(self.selected_catalog).copied()
+    }
+
+    pub fn search_character(&mut self, ch: char) {
+        if self.catalog_query.chars().count() < 100 {
+            self.catalog_query.push(ch);
+            self.selected_catalog = 0;
+        }
+    }
+    pub fn search_backspace(&mut self) {
+        self.catalog_query.pop();
+        self.selected_catalog = 0;
+    }
+    fn filtered_catalog(&self) -> Vec<&'static crate::mcp_config_cli::McpCatalogEntry> {
+        crate::mcp_config_cli::catalog_entries()
+            .iter()
+            .filter(|entry| entry.matches_in(self.locale, &self.catalog_query))
+            .collect()
+    }
+    pub fn catalog_entry_configured(&self, id: &str) -> bool {
+        self.statuses.iter().any(|status| status.name == id)
     }
 
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -119,8 +142,8 @@ impl McpManager {
     }
 
     fn render_with_theme(&self, frame: &mut Frame<'_>, area: Rect, theme: maestro_ui::UiTheme) {
-        let width = area.width.saturating_sub(4).clamp(56, 108);
-        let height = area.height.saturating_sub(2).clamp(14, 34);
+        let width = area.width.saturating_sub(4).min(108);
+        let height = area.height.saturating_sub(2).min(34);
         let modal = Rect::new(
             area.x + area.width.saturating_sub(width) / 2,
             area.y + area.height.saturating_sub(height) / 2,
@@ -137,7 +160,10 @@ impl McpManager {
                     .add_modifier(Modifier::BOLD),
             )
             .style(theme.text_style())
-            .title(" MCP servers ");
+            .title(format!(
+                " {} ",
+                self.locale.text(crate::localization::TextKey::McpServers)
+            ));
         let inner = block.inner(modal);
         frame.render_widget(block, modal);
         let sections = Layout::vertical([
@@ -148,7 +174,7 @@ impl McpManager {
         .split(inner);
 
         if self.catalog_mode {
-            let entries = crate::mcp_config_cli::catalog_entries();
+            let entries = self.filtered_catalog();
             let rows = entries
                 .iter()
                 .map(|entry| {
@@ -157,7 +183,15 @@ impl McpManager {
                             format!("{:<18}", entry.id),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(entry.description),
+                        Span::raw(format!(
+                            "{}{}",
+                            self.locale.translate(entry.description),
+                            if self.catalog_entry_configured(entry.id) {
+                                " ✓"
+                            } else {
+                                ""
+                            }
+                        )),
                     ]))
                 })
                 .collect::<Vec<_>>();
@@ -171,8 +205,24 @@ impl McpManager {
                 &mut state,
             );
             let detail = self.selected_catalog().map_or_else(
-                || "No registry entries.".to_string(),
-                |entry| format!("{} {}", entry.command, entry.args.join(" ")),
+                || {
+                    self.locale
+                        .text(crate::localization::TextKey::NoMatches)
+                        .to_string()
+                },
+                |entry| {
+                    format!(
+                        "{} · {}\n{}\n{}",
+                        self.locale.translate(entry.category),
+                        if self.catalog_entry_configured(entry.id) {
+                            self.locale.text(crate::localization::TextKey::Configured)
+                        } else {
+                            self.locale.text(crate::localization::TextKey::Available)
+                        },
+                        entry.destination(),
+                        entry.documentation
+                    )
+                },
             );
             frame.render_widget(
                 Paragraph::new(detail)
@@ -185,8 +235,13 @@ impl McpManager {
                 sections[1],
             );
             frame.render_widget(
-                Paragraph::new("↑/↓ select  Enter add to user config  Esc back")
-                    .style(Style::default().fg(theme.muted)),
+                Paragraph::new(format!(
+                    "{}: {}\n{}",
+                    self.locale.text(crate::localization::TextKey::Search),
+                    self.catalog_query,
+                    self.locale.text(crate::localization::TextKey::CatalogHelp)
+                ))
+                .style(Style::default().fg(theme.muted)),
                 sections[2],
             );
             return;
@@ -194,7 +249,7 @@ impl McpManager {
 
         if self.statuses.is_empty() {
             frame.render_widget(
-                Paragraph::new("No MCP servers configured. Press a to add one."),
+                Paragraph::new(self.locale.text(crate::localization::TextKey::NoServers)),
                 sections[0],
             );
         } else {
@@ -208,12 +263,17 @@ impl McpManager {
                             format!("{:<22}", status.name),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<22}", status.state.label()), state_style),
-                        Span::raw(format!(
-                            "{:<10} {:<7} {} tools",
-                            format!("{:?}", status.scope).to_lowercase(),
-                            format!("{:?}", status.transport).to_lowercase(),
-                            status.tools.len()
+                        Span::styled(
+                            format!("{:<22}", self.locale.translate(status.state.label())),
+                            state_style,
+                        ),
+                        Span::raw(maestro_ui::localization::format(
+                            "{0} {1} {2} tools",
+                            &[
+                                format!("{:<10}", format!("{:?}", status.scope).to_lowercase()),
+                                format!("{:<7}", format!("{:?}", status.transport).to_lowercase()),
+                                (status.tools.len()).to_string(),
+                            ],
                         )),
                     ]))
                 })
@@ -240,7 +300,9 @@ impl McpManager {
                     ));
                 } else if self.show_tools {
                     if status.tools.is_empty() && status.disabled_tools.is_empty() {
-                        lines.push(Line::raw("No tools reported."));
+                        lines.push(Line::raw(
+                            self.locale.text(crate::localization::TextKey::NoTools),
+                        ));
                     }
                     for (index, tool) in status.tools.iter().enumerate() {
                         let marker = if index == self.selected_tool {
@@ -257,16 +319,21 @@ impl McpManager {
                             " "
                         };
                         lines.push(Line::styled(
-                            format!("{marker} ○ {tool} (disabled)"),
+                            maestro_ui::localization::format(
+                                "{0} ○ {1} (disabled)",
+                                &[(marker).to_string(), (tool).clone()],
+                            ),
                             Style::default().fg(theme.muted),
                         ));
                     }
                 } else {
-                    lines.push(Line::raw(format!(
-                        "{} resources · {} prompts · {} disabled tools",
-                        status.resources.len(),
-                        status.prompts.len(),
-                        status.disabled_tools.len()
+                    lines.push(Line::raw(maestro_ui::localization::format(
+                        "{0} resources · {1} prompts · {2} disabled tools",
+                        &[
+                            (status.resources.len()).to_string(),
+                            (status.prompts.len()).to_string(),
+                            (status.disabled_tools.len()).to_string(),
+                        ],
                     )));
                 }
                 Text::from(lines)
@@ -283,11 +350,9 @@ impl McpManager {
             sections[1],
         );
         frame.render_widget(
-            Paragraph::new(
-                "↑/↓ select  Enter tools  Space enable/disable  r retry  a add  c catalog  o auth  x clear auth  d remove  p permissions  Esc close",
-            )
-            .style(Style::default().fg(theme.muted))
-            .wrap(Wrap { trim: true }),
+            Paragraph::new(self.locale.text(crate::localization::TextKey::ManagerHelp))
+                .style(Style::default().fg(theme.muted))
+                .wrap(Wrap { trim: true }),
             sections[2],
         );
     }
@@ -308,6 +373,60 @@ fn state_style(state: McpLifecycleState, theme: maestro_ui::UiTheme) -> Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_filter_resets_selection_and_handles_no_matches() {
+        let mut manager = McpManager::new();
+        manager.enter_catalog();
+        manager.move_down();
+        for ch in "LINEAR".chars() {
+            manager.search_character(ch);
+        }
+        assert_eq!(manager.selected_catalog().unwrap().id, "linear");
+        manager.move_down();
+        assert_eq!(manager.selected_catalog().unwrap().id, "linear");
+        manager.search_character('!');
+        assert!(manager.selected_catalog().is_none());
+        manager.search_backspace();
+        assert_eq!(manager.selected_catalog().unwrap().id, "linear");
+    }
+
+    #[test]
+    fn localized_manager_renders_at_narrow_and_wide_sizes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for locale in crate::localization::Locale::ALL {
+            for (width, height) in [(40, 16), (80, 24), (120, 40)] {
+                let mut manager = McpManager::new();
+                manager.locale = locale;
+                manager.enter_catalog();
+                for ch in "linear".chars() {
+                    manager.search_character(ch);
+                }
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| manager.render(frame, frame.area()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                // Wide glyphs occupy a leading cell plus continuation cells.
+                // Those continuation cells are not spaces in the rendered label.
+                let mut text = String::new();
+                for y in 0..height {
+                    let mut x = 0;
+                    while x < width {
+                        let symbol = buffer[(x, y)].symbol();
+                        text.push_str(symbol);
+                        x += unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16;
+                    }
+                    text.push('\n');
+                }
+                assert!(text.contains("linear"), "{locale:?} {width}x{height}");
+                assert!(
+                    text.contains(locale.text(crate::localization::TextKey::Search)),
+                    "{locale:?} {width}x{height}: {text}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mcp_states_and_catalog_use_shared_theme() {
         for theme in crate::components::theme_test::palettes() {
@@ -384,5 +503,10 @@ mod tests {
         manager.move_down();
         manager.set_statuses(vec![status("b"), status("c")]);
         assert_eq!(manager.selected().unwrap().name, "b");
+        assert!(manager.selected_tool().is_none());
+        manager.toggle_tools();
+        assert_eq!(manager.selected_tool(), Some(("run", true)));
+        manager.toggle_tools();
+        assert!(manager.selected_tool().is_none());
     }
 }

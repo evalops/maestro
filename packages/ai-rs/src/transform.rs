@@ -188,10 +188,18 @@ fn transform_block_for_target(
                 }
             }
         },
-        ContentBlock::ToolUse { id, name, input } => Some(ContentBlock::ToolUse {
+        ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            gemini_context,
+        } => Some(ContentBlock::ToolUse {
             id: normalize_tool_id(id, target),
             name: name.clone(),
             input: input.clone(),
+            gemini_context: (target == OutboundTarget::OpenAiResponses)
+                .then(|| gemini_context.clone())
+                .flatten(),
         }),
         ContentBlock::ToolResult {
             tool_use_id,
@@ -488,6 +496,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gemini_context_is_only_retained_for_responses_wire_transform() {
+        let block = ContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "read".into(),
+            input: serde_json::json!({}),
+            gemini_context: Some(crate::GeminiToolContext {
+                native_name: "read".into(),
+                native_id: None,
+                thought_signature: Some("opaque-signature".into()),
+            }),
+        };
+        for target in [
+            OutboundTarget::Anthropic,
+            OutboundTarget::OpenAiChat,
+            OutboundTarget::OpenAiResponses,
+        ] {
+            let transformed = transform_block_for_target(&block, target).unwrap();
+            let ContentBlock::ToolUse { gemini_context, .. } = transformed else {
+                panic!("tool call")
+            };
+            assert_eq!(
+                gemini_context.is_some(),
+                target == OutboundTarget::OpenAiResponses
+            );
+        }
+        assert!(
+            serde_json::to_string(&block)
+                .unwrap()
+                .contains("opaque-signature"),
+            "wire transformation must not mutate durable history"
+        );
+    }
+
+    #[test]
     fn outbound_ids_are_bounded_distinct_and_results_follow_calls() {
         for target in [
             OutboundTarget::Anthropic,
@@ -511,6 +553,7 @@ mod tests {
                                 id: id.clone(),
                                 name: "read".into(),
                                 input: serde_json::json!({}),
+                                gemini_context: None,
                             })
                             .collect(),
                     ),
@@ -567,6 +610,7 @@ mod tests {
                     id: "pending".into(),
                     name: "read".into(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 }]),
             },
             Message {
@@ -684,11 +728,13 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "read".to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 },
                 ContentBlock::ToolUse {
                     id: "call_2".to_string(),
                     name: "write".to_string(),
                     input: serde_json::json!({}),
+                    gemini_context: None,
                 },
             ]),
             // Only call_1 has a result

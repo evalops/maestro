@@ -42,7 +42,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -60,6 +60,16 @@ pub const MAX_CHECKPOINTS_PER_SESSION: usize = 20;
 const MAX_EXPANDED_UNTRACKED_FILES: usize = 1000;
 
 const MANIFEST_FILE: &str = "checkpoint.json";
+const RETENTION_FILE: &str = "retention.json";
+
+/// Information lost by eviction cannot be reconstructed from retained manifests:
+/// gaps can also be turns with no file changes. Record the boundary before deletion.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionBoundary {
+    earliest_turn: usize,
+    unlinked_eviction: bool,
+}
 
 /// On-disk store for one session's checkpoints.
 pub struct CheckpointStore {
@@ -154,15 +164,45 @@ impl CheckpointStore {
         }
     }
 
-    /// Keep only the newest `keep` checkpoints (FIFO eviction). Best effort.
-    pub fn evict(&self, keep: usize) {
+    fn retention_boundary(&self) -> io::Result<RetentionBoundary> {
+        match fs::read(self.root.join(RETENTION_FILE)) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(RetentionBoundary::default())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn save_retention_boundary(&self, boundary: &RetentionBoundary) -> io::Result<()> {
+        crate::fs_atomic::write_atomic(
+            self.root.join(RETENTION_FILE),
+            serde_json::to_vec(boundary)?,
+        )
+    }
+
+    /// Keep only the newest `keep` checkpoints. Persist lost coverage before
+    /// deleting data; failure must leave the old snapshots recoverable.
+    pub fn evict(&self, keep: usize) -> io::Result<()> {
         let checkpoints = self.list();
         if checkpoints.len() <= keep {
-            return;
+            return Ok(());
         }
-        for checkpoint in &checkpoints[..checkpoints.len() - keep] {
-            let _ = self.remove(&checkpoint.id);
+        let evicted = &checkpoints[..checkpoints.len() - keep];
+        let mut boundary = self.retention_boundary()?;
+        for checkpoint in evicted {
+            if let Some(index) = checkpoint.user_turn_index {
+                boundary.earliest_turn = boundary.earliest_turn.max(index.saturating_add(1));
+            } else {
+                boundary.unlinked_eviction = true;
+            }
         }
+        self.save_retention_boundary(&boundary)?;
+        for checkpoint in evicted {
+            self.remove(&checkpoint.id)?;
+        }
+        Ok(())
     }
 }
 
@@ -219,6 +259,7 @@ impl Checkpoint {
 
 /// Pre-turn snapshot awaiting turn completion.
 pub struct PendingTurn {
+    cleanup: PendingDirectory,
     pub user_turn_index: Option<usize>,
     store: CheckpointStore,
     id: String,
@@ -235,6 +276,16 @@ pub struct PendingTurn {
     unreadable: HashSet<String>,
 }
 
+struct PendingDirectory(Option<PathBuf>);
+
+impl Drop for PendingDirectory {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
 /// Capture the pre-turn snapshot. Returns `None` when `cwd` is not inside a
 /// git worktree (checkpointing silently no-ops there).
 #[must_use]
@@ -244,7 +295,7 @@ pub fn begin_turn(
     session_id: &str,
     prompt: &str,
 ) -> Option<PendingTurn> {
-    let repo_root = PathBuf::from(git::repo_root(cwd)?);
+    let repo_root = dunce::canonicalize(git::repo_root(cwd)?).ok()?;
     let head = git_text(&repo_root, &["rev-parse", "--verify", "HEAD"]);
     let status = status_snapshot(&repo_root)?;
 
@@ -268,7 +319,7 @@ pub fn begin_turn(
     let mut pre_dirty = HashMap::new();
     let mut unreadable = HashSet::new();
     for path in status.dirty {
-        match fs::read(repo_root.join(&path)) {
+        match checked_worktree_path(&repo_root, &path).and_then(fs::read) {
             Ok(bytes) => match store_blob(&cp_dir, &bytes) {
                 Ok(hash) => {
                     pre_dirty.insert(path, Some(hash));
@@ -288,6 +339,7 @@ pub fn begin_turn(
     }
 
     Some(PendingTurn {
+        cleanup: PendingDirectory(Some(cp_dir)),
         user_turn_index: None,
         store,
         id,
@@ -304,7 +356,7 @@ pub fn begin_turn(
 /// Diff the worktree against the pre-turn snapshot and persist a checkpoint
 /// for everything the turn changed. Returns `None` when nothing changed (the
 /// pending directory is removed) or the repository disappeared.
-pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
+pub fn finalize_turn(mut pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
     let cp_dir = pending.store.new_checkpoint_dir(&pending.id);
     let Some(post) = status_snapshot(&pending.repo_root) else {
         let _ = fs::remove_dir_all(&cp_dir);
@@ -338,7 +390,9 @@ pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
                     .transpose()?
             }
         };
-        let Ok(post_hash) = file_hash(&pending.repo_root.join(path)) else {
+        let Ok(post_hash) =
+            checked_worktree_path(&pending.repo_root, path).and_then(|path| file_hash(&path))
+        else {
             continue;
         };
         if pre_blob == post_hash {
@@ -381,7 +435,9 @@ pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
                     });
                 }
             }
-        } else if let Ok(Some(hash)) = file_hash(&pending.repo_root.join(path)) {
+        } else if let Ok(Some(hash)) =
+            checked_worktree_path(&pending.repo_root, path).and_then(|path| file_hash(&path))
+        {
             entries.push(FileEntry {
                 path: path.clone(),
                 kind: EntryKind::Created,
@@ -406,8 +462,22 @@ pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
         head: pending.head,
         entries,
     };
+    // Begin snapshots all pre-existing dirty files. Keep only data actually
+    // referenced by this turn, including shared hashes referenced by any entry.
+    let referenced: HashSet<&str> = checkpoint
+        .entries
+        .iter()
+        .filter_map(|entry| entry.pre_blob.as_deref())
+        .collect();
+    for blob in fs::read_dir(cp_dir.join("blobs"))? {
+        let blob = blob?;
+        if !referenced.contains(blob.file_name().to_string_lossy().as_ref()) {
+            fs::remove_file(blob.path())?;
+        }
+    }
     pending.store.save(&checkpoint)?;
-    pending.store.evict(MAX_CHECKPOINTS_PER_SESSION);
+    pending.cleanup.0 = None;
+    pending.store.evict(MAX_CHECKPOINTS_PER_SESSION)?;
     Ok(Some(checkpoint))
 }
 
@@ -453,7 +523,13 @@ pub fn restore_checkpoint(
     };
 
     for entry in &checkpoint.entries {
-        let abs = checkpoint.repo_root.join(&entry.path);
+        let abs = match checked_worktree_path(&checkpoint.repo_root, &entry.path) {
+            Ok(path) => path,
+            Err(error) => {
+                report.failed.push(format!("{}: {error}", entry.path));
+                continue;
+            }
+        };
         let current_hash = match file_hash(&abs) {
             Ok(hash) => hash,
             Err(error) => {
@@ -526,6 +602,16 @@ pub fn fork_before_turn(
     target: &CheckpointStore,
     first_turn: usize,
 ) -> io::Result<()> {
+    let mut boundary = source.retention_boundary()?;
+    // A conversation-only fork can precede the source's coverage floor. Its
+    // first new turn establishes a new file baseline, not the missing past.
+    boundary.earliest_turn = if boundary.unlinked_eviction {
+        first_turn
+    } else {
+        boundary.earliest_turn.min(first_turn)
+    };
+    boundary.unlinked_eviction = false;
+    target.save_retention_boundary(&boundary)?;
     for checkpoint in source.list().into_iter().filter(|checkpoint| {
         checkpoint
             .user_turn_index
@@ -565,7 +651,9 @@ pub fn preview_turns(
             }
             let current = match simulated.get(&entry.path) {
                 Some(hash) => hash.clone(),
-                None => match file_hash(&checkpoint.repo_root.join(&entry.path)) {
+                None => match checked_worktree_path(&checkpoint.repo_root, &entry.path)
+                    .and_then(|path| file_hash(&path))
+                {
                     Ok(hash) => hash,
                     Err(_) => {
                         protected.insert(entry.path);
@@ -612,6 +700,18 @@ pub fn checkpoints_for_turns(
     store: &CheckpointStore,
     first_turn: usize,
 ) -> io::Result<Vec<Checkpoint>> {
+    let boundary = store.retention_boundary()?;
+    if boundary.unlinked_eviction {
+        return Err(io::Error::other(
+            "Older file checkpoints without turn links were removed. Use /rewind files for retained checkpoints.",
+        ));
+    }
+    if first_turn < boundary.earliest_turn {
+        return Err(io::Error::other(format!(
+            "File history before turn {} is no longer retained. Rewind the conversation separately or choose a newer turn.",
+            boundary.earliest_turn + 1
+        )));
+    }
     let checkpoints = store.list();
     if checkpoints
         .iter()
@@ -709,11 +809,53 @@ fn sha256(bytes: &[u8]) -> String {
 
 /// SHA-256 of a file's content; `Ok(None)` when the file does not exist.
 fn file_hash(path: &Path) -> io::Result<Option<String>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(sha256(&bytes))),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
     }
+    Ok(Some(format!("{:x}", hasher.finalize())))
+}
+
+/// Never follow a replaced symlink or a manifest path outside the worktree.
+/// This guards observed paths; callers must still preserve the content hash
+/// check because another editor can change files between preview and restore.
+fn checked_worktree_path(root: &Path, relative: &str) -> io::Result<PathBuf> {
+    // Captures store a resolved root, including platform aliases such as /tmp.
+    // A different resolution later means an ancestor was replaced or moved.
+    if dunce::canonicalize(root)? != root {
+        return Err(io::Error::other("checkpoint worktree location has changed"));
+    }
+    let path = Path::new(relative);
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::other("checkpoint path is not worktree-relative"));
+    }
+    let mut current = root.to_path_buf();
+    for part in path.components() {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::other("checkpoint path contains a symlink"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(current)
 }
 
 fn store_blob(cp_dir: &Path, bytes: &[u8]) -> io::Result<String> {
@@ -744,6 +886,9 @@ fn collect_files(dir: &Path, repo_root: &Path, out: &mut Vec<(String, PathBuf)>)
         return;
     };
     for entry in entries.flatten() {
+        if out.len() > MAX_EXPANDED_UNTRACKED_FILES {
+            break;
+        }
         let path = entry.path();
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -882,6 +1027,131 @@ mod tests {
 
     fn store(fx: &Fixture) -> CheckpointStore {
         CheckpointStore::new(&fx.sessions, "session-1")
+    }
+
+    #[test]
+    fn abandoned_capture_releases_its_directory() {
+        let fx = git_fixture();
+        fs::write(fx.repo.join("a.rs"), "dirty before capture").unwrap();
+        for _ in 0..3 {
+            let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "abandon").unwrap();
+            let dir = pending.store.new_checkpoint_dir(&pending.id);
+            assert!(dir.exists());
+            drop(pending);
+            assert!(!dir.exists(), "abandoned capture must release its blobs");
+        }
+    }
+
+    #[test]
+    fn finalized_checkpoint_keeps_only_referenced_blobs() {
+        let fx = git_fixture();
+        fs::write(fx.repo.join("b.rs"), "other original").unwrap();
+        run_git(&fx.repo, &["add", "b.rs"]);
+        run_git(&fx.repo, &["commit", "--quiet", "-m", "second file"]);
+        fs::write(fx.repo.join("a.rs"), "stable dirty content".repeat(1024)).unwrap();
+        let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "change b").unwrap();
+        fs::write(fx.repo.join("b.rs"), "changed b").unwrap();
+        let checkpoint = finalize_turn(pending).unwrap().unwrap();
+        let blobs = fs::read_dir(store(&fx).new_checkpoint_dir(&checkpoint.id).join("blobs"))
+            .unwrap()
+            .count();
+        assert_eq!(
+            blobs, 1,
+            "unchanged dirty file must not accumulate in retained checkpoints"
+        );
+        assert_eq!(
+            restore_latest(&store(&fx)).unwrap().unwrap().restored,
+            ["b.rs"]
+        );
+    }
+
+    #[test]
+    fn untracked_expansion_stops_at_overflow_sentinel() {
+        let fx = git_fixture();
+        let dir = fx.repo.join("generated");
+        fs::create_dir(&dir).unwrap();
+        for index in 0..MAX_EXPANDED_UNTRACKED_FILES + 50 {
+            fs::write(dir.join(index.to_string()), "x").unwrap();
+        }
+        let mut files = Vec::new();
+        collect_files(&dir, &fx.repo, &mut files);
+        assert_eq!(files.len(), MAX_EXPANDED_UNTRACKED_FILES + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_refuses_replaced_symlink_parent() {
+        let fx = git_fixture();
+        let nested = fx.repo.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("file"), "before").unwrap();
+        run_git(&fx.repo, &["add", "nested/file"]);
+        run_git(&fx.repo, &["commit", "--quiet", "-m", "nested file"]);
+        let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
+        fs::write(nested.join("file"), "after").unwrap();
+        finalize_turn(pending).unwrap().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("file"), "after").unwrap();
+        fs::remove_dir_all(&nested).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &nested).unwrap();
+        let report = restore_latest(&store(&fx)).unwrap().unwrap();
+        assert!(!report.failed.is_empty());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("file")).unwrap(),
+            "after"
+        );
+        assert_eq!(
+            store(&fx).list().len(),
+            1,
+            "retain a failed checkpoint for recovery"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_refuses_replaced_ancestor_above_worktree() {
+        let fx = git_fixture();
+        let holder = fx._tmp.path().join("holder");
+        fs::create_dir(&holder).unwrap();
+        let repo = holder.join("repo");
+        fs::rename(&fx.repo, &repo).unwrap();
+        let pending = begin_turn(&repo, &fx.sessions, "session-1", "edit").unwrap();
+        fs::write(repo.join("a.rs"), "after").unwrap();
+        finalize_turn(pending).unwrap().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(outside.path().join("repo")).unwrap();
+        fs::write(outside.path().join("repo/a.rs"), "after").unwrap();
+        fs::rename(&holder, fx._tmp.path().join("original-holder")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &holder).unwrap();
+        let report = restore_latest(&store(&fx)).unwrap().unwrap();
+        assert!(!report.failed.is_empty());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("repo/a.rs")).unwrap(),
+            "after"
+        );
+    }
+
+    #[test]
+    fn fork_after_legacy_eviction_can_establish_new_file_history() {
+        let fx = git_fixture();
+        let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "legacy").unwrap();
+        fs::write(fx.repo.join("a.rs"), "parent").unwrap();
+        finalize_turn(pending).unwrap().unwrap();
+        store(&fx).evict(0).unwrap();
+        let child = CheckpointStore::new(&fx.sessions, "child");
+        fork_before_turn(&store(&fx), &child, 0).unwrap();
+        let mut pending = begin_turn(&fx.repo, &fx.sessions, "child", "new edit").unwrap();
+        pending.user_turn_index = Some(0);
+        fs::write(fx.repo.join("a.rs"), "child").unwrap();
+        finalize_turn(pending).unwrap().unwrap();
+        assert!(preview_turns(&store(&fx), 0).is_err());
+        assert!(
+            restore_turns(&child, 0)
+                .unwrap()
+                .iter()
+                .all(|r| r.failed.is_empty())
+        );
+        assert_eq!(fs::read_to_string(fx.repo.join("a.rs")).unwrap(), "parent");
     }
 
     #[test]
@@ -1211,6 +1481,44 @@ mod tests {
             fs::read_to_string(fx.repo.join("scratch.txt")).unwrap(),
             "agent touched it\n"
         );
+    }
+
+    #[test]
+    fn rewind_rejects_evicted_history_before_changing_any_files() {
+        let fx = git_fixture();
+        for index in 0..3 {
+            let mut pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
+            pending.user_turn_index = Some(index);
+            fs::write(fx.repo.join("a.rs"), format!("turn-{index}")).unwrap();
+            finalize_turn(pending).unwrap().unwrap();
+        }
+        store(&fx).evict(2).unwrap();
+        assert!(preview_turns(&store(&fx), 0).is_err());
+        assert!(restore_turns(&store(&fx), 0).is_err());
+        assert_eq!(fs::read_to_string(fx.repo.join("a.rs")).unwrap(), "turn-2");
+        // Reopen the store: the coverage limit survives a process restart.
+        assert!(checkpoints_for_turns(&store(&fx), 0).is_err());
+        assert!(
+            restore_turns(&store(&fx), 1)
+                .unwrap()
+                .iter()
+                .all(|r| r.failed.is_empty())
+        );
+        assert_eq!(fs::read_to_string(fx.repo.join("a.rs")).unwrap(), "turn-0");
+    }
+
+    #[test]
+    fn unavailable_retention_metadata_preserves_files_and_checkpoints() {
+        let fx = git_fixture();
+        let mut pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
+        pending.user_turn_index = Some(0);
+        fs::write(fx.repo.join("a.rs"), "after").unwrap();
+        finalize_turn(pending).unwrap().unwrap();
+        fs::create_dir(store(&fx).root().join(RETENTION_FILE)).unwrap();
+        assert!(store(&fx).evict(0).is_err());
+        assert_eq!(store(&fx).list().len(), 1);
+        assert!(restore_turns(&store(&fx), 0).is_err());
+        assert_eq!(fs::read_to_string(fx.repo.join("a.rs")).unwrap(), "after");
     }
 
     #[test]

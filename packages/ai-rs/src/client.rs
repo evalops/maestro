@@ -377,6 +377,24 @@ impl UnifiedClient {
         }
     }
 
+    /// Attach the trusted host's per-invocation renewal channel.
+    pub fn set_managed_authorization_provider(
+        &mut self,
+        provider: Arc<dyn crate::managed_authorization::ManagedAuthorizationProvider>,
+    ) {
+        if let Self::OpenAI(client) = self {
+            client.set_managed_authorization_provider(provider);
+        }
+    }
+
+    /// Cache provenance is tenant/session-bound; this does not authorize inference.
+    pub fn cache_namespace(&self) -> Result<String> {
+        match self {
+            Self::OpenAI(client) => client.cache_namespace(),
+            _ => Ok("local".into()),
+        }
+    }
+
     /// Whether this client sends requests through the managed EvalOps gateway.
     pub fn is_managed_gateway(&self) -> bool {
         matches!(self, Self::OpenAI(client) if client.is_managed_gateway())
@@ -776,6 +794,19 @@ impl UnifiedClient {
         config: RequestConfig,
         observer: Option<StreamObserver>,
     ) -> Result<CancellableStream> {
+        let mut config = config;
+        let namespace = self.cache_namespace()?;
+        if let Some(prepared) = &config.cache_topology {
+            prepared.validate_namespace(&namespace)?;
+            prepared.validate(messages.as_slice(), &config)?;
+        } else {
+            config.cache_topology = Some(crate::cache_topology::PreparedPrompt::prepare(
+                messages.as_slice(),
+                &config,
+                namespace,
+                None,
+            )?);
+        }
         if let Some(observer) = &observer {
             observer(StreamObservation::Observed);
         }
@@ -884,6 +915,7 @@ impl UnifiedClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<CancellableStream> {
+        crate::cache_topology::validate_prepared(messages, config)?;
         match self {
             Self::Anthropic(client) => client.stream(messages, config).await.map(Into::into),
             #[cfg(feature = "bedrock")]

@@ -194,6 +194,12 @@ impl MockOpenAiServer {
 /// production default points at the first-party Platform origin, but these
 /// tests must remain deterministic and never reach the public network.
 fn start_mock_managed_setup_server() -> String {
+    start_mock_managed_setup_server_with_gate(None)
+}
+
+fn start_mock_managed_setup_server_with_gate(
+    mut gate: Option<std::sync::mpsc::Receiver<()>>,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock managed setup server");
     let address = listener
         .local_addr()
@@ -207,6 +213,11 @@ fn start_mock_managed_setup_server() -> String {
                 };
                 let request = read_request_body(&mut stream).expect("managed setup request");
                 assert_eq!(request.as_bytes(), b"\x0a\x0bpty-e2e-org\x12\x11pty-e2e-workspace");
+                if let Some(gate) = gate.take() {
+                    // The test releases policy only after observing editable input.
+                    // Dropping the sender on assertion failure also releases the stub.
+                    let _ = gate.recv();
+                }
                 // Canonical console.v1.ManagedSetup tags: version=1, mcp=5,
                 // organization_id=7, workspace_id=8. The real native client
                 // must decode protobuf here, exactly as it does with Platform.
@@ -414,6 +425,10 @@ impl PtySession {
                 // truthful answer for this 36-row PTY is the bottom row.
                 const DSR_QUERY: &[u8] = b"\x1b[6n";
                 const DSR_REPLY: &[u8] = b"\x1b[36;1R";
+                // Also answer primary device attributes like a real terminal.
+                // Otherwise keyboard detection waits for its two-second timeout.
+                const DA_QUERY: &[u8] = b"\x1b[c";
+                const DA_REPLY: &[u8] = b"\x1b[?1;2c";
                 let mut tail: Vec<u8> = Vec::new();
                 let mut buf = [0_u8; 8192];
                 loop {
@@ -430,11 +445,18 @@ impl PtySession {
                                 .windows(DSR_QUERY.len())
                                 .filter(|window| *window == DSR_QUERY)
                                 .count();
-                            if query_count > 0 {
+                            let da_count = window
+                                .windows(DA_QUERY.len())
+                                .filter(|window| *window == DA_QUERY)
+                                .count();
+                            if query_count > 0 || da_count > 0 {
                                 let mut writer =
                                     reader_writer.lock().unwrap_or_else(|e| e.into_inner());
                                 for _ in 0..query_count {
                                     let _ = writer.write_all(DSR_REPLY);
+                                }
+                                for _ in 0..da_count {
+                                    let _ = writer.write_all(DA_REPLY);
                                 }
                                 let _ = writer.flush();
                             }
@@ -720,6 +742,42 @@ fn pty_prompt_streams_answer() {
     session.shutdown();
 }
 
+/// The first composer must remain usable while the policy response is held.
+/// Enter cannot dispatch either a slash command or a provider request here.
+#[test]
+fn pty_startup_composer_edits_before_managed_setup_finishes() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (release, gate) = std::sync::mpsc::channel();
+    let mut mock = MockOpenAiServer::start(vec![text_turn("STARTUP_DRAFT_ACCEPTED")]);
+    mock.managed_setup_base_url = start_mock_managed_setup_server_with_gate(Some(gate));
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let started = Instant::now();
+    let mut session =
+        PtySession::spawn_with_args(&mock, workdir.path(), &["--model", "openai/gpt-4o"]);
+    session.wait_for_text("You can type while setup finishes", Duration::from_secs(5));
+    let first_frame = started.elapsed();
+    session.send_bytes(b"startup draft survives");
+    session.wait_for_text("startup draft survives", Duration::from_secs(2));
+    session.send_bytes(b"\r");
+    session.wait_for_text("press Enter when ready", Duration::from_secs(2));
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "no execution before verified setup"
+    );
+    eprintln!(
+        "startup first editable frame: {first_frame:?}; policy still held; provider requests=0"
+    );
+    release.send(()).unwrap();
+    session.send_bytes_until(b"\r", "STARTUP_DRAFT_ACCEPTED", TURN_TIMEOUT);
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "the retained draft must submit once"
+    );
+    session.shutdown();
+}
+
 /// The grouped `/model` menu must open its child selector and let Escape
 /// return to chat without issuing a provider request. A follow-up turn proves
 /// the modal stack was actually dismissed rather than only painted away.
@@ -881,6 +939,84 @@ fn pty_fork_sigterm_exits_143_and_flushes_fork_session() {
             .contains("PTY_FORK_SIGTERM_FLUSH"),
         "fork shutdown must never append to the source session"
     );
+}
+
+/// Exercise persisted rewind through terminal input, then prove the next
+/// provider request and saved branch exclude the abandoned turn.
+#[test]
+fn pty_rewind_preserves_source_and_continues_from_saved_prefix() {
+    let _serial = PTY_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mock = MockOpenAiServer::start(vec![text_turn("PTY_REWIND_CONTINUED")]);
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let source_id = "pty-rewind-source";
+    let source_path = write_fork_fixture(workdir.path(), source_id);
+    let abandoned = serde_json::json!({
+        "type": "message", "timestamp": "2026-07-29T00:00:02Z",
+        "message": {"role": "user", "content": "PTY_ABANDONED_TURN", "timestamp": 2}
+    });
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source_path)
+            .unwrap(),
+        "{abandoned}"
+    )
+    .unwrap();
+    let mut session =
+        PtySession::spawn_with_args(&mock, workdir.path(), &["--resume-session", source_id]);
+    session.wait_for_text("PTY_ABANDONED_TURN", READY_TIMEOUT);
+    session.submit_prompt("/rewind 1");
+    // Status text can be replaced by the next ready event before a frame is
+    // painted. Wait for durable branch publication; the provider assertions
+    // below separately prove that the branch was adopted by the live actor.
+    let deadline = Instant::now() + TURN_TIMEOUT;
+    loop {
+        let published = std::fs::read_dir(source_path.parent().unwrap())
+            .unwrap()
+            .any(|entry| {
+                entry.is_ok_and(|entry| {
+                    let path = entry.path();
+                    path != source_path && path.extension().is_some_and(|ext| ext == "jsonl")
+                })
+            });
+        if published {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "rewind did not publish a saved branch"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(mock.request_count(), 0);
+    // Rewind repaints and probes the terminal. Use the harness's input
+    // acknowledgement before Enter so a cursor-position probe cannot consume
+    // the follow-up text. Repeating Enter on the cleared composer is a no-op.
+    session.send_bytes_until(
+        b"\x15PTY_NEW_BRANCH_REQUEST",
+        "PTY_NEW_BRANCH_REQUEST",
+        TURN_TIMEOUT,
+    );
+    session.send_bytes_until(b"\r", "PTY_REWIND_CONTINUED", TURN_TIMEOUT);
+    let requests = mock.state.lock().unwrap();
+    assert_eq!(requests.requests.len(), 1);
+    assert!(requests.requests[0].contains("PTY_FORK_SOURCE_READY"));
+    assert!(!requests.requests[0].contains("PTY_ABANDONED_TURN"));
+    drop(requests);
+    session.shutdown();
+    let source = std::fs::read_to_string(&source_path).unwrap();
+    assert!(source.contains("PTY_ABANDONED_TURN"));
+    assert!(!source.contains("PTY_NEW_BRANCH_REQUEST"));
+    let branches: Vec<_> = std::fs::read_dir(source_path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl") && path != &source_path)
+        .collect();
+    assert_eq!(branches.len(), 1);
+    let branch = std::fs::read_to_string(&branches[0]).unwrap();
+    assert!(branch.contains("PTY_FORK_SOURCE_READY"));
+    assert!(branch.contains("PTY_NEW_BRANCH_REQUEST"));
+    assert!(!branch.contains("PTY_ABANDONED_TURN"));
 }
 
 /// tool call → approval modal appears (selective mode) → approve → result

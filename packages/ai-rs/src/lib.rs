@@ -79,10 +79,12 @@ mod anthropic;
 pub mod app_message;
 #[cfg(feature = "bedrock")]
 mod bedrock;
+pub mod cache_topology;
 mod client;
 mod error;
 mod google;
 mod kimi;
+pub mod managed_authorization;
 mod model_capabilities;
 pub use model_capabilities::{
     ASTRA_CONTEXT_TOKENS, ASTRA_OUTPUT_TOKENS, AnthropicRequestCapabilities, AnthropicThinkingMode,

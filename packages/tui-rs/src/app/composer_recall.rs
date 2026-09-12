@@ -124,8 +124,13 @@ pub(super) fn render(
     }
     let popup = Rect::new(area.x, input.y - height, area.width, height);
     let mut lines = vec![
-        ratatui::text::Line::raw(format!("History: {}", search.query.replace('\n', " "))),
-        ratatui::text::Line::raw("↑/↓ select · Enter restore text (attachments kept) · Esc cancel"),
+        ratatui::text::Line::raw(maestro_ui::localization::format(
+            "History: {0}",
+            &[(search.query.replace('\n', " ")).clone()],
+        )),
+        ratatui::text::Line::raw(maestro_ui::localization::tr(
+            "↑/↓ select · Enter restore text (attachments kept) · Esc cancel",
+        )),
     ];
     let count = usize::from(height.saturating_sub(2));
     let start = search.selected.saturating_sub(count.saturating_sub(1));
@@ -144,7 +149,9 @@ pub(super) fn render(
         ));
     }
     if search.matches.is_empty() && count > 0 {
-        lines.push(ratatui::text::Line::raw("No matching prompts"));
+        lines.push(ratatui::text::Line::raw(maestro_ui::localization::tr(
+            "No matching prompts",
+        )));
     }
     frame.render_widget(Clear, popup);
     frame.render_widget(

@@ -87,6 +87,20 @@ const workspaceMembers = [...membersBlock[1].matchAll(/"([^"]+)"/g)]
 const copiesMember = (stage, member) =>
 	new RegExp(`COPY\\s+${member.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+\\.\\/${member.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m").test(stage);
 const uncopied = [];
+const vendoredPaths = [...cargoManifest.matchAll(/\bpath\s*=\s*"(vendor\/[^"\n]+)"/g)]
+	.map((match) => match[1]);
+for (const path of new Set(vendoredPaths)) {
+	for (const [name, stage, command] of [
+		["planner", plannerStage, "prepare"],
+		["native", nativeStage, "cook"],
+	]) {
+		const marker = new RegExp(`^RUN\\s+cargo\\s+chef\\s+${command}\\b`, "m");
+		const boundary = stage.search(marker);
+		if (boundary < 0 || !copiesMember(stage.slice(0, boundary), path)) {
+			uncopied.push(`${path} before cargo chef ${command} in the ${name} stage`);
+		}
+	}
+}
 for (const member of workspaceMembers) {
 	if (!copiesMember(plannerStage, member)) {
 		uncopied.push(`${member} in the planner stage`);

@@ -213,11 +213,11 @@ fn create_footer(scroll: usize, total_lines: usize, visible_lines: usize) -> Lin
 
     // Position indicator
     let position = if total_lines <= visible_lines {
-        "All".to_string()
+        crate::localization::tr("All").to_string()
     } else if scroll == 0 {
-        "Top".to_string()
+        crate::localization::tr("Top").to_string()
     } else if scroll + visible_lines >= total_lines {
-        "End".to_string()
+        crate::localization::tr("End").to_string()
     } else {
         let percent = (scroll * 100) / total_lines.max(1);
         format!("{percent}%")
@@ -235,7 +235,7 @@ fn create_footer(scroll: usize, total_lines: usize, visible_lines: usize) -> Lin
         ("↑↓", "scroll"),
         ("PgUp/Dn", "page"),
         ("g/G", "top/end"),
-        ("q", "close"),
+        ("q", crate::localization::tr("close")),
     ];
 
     for (i, (key, desc)) in hints.iter().enumerate() {

@@ -19,8 +19,11 @@ const SCRIPT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RUNTIME_PACKAGE = "maestro-runtime";
 const CONTRACTS_PACKAGE = "maestro-runtime-contracts";
 const TUI_PACKAGE = "maestro-tui";
+const HOST_PACKAGE = "maestro-local-host";
+const GATEWAY_PACKAGE = "maestro-runtime-gateway";
 const AI_PACKAGE = "maestro-ai";
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
+	HOST_PACKAGE,
 	"maestro-tui",
 	"maestro-ui",
 	"ratatui",
@@ -589,6 +592,8 @@ export function analyzeNativeRuntimeBoundary(root = SCRIPT_ROOT) {
 	const runtime = workspace.packages.get(RUNTIME_PACKAGE);
 	const contracts = workspace.packages.get(CONTRACTS_PACKAGE);
 	const tui = workspace.packages.get(TUI_PACKAGE);
+	const host = workspace.packages.get(HOST_PACKAGE);
+	const gateway = workspace.packages.get(GATEWAY_PACKAGE);
 
 	if (!runtime) violations.push({ code: "missing-runtime-package", message: "workspace is missing maestro-runtime" });
 	if (!contracts) violations.push({ code: "missing-contracts-package", message: "workspace is missing maestro-runtime-contracts" });
@@ -651,6 +656,22 @@ export function analyzeNativeRuntimeBoundary(root = SCRIPT_ROOT) {
 		}
 	}
 
+	if (host) {
+		for (const edge of dependencyViolations(host, workspace, new Set([TUI_PACKAGE]))) {
+			violations.push({ code: "host-depends-on-tui", message: edge.path.join(" -> "), path: relativePath(absoluteRoot, host.manifestPath), line: edge.dependency.line });
+		}
+		for (const definition of packageDefinitions(host, absoluteRoot).filter((candidate) => ["struct", "type", "impl"].includes(candidate.kind) && candidate.name === "NativeAgent")) {
+			if (!runtimeHandleEvidence(host, absoluteRoot)) {
+				violations.push({ code: "host-owns-native-agent", message: "maestro-local-host NativeAgent must delegate to the runtime handle", path: definition.path, line: definition.line });
+			}
+		}
+	}
+	if (gateway) {
+		for (const edge of dependencyViolations(gateway, workspace, new Set([TUI_PACKAGE]))) {
+			violations.push({ code: "gateway-depends-on-tui", message: edge.path.join(" -> "), path: relativePath(absoluteRoot, gateway.manifestPath), line: edge.dependency.line });
+		}
+	}
+
 	const runnerOwners = [];
 	for (const packageInfo of workspace.packages.values()) {
 		if (packageDefinitions(packageInfo, absoluteRoot).some((definition) => definition.kind === "struct" && definition.name === "NativeAgentRunner")) runnerOwners.push(packageInfo);
@@ -661,7 +682,8 @@ export function analyzeNativeRuntimeBoundary(root = SCRIPT_ROOT) {
 	for (const packageInfo of workspace.packages.values()) {
 		if (packageInfo === runtime || packageInfo === tui) continue;
 		for (const definition of packageDefinitions(packageInfo, absoluteRoot).filter((candidate) => ["struct", "type"].includes(candidate.kind) && candidate.name === "NativeAgent")) {
-			violations.push({ code: "unexpected-native-agent-owner", message: `${packageInfo.packageName} defines NativeAgent outside the approved runtime or TUI wrapper locations`, path: definition.path, line: definition.line });
+			if (packageInfo === host && runtimeHandleEvidence(host, absoluteRoot)) continue;
+			violations.push({ code: "unexpected-native-agent-owner", message: `${packageInfo.packageName} defines NativeAgent outside the approved runtime or verified host wrapper locations`, path: definition.path, line: definition.line });
 		}
 		for (const definition of packageDefinitions(packageInfo, absoluteRoot).filter((candidate) => ["struct", "type"].includes(candidate.kind) && candidate.name === "NativeAgentRunner")) {
 			violations.push({ code: "unexpected-native-runner-owner", message: `${packageInfo.packageName} defines NativeAgentRunner outside maestro-runtime`, path: definition.path, line: definition.line });

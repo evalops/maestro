@@ -718,6 +718,8 @@ pub enum ContentBlock {
         /// alone, exactly as it was before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contract: Option<ToolCallContract>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gemini_context: Option<maestro_ai::GeminiToolContext>,
     },
     /// Image (base64)
     Image {

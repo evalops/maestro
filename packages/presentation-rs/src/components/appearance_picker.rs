@@ -17,9 +17,12 @@ pub fn render_appearance(
         style::Style,
         widgets::Paragraph,
     };
-    let inner = maestro_ui::Modal::sized("Dex appearance", ModalSize::Standard)
-        .theme(theme)
-        .render(frame, area);
+    let inner = maestro_ui::Modal::sized(
+        maestro_ui::localization::tr("Dex appearance"),
+        ModalSize::Standard,
+    )
+    .theme(theme)
+    .render(frame, area);
     let chunks = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
     crate::components::dex_companion::DexCompanion::new(DexCompanionState::Ready)
         .look(look)
@@ -33,7 +36,8 @@ pub fn render_appearance(
             frame.buffer_mut(),
         );
     frame.render_widget(
-        Paragraph::new("Make Dex yours").style(Style::default().fg(theme.muted)),
+        Paragraph::new(maestro_ui::localization::tr("Make Dex yours"))
+            .style(Style::default().fg(theme.muted)),
         Rect::new(
             chunks[0].x + 8,
             chunks[0].y,
@@ -48,7 +52,7 @@ pub fn render_appearance(
         PickerOptions {
             position_when_clipped: true,
             help: PickerHelp {
-                navigation: "select",
+                navigation: maestro_ui::localization::tr("select"),
                 confirm: "save",
                 key_separator: " ",
             },

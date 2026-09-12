@@ -109,7 +109,7 @@
 	"runtimeSurfaces": [
 		{
 			"area": "rpc-server-dispatch",
-			"path": "packages/tui-rs/src/headless_server.rs",
+			"path": "packages/local-host-rs/src/headless_server.rs",
 			"anchors": [
 				"run_headless_server",
 				"ToAgentMessage::Prompt",
@@ -120,7 +120,7 @@
 		},
 		{
 			"area": "rpc-server-native",
-			"path": "packages/tui-rs/src/headless_server.rs",
+			"path": "packages/local-host-rs/src/headless_server.rs",
 			"anchors": [
 				"run_headless_server",
 				"ToAgentMessage::Prompt",

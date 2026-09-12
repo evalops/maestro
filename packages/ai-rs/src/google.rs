@@ -97,7 +97,8 @@ impl GoogleClient {
 
     /// Build the Gemini API request body
     fn build_request(&self, messages: &[Message], config: &RequestConfig) -> Result<GoogleRequest> {
-        let messages = super::transform::google_messages_for_wire(messages);
+        let messages = crate::cache_topology::messages_with_volatile_tail(messages, config);
+        let messages = super::transform::google_messages_for_wire(&messages);
         let contents = messages
             .iter()
             .map(|msg| self.message_to_content(msg))
@@ -154,7 +155,9 @@ impl GoogleClient {
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
                         text: format!("<thinking>{thinking}</thinking>"),
                     }),
-                    ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
+                    ContentBlock::ToolUse {
+                        id: _, name, input, ..
+                    } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -222,6 +225,7 @@ async fn stream_google_response(
     let mut buffer = String::new();
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut cache_read_tokens = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Failed to read chunk")?;
@@ -257,6 +261,7 @@ async fn stream_google_response(
                                                     id: format!("call_{}", uuid::Uuid::new_v4()),
                                                     name: function_call.name,
                                                     input: function_call.args,
+                                                    gemini_context: None,
                                                 },
                                             });
                                         }
@@ -280,8 +285,10 @@ async fn stream_google_response(
 
                     // Update usage
                     if let Some(metadata) = response.usage_metadata {
-                        input_tokens = metadata.prompt_token_count.unwrap_or(0);
-                        output_tokens = metadata.candidates_token_count.unwrap_or(0);
+                        input_tokens = metadata.prompt_token_count.unwrap_or(input_tokens);
+                        output_tokens = metadata.candidates_token_count.unwrap_or(output_tokens);
+                        cache_read_tokens =
+                            metadata.cached_content_token_count.or(cache_read_tokens);
                     }
                 }
             }
@@ -289,14 +296,23 @@ async fn stream_google_response(
     }
 
     // Send final usage
-    let _ = tx.send(StreamEvent::Usage {
+    let _ = tx.send(super::google::cache_usage_event(
         input_tokens,
         output_tokens,
-        cache_read_tokens: Some(0),
-        cache_creation_tokens: Some(0),
-    });
+        cache_read_tokens,
+    ));
 
     Ok(())
+}
+
+/// Google prompt counts include cached tokens. Keep cache absence distinct from zero.
+pub(super) fn cache_usage_event(input: u64, output: u64, cached: Option<u64>) -> StreamEvent {
+    StreamEvent::Usage {
+        input_tokens: input.saturating_sub(cached.unwrap_or(0)),
+        output_tokens: output,
+        cache_read_tokens: cached,
+        cache_creation_tokens: None,
+    }
 }
 
 // ============================================================================
@@ -395,11 +411,66 @@ struct Candidate {
 struct UsageMetadata {
     prompt_token_count: Option<u64>,
     candidates_token_count: Option<u64>,
+    cached_content_token_count: Option<u64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_cache_usage_distinguishes_hit_miss_and_unknown() {
+        for (field, expected) in [(None, None), (Some(0), Some(0)), (Some(80), Some(80))] {
+            let mut metadata = serde_json::json!({"promptTokenCount":100,"candidatesTokenCount":5});
+            if let Some(value) = field {
+                metadata["cachedContentTokenCount"] = value.into();
+            }
+            let metadata: UsageMetadata = serde_json::from_value(metadata).unwrap();
+            let StreamEvent::Usage {
+                input_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                ..
+            } = cache_usage_event(
+                metadata.prompt_token_count.unwrap(),
+                5,
+                metadata.cached_content_token_count,
+            )
+            else {
+                panic!("expected usage")
+            };
+            assert_eq!(cache_read_tokens, expected);
+            assert_eq!(input_tokens, 100 - expected.unwrap_or(0));
+            assert_eq!(cache_creation_tokens, None);
+        }
+    }
+
+    #[test]
+    fn volatile_tail_reaches_the_provider_after_history() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::text("previous"),
+        }];
+        let mut config = RequestConfig::default();
+        config.cache_topology = Some(
+            crate::cache_topology::PreparedPrompt::prepare(
+                &messages,
+                &config,
+                "scope".into(),
+                None,
+            )
+            .unwrap()
+            .with_volatile_tail(Some("current clock and plan".into())),
+        );
+        let request =
+            serde_json::to_value(client.build_request(&messages, &config).unwrap()).unwrap();
+        assert_eq!(
+            request["contents"][1]["parts"][0]["text"],
+            "current clock and plan"
+        );
+        assert_eq!(request["contents"][0]["parts"][0]["text"], "previous");
+    }
 
     #[test]
     fn request_matches_foreign_tool_results_by_function_name() {
@@ -412,11 +483,13 @@ mod tests {
                         id: "call_shared|fc_a".into(),
                         name: "read".into(),
                         input: json!({"path":"a"}),
+                        gemini_context: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_shared|fc_b".into(),
                         name: "search".into(),
                         input: json!({"query":"b"}),
+                        gemini_context: None,
                     },
                 ]),
             },
@@ -560,6 +633,7 @@ mod tests {
                 id: "call_123".to_string(),
                 name: "get_weather".to_string(),
                 input: json!({"city": "Seattle"}),
+                gemini_context: None,
             }]),
         };
 

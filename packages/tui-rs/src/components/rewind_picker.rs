@@ -83,14 +83,19 @@ impl RewindPicker {
             .take(MAX_LISTED)
             .map(|entry| entry.path.as_str())
             .collect();
-        let mut summary = format!(
-            "{} file{}: {}",
-            total,
-            if total == 1 { "" } else { "s" },
-            listed.join(", ")
+        let mut summary = maestro_ui::localization::format(
+            if total == 1 {
+                "{0} file: {1}"
+            } else {
+                "{0} files: {1}"
+            },
+            &[total.to_string(), listed.join(", ")],
         );
         if total > MAX_LISTED {
-            summary.push_str(&format!(", +{} more", total - MAX_LISTED));
+            summary.push_str(&maestro_ui::localization::format(
+                ", +{0} more",
+                &[(total - MAX_LISTED).to_string()],
+            ));
         }
         summary
     }
@@ -106,22 +111,26 @@ impl RewindPicker {
         }
         let height = self.checkpoint_count.saturating_mul(2).saturating_add(3);
         let height = u16::try_from(height).unwrap_or(u16::MAX).max(5);
-        let inner = Modal::new("Rewind to checkpoint", 72, height)
-            .theme(theme)
-            .render(frame, area);
+        let inner = Modal::new(
+            maestro_ui::localization::tr("Rewind to checkpoint"),
+            72,
+            height,
+        )
+        .theme(theme)
+        .render(frame, area);
         let row_theme = theme.on_panel();
         self.picker.render(
             frame,
             inner,
             theme,
             PickerOptions {
-                empty: "No checkpoints to rewind to",
+                empty: maestro_ui::localization::tr("No checkpoints to rewind to"),
                 hints: Some(&[
-                    KeyHint::new("↑↓", "navigate"),
-                    KeyHint::new("Enter", "files"),
+                    KeyHint::new("↑↓", maestro_ui::localization::tr("navigate")),
+                    KeyHint::new("Enter", maestro_ui::localization::tr("files")),
                     KeyHint::new("c", "conversation"),
                     KeyHint::new("b", "both"),
-                    KeyHint::new("Esc", "cancel"),
+                    KeyHint::new("Esc", maestro_ui::localization::tr("cancel")),
                 ]),
                 ..PickerOptions::default()
             },

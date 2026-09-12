@@ -56,7 +56,9 @@ impl FeedbackUi {
                 );
                 frame.render_widget(Clear, badge);
                 frame.render_widget(
-                    Paragraph::new("Feedback drafts · /feedback to review"),
+                    Paragraph::new(maestro_ui::localization::tr(
+                        "Feedback drafts · /feedback to review",
+                    )),
                     badge,
                 );
             }
@@ -77,13 +79,18 @@ impl FeedbackUi {
         );
         frame.render_widget(Clear, card);
         frame.render_widget(
-            Paragraph::new(format!(
-                "{}\n1 Review · 2 Review and send · 0 Hide · /feedback Queue",
-                draft.description.lines().next().unwrap_or("Feedback draft")
+            Paragraph::new(maestro_ui::localization::format(
+                "{0}\n1 Review · 2 Review and send · 0 Hide · /feedback Queue",
+                &[draft
+                    .description
+                    .lines()
+                    .next()
+                    .unwrap_or("Feedback draft")
+                    .to_string()],
             ))
             .block(
                 Block::default()
-                    .title(" Bug report drafted ")
+                    .title(maestro_ui::localization::tr(" Bug report drafted "))
                     .borders(Borders::ALL),
             ),
             card,
@@ -112,14 +119,17 @@ impl FeedbackUi {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!(
-                    "Saved drafts ({})\n↑/↓ Select · Enter Review · w Write report · Esc Close\n\n{}",
-                    self.queue.len(),
-                    if rows.is_empty() {
-                        "No saved drafts."
-                    } else {
-                        &rows
-                    }
+                maestro_ui::localization::format(
+                    "Saved drafts ({0})\n↑/↓ Select · Enter Review · w Write report · Esc Close\n\n{1}",
+                    &[
+                        (self.queue.len()).to_string(),
+                        (if rows.is_empty() {
+                            "No saved drafts."
+                        } else {
+                            &rows
+                        })
+                        .to_string(),
+                    ],
                 )
             }
             FeedbackMode::Evidence => {
@@ -145,26 +155,35 @@ impl FeedbackUi {
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                format!(
-                    "Choose evidence · ↑/↓ Select · Space Toggle · Esc Review\nOnly checked items will be sent. Known credential patterns are redacted; review the text.\n\n{rows}"
+                maestro_ui::localization::format(
+                    "Choose evidence · ↑/↓ Select · Space Toggle · Esc Review\nOnly checked items will be sent. Known credential patterns are redacted; review the text.\n\n{0}",
+                    std::slice::from_ref(&(rows)),
                 )
             }
             FeedbackMode::Edit(field) => {
                 let mut text = self.editor.clone();
                 text.insert(self.editor_cursor.min(text.len()), '▏');
-                format!("Edit {field} · Enter Save · Shift+Enter New line · Esc Cancel\n\n{text}")
+                maestro_ui::localization::format(
+                    "Edit {0} · Enter Save · Shift+Enter New line · Esc Cancel\n\n{1}",
+                    &[(field).to_string(), (text).clone()],
+                )
             }
-            FeedbackMode::Review => format!(
-                "e Edit description · x Expected · r Reproduction · d Version/model\nv Choose evidence · s Send · a Export · 0 Discard · Esc Queue\n{}\n\n{}",
-                if self.quick_send {
-                    "Press 2 again to send the reviewed report."
-                } else {
-                    "↑/↓ Scroll. Sending shares the fields below with product support."
-                },
-                self.draft
-                    .as_ref()
-                    .map(BugReport::preview)
-                    .unwrap_or_else(|| "No draft. Press e to write one.".into())
+            FeedbackMode::Review => maestro_ui::localization::format(
+                "e Edit description · x Expected · r Reproduction · d Version/model\nv Choose evidence · s Send · a Export · 0 Discard · Esc Queue\n{0}\n\n{1}",
+                &[
+                    (if self.quick_send {
+                        "Press 2 again to send the reviewed report."
+                    } else {
+                        "↑/↓ Scroll. Sending shares the fields below with product support."
+                    })
+                    .to_string(),
+                    (self
+                        .draft
+                        .as_ref()
+                        .map(BugReport::preview)
+                        .unwrap_or_else(|| "No draft. Press e to write one.".into()))
+                    .clone(),
+                ],
             ),
         };
         let content = if let Some(error) = &self.error {
@@ -179,7 +198,7 @@ impl FeedbackUi {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Product feedback "),
+                        .title(maestro_ui::localization::tr(" Product feedback ")),
                 ),
             popup,
         );
@@ -315,13 +334,19 @@ impl App {
                 self.feedback_ui.path = Some(path);
             }
             self.state.add_system_message(
-                "Feedback draft saved locally. /feedback to review the queue.".into(),
+                self.state
+                    .locale
+                    .translate("Feedback draft saved locally. /feedback to review the queue.")
+                    .into(),
             );
             Ok(())
         })();
         if let Err(error) = result {
-            self.state
-                .add_system_message(format!("Could not save feedback draft: {error}"));
+            self.state.add_system_message(
+                self.state
+                    .locale
+                    .format("Could not save feedback draft: {0}", &[(error).to_string()]),
+            );
         }
     }
 
@@ -487,9 +512,11 @@ impl App {
                 self.active_modal = ActiveModal::None;
                 self.state.add_system_message(
                     if action == "hide" {
-                        "Feedback card hidden. The draft is in /feedback."
+                        self.state
+                            .locale
+                            .translate("Feedback card hidden. The draft is in /feedback.")
                     } else {
-                        "Bug report draft dismissed."
+                        self.state.locale.translate("Bug report draft dismissed.")
                     }
                     .into(),
                 );
@@ -512,8 +539,9 @@ impl App {
                             draft.status = DraftStatus::Reviewed;
                         }
                         Err(error) => {
-                            self.feedback_ui.error = Some(format!(
-                                "{error} You can export this report locally with a."
+                            self.feedback_ui.error = Some(self.state.locale.format(
+                                "{0} You can export this report locally with a.",
+                                &[(error).to_string()],
                             ));
                         }
                     }
@@ -526,8 +554,10 @@ impl App {
             "send" => {
                 let draft = saved.as_mut().context("Create a draft first.")?;
                 if let DraftStatus::Sent { reference } = &draft.status {
-                    self.state
-                        .add_system_message(format!("Bug report already submitted: {reference}"));
+                    self.state.add_system_message(self.state.locale.format(
+                        "Bug report already submitted: {0}",
+                        std::slice::from_ref(reference),
+                    ));
                     return Ok(());
                 }
                 ensure!(
@@ -548,7 +578,8 @@ impl App {
                     let _ = tx.send((path, draft, result));
                 });
                 self.feedback_ui.send = Some(rx);
-                self.feedback_ui.error = Some("Sending report…".into());
+                self.feedback_ui.error =
+                    Some(self.state.locale.translate("Sending report…").into());
             }
             "export" => {
                 let draft = saved.as_ref().context("Create a draft first.")?;
@@ -559,11 +590,15 @@ impl App {
                     .context("No session root")?
                     .join("feedback-bundles");
                 let exported = draft.export(&directory)?;
-                self.state.add_system_message(format!(
-                    "Feedback saved to {}. Nothing was sent.",
-                    exported.display()
+                self.state.add_system_message(self.state.locale.format(
+                    "Feedback saved to {0}. Nothing was sent.",
+                    &[(exported.display()).to_string()],
                 ));
-                self.feedback_ui.error = Some(format!("Saved {}", exported.display()));
+                self.feedback_ui.error = Some(
+                    self.state
+                        .locale
+                        .format("Saved {0}", &[(exported.display()).to_string()]),
+                );
             }
             _ => {
                 // Claude-compatible free-form /bug and /feedback descriptions.
@@ -575,8 +610,11 @@ impl App {
                         draft.status = DraftStatus::Reviewed;
                     }
                     Err(error) => {
-                        self.feedback_ui.error =
-                            Some(format!("{error} Press a to export locally."));
+                        self.feedback_ui.error = Some(
+                            self.state
+                                .locale
+                                .format("{0} Press a to export locally.", &[(error).to_string()]),
+                        );
                     }
                 }
                 saved = Some(draft);
@@ -616,7 +654,7 @@ impl App {
             Err(_) => {
                 self.feedback_ui.send = None;
                 self.feedback_ui.error = Some(
-                    "Submission could not be confirmed. /bug send retries the saved report.".into(),
+                    self.state.locale.translate("Submission could not be confirmed. /bug send retries the saved report.").into(),
                 );
                 return;
             }
@@ -629,8 +667,8 @@ impl App {
                     reference: reference.clone(),
                 };
                 match self.feedback_save(&path,&draft) {
-                    Ok(()) => self.state.add_system_message(format!("Bug report submitted: {reference}")),
-                    Err(error) => self.state.add_system_message(format!("Report submitted: {reference}, but the local receipt could not be saved: {error}. Retry uses the same report ID.")),
+                    Ok(()) => self.state.add_system_message(self.state.locale.format("Bug report submitted: {0}", std::slice::from_ref(&(reference)))),
+                    Err(error) => self.state.add_system_message(self.state.locale.format("Report submitted: {0}, but the local receipt could not be saved: {1}. Retry uses the same report ID.", &[(reference).clone(), (error).to_string()])),
                 }
                 if self
                     .feedback_ui
@@ -822,9 +860,9 @@ impl App {
                         .as_ref()
                         .is_some_and(|d| d.include_diagnostics);
                     self.handle_bug_report(if enabled {
-                        "diagnostics off"
+                        self.state.locale.translate("diagnostics off")
                     } else {
-                        "diagnostics on"
+                        self.state.locale.translate("diagnostics on")
                     })
                     .await?;
                     self.handle_bug_report("review").await?;

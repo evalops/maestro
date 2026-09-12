@@ -21,7 +21,7 @@ This is a **native Rust TUI** with a fully native agent runtime, AI provider cli
 
 ### Key Design Decisions
 
-1. **Native Agent Architecture**: AI communication, tool execution, and streaming live entirely in Rust (`agent/`, `tools/`). This enables a standalone binary and avoids cross-process latency. A Node hook bridge exists only for running TS hooks when enabled.
+1. **Native Agent Architecture**: AI communication and streaming live in maestro-runtime; local tool execution and runtime construction live in maestro-local-host. The TUI reexports historical module paths. This enables a standalone binary and avoids cross-process latency. A Node hook bridge exists only for running TS hooks when enabled.
 
 2. **Cursor Positioning**: Uses native terminal cursor (adapted from OpenAI Codex) rather than inline cursor rendering. See `components/textarea.rs` for the implementation.
 
@@ -81,8 +81,8 @@ Self {
 ```
 
 **Adding a Tool:**
-1. Implement in `tools/my_tool.rs`
-2. Add to `ToolExecutor` struct in `tools/registry.rs`
+1. Add a module under `products/maestro/packages/local-host-rs/src/tools/`
+2. Add to `ToolExecutor` in maestro-local-host
 3. Add match arm in `ToolExecutor::execute()`
 4. Register schema in `ToolRegistry::new()`
 
@@ -116,7 +116,7 @@ Before making changes, understand these foundational files:
 |------|---------|-----------|
 | `state.rs` | Central `AppState` struct with all mutable state | Adding any new state or modifying state handling |
 | `app.rs` | Main event loop, keyboard handling, modal management | Adding modals, changing input handling |
-| `tools/registry.rs` | Tool definitions, schemas, execution dispatch | Adding or modifying tools |
+| `products/maestro/packages/local-host-rs/src/tools/registry.rs` | Tool definitions, schemas, execution dispatch | Adding or modifying tools |
 | `products/maestro/packages/runtime-rs/src/agent/native.rs` | Agent lifecycle, tool handling, provider orchestration | Changing agent behavior |
 | `products/maestro/packages/runtime-rs/src/agent/protocol.rs` | `FromAgent` enum - all agent→UI events | Adding new agent events |
 | `products/maestro/packages/session-rs/src/session/manager.rs` | Session CRUD, `SessionInfo` struct | Working with sessions |
@@ -145,9 +145,10 @@ All widgets implement ratatui's `Widget` trait.
 - **`matcher.rs`**: Fuzzy matching, scoring, tab completion (`SlashCommandMatcher`, `SlashCycleState`)
 - **`types.rs`**: `Command`, `CommandContext` definitions
 
-### `agent/` - Native Runtime Host
-- **`mod.rs`**: Compatibility constructors, client resolution, and turn telemetry
-- **`native_host.rs`**: Local tools, hooks, and policy adapter for maestro-runtime
+### `agent/` - Runtime Compatibility Exports
+- **`mod.rs`**: Reexports the shared host constructors.
+- Local tools, hooks, credentials, and the runtime adapter live in `products/maestro/packages/local-host-rs/src`.
+- Child-agent lifecycle and the injectable child factory live in the shared host `products/maestro/packages/local-host-rs/src/subagents/` module.
 - The native actor and provider loop live in `products/maestro/packages/runtime-rs/src/agent/`. Shared events live in maestro-runtime-contracts.
 
 ### `products/maestro/packages/session-rs/src/session/` - Persistence
@@ -287,14 +288,14 @@ Emit events (ToolStart, ToolOutput, ToolEnd)
 Return ToolResult { success, output, error }
 ```
 
-**Tool Result Caching** (`tools/cache.rs`):
+**Tool Result Caching** (`products/maestro/packages/local-host-rs/src/tools/cache.rs`):
 - LRU cache for read-only tools (read, glob, grep)
 - Excluded: bash, write, edit (side effects)
 - Configurable TTL and max entries
 
 ### Safety Systems
 
-**Action Firewall** (`safety/`):
+**Action Firewall** (`products/maestro/packages/local-host-rs/src/safety/`):
 - Path containment checks (no escaping workspace)
 - Dangerous pattern detection (regex-based)
 - Severity levels: Low, Medium, High, Critical
@@ -310,7 +311,7 @@ Return ToolResult { success, output, error }
 - Per-tool rate limits with sliding time window
 - Prevents token waste and API throttling
 
-### Hooks System (`hooks/`)
+### Hooks System (`products/maestro/packages/local-host-rs/src/hooks/`)
 
 Multi-backend extensibility system:
 
@@ -327,7 +328,7 @@ Multi-backend extensibility system:
 - `PreMessage` / `PostMessage` - message interception
 - `Overflow` - context overflow detection
 
-### Skills System (`skills/`)
+### Skills System (`products/maestro/packages/local-host-rs/src/skills/`)
 
 Dynamic capability activation without code changes:
 
@@ -404,11 +405,11 @@ live in `products/maestro/packages/codex-rs/src`; task graph scheduling lives in
 `products/maestro/packages/swarm-rs/src`. Token accounting and compaction live in
 `products/maestro/packages/context-rs/src`. Session persistence lives in
 `products/maestro/packages/session-rs/src`. The native actor lives in
-`products/maestro/packages/runtime-rs/src`; this crate composes its local execution host. This crate re-exports the historical module paths.
+`products/maestro/packages/runtime-rs/src`; maestro-local-host composes its local execution host. This crate reexports the historical module paths.
 
 Run their tests with `cargo test -p maestro-ui -p maestro-sandbox -p
 maestro-workspace -p maestro-codex -p maestro-swarm -p maestro-context --locked` from the Maestro workspace. The application-owned
-`sandbox_policy` module remains here alongside configuration and approval policy.
+`sandbox_policy` module lives in maestro-local-host alongside configuration and approval policy.
 
 ## Known Issues / TODOs
 

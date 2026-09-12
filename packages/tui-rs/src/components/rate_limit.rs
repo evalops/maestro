@@ -97,11 +97,17 @@ pub fn format_duration_compact(secs: u64) -> String {
     } else if secs < 3600 {
         let minutes = secs / 60;
         let seconds = secs % 60;
-        format!("{minutes}m {seconds:02}s")
+        maestro_ui::localization::format(
+            "{0}m {1}s",
+            &[(minutes).to_string(), format!("{:02}", seconds)],
+        )
     } else {
         let hours = secs / 3600;
         let minutes = (secs % 3600) / 60;
-        format!("{hours}h {minutes:02}m")
+        maestro_ui::localization::format(
+            "{0}h {1}m",
+            &[(hours).to_string(), format!("{:02}", minutes)],
+        )
     }
 }
 
@@ -239,7 +245,9 @@ impl RateLimitDisplay {
 
         let reset_text = window
             .format_reset()
-            .map(|r| format!(" (resets in {r})"))
+            .map(|r| {
+                maestro_ui::localization::format(" (resets in {0})", std::slice::from_ref(&(r)))
+            })
             .unwrap_or_default();
 
         let gauge_label = format!("{:.0}%{}", window.used_percent * 100.0, reset_text);
@@ -260,7 +268,7 @@ impl RateLimitDisplay {
             let pct = primary.used_percent * 100.0;
             let color = primary.color();
             spans.push(Span::styled(
-                format!("Rate: {pct:.0}%"),
+                maestro_ui::localization::format("Rate: {0}%", &[format!("{:.0}", pct)]),
                 Style::default().fg(color),
             ));
 
@@ -278,12 +286,12 @@ impl RateLimitDisplay {
             }
             if credits.unlimited {
                 spans.push(Span::styled(
-                    "Credits: ∞",
+                    maestro_ui::localization::tr("Credits: ∞"),
                     Style::default().fg(Color::Green),
                 ));
             } else if let Some(ref balance) = credits.balance {
                 spans.push(Span::styled(
-                    format!("Credits: {balance}"),
+                    maestro_ui::localization::format("Credits: {0}", std::slice::from_ref(balance)),
                     Style::default().fg(crate::themes::current_ui_theme().focus),
                 ));
             }
@@ -294,7 +302,10 @@ impl RateLimitDisplay {
 
     /// Render full version with bars
     fn render_full(&self, area: Rect, buf: &mut Buffer) {
-        let title = self.title.as_deref().unwrap_or("Rate Limits");
+        let title = self
+            .title
+            .as_deref()
+            .unwrap_or(maestro_ui::localization::tr("Rate Limits"));
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {title} "));
@@ -310,7 +321,10 @@ impl RateLimitDisplay {
         if let Some(ref primary) = self.primary {
             if y + bar_height <= inner.y + inner.height {
                 let bar_area = Rect::new(inner.x, y, inner.width, bar_height);
-                let label = primary.label.as_deref().unwrap_or("Requests");
+                let label = primary
+                    .label
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("Requests"));
                 Self::render_bar(label, primary, bar_area, buf);
                 y += bar_height;
             }
@@ -320,7 +334,10 @@ impl RateLimitDisplay {
         if let Some(ref secondary) = self.secondary {
             if y + bar_height <= inner.y + inner.height {
                 let bar_area = Rect::new(inner.x, y, inner.width, bar_height);
-                let label = secondary.label.as_deref().unwrap_or("Tokens");
+                let label = secondary
+                    .label
+                    .as_deref()
+                    .unwrap_or(maestro_ui::localization::tr("Tokens"));
                 Self::render_bar(label, secondary, bar_area, buf);
                 y += bar_height;
             }
@@ -331,15 +348,21 @@ impl RateLimitDisplay {
             if y < inner.y + inner.height {
                 let credits_area = Rect::new(inner.x, y, inner.width, 1);
                 let text = if credits.unlimited {
-                    Span::styled("Credits: Unlimited", Style::default().fg(Color::Green))
+                    Span::styled(
+                        maestro_ui::localization::tr("Credits: Unlimited"),
+                        Style::default().fg(Color::Green),
+                    )
                 } else if let Some(ref balance) = credits.balance {
                     Span::styled(
-                        format!("Credits: {balance}"),
+                        maestro_ui::localization::format(
+                            "Credits: {0}",
+                            std::slice::from_ref(balance),
+                        ),
                         Style::default().fg(crate::themes::current_ui_theme().focus),
                     )
                 } else {
                     Span::styled(
-                        "Credits: Unknown",
+                        maestro_ui::localization::tr("Credits: Unknown"),
                         Style::default().fg(crate::themes::current_ui_theme().muted),
                     )
                 };
