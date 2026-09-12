@@ -1,5 +1,5 @@
 {
-  "generated_at": 1789111830,
+  "generated_at": 1789198032,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1305,7 +1305,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 393216
+        "output_tokens": 943718
       },
       "verification": {
         "state": "catalog",
@@ -1370,10 +1370,29 @@
       }
     },
     {
-      "id": "~openai/gpt-latest",
-      "name": "OpenAI GPT Latest",
+      "id": "~openai/gpt-astra-latest",
+      "name": "OpenAI GPT Astra Latest",
       "provider": "openrouter",
-      "description": "This model always redirects to the latest model in the OpenAI GPT family.",
+      "description": "This model always redirects to the latest model in the OpenAI GPT Astra family.",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "~openai/gpt-luna-latest",
+      "name": "OpenAI GPT Luna Latest",
+      "provider": "openrouter",
+      "description": "This model always redirects to the latest model in the OpenAI GPT Luna family.",
       "capabilities": {
         "protocol": "openai-chat",
         "tools": true,
@@ -1400,6 +1419,44 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 400000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "~openai/gpt-sol-latest",
+      "name": "OpenAI GPT Sol Latest",
+      "provider": "openrouter",
+      "description": "This model always redirects to the latest model in the OpenAI GPT Sol family.",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
+        "output_tokens": 128000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "~openai/gpt-terra-latest",
+      "name": "OpenAI GPT Terra Latest",
+      "provider": "openrouter",
+      "description": "This model always redirects to the latest model in the OpenAI GPT Terra family.",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1050000,
         "output_tokens": 128000
       },
       "verification": {
@@ -2483,7 +2540,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 943718
+        "output_tokens": 393216
       },
       "verification": {
         "state": "catalog",
@@ -3014,7 +3071,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1000000,
+        "context_tokens": 262144,
         "output_tokens": 32768
       },
       "verification": {
@@ -3289,6 +3346,25 @@
       }
     },
     {
+      "id": "inclusionai/ling-3.0-flash-vl",
+      "name": "inclusionAI: Ling 3.0 Flash VL",
+      "provider": "openrouter",
+      "description": "Ling 3.0 Flash VL builds on Ling 3.0 Flash (124B total / 5.5B active MoE from InclusionAI), further strengthening its…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": true,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 131072,
+        "output_tokens": 32768
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
       "id": "inclusionai/ling-3.0-flash-vl:free",
       "name": "inclusionAI: Ling 3.0 Flash VL (free)",
       "provider": "openrouter",
@@ -3301,6 +3377,44 @@
         "streaming": true,
         "context_tokens": 262144,
         "output_tokens": 32768
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "inference-net/schematron-v2-small",
+      "name": "Inference.net: Schematron V2 Small",
+      "provider": "openrouter",
+      "description": "Schematron V2 Small is a 3B-parameter HTML-to-JSON extraction model from Inference.net. It prioritizes extraction…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": false,
+        "vision": false,
+        "reasoning": false,
+        "streaming": true,
+        "context_tokens": 128000,
+        "output_tokens": 4096
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "inference-net/schematron-v2-turbo",
+      "name": "Inference.net: Schematron V2 Turbo",
+      "provider": "openrouter",
+      "description": "Schematron V2 Turbo is a 3B-parameter HTML-to-JSON extraction model from Inference.net. It prioritizes throughput for…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": false,
+        "vision": false,
+        "reasoning": false,
+        "streaming": true,
+        "context_tokens": 128000,
+        "output_tokens": 8192
       },
       "verification": {
         "state": "catalog",
@@ -4173,7 +4287,7 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131072,
+        "context_tokens": 256000,
         "output_tokens": 16384
       },
       "verification": {
@@ -6280,7 +6394,7 @@
         "reasoning": false,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 16384
+        "output_tokens": 235929
       },
       "verification": {
         "state": "catalog",
@@ -8028,7 +8142,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 131072
+        "output_tokens": 182476
       },
       "verification": {
         "state": "catalog",
