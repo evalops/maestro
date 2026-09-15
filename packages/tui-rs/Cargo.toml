@@ -192,7 +192,7 @@ maestro-session = { workspace = true, features = ["test-support"] }
 # Reconstruct real terminal cells in PTY assertions, including cursor-only spaces.
 vt100 = "0.16.2"
 pretty_assertions = "1"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 wat = "1"
 # Enables `#[tokio::test(start_paused = true)]` for deterministic timeout tests.
 tokio = { workspace = true, features = ["test-util"] }
